@@ -9,8 +9,17 @@ async fn get_preset_names() -> Result<Vec<String>, String> {
     let helix = HelixUsb::connect()
         .map_err(|e| format!("Connexion USB échouée: {}", e))?;
     
-    // Test simple — juste vérifier qu'on peut ouvrir le device
-    Ok(vec!["HX Stomp XL connecté !".to_string()])
+    println!("USB connecté !");
+
+    let events = helix.start_listener();
+
+    connect_sequence(&helix, &events)
+        .map_err(|e| format!("Handshake échoué: {}", e))?;
+    
+    println!("Handshake OK !");
+    
+    request_preset_names(&helix, &events)
+        .map_err(|e| format!("Lecture presets échouée: {}", e))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
