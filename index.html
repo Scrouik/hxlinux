@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HXLinux</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      
+      body {
+        background: #1a1a1a;
+        color: #e0e0e0;
+        font-family: 'Roboto', sans-serif;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      header {
+        background: #111;
+        padding: 12px 20px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid #333;
+      }
+
+      header h1 {
+        font-size: 1.2rem;
+        color: #e8a020;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+      }
+
+      #status {
+        font-size: 0.8rem;
+        color: #888;
+      }
+
+      #btn-refresh {
+        background: #e8a020;
+        color: #111;
+        border: none;
+        padding: 6px 14px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+      }
+
+      #btn-refresh:hover { background: #ffb830; }
+
+      #preset-list {
+        list-style: none;
+        overflow-y: auto;
+        flex: 1;
+        padding: 8px;
+      }
+
+      #preset-list li {
+        padding: 8px 12px;
+        border-radius: 4px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      #preset-list li:hover { background: #2a2a2a; }
+
+      .preset-num {
+        color: #e8a020;
+        font-size: 0.75rem;
+        font-family: monospace;
+        min-width: 30px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>HX Linux</h1>
+      <span id="status">En attente...</span>
+      <button id="btn-refresh">Actualiser</button>
+    </header>
+    <ul id="preset-list"></ul>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
