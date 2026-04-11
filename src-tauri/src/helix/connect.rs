@@ -18,10 +18,20 @@ pub fn connect_sequence(
     helix.write(&[0x11,0x00,0x00,0x18,0x01,0x10,0xef,0x03,0x00,0x02,0x00,0x04,0x00,0x10,0x00,0x00,0x01,0x00,0x05,0x00,0x01,0x00,0x00,0x00,0x05,0x00,0x00,0x00])?;
     println!("ENVOI ack x1");
 
-    // 4. Attendre reconfig
-    wait_raw(events, |d| d.len() >= 14 && d[0] == 0x28 && d[4] == 0xef && d[12] == 0x09);
-    println!("RECU reconfig");
-
+    // 4. Attendre reconfig — sauvegarder le message
+    let mut reconfig_data: Vec<u8> = Vec::new();
+    loop {
+        match events.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(HelixEvent::RawMessage(data)) => {
+                if data.len() >= 14 && data[0] == 0x28 && data[4] == 0xef && data[12] == 0x09 {
+                    reconfig_data = data;
+                    break;
+                }
+            }
+            _ => continue,
+        }
+    }
+    println!("Reconfig complet: {:02x?}", &reconfig_data);
     // 5. Acks reconfig
     helix.write(&[0x08,0x00,0x00,0x18,0x01,0x10,0xef,0x03,0x00,0x03,0x00,0x08,0x20,0x10,0x00,0x00])?;
     helix.write(&[0x08,0x00,0x00,0x18,0x01,0x10,0xef,0x03,0x00,0x04,0x00,0x02,0x20,0x10,0x00,0x00])?;
@@ -79,7 +89,7 @@ pub fn connect_sequence(
         match events.recv_timeout(std::time::Duration::from_secs(10)) {
             Ok(HelixEvent::KeepAliveX1 { counter }) => {
                 let ack = [0x08,0x00,0x00,0x18,0x01,0x10,0xef,0x03,
-                    0x00,counter.wrapping_add(1),0x00,0x08,0x20,0x10,0x00,0x00];
+                    0x00,counter.wrapping_add(1),0x00,0x08,0x38,counter.wrapping_add(9),0x00,0x00];
                 helix.write(&ack)?;
                 println!("ACK keep-alive x1 pendant attente header");
             }
@@ -101,18 +111,18 @@ pub fn connect_sequence(
         match events.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(HelixEvent::PresetChunk(_)) => {
                 chunk_count += 1;
-                println!("PRESET CHUNK #{}", chunk_count);
+                println!("ACK chunk #{} msg={:02x} ack={:02x}", chunk_count, msg_counter, ack_counter);
                 let ack = [0x08,0x00,0x00,0x18,0x80,0x10,0xed,0x03,
                     0x00,msg_counter,0x00,0x08,0x91,ack_counter,0x00,0x00];
                 helix.write(&ack)?;
                 msg_counter = msg_counter.wrapping_add(1);
                 ack_counter = ack_counter.wrapping_add(1);
             }
-            Ok(HelixEvent::KeepAliveX1 { counter }) => {
-                let ack = [0x08,0x00,0x00,0x18,0x01,0x10,0xef,0x03,
-                    0x00,counter.wrapping_add(1),0x00,0x08,0x20,0x10,0x00,0x00];
-                helix.write(&ack)?;
+            Ok(HelixEvent::KeepAliveX1 { .. }) => {
+                // Ne pas acquitter pendant la lecture des presets
+                continue;
             }
+
             Ok(HelixEvent::KeepAliveX80 { .. }) => {
                 // Ignoré pendant la lecture du preset
             }
