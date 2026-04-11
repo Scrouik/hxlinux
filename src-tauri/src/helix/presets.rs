@@ -14,7 +14,6 @@ pub fn request_preset_names(
         0x83, 0x66, 0xcd, 0x03, 0xea, 0x64, 0x01, 0x65,
         0x82, 0x6b, 0x00, 0x65, 0x02, 0x00, 0x00, 0x00
     ])?;
-    println!("ENVOI requête presets");
 
     let mut stream: Vec<u8> = Vec::new();
     let mut preset_names: Vec<String> = Vec::new();
@@ -23,11 +22,9 @@ pub fn request_preset_names(
     loop {
         match events.recv_timeout(std::time::Duration::from_secs(1)) {
             Ok(HelixEvent::PresetNamesData(data)) => {
-                println!("RECU données presets ({} octets) counter={:02x}", data.len(), data[9]);
                 if data.len() > 16 {
                     stream.extend_from_slice(&data[16..]);  // D'abord on ajoute
                 }
-                println!("Stream total: {} octets", stream.len());
 
                 // Ack
                 let ack = [
@@ -61,7 +58,6 @@ pub fn request_preset_names(
 
             Err(_) => {
                 timeout_count += 1;
-                println!("Timeout #{}", timeout_count);
                 if timeout_count >= 2 {
                     break;
                 }
@@ -71,8 +67,6 @@ pub fn request_preset_names(
     }
 
     parse_preset_names(&stream, &mut preset_names);  // Puis on parse
-    println!("Noms décodés: {}", preset_names.len());
-    println!("Total presets: {}", preset_names.len());
     Ok(preset_names)
 }
 
@@ -84,7 +78,6 @@ fn parse_preset_names(stream: &[u8], names: &mut Vec<String>) {
             if i + 8 <= stream.len() && stream[i+4] == 0x84 && stream[i+5] == 0xcd 
                 && stream[i+6] == 0x00 && stream[i+7] == 0x6d {
                 
-                let preset_idx = stream[i+3] as usize;                
                 let name_len = stream[i+8] as usize;
                 let name_start = i + 9;
                 let name_end = name_start + name_len.saturating_sub(0x80);
@@ -99,10 +92,7 @@ fn parse_preset_names(stream: &[u8], names: &mut Vec<String>) {
                         .collect();
 
                     if !name.is_empty() {
-                        while names.len() <= preset_idx {
-                            names.push(String::from("New Preset"));
-                        }
-                        names[preset_idx] = name;
+                        names.push(name);
                     }
                 }
                 i += 9;

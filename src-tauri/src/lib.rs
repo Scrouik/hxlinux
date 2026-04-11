@@ -16,7 +16,6 @@ async fn get_preset_names() -> Result<Vec<String>, String> {
     connect_sequence(&helix, &events)
         .map_err(|e| format!("Handshake échoué: {}", e))?;
     
-    println!("Handshake OK !");
     
     request_preset_names(&helix, &events)
         .map_err(|e| format!("Lecture presets échouée: {}", e))

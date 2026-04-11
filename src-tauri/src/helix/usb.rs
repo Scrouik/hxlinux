@@ -45,7 +45,7 @@ impl HelixUsb {
     pub fn connect() -> Result<Self, rusb::Error> {
         let context = Context::new()?;
         
-        let mut handle = context
+        let handle = context
             .open_device_with_vid_pid(VENDOR_ID, PRODUCT_ID)
             .ok_or(rusb::Error::NoDevice)?;
 
@@ -115,13 +115,9 @@ impl HelixUsb {
 
                         // Données noms de presets x1 — paquet avec data[1]==0x01
                         else if data[4] == 0xef && data[6] == 0x01 && data[1] == 0x01 && n > 16 {
-                            println!("LISTENER: PresetNamesData détecté ! {} octets", n);
                             let _ = tx.send(HelixEvent::PresetNamesData(data));
                         }
                         else {
-                            println!("LISTENER RAW: data[0]={:02x} data[1]={:02x} data[4]={:02x} data[6]={:02x} data[11]={:02x} n={}", 
-                                data[0], data[1], data[4], data[6], 
-                                if n>11 {data[11]} else {0}, n);
                             let _ = tx.send(HelixEvent::RawMessage(data));
                         }
                     }
