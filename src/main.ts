@@ -4,10 +4,7 @@ async function loadPresets() {
   const statusEl = document.querySelector("#status");
   const listEl = document.querySelector("#preset-list");
   
-  if (!statusEl || !listEl) {
-    console.log("Elements non trouvés !");
-    return;
-  }
+  if (!statusEl || !listEl) return;
   
   statusEl.textContent = "Connexion au HX Stomp XL...";
   
@@ -19,11 +16,31 @@ async function loadPresets() {
       .join("");
   } catch (error) {
     statusEl.textContent = `Erreur: ${error}`;
-    alert(`Erreur détaillée: ${error}`);
+  }
+}
+
+async function checkAndLoad() {
+  const statusEl = document.querySelector("#status");
+  if (!statusEl) return;
+
+  statusEl.textContent = "Recherche du HX Stomp XL...";
+
+  try {
+    const connected = await invoke<boolean>("check_device");
+    if (connected) {
+      await loadPresets();
+    } else {
+      statusEl.textContent = "HX Stomp XL non détecté — vérifiez la connexion USB";
+    }
+  } catch (error) {
+    statusEl.textContent = `Erreur: ${error}`;
   }
 }
 
 window.addEventListener("DOMContentLoaded", () => {
   document.querySelector("#btn-refresh")
     ?.addEventListener("click", loadPresets);
+  
+  // Lancement automatique au démarrage
+  checkAndLoad();
 });

@@ -42,6 +42,13 @@ pub struct HelixUsb {
 
 impl HelixUsb {
 
+    pub fn is_connected() -> bool {
+    match Context::new() {
+        Ok(context) => context.open_device_with_vid_pid(VENDOR_ID, PRODUCT_ID).is_some(),
+        Err(_) => false,
+        }
+    }
+    
     pub fn connect() -> Result<Self, rusb::Error> {
         let context = Context::new()?;
         
