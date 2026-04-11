@@ -21,15 +21,13 @@ pub fn request_preset_names(
     let mut timeout_count = 0;
 
     loop {
-        match events.recv_timeout(std::time::Duration::from_secs(5)) {
+        match events.recv_timeout(std::time::Duration::from_secs(1)) {
             Ok(HelixEvent::PresetNamesData(data)) => {
                 println!("RECU données presets ({} octets) counter={:02x}", data.len(), data[9]);
                 if data.len() > 16 {
                     stream.extend_from_slice(&data[16..]);  // D'abord on ajoute
                 }
                 println!("Stream total: {} octets", stream.len());
-                parse_preset_names(&stream, &mut preset_names);  // Puis on parse
-                println!("Noms décodés: {}", preset_names.len());
 
                 // Ack
                 let ack = [
@@ -50,31 +48,11 @@ pub fn request_preset_names(
                 // Le HX envoie les données sans attendre cet ack
                 continue;
             }
-            /*
-            Ok(HelixEvent::KeepAliveX1 { counter }) => {
-                let ack = [
-                    0x08,0x00,0x00,0x18,0x01,0x10,0xef,0x03,
-                    0x00,counter.wrapping_add(2),0x00,0x08,0x38,counter.wrapping_add(10),0x00,0x00
-                ];
-                helix.write(&ack)?;
-                println!("ACK keep-alive x1 avec 0x38");
-            }
-            */
 
             Ok(HelixEvent::KeepAliveX80 { .. }) => {
                 // Ignorer pendant la lecture des presets
                 continue;
             }
-            /*
-            Ok(HelixEvent::KeepAliveX80 { counter, ack }) => {
-                let response = [
-                    0x08,0x00,0x00,0x18,0x80,0x10,0xed,0x03,
-                    0x00,counter,0x00,0x08,0x91,ack,0x00,0x00
-                ];
-                helix.write(&response)?;
-                println!("ACK keep-alive x80");
-            }
-            */
 
             Ok(HelixEvent::RawMessage(data)) => {
                 println!("RAW reçu: data[0]={:02x} data[4]={:02x} data[11]={:02x}", 
@@ -84,7 +62,7 @@ pub fn request_preset_names(
             Err(_) => {
                 timeout_count += 1;
                 println!("Timeout #{}", timeout_count);
-                if timeout_count >= 5 {
+                if timeout_count >= 2 {
                     break;
                 }
             }
@@ -92,16 +70,21 @@ pub fn request_preset_names(
         }
     }
 
+    parse_preset_names(&stream, &mut preset_names);  // Puis on parse
+    println!("Noms décodés: {}", preset_names.len());
     println!("Total presets: {}", preset_names.len());
     Ok(preset_names)
 }
 
+
 fn parse_preset_names(stream: &[u8], names: &mut Vec<String>) {
     let mut i = 0;
-    while i + 5 <= stream.len() {
+    while i + 25 <= stream.len() {
         if stream[i] == 0x81 && stream[i+1] == 0xcd && stream[i+2] == 0x00 {
-            if i + 25 <= stream.len() && stream[i+4] == 0x84 && stream[i+5] == 0xcd 
+            if i + 8 <= stream.len() && stream[i+4] == 0x84 && stream[i+5] == 0xcd 
                 && stream[i+6] == 0x00 && stream[i+7] == 0x6d {
+                
+                let preset_idx = stream[i+3] as usize;                
                 let name_len = stream[i+8] as usize;
                 let name_start = i + 9;
                 let name_end = name_start + name_len.saturating_sub(0x80);
@@ -114,13 +97,12 @@ fn parse_preset_names(stream: &[u8], names: &mut Vec<String>) {
                         .filter(|&&b| b >= 32 && b <= 126)
                         .map(|&b| b as char)
                         .collect();
-                    
+
                     if !name.is_empty() {
-                        let idx = stream[i+3] as usize;
-                        while names.len() <= idx {
+                        while names.len() <= preset_idx {
                             names.push(String::from("New Preset"));
                         }
-                        names[idx] = name;
+                        names[preset_idx] = name;
                     }
                 }
                 i += 9;

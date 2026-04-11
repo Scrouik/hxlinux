@@ -65,12 +65,6 @@ impl HelixUsb {
         Ok(())
     }
 
-    pub fn read(&self, buf: &mut [u8]) -> Result<usize, rusb::Error> {
-        let timeout = Duration::from_millis(2000);
-        let n = self.handle.read_bulk(ENDPOINT_BULK_IN, buf, timeout)?;
-        Ok(n)
-    }
-
     pub fn flush(&self) {
         let mut buf = [0u8; 512];
         let timeout = Duration::from_millis(100);

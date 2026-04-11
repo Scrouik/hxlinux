@@ -139,7 +139,8 @@ where F: Fn(&[u8]) -> bool
             }
             Ok(HelixEvent::KeepAliveX1 { .. }) => continue,
             Ok(HelixEvent::KeepAliveX80 { .. }) => continue,
-            _ => return,
+            Err(_) => return,
+            _ => continue,
         }
     }
 }
