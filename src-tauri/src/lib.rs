@@ -9,21 +9,33 @@ async fn check_device() -> bool {
     HelixUsb::is_connected()
 }
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 #[tauri::command]
 async fn get_preset_names() -> Result<Vec<String>, String> {
     let helix = HelixUsb::connect()
         .map_err(|e| format!("Connexion USB échouée: {}", e))?;
-    
-    println!("USB connecté !");
 
-    let events = helix.start_listener();
+    let stop = Arc::new(AtomicBool::new(false));
+    let events = helix.start_listener(Arc::clone(&stop));
 
     connect_sequence(&helix, &events)
-        .map_err(|e| format!("Handshake échoué: {}", e))?;
+        .map_err(|e| {
+            stop.store(true, Ordering::Relaxed);
+            format!("Handshake échoué: {}", e)
+        })?;
+
+    let result = request_preset_names(&helix, &events)
+        .map_err(|e| format!("Lecture presets échouée: {}", e));
+
+    // Arrêter le listener
+    stop.store(true, Ordering::Relaxed);
     
-    
-    request_preset_names(&helix, &events)
-        .map_err(|e| format!("Lecture presets échouée: {}", e))
+    // Attendre que le thread s'arrête
+    std::thread::sleep(std::time::Duration::from_millis(600));
+
+    result
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

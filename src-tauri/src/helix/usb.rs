@@ -17,12 +17,12 @@
 // any changes made directly on the device (preset switches, parameter changes),
 // keeping the interface always in sync with the hardware state.
 
-
 // Si tu ne comprends pas utilises Deepl :)
 
 use rusb::{Context, DeviceHandle, UsbContext};
 use crate::helix::protocol::*;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::sync::mpsc;
 
@@ -43,12 +43,12 @@ pub struct HelixUsb {
 impl HelixUsb {
 
     pub fn is_connected() -> bool {
-    match Context::new() {
-        Ok(context) => context.open_device_with_vid_pid(VENDOR_ID, PRODUCT_ID).is_some(),
-        Err(_) => false,
+        match Context::new() {
+            Ok(context) => context.open_device_with_vid_pid(VENDOR_ID, PRODUCT_ID).is_some(),
+            Err(_) => false,
         }
     }
-    
+
     pub fn connect() -> Result<Self, rusb::Error> {
         let context = Context::new()?;
         
@@ -83,14 +83,17 @@ impl HelixUsb {
         }
     }
 
-    pub fn start_listener(&self) -> mpsc::Receiver<HelixEvent> {
+    pub fn start_listener(&self, stop: Arc<AtomicBool>) -> mpsc::Receiver<HelixEvent> {
         let (tx, rx) = mpsc::channel();
         let handle = Arc::clone(&self.handle);
 
         std::thread::spawn(move || {
             let mut buf = [0u8; 512];
             loop {
-                match handle.read_bulk(ENDPOINT_BULK_IN, &mut buf, Duration::from_millis(5000)) {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                match handle.read_bulk(ENDPOINT_BULK_IN, &mut buf, Duration::from_millis(500)) {
                     Ok(n) if n >= 10 => {
                         let data = buf[..n].to_vec();
 
@@ -101,26 +104,22 @@ impl HelixUsb {
                                 counter: data[9] 
                             });
                         }
-
                         // Keep-alive x80
-                        else if data[4] == 0xed && data[6] == 0x80 && (data[11] == 0x10) {
+                        else if data[4] == 0xed && data[6] == 0x80 && data[11] == 0x10 {
                             let _ = tx.send(HelixEvent::KeepAliveX80 { 
                                 counter: data[9],
                                 ack: data[12],
                             });
                         }
-
                         // Chunk preset x80
                         else if data[4] == 0xed && data[6] == 0x80 && data[1] == 0x01 {
                             let _ = tx.send(HelixEvent::PresetChunk(data));
                         }
-
-                        // Header preset 0x39
+                        // Header preset 0x39 ou 0x3c
                         else if (data[0] == 0x39 || data[0] == 0x3c) && data[4] == 0xed && data[6] == 0x80 {
                             let _ = tx.send(HelixEvent::PresetHeader);
                         }
-
-                        // Données noms de presets x1 — paquet avec data[1]==0x01
+                        // Données noms de presets x1
                         else if data[4] == 0xef && data[6] == 0x01 && data[1] == 0x01 && n > 16 {
                             let _ = tx.send(HelixEvent::PresetNamesData(data));
                         }
