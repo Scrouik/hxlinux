@@ -4,8 +4,8 @@ use std::sync::mpsc;
 pub fn connect_sequence(
     helix: &HelixUsb,
     events: &mpsc::Receiver<HelixEvent>
-) -> Result<usize, rusb::Error> {
-    
+) -> Result<(usize, u8), rusb::Error> {
+
     // 1. Init x1
     helix.write(&[0x0c,0x00,0x00,0x28,0x01,0x10,0xef,0x03,0x00,0x00,0x00,0x02,0x00,0x01,0x00,0x21,0x00,0x10,0x00,0x00])?;
 
@@ -63,21 +63,19 @@ pub fn connect_sequence(
     // 15. Attendre confirmation x1
     wait_raw(events, |d| d.len() >= 20 && d[4] == 0xef && d[6] == 0x01 && (d[18] == 0x02 || d[18] == 0x05));
 
-    // 16. Démarrage lecture preset courant — session_no aléatoire comme kempline
+    // 16. Démarrage lecture preset courant
     let session_no: u8 = (rand::random::<u8>() % 0xfb) + 0x04;
     helix.write(&[0x19,0x00,0x00,0x18,0x80,0x10,0xed,0x03,0x00,0x04,0x00,0x04,
         session_no,0x1e,0x00,0x00,0x01,0x00,0x06,0x00,0x09,0x00,0x00,0x00,
         0x83,0x66,0xcd,0x04,0x04,0x64,0x17,0x65,0xc0,0x00,0x00,0x00])?;
     helix.write(&[0x08,0x00,0x00,0x18,0x01,0x10,0xef,0x03,0x00,0x03,0x00,0x08,0x72,0x1e,0x00,0x00])?;
-    println!("Step 16 envoyé — session_no={:02x}", session_no);
 
     // 17. Attendre header — extraire index preset actif
     let active_preset: usize;
+    let mut last_x1_counter: u8 = 0x04;
     loop {
-        println!("BOUCLE17: attente...");
         match events.recv_timeout(std::time::Duration::from_secs(10)) {
             Ok(HelixEvent::PresetHeader(data)) => {
-                println!("HEADER data[0]={:02x}", data[0]);
                 let mut idx_6b: u8 = 0;
                 let mut idx_6c: u8 = 0;
                 for i in 0..data.len().saturating_sub(3) {
@@ -94,6 +92,7 @@ pub fn connect_sequence(
                 break;
             }
             Ok(HelixEvent::KeepAliveX1 { counter }) => {
+                last_x1_counter = counter;
                 let ack = [0x08,0x00,0x00,0x18,0x01,0x10,0xef,0x03,
                     0x00,counter.wrapping_add(1),0x00,0x08,0x38,counter.wrapping_add(9),0x00,0x00];
                 helix.write(&ack)?;
@@ -112,10 +111,9 @@ pub fn connect_sequence(
     let mut chunk_count = 0;
 
     loop {
-        match events.recv_timeout(std::time::Duration::from_secs(5)) {
+        match events.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(HelixEvent::PresetChunk(_)) => {
                 chunk_count += 1;
-                println!("ACK chunk #{} msg={:02x} ack={:02x}", chunk_count, msg_counter, ack_counter);
                 let ack = [0x08,0x00,0x00,0x18,0x80,0x10,0xed,0x03,
                     0x00,msg_counter,0x00,0x08,0x91,ack_counter,0x00,0x00];
                 helix.write(&ack)?;
@@ -128,7 +126,7 @@ pub fn connect_sequence(
         }
     }
 
-    Ok(active_preset)
+    Ok((active_preset, last_x1_counter.wrapping_add(1)))
 }
 
 fn wait_raw<F>(events: &mpsc::Receiver<HelixEvent>, condition: F)
@@ -137,18 +135,13 @@ where F: Fn(&[u8]) -> bool
     loop {
         match events.recv_timeout(std::time::Duration::from_secs(10)) {
             Ok(HelixEvent::RawMessage(data)) => {
-                println!("WAIT_RAW: {:02x?}", &data[..data.len().min(16)]);
                 if condition(&data) {
-                    println!("WAIT_RAW: condition OK !");
                     return;
                 }
             }
             Ok(HelixEvent::KeepAliveX1 { .. }) => continue,
             Ok(HelixEvent::KeepAliveX80 { .. }) => continue,
-            Err(_) => {
-                println!("WAIT_RAW: timeout !");
-                return;
-            }
+            Err(_) => return,
             _ => continue,
         }
     }
