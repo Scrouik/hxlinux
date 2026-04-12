@@ -66,6 +66,12 @@ impl HelixUsb {
         })
     }
 
+    pub fn disconnect(&self) {
+        let _ = self.handle.release_interface(0);
+        // Réattacher le kernel driver
+        let _ = self.handle.attach_kernel_driver(0);
+    }
+
     pub fn write(&self, data: &[u8]) -> Result<(), rusb::Error> {
         let timeout = Duration::from_millis(5000);
         self.handle.write_bulk(ENDPOINT_BULK_OUT, data, timeout)?;
@@ -96,7 +102,12 @@ impl HelixUsb {
                 match handle.read_bulk(ENDPOINT_BULK_IN, &mut buf, Duration::from_millis(500)) {
                     Ok(n) if n >= 10 => {
                         let data = buf[..n].to_vec();
-
+                        
+                        // Log tout ce qui vient de x80
+                        if data[4] == 0xed && data[6] == 0x80 {
+                            println!("X80 RAW: data[0]={:02x} data[1]={:02x} data[11]={:02x} n={}", 
+                                data[0], data[1], data[11], n);
+                        }
                         // Keep-alive x1
                         if data[4] == 0xef && data[6] == 0x01 
                             && (data[11] == 0x10 || data[11] == 0x08) {
@@ -105,7 +116,7 @@ impl HelixUsb {
                             });
                         }
                         // Keep-alive x80
-                        else if data[4] == 0xed && data[6] == 0x80 && data[11] == 0x10 {
+                        else if data[4] == 0xed && data[6] == 0x80 && (data[11] == 0x10 || data[11] == 0x08) {
                             let _ = tx.send(HelixEvent::KeepAliveX80 { 
                                 counter: data[9],
                                 ack: data[12],
@@ -115,8 +126,9 @@ impl HelixUsb {
                         else if data[4] == 0xed && data[6] == 0x80 && data[1] == 0x01 {
                             let _ = tx.send(HelixEvent::PresetChunk(data));
                         }
-                        // Header preset 0x39, 0x3b ou 0x3c
-                        else if (data[0] == 0x39 || data[0] == 0x3b || data[0] == 0x3c) && data[4] == 0xed && data[6] == 0x80 {
+                        // Header preset 0x37, 0x39, 0x3b ou 0x3c
+                        else if data[4] == 0xed && data[6] == 0x80 && data[1] == 0x00 && n >= 55 && n <= 75 {
+                            println!("PRESET HEADER détecté: data[0]={:02x}", data[0]);
                             let _ = tx.send(HelixEvent::PresetHeader(data));
                         }
                         // Données noms de presets x1

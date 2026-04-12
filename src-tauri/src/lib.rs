@@ -34,6 +34,9 @@ async fn get_preset_names() -> Result<Vec<String>, String> {
     // Attendre que le thread s'arrête
     std::thread::sleep(std::time::Duration::from_millis(600));
 
+    // Libérer proprement
+    helix.disconnect();
+
     result
 }
 

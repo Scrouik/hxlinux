@@ -15,20 +15,17 @@ pub fn connect_sequence(
     // 3. Ack x1
     helix.write(&[0x11,0x00,0x00,0x18,0x01,0x10,0xef,0x03,0x00,0x02,0x00,0x04,0x00,0x10,0x00,0x00,0x01,0x00,0x05,0x00,0x01,0x00,0x00,0x00,0x05,0x00,0x00,0x00])?;
 
-    // 4. Attendre reconfig — sauvegarder le message
-        let mut reconfig_data: Vec<u8> = Vec::new();
-        loop {
-            match events.recv_timeout(std::time::Duration::from_secs(10)) {
-                Ok(HelixEvent::RawMessage(data)) => {
-                    if data.len() >= 14 && data[0] == 0x28 && data[4] == 0xef && data[12] == 0x09 {
-                        reconfig_data = data;
-                        println!("RECONFIG: {:02x?}", &reconfig_data);  // ← ajoute ce log
-                        break;
-                    }
+    // 4. Attendre reconfig
+    loop {
+        match events.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(HelixEvent::RawMessage(data)) => {
+                if data.len() >= 14 && data[0] == 0x28 && data[4] == 0xef && data[12] == 0x09 {
+                    break;
                 }
-                _ => continue,
             }
+            _ => continue,
         }
+    }
 
     // 5. Acks reconfig
     helix.write(&[0x08,0x00,0x00,0x18,0x01,0x10,0xef,0x03,0x00,0x03,0x00,0x08,0x20,0x10,0x00,0x00])?;
@@ -67,18 +64,20 @@ pub fn connect_sequence(
     wait_raw(events, |d| d.len() >= 20 && d[4] == 0xef && d[6] == 0x01 && (d[18] == 0x02 || d[18] == 0x05));
 
     // 16. Démarrage lecture preset courant — session_no aléatoire comme kempline
-        let session_no: u8 = (rand::random::<u8>() % 0xfb) + 0x04; // valeur entre 0x04 et 0xff
-        helix.write(&[0x19,0x00,0x00,0x18,0x80,0x10,0xed,0x03,0x00,0x04,0x00,0x04,
-            session_no,0x1e,0x00,0x00,0x01,0x00,0x06,0x00,0x09,0x00,0x00,0x00,
-            0x83,0x66,0xcd,0x04,0x04,0x64,0x17,0x65,0xc0,0x00,0x00,0x00])?;
-        helix.write(&[0x08,0x00,0x00,0x18,0x01,0x10,0xef,0x03,0x00,0x03,0x00,0x08,0x72,0x1e,0x00,0x00])?;
+    let session_no: u8 = (rand::random::<u8>() % 0xfb) + 0x04;
+    helix.write(&[0x19,0x00,0x00,0x18,0x80,0x10,0xed,0x03,0x00,0x04,0x00,0x04,
+        session_no,0x1e,0x00,0x00,0x01,0x00,0x06,0x00,0x09,0x00,0x00,0x00,
+        0x83,0x66,0xcd,0x04,0x04,0x64,0x17,0x65,0xc0,0x00,0x00,0x00])?;
+    helix.write(&[0x08,0x00,0x00,0x18,0x01,0x10,0xef,0x03,0x00,0x03,0x00,0x08,0x72,0x1e,0x00,0x00])?;
+    println!("Step 16 envoyé — session_no={:02x}", session_no);
 
-    // 17. Attendre header 0x39 — acquitter keep-alive x1 pendant l'attente
+    // 17. Attendre header — extraire index preset actif
     let active_preset: usize;
     loop {
+        println!("BOUCLE17: attente...");
         match events.recv_timeout(std::time::Duration::from_secs(10)) {
             Ok(HelixEvent::PresetHeader(data)) => {
-                println!("Header preset reçu !");
+                println!("HEADER data[0]={:02x}", data[0]);
                 let mut idx_6b: u8 = 0;
                 let mut idx_6c: u8 = 0;
                 for i in 0..data.len().saturating_sub(3) {
@@ -90,32 +89,23 @@ pub fn connect_sequence(
                     }
                 }
                 let active_preset_idx = (idx_6b as usize * 25) + idx_6c as usize;
-                println!("Preset actif: index={} (6b={:02x} 6c={:02x})", active_preset_idx, idx_6b, idx_6c);
                 helix.write(&[0x19,0x00,0x00,0x18,0x80,0x10,0xed,0x03,0x00,0x05,0x00,0x0c,0x91,0x1e,0x00,0x00,0x01,0x00,0x06,0x00,0x09,0x00,0x00,0x00,0x83,0x66,0xcd,0x03,0xf4,0x64,0x16,0x65,0xc0,0x00,0x00,0x00])?;
                 active_preset = active_preset_idx;
                 break;
             }
             Ok(HelixEvent::KeepAliveX1 { counter }) => {
-                println!("BOUCLE17: KeepAliveX1 counter={:02x}", counter);
                 let ack = [0x08,0x00,0x00,0x18,0x01,0x10,0xef,0x03,
                     0x00,counter.wrapping_add(1),0x00,0x08,0x38,counter.wrapping_add(9),0x00,0x00];
                 helix.write(&ack)?;
             }
-            Ok(other) => {
-                match &other {
-                    HelixEvent::PresetChunk(d) => println!("BOUCLE17: PresetChunk data[0]={:02x}", d[0]),
-                    HelixEvent::RawMessage(d) => println!("BOUCLE17: RawMessage data[0]={:02x} data[4]={:02x} data[6]={:02x}", d[0], d[4], d[6]),
-                    HelixEvent::KeepAliveX80 { counter, .. } => println!("BOUCLE17: KeepAliveX80 counter={:02x}", counter),
-                    _ => println!("BOUCLE17: autre événement inconnu"),
-                }
-            }
             Err(_) => {
-                println!("BOUCLE17: timeout !");
                 active_preset = 0;
                 break;
             }
+            _ => continue,
         }
     }
+
     // 18. Lire les chunks du preset
     let mut msg_counter: u8 = 0x06;
     let mut ack_counter: u8 = 0x1f;
@@ -132,22 +122,12 @@ pub fn connect_sequence(
                 msg_counter = msg_counter.wrapping_add(1);
                 ack_counter = ack_counter.wrapping_add(1);
             }
-            Ok(HelixEvent::KeepAliveX1 { .. }) => {
-                // Ne pas acquitter pendant la lecture des presets
-                continue;
-            }
-
-            Ok(HelixEvent::KeepAliveX80 { .. }) => {
-                // Ignoré pendant la lecture du preset
-            }
-            _ => {
-                println!("Preset lu — {} chunks", chunk_count);
-                break;
-            }
+            Ok(HelixEvent::KeepAliveX1 { .. }) => continue,
+            Ok(HelixEvent::KeepAliveX80 { .. }) => continue,
+            _ => break,
         }
     }
 
-    println!("CONNEXION ETABLIE !");
     Ok(active_preset)
 }
 
