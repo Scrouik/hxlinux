@@ -30,7 +30,7 @@ pub enum HelixEvent {
     KeepAliveX1 { counter: u8 },
     KeepAliveX80 { counter: u8, ack: u8 },
     PresetChunk(Vec<u8>),
-    PresetHeader,
+    PresetHeader(Vec<u8>),  // au lieu de PresetHeader
     PresetNamesData(Vec<u8>),
     RawMessage(Vec<u8>),
     Disconnected,
@@ -115,9 +115,9 @@ impl HelixUsb {
                         else if data[4] == 0xed && data[6] == 0x80 && data[1] == 0x01 {
                             let _ = tx.send(HelixEvent::PresetChunk(data));
                         }
-                        // Header preset 0x39 ou 0x3c
-                        else if (data[0] == 0x39 || data[0] == 0x3c) && data[4] == 0xed && data[6] == 0x80 {
-                            let _ = tx.send(HelixEvent::PresetHeader);
+                        // Header preset 0x39, 0x3b ou 0x3c
+                        else if (data[0] == 0x39 || data[0] == 0x3b || data[0] == 0x3c) && data[4] == 0xed && data[6] == 0x80 {
+                            let _ = tx.send(HelixEvent::PresetHeader(data));
                         }
                         // Données noms de presets x1
                         else if data[4] == 0xef && data[6] == 0x01 && data[1] == 0x01 && n > 16 {

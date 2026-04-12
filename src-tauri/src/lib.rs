@@ -20,11 +20,10 @@ async fn get_preset_names() -> Result<Vec<String>, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let events = helix.start_listener(Arc::clone(&stop));
 
-    connect_sequence(&helix, &events)
-        .map_err(|e| {
-            stop.store(true, Ordering::Relaxed);
-            format!("Handshake échoué: {}", e)
-        })?;
+    let active_preset = connect_sequence(&helix, &events)
+        .map_err(|e| format!("Handshake échoué: {}", e))?;
+
+    println!("Preset actif: {}", active_preset);
 
     let result = request_preset_names(&helix, &events)
         .map_err(|e| format!("Lecture presets échouée: {}", e));
