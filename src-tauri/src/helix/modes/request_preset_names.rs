@@ -70,6 +70,8 @@ impl RequestPresetNames {
     /// Kempline : parse_preset_names()
     /// Retourne le nombre de noms décodés
     fn parse_preset_names(&mut self) -> usize {
+        println!("[Parser] stream length: {}", self.preset_names_stream.len());
+        println!("[Parser] first 32 bytes: {:02x?}", &self.preset_names_stream[..self.preset_names_stream.len().min(32)]);
         // Pattern marqueur : [0x81, 0xcd, 0x00]
         let pattern = [0x81u8, 0xcd, 0x00];
         let record_len = 25;
@@ -256,6 +258,7 @@ impl Mode for RequestPresetNames {
     }
 
     fn data_in(&mut self, data: &[u8], state: &mut HelixState) -> bool {
+        println!("[RequestPresetNames] stream total: {} bytes", self.preset_names_stream.len());
         self.arm_watchdog();
 
         // Keep-alive → acquitter silencieusement
@@ -277,12 +280,13 @@ impl Mode for RequestPresetNames {
             self.append_payload(data);
 
             // Ack
-            let ack_cnt = data[9].wrapping_add(9);
+            let ack_cnt  = data[9].wrapping_add(9);
+            let next_cnt = state.next_x1_cnt();
             let pkt = OutPacket::new(vec![
                 0x08, 0x00, 0x00, 0x18,
                 0x01, 0x10, 0xef, 0x03,
-                0x00, data[9], 0x00, 0x08,
-                0x38, ack_cnt, 0x00, 0x00,
+                0x00, next_cnt, 0x00, 0x08,  // ← next_x1_cnt() comme kempline
+                0x38, ack_cnt,  0x00, 0x00,
             ]);
             state.send(pkt);
 
@@ -310,12 +314,13 @@ impl Mode for RequestPresetNames {
             XX,   0x02, 0x00, 0x00
         ], 16) {
             // Ack
-            let ack_cnt = data[9].wrapping_add(9);
+            let ack_cnt  = data[9].wrapping_add(9);
+            let next_cnt = state.next_x1_cnt();
             let pkt = OutPacket::new(vec![
                 0x08, 0x00, 0x00, 0x18,
                 0x01, 0x10, 0xef, 0x03,
-                0x00, data[9], 0x00, 0x08,
-                0x38, ack_cnt, 0x00, 0x00,
+                0x00, next_cnt, 0x00, 0x08,  // ← next_x1_cnt() comme kempline
+                0x38, ack_cnt,  0x00, 0x00,
             ]);
             state.send(pkt);
 
