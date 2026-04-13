@@ -87,9 +87,6 @@ impl Mode for RequestPreset {
         // Incrémenter session_id comme kempline
         state.request_preset_session_id =
             state.request_preset_session_id.wrapping_add(2);
-        if state.request_preset_session_id > 0xff {
-            state.request_preset_session_id -= 0xff;
-        }
     }
 
     fn data_in(&mut self, data: &[u8], state: &mut HelixState) -> bool {

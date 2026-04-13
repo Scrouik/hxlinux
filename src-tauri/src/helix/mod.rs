@@ -27,6 +27,7 @@ pub trait Mode: Send {
 // Kempline : switch_mode("RequestPresetName") etc.
 // ===========================================================
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum ModeRequest {
     Connect,
     ReconfigureX1,
@@ -80,6 +81,7 @@ pub struct HelixState {
 // Commandes vers le KeepAliveManager
 // ===========================================================
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum KeepAliveCommand {
     StartX1,
     StartX2,
@@ -171,11 +173,4 @@ impl HelixState {
         self.session_no = rand::random::<u8>().max(0x04);
     }
 
-    /// Remplace les wildcards None par le compteur dans un template
-    pub fn fill_packet(&self, template: &[Option<u8>], cnt: u8) -> Vec<u8> {
-        template.iter().map(|b| match b {
-            Some(v) => *v,
-            None    => cnt,
-        }).collect()
-    }
 }

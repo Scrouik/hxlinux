@@ -25,20 +25,6 @@ use helix::modes::reconfigure_x1::ReconfigureX1;
 use helix::modes::request_preset::RequestPreset;
 use std::time::Duration;
 
-use lazy_static::lazy_static;
-lazy_static! {
-    static ref GLOBAL_HANDLE: Mutex<Option<Arc<rusb::DeviceHandle<rusb::GlobalContext>>>> = 
-        Mutex::new(None);
-    static ref GLOBAL_MODE_TX: Mutex<Option<mpsc::Sender<ModeRequest>>> =
-        Mutex::new(None);
-    static ref GLOBAL_STOP_LISTENER: Mutex<Option<Arc<AtomicBool>>> =
-        Mutex::new(None);
-    static ref GLOBAL_KA_MANAGER: Mutex<Option<Arc<KeepAliveManager>>> =
-        Mutex::new(None);
-    static ref GLOBAL_USB_TX_DROP: Mutex<Option<mpsc::Sender<OutPacket>>> =
-    Mutex::new(None);
-}
-
 const HX_VID: u16 = 0x0e41;
 const HX_PID: u16 = 0x4253;
 
@@ -52,56 +38,8 @@ pub fn run() {
             });
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                println!("[Tauri] fenêtre fermée → nettoyage USB");
-                // Signal de shutdown via canal global
-                // Pour l'instant : libérer proprement le device
-                cleanup_usb();
-                window.destroy().unwrap();
-            }
-        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-// ===========================================================
-// Deconnect le port USB proprement
-// ===========================================================
-fn cleanup_usb() {
-    // 1. Stopper les keep-alives
-    if let Some(ka) = GLOBAL_KA_MANAGER.lock().unwrap().as_ref() {
-        ka.stop_all();
-    }
-
-    // 2. Stopper le listener
-    if let Some(stop) = GLOBAL_STOP_LISTENER.lock().unwrap().as_ref() {
-        stop.store(true, Ordering::SeqCst);
-    }
-
-    // 3. Fermer le canal mode
-    {
-        let mut tx = GLOBAL_MODE_TX.lock().unwrap();
-        *tx = None;
-    }
-
-    {
-        let mut tx = GLOBAL_USB_TX_DROP.lock().unwrap();
-        *tx = None; // drop → ferme le channel → usb_writer s'arrête
-    }
-    // 4. Attendre que tout s'arrête
-    thread::sleep(Duration::from_millis(200));
-
-    // 5. Libérer l'interface
-    if let Some(handle) = GLOBAL_HANDLE.lock().unwrap().take() {
-        // Reset USB — équivalent dispose_resources de kempline
-        if let Err(e) = handle.reset() {
-            println!("[Helix] reset USB : {}", e);
-        }
-        let _ = handle.release_interface(0);
-        drop(handle);
-        println!("[Helix] USB libéré proprement");
-    }
 }
 
 // ===========================================================
@@ -160,18 +98,9 @@ fn start_helix() {
     }
     println!("[Helix] endpoints réinitialisés");
 
-    {
-    let mut global = GLOBAL_HANDLE.lock().unwrap();
-    *global = Some(Arc::clone(&handle));
-    }
-
     // -- Channels --
     let (usb_tx,  usb_rx)  = mpsc::channel::<OutPacket>();
     let (mode_tx, mode_rx) = mpsc::channel::<ModeRequest>();
-    {
-        let mut global_tx = GLOBAL_MODE_TX.lock().unwrap();
-        *global_tx = Some(mode_tx.clone());
-    }
     let (ka_tx,   ka_rx)   = mpsc::channel::<KeepAliveCommand>();
 
     // -- État partagé --
@@ -200,10 +129,6 @@ fn start_helix() {
 
     // -- Démarrer usb_listener --
     let stop_listener = Arc::new(AtomicBool::new(false));
-    {
-        let mut global_stop = GLOBAL_STOP_LISTENER.lock().unwrap();
-        *global_stop = Some(Arc::clone(&stop_listener));
-    }
     helix::usb_listener::start_listener(
         Arc::clone(&handle),
         Arc::clone(&state),
@@ -231,11 +156,6 @@ fn start_helix() {
                 }
             }
         });
-    }
-
-    {
-        let mut global_ka = GLOBAL_KA_MANAGER.lock().unwrap();
-        *global_ka = Some(Arc::clone(&ka_manager));
     }
 
     // -- Boucle principale : changements de mode --

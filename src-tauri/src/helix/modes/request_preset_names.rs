@@ -14,8 +14,6 @@ use crate::helix::modes::standard::Standard;
 use crate::pattern;
 
 const EXPECTED_PRESET_COUNT: usize = 125;
-// Watchdog kempline : 0.75s sans paquet → on finalise
-const WATCHDOG_MS: u64 = 750;
 
 pub struct RequestPresetNames {
     preset_names_stream:          Vec<u8>,
