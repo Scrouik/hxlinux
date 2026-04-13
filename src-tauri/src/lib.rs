@@ -22,6 +22,7 @@ use helix::modes::request_preset_name::RequestPresetName;
 use helix::modes::request_preset_names::RequestPresetNames;
 use helix::modes::standard::Standard;
 use helix::modes::reconfigure_x1::ReconfigureX1;
+use helix::modes::request_preset::RequestPreset;
 
 const HX_VID: u16 = 0x0e41;
 const HX_PID: u16 = 0x4253;
@@ -87,6 +88,15 @@ fn start_helix() {
     }
     println!("[Helix] interface USB réclamée");
 
+    // Kempline : clear_feature ENDPOINT_HALT sur 0x01 et 0x81
+    if let Err(e) = handle.clear_halt(0x01) {
+        println!("[Helix] clear_halt 0x01 : {}", e);
+    }
+    if let Err(e) = handle.clear_halt(0x81) {
+        println!("[Helix] clear_halt 0x81 : {}", e);
+    }
+    println!("[Helix] endpoints réinitialisés");
+
     // -- Channels --
     let (usb_tx,  usb_rx)  = mpsc::channel::<OutPacket>();
     let (mode_tx, mode_rx) = mpsc::channel::<ModeRequest>();
@@ -151,6 +161,14 @@ fn start_helix() {
     println!("[Helix] en attente de changements de mode");
     loop {
         match mode_rx.recv() {
+            Ok(ModeRequest::RequestPreset) => {
+                println!("[Helix] → RequestPreset");
+                let mut s = state.lock().unwrap();
+                let mut m = current_mode.lock().unwrap();
+                m.shutdown(&mut s);
+                *m = Box::new(RequestPreset::new());
+                m.start(&mut s);
+            }
             Ok(ModeRequest::RequestPresetName) => {
                 println!("[Helix] → RequestPresetName");
                 let mut s = state.lock().unwrap();

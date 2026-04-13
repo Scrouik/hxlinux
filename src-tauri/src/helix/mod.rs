@@ -33,12 +33,16 @@ pub enum ModeRequest {
     RequestPresetName,
     RequestPresetNames,
     Standard,
+    RequestPreset,
 }
 
 // ===========================================================
 // HelixState — état partagé entre tous les threads
 // ===========================================================
 pub struct HelixState {
+
+    pub got_preset: bool,
+    pub request_preset_session_id: u8,
 
     pub connecting: bool,
 
@@ -99,6 +103,8 @@ impl HelixState {
             got_preset_names:   false,
             preset_pkt_counter: 0x0716,
             connecting: true,
+            got_preset: false,
+            request_preset_session_id: 0xf4,
         }
     }
 
