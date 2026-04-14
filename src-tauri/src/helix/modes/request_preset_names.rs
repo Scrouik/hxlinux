@@ -68,8 +68,6 @@ impl RequestPresetNames {
     /// Kempline : parse_preset_names()
     /// Retourne le nombre de noms décodés
     fn parse_preset_names(&mut self) -> usize {
-        println!("[Parser] stream length: {}", self.preset_names_stream.len());
-        println!("[Parser] first 32 bytes: {:02x?}", &self.preset_names_stream[..self.preset_names_stream.len().min(32)]);
         // Pattern marqueur : [0x81, 0xcd, 0x00]
         let pattern = [0x81u8, 0xcd, 0x00];
         let record_len = 25;
@@ -256,15 +254,12 @@ impl Mode for RequestPresetNames {
     }
 
     fn data_in(&mut self, data: &[u8], state: &mut HelixState) -> bool {
-        println!("[RequestPresetNames] stream total: {} bytes", self.preset_names_stream.len());
         self.arm_watchdog();
 
         // Keep-alive → acquitter silencieusement
         if Standard::check_keep_alive(data, state) {
             return false;
         }
-
-        println!("[RequestPresetNames] data_in {} bytes", data.len());
 
         // Paquet avec un byte de payload (0x8, 0x1, ...)
         // Kempline : my_byte_cmp([0x8, 0x1, 0x0, 0x18, 0xef, 0x3, 0x1, 0x10,

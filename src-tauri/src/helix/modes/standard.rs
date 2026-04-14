@@ -30,50 +30,26 @@ impl Standard {
         if byte_cmp(data, &pattern![
             0x08, 0x00, 0x00, 0x18,
             0xef, 0x03, 0x01, 0x10,
-            0x00, XX,   0x00, XX
+            0x00, XX, 0x00, 0x10
         ], 12) {
-            let cnt = state.next_x1_cnt();
-            state.send(OutPacket::new(vec![
-                0x08, 0x00, 0x00, 0x18,
-                0x01, 0x10, 0xef, 0x03,
-                0x00, cnt,  0x00, 0x08,
-                0x72, 0x1e, 0x00, 0x00,
-            ]));
-            return true;
+            return true;  // pas de send() ici
         }
-
         // x2
         if byte_cmp(data, &pattern![
             0x08, 0x00, 0x00, 0x18,
             0xf0, 0x03, 0x02, 0x10,
-            0x00, XX,   0x00, XX
+            0x00, XX, 0x00, 0x10
         ], 12) {
-            let cnt = state.next_x2_cnt();
-            state.send(OutPacket::new(vec![
-                0x08, 0x00, 0x00, 0x18,
-                0x02, 0x10, 0xf0, 0x03,
-                0x00, cnt,  0x00, 0x08,
-                0x74, 0x77, 0x00, 0x00,
-            ]));
             return true;
         }
-
         // x80
         if byte_cmp(data, &pattern![
             0x08, 0x00, 0x00, 0x18,
             0xed, 0x03, 0x80, 0x10,
-            0x00, XX,   0x00, XX
+            0x00, XX, 0x00, 0x10
         ], 12) {
-            let cnt = state.next_x80_cnt();
-            state.send(OutPacket::new(vec![
-                0x08, 0x00, 0x00, 0x18,
-                0x80, 0x10, 0xed, 0x03,
-                0x00, cnt,  0x00, 0x08,
-                0x20, 0x10, 0x00, 0x00,
-            ]));
             return true;
         }
-
         false
     }
 }
@@ -92,12 +68,15 @@ impl Mode for Standard {
             0x00, XX, 0x00, 0x04,
             XX, XX, XX, XX
         ], 16) {
+            state.increase_session_quadruple_x11();
+            let sq = state.session_quadruple;
             let cnt = state.next_x80_cnt();
+            println!("[Standard] LED COLOR CHANGE → session_quadruple: {:02x?}", sq);
             state.send(OutPacket::with_delay(vec![
                 0x08, 0x00, 0x00, 0x18,
                 0x80, 0x10, 0xed, 0x03,
                 0x00, cnt,  0x00, 0x08,
-                0x20, 0x10, 0x00, 0x00,
+                sq[0], sq[1], sq[2], sq[3],
             ], 0));
             return true;
         }

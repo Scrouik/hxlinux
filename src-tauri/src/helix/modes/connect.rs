@@ -186,7 +186,8 @@ impl Mode for Connect {
             0x09, 0x02
         ], 14) {
             self.received_x11_on_x2 = true;
-            // Kempline : start_x2x10_keep_alive_thread()
+            // -- x11 reçu sur x2 → démarrage keep-alive x2
+            state.start_keepalive(crate::helix::KeepAliveCommand::StartX2);
         } else if byte_cmp(data, &pattern![
             0x08, 0x00, 0x00, 0x18,
             0xf0, 0x03, 0x02, 0x10,

@@ -29,7 +29,7 @@ impl RequestPresetName {
                 Ok(_)  => { /* annulé — réponse reçue à temps */ }
                 Err(_) => {
                     println!("[RequestPresetName] watchdog — pas de réponse, switch mode");
-                    let _ = mode_tx.send(ModeRequest::RequestPresetNames);
+                    let _ = mode_tx.send(ModeRequest::Standard);
                 }
             }
         });
@@ -99,7 +99,7 @@ impl Mode for RequestPresetName {
 
                 // Annuler le watchdog avant de switcher
                 self.cancel_watchdog();
-                state.switch_mode(ModeRequest::RequestPresetNames);
+                state.switch_mode(ModeRequest::RequestPreset);
             }
             return false;
         }

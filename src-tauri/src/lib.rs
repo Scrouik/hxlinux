@@ -28,13 +28,38 @@ use std::time::Duration;
 const HX_VID: u16 = 0x0e41;
 const HX_PID: u16 = 0x4253;
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
+// État partagé entre Rust et Tauri
+#[derive(Default)]
+struct AppState {
+    preset_names:   Vec<String>,
+    active_preset:  usize,
+}
+
+#[tauri::command]
+fn get_preset_names(state: tauri::State<Arc<Mutex<AppState>>>) -> Vec<String> {
+    state.lock().unwrap().preset_names.clone()
+}
+
+#[tauri::command]
+fn get_active_preset(state: tauri::State<Arc<Mutex<AppState>>>) -> usize {
+    state.lock().unwrap().active_preset
+}
+
 pub fn run() {
+    let app_state = Arc::new(Mutex::new(AppState::default()));
+    let app_state_clone = Arc::clone(&app_state);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .setup(|_app| {
-            thread::spawn(|| {
-                start_monitor();
+        .manage(app_state)
+        .invoke_handler(tauri::generate_handler![
+            get_preset_names,
+            get_active_preset,
+        ])
+        .setup(move |_app| {
+            let state = app_state_clone;
+            thread::spawn(move || {
+                start_monitor(state);
             });
             Ok(())
         })
@@ -45,23 +70,21 @@ pub fn run() {
 // ===========================================================
 // Surveille le branchement USB et lance/arrête la connexion
 // ===========================================================
-fn start_monitor() {
+fn start_monitor(app_state: Arc<Mutex<AppState>>) {
     println!("[Monitor] démarrage surveillance USB");
-
     let stop_monitor = Arc::new(AtomicBool::new(false));
 
     helix::usb_monitor::start_monitor(
-        Arc::new(Mutex::new(HelixState::new())), // state temporaire pour le monitor
+        Arc::new(Mutex::new(HelixState::new())),
         Arc::clone(&stop_monitor),
-        Arc::new(|| {
-            // HX branché → démarrer la connexion
+        Arc::new(move || {
             println!("[Monitor] HX détecté → démarrage connexion");
-            thread::spawn(|| {
-                start_helix();
+            let state = Arc::clone(&app_state);
+            thread::spawn(move || {
+                start_helix(state);
             });
         }),
         Arc::new(|| {
-            // HX débranché → le usb_listener détectera NoDevice
             println!("[Monitor] HX débranché");
         }),
     );
@@ -70,7 +93,7 @@ fn start_monitor() {
 // ===========================================================
 // Connexion complète au HX et boucle de traitement
 // ===========================================================
-fn start_helix() {
+fn start_helix(app_state: Arc<Mutex<AppState>>) {
     println!("[Helix] connexion au HX Stomp XL...");
 
     // Ouvrir le device USB
@@ -88,6 +111,20 @@ fn start_helix() {
         return;
     }
     println!("[Helix] interface USB réclamée");
+
+    // Réclamer l'interface MIDI (interface 4)
+    if let Err(e) = handle.kernel_driver_active(4) {
+        println!("[Helix] kernel_driver_active(4) : {}", e);
+    }
+    if handle.kernel_driver_active(4).unwrap_or(false) {
+        println!("[Helix] détachement kernel driver interface 4");
+        let _ = handle.detach_kernel_driver(4);
+    }
+    if let Err(e) = handle.claim_interface(4) {
+        println!("[Helix] erreur claim_interface(4) : {}", e);
+    } else {
+        println!("[Helix] interface MIDI réclamée");
+    }
 
     // Kempline : clear_feature ENDPOINT_HALT sur 0x01 et 0x81
     if let Err(e) = handle.clear_halt(0x01) {
@@ -108,7 +145,7 @@ fn start_helix() {
     {
         let mut s = state.lock().unwrap();
         s.tx           = Some(usb_tx);
-        s.mode_tx      = Some(mode_tx);
+        s.mode_tx = Some(mode_tx.clone());
         s.keepalive_tx = Some(ka_tx);
         // Générer un session_no aléatoire dès le départ
         s.new_session_no();
@@ -158,6 +195,35 @@ fn start_helix() {
         });
     }
 
+    // Thread MIDI listener — endpoint 0x82
+    {
+        let handle_midi = Arc::clone(&handle);
+        let mode_tx_midi = mode_tx.clone();
+        let state_midi = Arc::clone(&state);
+        thread::spawn(move || {
+            println!("[MidiListener] démarré");
+            let mut buf = vec![0u8; 64];
+            loop {
+                match handle_midi.read_bulk(0x82, &mut buf, Duration::from_millis(500)) {
+                    Ok(n) if n >= 4 => {
+                        // MIDI Program Change : [0x0C, 0xC0, program_no, 0x00]
+                        if buf[0] == 0x0C && (buf[1] & 0xF0) == 0xC0 {
+                            let preset_no = buf[2] as usize;
+                            println!("[MidiListener] Program Change → preset {}", preset_no);
+                            {
+                                let mut s = state_midi.lock().unwrap();
+                                s.preset_index = preset_no;
+                            }
+                            let _ = mode_tx_midi.send(ModeRequest::RequestPresetName);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => {}
+                }
+            }
+        });
+    }
+
     // -- Boucle principale : changements de mode --
     println!("[Helix] en attente de changements de mode");
     loop {
@@ -176,6 +242,11 @@ fn start_helix() {
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
                 *m = Box::new(RequestPresetName::new());
+                // Mettre à jour le preset actif
+                {
+                    let mut app = app_state.lock().unwrap();
+                    app.active_preset = s.preset_index;
+                }
                 m.start(&mut s);
             }
             Ok(ModeRequest::RequestPresetNames) => {
@@ -191,6 +262,14 @@ fn start_helix() {
                 let mut s = state.lock().unwrap();
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
+                
+                // Mettre à jour l'AppState
+                {
+                    let mut app = app_state.lock().unwrap();
+                    app.preset_names  = s.preset_names.clone();
+                    app.active_preset = s.preset_index;
+                }
+                
                 *m = Box::new(Standard);
                 m.start(&mut s);
             }

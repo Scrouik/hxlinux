@@ -42,6 +42,8 @@ pub enum ModeRequest {
 // ===========================================================
 pub struct HelixState {
 
+    pub session_quadruple: [u8; 4],
+
     pub got_preset: bool,
     pub request_preset_session_id: u8,
 
@@ -103,13 +105,26 @@ impl HelixState {
             keepalive_tx:       None,
             connected:          false,
             got_preset_names:   false,
-            preset_pkt_counter: 0x0716,
-            connecting: true,
-            got_preset: false,
+            connecting:         true,
+            got_preset:         false,
+            preset_pkt_counter: 0x001e,
             request_preset_session_id: 0xf4,
+            session_quadruple: [0xf4, 0x1e, 0x00, 0x00],
         }
     }
 
+    pub fn increase_session_quadruple_x11(&mut self) {
+        self.session_quadruple[0] = self.session_quadruple[0].wrapping_add(0x11);
+        if self.session_quadruple[0] < 0x11 {
+            self.session_quadruple[1] = self.session_quadruple[1].wrapping_add(0x01);
+            if self.session_quadruple[1] == 0x00 {
+                self.session_quadruple[2] = self.session_quadruple[2].wrapping_add(0x01);
+                if self.session_quadruple[2] == 0x00 {
+                    self.session_quadruple[3] = self.session_quadruple[3].wrapping_add(0x01);
+                }
+            }
+        }
+    }
     
 
     /// Kempline : preset_data_packet_double()

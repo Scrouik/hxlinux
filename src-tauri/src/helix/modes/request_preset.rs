@@ -59,7 +59,9 @@ impl RequestPreset {
 impl Mode for RequestPreset {
 
     fn start(&mut self, state: &mut HelixState) {
-        println!("[RequestPreset] démarré");
+        println!("[RequestPreset] démarré — preset_pkt_counter={:#06x} session_id={:#04x}", 
+        state.preset_pkt_counter, 
+        state.request_preset_session_id);
         self.preset_data.clear();
         self.in_transfer  = false;
         self.timer_cancel_tx = None;
@@ -96,7 +98,15 @@ impl Mode for RequestPreset {
             return false;
         }
 
-        // Kempline : data_in[6] != 0x80 → erreur
+        // Paquets x2 (changement de preset) — déléguer à Standard
+        // Kempline : RequestPreset hérite de Standard, donc data_in de Standard est appelé
+        if data.len() > 6 && data[6] == 0x02 {
+            let mut std = crate::helix::modes::standard::Standard;
+            println!("[RequestPreset] paquet x2) : {:02x?}", data);
+            return std.data_in(data, state);
+        }
+
+        // Kempline : data_in[6] != 0x80 → paquet inattendu
         if data.len() > 6 && data[6] != 0x80 {
             println!("[RequestPreset] paquet inattendu (pas x80) : {:02x?}", data);
             return true;

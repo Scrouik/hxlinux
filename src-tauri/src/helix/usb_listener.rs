@@ -43,6 +43,10 @@ pub fn start_listener(
             ) {
                 Ok(n) if n > 0 => {
                     let data = buf[..n].to_vec();
+                    // Log temporaire - TOUS les paquets
+                    if data.len() > 6 && data[4] == 0xf0 {
+                        println!("[UsbListener RAW x2] {} bytes : {:02x?}", n, data);
+                    }
                     println!("[UsbListener] reçu {} bytes : {:02x?}", n, data);
 
                     // Dispatcher vers le mode actif
