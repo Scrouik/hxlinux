@@ -111,7 +111,18 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
         return;
     }
     println!("[Helix] interface USB réclamée");
-
+    // Vider le buffer 0x81 — le HX peut avoir des données résiduelles
+    // d'une session précédente
+    println!("[Helix] vidage buffer 0x81...");
+    let mut flush_buf = vec![0u8; 512];
+    let flush_deadline = std::time::Instant::now() + Duration::from_millis(200);
+    while std::time::Instant::now() < flush_deadline {
+        match handle.read_bulk(0x81, &mut flush_buf, Duration::from_millis(50)) {
+            Ok(n) if n > 0 => { /* paquet résiduel ignoré */ }
+            _ => break,
+        }
+    }
+    println!("[Helix] buffer vidé");
     // Réclamer l'interface MIDI (interface 4)
     if let Err(e) = handle.kernel_driver_active(4) {
         println!("[Helix] kernel_driver_active(4) : {}", e);
