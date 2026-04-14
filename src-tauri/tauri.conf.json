@@ -26,6 +26,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "resources/HX_ModelCatalog.json": "resources/HX_ModelCatalog.json",
+      "resources/icons_models/*": "resources/icons_models/",
+      "resources/icons_category/*": "resources/icons_category/"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
