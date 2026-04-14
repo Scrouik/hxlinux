@@ -99,6 +99,10 @@ impl Mode for RequestPresetName {
 
                 // Annuler le watchdog avant de switcher
                 self.cancel_watchdog();
+                // Lire le preset actif depuis la réponse
+                if self.preset_name_data.len() > 24 {
+                    state.preset_index = self.preset_name_data[24] as usize;
+                }
                 state.switch_mode(ModeRequest::RequestPreset);
             }
             return false;
