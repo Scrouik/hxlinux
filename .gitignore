@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Ressources tierces (non versionnées)
+Kempline/
+Line 6 files/
+packages.microsoft.gpg
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
