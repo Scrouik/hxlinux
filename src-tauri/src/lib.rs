@@ -318,6 +318,24 @@ fn get_active_preset_slots(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<
     Some(parse_preset_slots(&s.preset_data))
 }
 
+/// Version debug : retourne aussi les coordonnées brutes de grille [x, y].
+#[tauri::command]
+fn get_active_preset_slots_debug(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<Vec<[String; 4]>> {
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        (app.active_preset, app.helix_state.clone()?)
+    };
+
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() {
+        return None;
+    }
+    if s.preset_index != active_preset {
+        return None;
+    }
+    Some(parse_preset_slots_debug(&s.preset_data))
+}
+
 lazy_static! {
     static ref MODULES_BY_ID: HashMap<String, [String; 2]> = {
         let mut map = HashMap::new();
@@ -349,23 +367,33 @@ lazy_static! {
     };
 }
 
+#[derive(Clone)]
+struct ParsedSlot {
+    category: String,
+    name: String,
+    grid_x: Option<u8>,
+    grid_y: Option<u8>,
+}
+
 /// Parse les slots d'un preset brut.
 /// Kempline : split par [0x82, 0x13], extrait l'ID entre markers 0x19 et 0x1a.
-fn parse_preset_slots(data: &[u8]) -> Vec<[String; 2]> {
-    #[derive(Clone)]
-    struct ParsedSlot {
-        category: String,
-        name: String,
-        grid_pos: Option<u8>,
-    }
-
-    fn extract_grid_pos(chunk: &[u8], scan_from: usize) -> Option<u8> {
-        // The block payload uses small tag/value pairs; tag 0x02 carries
-        // a stable slot position we can use to detect branch wraps.
+fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
+    fn extract_grid_x(chunk: &[u8], scan_from: usize) -> Option<u8> {
         let end = chunk.len().min(scan_from.saturating_add(40));
         let mut i = scan_from;
         while i + 1 < end {
             if chunk[i] == 0x02 {
+                return Some(chunk[i + 1]);
+            }
+            i += 1;
+        }
+        None
+    }
+    fn extract_grid_y(chunk: &[u8], scan_from: usize) -> Option<u8> {
+        let end = chunk.len().min(scan_from.saturating_add(40));
+        let mut i = scan_from;
+        while i + 1 < end {
+            if chunk[i] == 0x03 {
                 return Some(chunk[i + 1]);
             }
             i += 1;
@@ -415,7 +443,8 @@ fn parse_preset_slots(data: &[u8]) -> Vec<[String; 2]> {
                         parsed_slots.push(ParsedSlot {
                             category,
                             name,
-                            grid_pos: extract_grid_pos(chunk, id_start + rel_end + 1),
+                            grid_x: extract_grid_x(chunk, id_start + rel_end + 1),
+                            grid_y: extract_grid_y(chunk, id_start + rel_end + 1),
                         });
                     }
                     cursor = id_start + rel_end + 1;
@@ -444,7 +473,7 @@ fn parse_preset_slots(data: &[u8]) -> Vec<[String; 2]> {
     let mut split_before_idx: Option<usize> = None;
     for (i, slot) in deduped.iter().enumerate() {
         let is_amp = slot.category == "Amp" || slot.category == "Preamp" || slot.category == "Amp+Cab";
-        let amp_pos = slot.grid_pos;
+        let amp_pos = slot.grid_x;
         if !is_amp || amp_pos.is_none() {
             continue;
         }
@@ -452,25 +481,79 @@ fn parse_preset_slots(data: &[u8]) -> Vec<[String; 2]> {
         if deduped
             .iter()
             .skip(i + 1)
-            .any(|s| s.grid_pos.map_or(false, |p| p < amp_pos))
+            .any(|s| s.grid_x.map_or(false, |p| p < amp_pos))
         {
             split_before_idx = Some(i);
             break;
         }
     }
 
+    // Merge/Mixer : le retour sur grid_x (premier slot avec x >= ancre après
+    // une colonne plus basse) arrive trop tôt si l'ordre sérialisé mélange la
+    // chaîne commune et la branche B (effets post-merge avant l'ampli B, etc.).
+    // Helix liste souvent : ampli A, chaîne après merge, puis ampli B et la suite
+    // sur la branche basse — le point de jonction visuel est donc juste après
+    // le premier ampli (même indice que le split), pas au premier « rebond » de x.
+    let merge_before_idx: Option<usize> = split_before_idx.map(|s| {
+        let m = s.saturating_add(1);
+        if m >= deduped.len() {
+            deduped.len()
+        } else {
+            m
+        }
+    });
+
     let mut result = Vec::new();
     for (idx, slot) in deduped.iter().enumerate() {
         if split_before_idx == Some(idx) {
-            result.push([
-                String::from("Routing"),
-                String::from("Split (branche parallèle)"),
-            ]);
+            result.push(ParsedSlot {
+                category: String::from("Routing"),
+                name: String::from("Split (branche parallèle)"),
+                grid_x: None,
+                grid_y: None,
+            });
         }
-        result.push([slot.category.clone(), slot.name.clone()]);
+        if merge_before_idx == Some(idx) {
+            result.push(ParsedSlot {
+                category: String::from("Routing"),
+                name: String::from("Merge/Mixer"),
+                grid_x: None,
+                grid_y: None,
+            });
+        }
+        result.push(slot.clone());
+    }
+    if merge_before_idx == Some(deduped.len()) {
+        result.push(ParsedSlot {
+            category: String::from("Routing"),
+            name: String::from("Merge/Mixer"),
+            grid_x: None,
+            grid_y: None,
+        });
     }
 
     result
+}
+
+fn parse_preset_slots(data: &[u8]) -> Vec<[String; 2]> {
+    parse_preset_slots_internal(data)
+        .into_iter()
+        .map(|s| [s.category, s.name])
+        .collect()
+}
+
+fn parse_preset_slots_debug(data: &[u8]) -> Vec<[String; 4]> {
+    parse_preset_slots_internal(data)
+        .into_iter()
+        .map(|s| {
+            [
+                s.category,
+                s.name,
+                s.grid_x.map(|v| v.to_string()).unwrap_or_default(),
+                s.grid_y.map(|v| v.to_string()).unwrap_or_default(),
+            ]
+        })
+        .collect()
 }
 
 // ===========================================================
@@ -513,6 +596,7 @@ pub fn run() {
             request_preset_content,
             get_preset_slots,
             get_active_preset_slots,
+            get_active_preset_slots_debug,
             get_preset_data_hex,
         ])
         .setup(move |app| {
