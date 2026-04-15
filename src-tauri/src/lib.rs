@@ -13,8 +13,14 @@ use std::sync::mpsc;
 use std::sync::mpsc::TryRecvError;
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::fs;
+use std::path::PathBuf;
 use std::thread;
-use tauri::{WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, Size, WebviewUrl,
+    WebviewWindowBuilder, WindowEvent,
+};
+use serde::{Deserialize, Serialize};
 
 use helix::HelixState;
 use helix::ModeRequest;
@@ -33,6 +39,73 @@ use lazy_static::lazy_static;
 const HX_VID: u16 = 0x0e41;
 const HX_PID: u16 = 0x4253;
 const EXPECTED_PRESET_COUNT: usize = 125;
+const WINDOW_LAYOUT_FILE: &str = "window-layout.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SavedWindowGeometry {
+    x: i32,
+    y: i32,
+    width: f64,
+    height: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct SavedWindowLayout {
+    main: Option<SavedWindowGeometry>,
+    models: Option<SavedWindowGeometry>,
+}
+
+fn window_layout_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let mut dir = app.path().app_config_dir().ok()?;
+    let _ = fs::create_dir_all(&dir);
+    dir.push(WINDOW_LAYOUT_FILE);
+    Some(dir)
+}
+
+fn read_window_layout(app: &tauri::AppHandle) -> Option<SavedWindowLayout> {
+    let path = window_layout_path(app)?;
+    let text = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<SavedWindowLayout>(&text).ok()
+}
+
+fn capture_window_geometry(window: &tauri::WebviewWindow) -> Option<SavedWindowGeometry> {
+    let pos = window.outer_position().ok()?;
+    let size = window.outer_size().ok()?;
+    Some(SavedWindowGeometry {
+        x: pos.x,
+        y: pos.y,
+        width: size.width as f64,
+        height: size.height as f64,
+    })
+}
+
+fn apply_window_geometry(window: &tauri::WebviewWindow, geometry: &SavedWindowGeometry) {
+    let _ = window.set_size(Size::Logical(LogicalSize::new(
+        geometry.width,
+        geometry.height,
+    )));
+    let _ = window.set_position(Position::Physical(PhysicalPosition::new(
+        geometry.x,
+        geometry.y,
+    )));
+}
+
+fn save_window_layout(app: &tauri::AppHandle) {
+    let layout = SavedWindowLayout {
+        main: app
+            .get_webview_window("main")
+            .and_then(|w| capture_window_geometry(&w)),
+        models: app
+            .get_webview_window("models")
+            .and_then(|w| capture_window_geometry(&w)),
+    };
+
+    if let Some(path) = window_layout_path(app) {
+        if let Ok(text) = serde_json::to_string_pretty(&layout) {
+            let _ = fs::write(path, text);
+        }
+    }
+}
 
 // ===========================================================
 // État partagé entre Rust et Tauri
@@ -324,6 +397,27 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(app_state)
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    save_window_layout(&window.app_handle());
+                    window.app_handle().exit(0);
+                } else {
+                    api.prevent_close();
+                }
+            }
+            if let WindowEvent::Focused(true) = event {
+                if window.label() == "main" {
+                    if let Some(models_window) = window.app_handle().get_webview_window("models") {
+                        let _ = models_window.unminimize();
+                        let _ = models_window.show();
+                        // Bring models window to front without changing keyboard focus.
+                        let _ = models_window.set_always_on_top(true);
+                        let _ = models_window.set_always_on_top(false);
+                    }
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_preset_names,
             get_active_preset,
@@ -335,7 +429,7 @@ pub fn run() {
             get_preset_data_hex,
         ])
         .setup(move |app| {
-            let _ = WebviewWindowBuilder::new(
+            let models_window = WebviewWindowBuilder::new(
                 app,
                 "models",
                 WebviewUrl::App("models.html".into()),
@@ -344,7 +438,37 @@ pub fn run() {
             .inner_size(560.0, 760.0)
             .min_inner_size(420.0, 420.0)
             .resizable(true)
+            .closable(false)
+            .focused(false)
             .build();
+            if let (Ok(models_window), Some(main_window)) =
+                (models_window, app.get_webview_window("main"))
+            {
+                if let Some(saved_layout) = read_window_layout(&app.app_handle()) {
+                    if let Some(main) = &saved_layout.main {
+                        apply_window_geometry(&main_window, main);
+                    }
+                    if let Some(models) = &saved_layout.models {
+                        apply_window_geometry(&models_window, models);
+                    }
+                } else {
+                    let target_height = 760.0;
+                    let _ = main_window
+                        .set_size(Size::Logical(LogicalSize::new(800.0, target_height)));
+                    let _ = main_window
+                        .set_position(Position::Logical(LogicalPosition::new(80.0, 80.0)));
+                    if let (Ok(main_pos), Ok(main_size)) =
+                        (main_window.outer_position(), main_window.outer_size())
+                    {
+                        let models_x = main_pos.x + main_size.width as i32;
+                        let models_y = main_pos.y;
+                        let _ = models_window.set_position(Position::Physical(
+                            PhysicalPosition::new(models_x, models_y),
+                        ));
+                    }
+                }
+                let _ = main_window.set_focus();
+            }
 
             let state = app_state_clone;
             thread::spawn(move || {

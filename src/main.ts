@@ -1,7 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { LogicalSize } from "@tauri-apps/api/dpi";
 import { emit } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -24,7 +22,6 @@ const barActive   = document.getElementById("bar-active")!;
 const barHint     = document.getElementById("bar-hint")!;
 const presetCount = document.getElementById("preset-count")!;
 const appRoot     = document.querySelector(".app") as HTMLElement;
-let lastAppliedWindowWidth = -1;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -70,20 +67,6 @@ function updateAppWidth(names: string[]) {
   const targetWidth = Math.min(maxWidth, Math.max(minWidth, listTargetWidth));
 
   appRoot.style.width = `${targetWidth}px`;
-  void updateWindowWidth(targetWidth);
-}
-
-async function updateWindowWidth(targetWidth: number) {
-  // Evite les boucles resize inutiles.
-  if (Math.abs(targetWidth - lastAppliedWindowWidth) < 2) return;
-  lastAppliedWindowWidth = targetWidth;
-
-  try {
-    const appWindow = getCurrentWindow();
-    await appWindow.setSize(new LogicalSize(targetWidth, window.innerHeight));
-  } catch {
-    // Mode navigateur ou API fenêtre indisponible.
-  }
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
