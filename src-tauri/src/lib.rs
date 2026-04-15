@@ -10,7 +10,11 @@ mod helix;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::mpsc::TryRecvError;
+use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::thread;
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 use helix::HelixState;
 use helix::ModeRequest;
@@ -24,9 +28,11 @@ use helix::modes::standard::Standard;
 use helix::modes::reconfigure_x1::ReconfigureX1;
 use helix::modes::request_preset::RequestPreset;
 use std::time::Duration;
+use lazy_static::lazy_static;
 
 const HX_VID: u16 = 0x0e41;
 const HX_PID: u16 = 0x4253;
+const EXPECTED_PRESET_COUNT: usize = 125;
 
 // ===========================================================
 // État partagé entre Rust et Tauri
@@ -111,7 +117,6 @@ fn rename_preset(
     }
 
     s.send(OutPacket::new(data));
-    println!("[rename_preset] preset {} → \"{}\"", index, name);
     drop(s);
 
     // Mettre à jour AppState pour que le polling retourne le nouveau nom
@@ -148,8 +153,164 @@ fn activate_preset(
     // Mettre à jour l'état local
     state.lock().unwrap().active_preset = index;
 
-    println!("[activate_preset] preset {} activé", index);
     Ok(())
+}
+
+/// Retourne les données brutes du dernier preset lu en hex (debug).
+#[tauri::command]
+fn get_preset_data_hex(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()?
+    };
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready {
+        return None;
+    }
+    let mut out = String::with_capacity(s.preset_data.len() * 2);
+    for b in &s.preset_data {
+        let _ = write!(&mut out, "{:02x}", b);
+    }
+    Some(out)
+}
+
+/// Déclenche la lecture du contenu du preset actif sur le HX.
+#[tauri::command]
+fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(), String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone().ok_or("HX non connecté")?
+    };
+    let mut s = helix_arc.lock().unwrap();
+    if s.preset_content_only && !s.preset_data_ready {
+        eprintln!("[PresetDebug][request_preset_content] already in progress, skip");
+        return Ok(());
+    }
+    s.preset_data_ready = false;
+    s.preset_data.clear();
+    s.preset_content_only = true;
+    eprintln!(
+        "[PresetDebug][request_preset_content] trigger preset_index={} mode=RequestPreset",
+        s.preset_index
+    );
+    s.switch_mode(ModeRequest::RequestPreset);
+    Ok(())
+}
+
+/// Retourne les slots du dernier preset lu, sous forme [catégorie, nom].
+#[tauri::command]
+fn get_preset_slots(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<Vec<[String; 2]>> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()?
+    };
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready {
+        eprintln!("[PresetDebug][get_preset_slots] not ready yet");
+        return None;
+    }
+    if s.preset_data.is_empty() {
+        eprintln!("[PresetDebug][get_preset_slots] ready flag true but payload empty -> ignore");
+        return None;
+    }
+    let slots = parse_preset_slots(&s.preset_data);
+    eprintln!(
+        "[PresetDebug][get_preset_slots] ready bytes={} slots={}",
+        s.preset_data.len(),
+        slots.len()
+    );
+    Some(slots)
+}
+
+/// Retourne les slots uniquement si les données correspondent au preset actif.
+#[tauri::command]
+fn get_active_preset_slots(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<Vec<[String; 2]>> {
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        (app.active_preset, app.helix_state.clone()?)
+    };
+
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() {
+        return None;
+    }
+    if s.preset_index != active_preset {
+        eprintln!(
+            "[PresetDebug][get_active_preset_slots] waiting: state.preset_index={} app.active_preset={}",
+            s.preset_index,
+            active_preset
+        );
+        return None;
+    }
+    Some(parse_preset_slots(&s.preset_data))
+}
+
+lazy_static! {
+    static ref MODULES_BY_ID: HashMap<String, [String; 2]> = {
+        let mut map = HashMap::new();
+        let modules_py = include_str!("../../Kempline/modules.py");
+        for line in modules_py.lines() {
+            let parts: Vec<&str> = line.split('\'').collect();
+            if parts.len() >= 6 {
+                let key = parts[1].trim().to_lowercase();
+                let category = parts[3].trim().to_string();
+                let name = parts[5].trim().to_string();
+                if !key.is_empty() && !category.is_empty() && !name.is_empty() {
+                    map.insert(key, [category, name]);
+                }
+            }
+        }
+        map
+    };
+}
+
+/// Parse les slots d'un preset brut.
+/// Kempline : split par [0x82, 0x13], extrait l'ID entre markers 0x19 et 0x1a.
+fn parse_preset_slots(data: &[u8]) -> Vec<[String; 2]> {
+    let mut chunks: Vec<&[u8]> = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i + 1 < data.len() {
+        if data[i] == 0x82 && data[i + 1] == 0x13 {
+            if i > start {
+                chunks.push(&data[start..i]);
+            }
+            start = i + 2;
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    if start < data.len() {
+        chunks.push(&data[start..]);
+    }
+
+    let mut result = Vec::new();
+    for chunk in chunks {
+        let mut cursor = 0usize;
+        while cursor < chunk.len() {
+            if chunk[cursor] == 0x19 {
+                let id_start = cursor + 1;
+                if let Some(rel_end) = chunk[id_start..].iter().position(|&b| b == 0x1a) {
+                    let id_bytes = &chunk[id_start..id_start + rel_end];
+                    if !id_bytes.is_empty() {
+                        let mut id_hex = String::with_capacity(id_bytes.len() * 2);
+                        for b in id_bytes {
+                            let _ = write!(&mut id_hex, "{:02x}", b);
+                        }
+                        if let Some(entry) = MODULES_BY_ID.get(&id_hex) {
+                            result.push(entry.clone());
+                        } else {
+                            result.push([String::from("Unknown"), id_hex]);
+                        }
+                    }
+                    break;
+                }
+            }
+            cursor += 1;
+        }
+    }
+    result
 }
 
 // ===========================================================
@@ -168,8 +329,23 @@ pub fn run() {
             get_active_preset,
             rename_preset,
             activate_preset,
+            request_preset_content,
+            get_preset_slots,
+            get_active_preset_slots,
+            get_preset_data_hex,
         ])
-        .setup(move |_app| {
+        .setup(move |app| {
+            let _ = WebviewWindowBuilder::new(
+                app,
+                "models",
+                WebviewUrl::App("models.html".into()),
+            )
+            .title("HX Models")
+            .inner_size(560.0, 760.0)
+            .min_inner_size(420.0, 420.0)
+            .resizable(true)
+            .build();
+
             let state = app_state_clone;
             thread::spawn(move || {
                 start_monitor(state);
@@ -184,22 +360,18 @@ pub fn run() {
 // Surveille le branchement USB et lance/arrête la connexion
 // ===========================================================
 fn start_monitor(app_state: Arc<Mutex<AppState>>) {
-    println!("[Monitor] démarrage surveillance USB");
     let stop_monitor = Arc::new(AtomicBool::new(false));
 
     helix::usb_monitor::start_monitor(
         Arc::new(Mutex::new(HelixState::new())),
         Arc::clone(&stop_monitor),
         Arc::new(move || {
-            println!("[Monitor] HX détecté → démarrage connexion");
             let state = Arc::clone(&app_state);
             thread::spawn(move || {
                 start_helix(state);
             });
         }),
-        Arc::new(|| {
-            println!("[Monitor] HX débranché");
-        }),
+        Arc::new(|| {}),
     );
 }
 
@@ -207,20 +379,18 @@ fn start_monitor(app_state: Arc<Mutex<AppState>>) {
 // Connexion complète au HX et boucle de traitement
 // ===========================================================
 fn start_helix(app_state: Arc<Mutex<AppState>>) {
-    println!("[Helix] connexion au HX Stomp XL...");
-
     // Ouvrir le device USB
     let handle = match rusb::open_device_with_vid_pid(HX_VID, HX_PID) {
         Some(h) => Arc::new(h),
         None => {
-            println!("[Helix] HX non trouvé");
+            eprintln!("[Helix] HX non trouvé");
             return;
         }
     };
 
     // Réclamer l'interface USB
     if let Err(e) = handle.claim_interface(0) {
-        println!("[Helix] erreur claim_interface : {}", e);
+        eprintln!("[Helix] erreur claim_interface : {}", e);
         return;
     }
 
@@ -233,29 +403,24 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
             _ => break,
         }
     }
-    println!("[Helix] buffer vidé");
-
     // Réclamer l'interface MIDI (interface 4)
     if let Err(_e) = handle.kernel_driver_active(4) {
-        println!("[Helix] kernel_driver_active(4) : {}", _e);
+        eprintln!("[Helix] kernel_driver_active(4) : {}", _e);
     }
     if handle.kernel_driver_active(4).unwrap_or(false) {
         let _ = handle.detach_kernel_driver(4);
     }
     if let Err(e) = handle.claim_interface(4) {
-        println!("[Helix] erreur claim_interface(4) : {}", e);
-    } else {
-        println!("[Helix] interface MIDI réclamée");
+        eprintln!("[Helix] erreur claim_interface(4) : {}", e);
     }
 
     // Kempline : clear_feature ENDPOINT_HALT sur 0x01 et 0x81
     if let Err(e) = handle.clear_halt(0x01) {
-        println!("[Helix] clear_halt 0x01 : {}", e);
+        eprintln!("[Helix] clear_halt 0x01 : {}", e);
     }
     if let Err(e) = handle.clear_halt(0x81) {
-        println!("[Helix] clear_halt 0x81 : {}", e);
+        eprintln!("[Helix] clear_halt 0x81 : {}", e);
     }
-    println!("[Helix] endpoints réinitialisés");
 
     // -- Channels --
     let (usb_tx,  usb_rx)  = mpsc::channel::<OutPacket>();
@@ -307,7 +472,6 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
         let ka = Arc::clone(&ka_manager);
         let s  = Arc::clone(&state);
         thread::spawn(move || {
-            println!("[KeepAliveManager] démarré");
             loop {
                 match ka_rx.recv() {
                     Ok(KeepAliveCommand::StartX1)  => ka.start_x1(Arc::clone(&s)),
@@ -329,14 +493,12 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
         let mode_tx_midi = mode_tx.clone();
         let state_midi   = Arc::clone(&state);
         thread::spawn(move || {
-            println!("[MidiListener] démarré");
             let mut buf = vec![0u8; 64];
             loop {
                 match handle_midi.read_bulk(0x82, &mut buf, Duration::from_millis(500)) {
                     Ok(n) if n >= 4 => {
                         if buf[0] == 0x0C && (buf[1] & 0xF0) == 0xC0 {
                             let preset_no = buf[2] as usize;
-                            println!("[MidiListener] Program Change → preset {}", preset_no);
                             {
                                 let mut s = state_midi.lock().unwrap();
                                 s.preset_index = preset_no;
@@ -352,11 +514,30 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
     }
 
     // -- Boucle principale : changements de mode --
-    println!("[Helix] en attente de changements de mode");
     loop {
         match mode_rx.recv() {
             Ok(ModeRequest::RequestPreset) => {
-                println!("[Helix] → RequestPreset");
+                // Dédupliquer les RequestPreset consécutifs (course avec flux auto).
+                let mut dropped = 0usize;
+                loop {
+                    match mode_rx.try_recv() {
+                        Ok(ModeRequest::RequestPreset) => dropped += 1,
+                        Ok(other) => {
+                            // Remettre l'événement non-RequestPreset via un re-send local.
+                            // Comme le receiver est unique et ce cas est rare, on le traite
+                            // en repassant immédiatement par switch_mode.
+                            let s = state.lock().unwrap();
+                            s.switch_mode(other);
+                            break;
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => break,
+                    }
+                }
+                if dropped > 0 {
+                    eprintln!("[PresetDebug][ModeLoop] dropped duplicate RequestPreset x{}", dropped);
+                }
+
                 let mut s = state.lock().unwrap();
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
@@ -364,8 +545,13 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
                 m.start(&mut s);
             }
             Ok(ModeRequest::RequestPresetName) => {
-                println!("[Helix] → RequestPresetName");
                 let mut s = state.lock().unwrap();
+                // Pendant une lecture content_only, ignorer les changements de
+                // preset asynchrones pour ne pas interrompre RequestPreset.
+                if s.preset_content_only {
+                    eprintln!("[PresetDebug][ModeLoop] ignore RequestPresetName while content_only");
+                    continue;
+                }
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
                 *m = Box::new(RequestPresetName::new());
@@ -376,7 +562,6 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
                 m.start(&mut s);
             }
             Ok(ModeRequest::RequestPresetNames) => {
-                println!("[Helix] → RequestPresetNames");
                 let mut s = state.lock().unwrap();
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
@@ -384,20 +569,27 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
                 m.start(&mut s);
             }
             Ok(ModeRequest::Standard) => {
-                println!("[Helix] → Standard");
                 let mut s = state.lock().unwrap();
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
                 {
                     let mut app = app_state.lock().unwrap();
-                    app.preset_names  = s.preset_names.clone();
+                    // Ne jamais écraser la liste globale avec un état partiel.
+                    if !s.got_preset && s.preset_names.len() >= EXPECTED_PRESET_COUNT {
+                        app.preset_names = s.preset_names.clone();
+                    } else if !s.got_preset {
+                        eprintln!(
+                            "[PresetDebug][Standard] skip preset_names overwrite len={}",
+                            s.preset_names.len()
+                        );
+                    }
+                    s.got_preset = false;
                     app.active_preset = s.preset_index;
                 }
                 *m = Box::new(Standard);
                 m.start(&mut s);
             }
             Ok(ModeRequest::Connect) => {
-                println!("[Helix] → Connect");
                 let mut s = state.lock().unwrap();
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
@@ -405,7 +597,6 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
                 m.start(&mut s);
             }
             Ok(ModeRequest::ReconfigureX1) => {
-                println!("[Helix] → ReconfigureX1");
                 let mut s = state.lock().unwrap();
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
@@ -413,20 +604,18 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
                 m.start(&mut s);
             }
             Err(_) => {
-                println!("[Helix] channel fermé → arrêt");
                 break;
             }
         }
     }
 
     // -- Nettoyage --
-    println!("[Helix] arrêt en cours...");
     stop_listener.store(true, Ordering::SeqCst);
     ka_manager.stop_all();
     thread::sleep(Duration::from_millis(1100));
     let _ = handle.release_interface(0);
     if let Err(e) = handle.attach_kernel_driver(0) {
-        println!("[Helix] attach_kernel_driver : {}", e);
+        eprintln!("[Helix] attach_kernel_driver : {}", e);
     }
 
     // Effacer le HelixState de l'AppState à la déconnexion

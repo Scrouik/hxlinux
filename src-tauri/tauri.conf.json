@@ -15,6 +15,7 @@
       {
         "title": "hxlinux",
         "width": 800,
+        "minWidth": 280,
         "height": 600,
         "devtools": true
       }

@@ -21,8 +21,6 @@ pub fn start_writer(
     rx: Receiver<OutPacket>,
 ) {
     thread::spawn(move || {
-        println!("[UsbWriter] thread démarré");
-
         loop {
             // On attend le prochain paquet à envoyer
             match rx.recv() {
@@ -38,17 +36,12 @@ pub fn start_writer(
                         &pkt.data,
                         Duration::from_millis(WRITE_TIMEOUT_MS),
                     ) {
-                        Ok(n) => {
-                            println!("[UsbWriter] envoyé {} bytes : {:02x?}", n, pkt.data);
-                        }
-                        Err(e) => {
-                            println!("[UsbWriter] erreur écriture : {}", e);
-                        }
+                        Ok(_) => {}
+                        Err(e) => eprintln!("[UsbWriter] erreur écriture : {}", e),
                     }
                 }
                 Err(_) => {
                     // Le channel est fermé → on arrête le thread
-                    println!("[UsbWriter] channel fermé, arrêt");
                     break;
                 }
             }

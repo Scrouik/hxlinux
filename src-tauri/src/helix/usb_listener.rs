@@ -25,13 +25,11 @@ pub fn start_listener(
     stop:   Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
-        println!("[UsbListener] thread démarré");
         let mut buf = vec![0u8; BUFFER_SIZE];
 
         loop {
             // Vérifier si on doit s'arrêter
             if stop.load(Ordering::SeqCst) {
-                println!("[UsbListener] arrêt demandé");
                 break;
             }
 
@@ -43,11 +41,6 @@ pub fn start_listener(
             ) {
                 Ok(n) if n > 0 => {
                     let data = buf[..n].to_vec();
-                    // Log temporaire - TOUS les paquets
-                    if data.len() > 6 && data[4] == 0xf0 {
-                        println!("[UsbListener RAW x2] {} bytes : {:02x?}", n, data);
-                    }
-                    println!("[UsbListener] reçu {} bytes : {:02x?}", n, data);
 
                     // Dispatcher vers le mode actif
                     // On lock state et mode séparément pour éviter deadlock
@@ -62,18 +55,16 @@ pub fn start_listener(
                     // Timeout normal — on reboucle pour vérifier stop
                 }
                 Err(rusb::Error::NoDevice) => {
-                    println!("[UsbListener] HX déconnecté");
+                    eprintln!("[UsbListener] HX déconnecté");
                     let mut s = state.lock().unwrap();
                     s.connected = false;
                     break;
                 }
                 Err(e) => {
-                    println!("[UsbListener] erreur lecture : {}", e);
+                    eprintln!("[UsbListener] erreur lecture : {}", e);
                     break;
                 }
             }
         }
-
-        println!("[UsbListener] thread arrêté");
     });
 }

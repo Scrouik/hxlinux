@@ -77,6 +77,14 @@ pub struct HelixState {
     // Flags
     pub connected:       bool,
     pub got_preset_names: bool,
+
+    // Données brutes du dernier preset lu
+    pub preset_data:       Vec<u8>,
+    pub preset_data_ready: bool,
+
+    // Si true : RequestPreset revient à Standard (clic utilisateur)
+    // Si false : RequestPreset revient à RequestPresetNames (démarrage)
+    pub preset_content_only: bool,
 }
 
 // ===========================================================
@@ -105,6 +113,9 @@ impl HelixState {
             keepalive_tx:       None,
             connected:          false,
             got_preset_names:   false,
+            preset_data:        Vec::new(),
+            preset_data_ready:  false,
+            preset_content_only: false,
             connecting:         true,
             got_preset:         false,
             preset_pkt_counter: 0x001e,

@@ -28,7 +28,6 @@ impl RequestPresetName {
             match cancel_rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(_)  => { /* annulé — réponse reçue à temps */ }
                 Err(_) => {
-                    println!("[RequestPresetName] watchdog — pas de réponse, switch mode");
                     let _ = mode_tx.send(ModeRequest::Standard);
                 }
             }
@@ -45,7 +44,6 @@ impl RequestPresetName {
 impl Mode for RequestPresetName {
 
     fn start(&mut self, state: &mut HelixState) {
-        println!("[RequestPresetName] démarré");
         self.preset_name_data.clear();
 
         let double  = state.preset_data_packet_double();
@@ -84,17 +82,6 @@ impl Mode for RequestPresetName {
             self.preset_name_data.extend_from_slice(&data[16..]);
 
             if data[1] == 0x00 {
-                let slot_number_idx = 27;
-                let mut preset_name = String::new();
-                for i in slot_number_idx..slot_number_idx + 24 {
-                    if i >= self.preset_name_data.len() { break; }
-                    let b = self.preset_name_data[i];
-                    if b == 0x00 { break; }
-                    preset_name.push(b as char);
-                }
-
-                println!("[RequestPresetName] nom du preset : {}", preset_name);
-                state.preset_names = vec![preset_name];
                 state.new_session_no();
 
                 // Annuler le watchdog avant de switcher
@@ -103,17 +90,22 @@ impl Mode for RequestPresetName {
                 if self.preset_name_data.len() > 24 {
                     state.preset_index = self.preset_name_data[24] as usize;
                 }
-                state.switch_mode(ModeRequest::RequestPreset);
+                // Au démarrage, on garde la séquence historique complète.
+                // En mode nominal (noms déjà chargés), on évite de relancer
+                // RequestPreset/RequestPresetNames à chaque changement preset.
+                if state.got_preset_names {
+                    state.switch_mode(ModeRequest::Standard);
+                } else {
+                    state.switch_mode(ModeRequest::RequestPreset);
+                }
             }
             return false;
         }
 
-        println!("[RequestPresetName] paquet non reconnu : {:02x?}", data);
         true
     }
 
     fn shutdown(&mut self, _state: &mut HelixState) {
         self.cancel_watchdog();
-        println!("[RequestPresetName] arrêt");
     }
 }

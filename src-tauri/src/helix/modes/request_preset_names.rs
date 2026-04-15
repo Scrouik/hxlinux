@@ -49,7 +49,6 @@ impl RequestPresetNames {
                 match cancel_rx.recv_timeout(Duration::from_millis(750)) {
                     Ok(_)  => {}
                     Err(_) => {
-                        println!("[RequestPresetNames] watchdog timeout → finalisation");
                         let _ = mode_tx.send(ModeRequest::Standard);
                     }
                 }
@@ -196,10 +195,6 @@ impl RequestPresetNames {
         self.parse_preset_names();
 
         let names = self.build_aligned_names();
-        println!("[RequestPresetNames] {} noms reçus", names.len());
-        for (i, name) in names.iter().enumerate() {
-            println!("  {:03} : {}", i, name);
-        }
 
         state.preset_names     = names;
         state.got_preset_names = true;
@@ -219,8 +214,6 @@ impl RequestPresetNames {
 impl Mode for RequestPresetNames {
 
     fn start(&mut self, state: &mut HelixState) {
-        println!("[RequestPresetNames] démarré");
-
         self.preset_names_stream.clear();
         self.decoded_names_by_index.clear();
         self.decoded_names_fallback.clear();
@@ -290,7 +283,6 @@ impl Mode for RequestPresetNames {
             // Vérifier si on a tous les noms
             let count = self.parse_preset_names();
             if count >= EXPECTED_PRESET_COUNT {
-                println!("[RequestPresetNames] {} noms atteints → finalisation", count);
                 self.finish_transfer(state);
             }
 
@@ -324,23 +316,21 @@ impl Mode for RequestPresetNames {
 
             let count = self.parse_preset_names();
             if count >= EXPECTED_PRESET_COUNT {
-                println!("[RequestPresetNames] {} noms atteints → finalisation", count);
                 self.finish_transfer(state);
             }
 
             return true;
         }
 
-        println!("[RequestPresetNames] paquet non reconnu : {:02x?}", data);
         true
     }
 
     fn shutdown(&mut self, state: &mut HelixState) {
         self.cancel_watchdog();
+        state.got_preset = false;
         // Finaliser si pas encore fait (cas du watchdog timeout)
         if !self.transfer_complete {
             self.finish_transfer(state);
         }
-    println!("[RequestPresetNames] arrêt");
 }
 }

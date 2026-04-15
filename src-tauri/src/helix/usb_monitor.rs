@@ -25,13 +25,10 @@ pub fn start_monitor(
     on_lost:      Arc<dyn Fn() + Send + Sync>,
 ) {
     thread::spawn(move || {
-        println!("[UsbMonitor] démarré, surveillance VID={:#06x} PID={:#06x}", HX_VID, HX_PID);
-
         let mut was_connected = false;
 
         loop {
             if stop.load(Ordering::SeqCst) {
-                println!("[UsbMonitor] arrêt demandé");
                 break;
             }
 
@@ -51,13 +48,11 @@ pub fn start_monitor(
             match (was_connected, found) {
                 // HX vient d'être branché
                 (false, true) => {
-                    println!("[UsbMonitor] HX Stomp XL détecté");
                     was_connected = true;
                     on_connected();
                 }
                 // HX vient d'être débranché
                 (true, false) => {
-                    println!("[UsbMonitor] HX Stomp XL déconnecté");
                     was_connected = false;
                     {
                         let mut s = state.lock().unwrap();
@@ -71,7 +66,5 @@ pub fn start_monitor(
 
             thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
         }
-
-        println!("[UsbMonitor] thread arrêté");
     });
 }

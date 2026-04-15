@@ -18,6 +18,8 @@ pub struct RequestPreset {
     in_transfer:    bool,
     // Timer 20ms pour détecter fin des chunks
     timer_cancel_tx: Option<mpsc::Sender<()>>,
+    // Watchdog global pour éviter de rester bloqué sans données
+    watchdog_cancel_tx: Option<mpsc::Sender<()>>,
     mode_tx:        Option<mpsc::Sender<ModeRequest>>,
 }
 
@@ -27,6 +29,7 @@ impl RequestPreset {
             preset_data:    Vec::new(),
             in_transfer:    false,
             timer_cancel_tx: None,
+            watchdog_cancel_tx: None,
             mode_tx:        None,
         }
     }
@@ -37,8 +40,40 @@ impl RequestPreset {
         }
     }
 
+    fn cancel_watchdog(&mut self) {
+        if let Some(tx) = self.watchdog_cancel_tx.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    fn arm_watchdog(&mut self, state_mode_tx: Option<mpsc::Sender<ModeRequest>>, content_only: bool) {
+        self.cancel_watchdog();
+        if let Some(mode_tx) = state_mode_tx {
+            let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
+            self.watchdog_cancel_tx = Some(cancel_tx);
+            thread::spawn(move || {
+                // Le HX peut prendre un peu de temps juste après un changement de preset.
+                match cancel_rx.recv_timeout(Duration::from_millis(2000)) {
+                    Ok(_) => {}
+                    Err(_) => {
+                        let next_mode = if content_only {
+                            ModeRequest::Standard
+                        } else {
+                            ModeRequest::RequestPresetNames
+                        };
+                        eprintln!(
+                            "[PresetDebug][RequestPreset::watchdog] timeout -> switch {:?}",
+                            next_mode
+                        );
+                        let _ = mode_tx.send(next_mode);
+                    }
+                }
+            });
+        }
+    }
+
     /// Kempline : threading.Timer(0.02, self.parse_preset_data)
-    fn arm_timer(&mut self, state_mode_tx: Option<mpsc::Sender<ModeRequest>>) {
+    fn arm_timer(&mut self, state_mode_tx: Option<mpsc::Sender<ModeRequest>>, content_only: bool) {
         self.cancel_timer();
         if let Some(mode_tx) = state_mode_tx {
             let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
@@ -47,8 +82,16 @@ impl RequestPreset {
                 match cancel_rx.recv_timeout(Duration::from_millis(20)) {
                     Ok(_)  => {}
                     Err(_) => {
-                        println!("[RequestPreset] timer 20ms → fin du preset");
-                        let _ = mode_tx.send(ModeRequest::RequestPresetNames);
+                        let next_mode = if content_only {
+                            ModeRequest::Standard
+                        } else {
+                            ModeRequest::RequestPresetNames
+                        };
+                        eprintln!(
+                            "[PresetDebug][RequestPreset::timer] timeout -> switch {:?}",
+                            next_mode
+                        );
+                        let _ = mode_tx.send(next_mode);
                     }
                 }
             });
@@ -59,12 +102,17 @@ impl RequestPreset {
 impl Mode for RequestPreset {
 
     fn start(&mut self, state: &mut HelixState) {
-        println!("[RequestPreset] démarré — preset_pkt_counter={:#06x} session_id={:#04x}", 
-        state.preset_pkt_counter, 
-        state.request_preset_session_id);
+        eprintln!(
+            "[PresetDebug][RequestPreset::start] preset_index={} content_only={} pkt_counter={:#06x} session_id={:#04x}",
+            state.preset_index,
+            state.preset_content_only,
+            state.preset_pkt_counter,
+            state.request_preset_session_id
+        );
         self.preset_data.clear();
         self.in_transfer  = false;
         self.timer_cancel_tx = None;
+        self.watchdog_cancel_tx = None;
         self.mode_tx = state.mode_tx.clone();
 
         let double  = state.preset_data_packet_double();
@@ -89,6 +137,9 @@ impl Mode for RequestPreset {
         // Incrémenter session_id comme kempline
         state.request_preset_session_id =
             state.request_preset_session_id.wrapping_add(2);
+
+        // Si aucun paquet n'arrive, on sort proprement.
+        self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only);
     }
 
     fn data_in(&mut self, data: &[u8], state: &mut HelixState) -> bool {
@@ -102,13 +153,16 @@ impl Mode for RequestPreset {
         // Kempline : RequestPreset hérite de Standard, donc data_in de Standard est appelé
         if data.len() > 6 && data[6] == 0x02 {
             let mut std = crate::helix::modes::standard::Standard;
-            println!("[RequestPreset] paquet x2) : {:02x?}", data);
             return std.data_in(data, state);
         }
 
         // Kempline : data_in[6] != 0x80 → paquet inattendu
         if data.len() > 6 && data[6] != 0x80 {
-            println!("[RequestPreset] paquet inattendu (pas x80) : {:02x?}", data);
+            eprintln!(
+                "[PresetDebug][RequestPreset::data_in] ignored non-x80 packet len={} type={:#04x}",
+                data.len(),
+                data[6]
+            );
             return true;
         }
 
@@ -120,6 +174,8 @@ impl Mode for RequestPreset {
             0x00, XX, 0x00, XX,
             XX, XX, 0x00, 0x00
         ], 16) {
+            // Un paquet valide arrive : on réarme le watchdog global.
+            self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only);
             // Annuler le timer en cours
             self.cancel_timer();
             self.in_transfer = false;
@@ -129,10 +185,16 @@ impl Mode for RequestPreset {
             // Accumuler les données à partir de byte[16]
             if data.len() > 16 {
                 self.preset_data.extend_from_slice(&data[16..]);
+                eprintln!(
+                    "[PresetDebug][RequestPreset::data_in] chunk len={} total={}",
+                    data.len() - 16,
+                    self.preset_data.len()
+                );
             }
 
             if !reply_here {
                 // Premier paquet — on ne répond pas encore
+                eprintln!("[PresetDebug][RequestPreset::data_in] first chunk received");
                 return true;
             }
 
@@ -153,19 +215,46 @@ impl Mode for RequestPreset {
                 session, double[0], double[1], 0x00,
             ]);
             state.send(pkt);
+            eprintln!(
+                "[PresetDebug][RequestPreset::data_in] ack sent cnt={:#04x} session={:#04x}",
+                cnt,
+                session
+            );
 
             // Timer 20ms — si pas de nouveau paquet → fin
-            self.arm_timer(state.mode_tx.clone());
+            self.arm_timer(state.mode_tx.clone(), state.preset_content_only);
             return true;
         }
 
-        println!("[RequestPreset] paquet non reconnu : {:02x?}", data);
         true
     }
 
     fn shutdown(&mut self, state: &mut HelixState) {
         self.cancel_timer();
-        state.got_preset = true;
-        println!("[RequestPreset] arrêt — {} bytes de données preset", self.preset_data.len());
+        self.cancel_watchdog();
+        state.preset_data = std::mem::take(&mut self.preset_data);
+        let has_data = !state.preset_data.is_empty();
+        let mut request_state_reset = false;
+        state.got_preset = has_data;
+        state.preset_data_ready = has_data;
+        state.preset_content_only = false;
+        if has_data {
+            state.new_session_no();
+        } else {
+            // Re-synchronize request state after a no-data timeout.
+            // The capture shows ED03 requests can get "stuck" until we reset these fields.
+            state.new_session_no();
+            state.preset_pkt_counter = 0x001e;
+            state.request_preset_session_id = 0xf4;
+            request_state_reset = true;
+        }
+        eprintln!(
+            "[PresetDebug][RequestPreset::shutdown] preset_data_ready={} bytes={} request_state_reset={} pkt_counter={:#06x} req_session_id={:#04x}",
+            state.preset_data_ready,
+            state.preset_data.len(),
+            request_state_reset,
+            state.preset_pkt_counter,
+            state.request_preset_session_id
+        );
     }
 }

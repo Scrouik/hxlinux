@@ -43,7 +43,6 @@ impl KeepAliveManager {
         stop.store(false, Ordering::SeqCst);
 
         thread::spawn(move || {
-            println!("[KeepAlive] thread x1 démarré");
             while !stop.load(Ordering::SeqCst) {
                 {
                     let mut s = state.lock().unwrap();
@@ -60,7 +59,6 @@ impl KeepAliveManager {
                 }
                 thread::sleep(Duration::from_millis(KEEP_ALIVE_INTERVAL_MS));
             }
-            println!("[KeepAlive] thread x1 arrêté");
         });
     }
 
@@ -71,7 +69,6 @@ impl KeepAliveManager {
         stop.store(false, Ordering::SeqCst);
 
         thread::spawn(move || {
-            println!("[KeepAlive] thread x2 démarré");
             while !stop.load(Ordering::SeqCst) {
                 {
                     let mut s = state.lock().unwrap();
@@ -88,7 +85,6 @@ impl KeepAliveManager {
                 }
                 thread::sleep(Duration::from_millis(KEEP_ALIVE_INTERVAL_MS));
             }
-            println!("[KeepAlive] thread x2 arrêté");
         });
     }
 
@@ -99,7 +95,6 @@ impl KeepAliveManager {
         stop.store(false, Ordering::SeqCst);
 
         thread::spawn(move || {
-            println!("[KeepAlive] thread x80 démarré");
             while !stop.load(Ordering::SeqCst) {
                 {
                     let mut s = state.lock().unwrap();
@@ -118,7 +113,6 @@ impl KeepAliveManager {
                 }
                 thread::sleep(Duration::from_millis(KEEP_ALIVE_INTERVAL_MS));
             }
-            println!("[KeepAlive] thread x80 arrêté");
         });
     }
 
@@ -127,6 +121,5 @@ impl KeepAliveManager {
         self.stop_x1.store(true, Ordering::SeqCst);
         self.stop_x2.store(true, Ordering::SeqCst);
         self.stop_x80.store(true, Ordering::SeqCst);
-        println!("[KeepAlive] arrêt de tous les threads");
     }
 }

@@ -42,21 +42,12 @@ impl Standard {
         ], 12) {
             return true;
         }
-        // x80
-        if byte_cmp(data, &pattern![
-            0x08, 0x00, 0x00, 0x18,
-            0xed, 0x03, 0x80, 0x10,
-            0x00, XX, 0x00, 0x10
-        ], 12) {
-            return true;
-        }
         false
     }
 }
 
 impl Mode for Standard {
     fn start(&mut self, _state: &mut HelixState) {
-        println!("[Standard] mode démarré");
     }
 
     fn data_in(&mut self, data: &[u8], state: &mut HelixState) -> bool {
@@ -71,7 +62,6 @@ impl Mode for Standard {
             state.increase_session_quadruple_x11();
             let sq = state.session_quadruple;
             let cnt = state.next_x80_cnt();
-            println!("[Standard] LED COLOR CHANGE → session_quadruple: {:02x?}", sq);
             state.send(OutPacket::with_delay(vec![
                 0x08, 0x00, 0x00, 0x18,
                 0x80, 0x10, 0xed, 0x03,
@@ -112,9 +102,6 @@ impl Mode for Standard {
             0x82, 0x76, 0xcd, 0x00,
             0x13, 0x77
         ], 42) {
-            if data.len() > 42 {
-                println!("[Standard] UI view changée : {:#04x}", data[42]);
-            }
             return true;
         }
 
@@ -132,9 +119,6 @@ impl Mode for Standard {
             0x82, 0x76, 0xcd, 0x00,
             0x15, 0x77
         ], 42) {
-            if data.len() > 42 {
-                println!("[Standard] UI mode changé : {:#04x}", data[42]);
-            }
             return true;
         }
 
@@ -159,7 +143,6 @@ impl Mode for Standard {
             ]));
             if data.len() > 40 {
                 state.preset_index = data[40] as usize;
-                println!("[Standard] preset switch → {}", state.preset_index);
             }
             state.switch_mode(ModeRequest::RequestPresetName);
             return true;
@@ -240,6 +223,23 @@ impl Mode for Standard {
         ], 16) {
             return false;
         }
+        // Fin de transfert preset variante (0x10) :
+        // acquitter pour éviter un blocage ED03 si le paquet arrive tard.
+        if byte_cmp(data, &pattern![
+            0x08, 0x00, 0x00, 0x18,
+            0xed, 0x03, 0x80, 0x10,
+            0x00, XX, 0x00, 0x10,
+            XX, XX, 0x00, 0x00
+        ], 16) {
+            let cnt = state.next_x80_cnt();
+            state.send(OutPacket::new(vec![
+                0x08, 0x00, 0x00, 0x18,
+                0x80, 0x10, 0xed, 0x03,
+                0x00, cnt,  0x00, 0x08,
+                data[12], data[13], data[14], data[15],
+            ]));
+            return false;
+        }
 
         // Paquets tardifs preset-names — acquitter silencieusement
         if byte_cmp(data, &pattern![
@@ -282,12 +282,9 @@ impl Mode for Standard {
             return false;
         }
 
-        // Paquet non reconnu
-        println!("[Standard] paquet non reconnu ({} bytes) : {:02x?}", data.len(), data);
         true
     }
 
     fn shutdown(&mut self, _state: &mut HelixState) {
-        println!("[Standard] arrêt");
     }
 }

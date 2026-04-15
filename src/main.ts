@@ -1,4 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import { LogicalSize } from "@tauri-apps/api/dpi";
+import { emit } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -7,7 +10,6 @@ let activePreset = -1;
 let selectedIndex = -1;
 let ctxTargetIndex = -1;
 let dragSrcIndex = -1;
-let refreshInterval: number | null = null;
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
 
@@ -21,6 +23,8 @@ const statusText  = document.getElementById("status-text")!;
 const barActive   = document.getElementById("bar-active")!;
 const barHint     = document.getElementById("bar-hint")!;
 const presetCount = document.getElementById("preset-count")!;
+const appRoot     = document.querySelector(".app") as HTMLElement;
+let lastAppliedWindowWidth = -1;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -39,9 +43,53 @@ function isEmpty(name: string): boolean {
   return !name || name === "<empty>";
 }
 
+function computeLongestPresetWidth(names: string[]): number {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return 0;
+  ctx.font = "500 13px Barlow";
+
+  let longest = 0;
+  names.forEach((name) => {
+    const displayName = isEmpty(name) ? "empty" : name;
+    longest = Math.max(longest, ctx.measureText(displayName).width);
+  });
+
+  return Math.ceil(longest);
+}
+
+function updateAppWidth(names: string[]) {
+  // Liens fixes d'une ligne : paddings + handle + numéro + gaps + marge.
+  const listChromeWidth = 32 + 16 + 28 + 24 + 20;
+  const longestPresetWidth = computeLongestPresetWidth(names);
+  const listTargetWidth = listChromeWidth + longestPresetWidth;
+
+  // Garde une largeur mini lisible et évite de dépasser la fenêtre.
+  const minWidth = 280;
+  const maxWidth = Math.max(minWidth, window.innerWidth - 24);
+  const targetWidth = Math.min(maxWidth, Math.max(minWidth, listTargetWidth));
+
+  appRoot.style.width = `${targetWidth}px`;
+  void updateWindowWidth(targetWidth);
+}
+
+async function updateWindowWidth(targetWidth: number) {
+  // Evite les boucles resize inutiles.
+  if (Math.abs(targetWidth - lastAppliedWindowWidth) < 2) return;
+  lastAppliedWindowWidth = targetWidth;
+
+  try {
+    const appWindow = getCurrentWindow();
+    await appWindow.setSize(new LogicalSize(targetWidth, window.innerHeight));
+  } catch {
+    // Mode navigateur ou API fenêtre indisponible.
+  }
+}
+
 // ─── Render ───────────────────────────────────────────────────────────────────
 
 function render(names: string[], active: number) {
+  updateAppWidth(names);
   const container = document.getElementById("list-container")!;
   const scrollY = container.scrollTop;
 
@@ -134,9 +182,18 @@ async function loadPresets() {
 
 // ─── Item interactions ────────────────────────────────────────────────────────
 
-function onItemClick(index: number) {
+async function onItemClick(index: number) {
   selectedIndex = index;
   hideContextMenu();
+  try {
+    console.log(`[PresetDebug][main] click preset index=${index}`);
+    await invoke("activate_preset", { index });
+    activePreset = index;
+    await emit("models:load-preset", { index });
+  } catch (e) {
+    barHint.textContent = `Erreur activation : ${e}`;
+    setTimeout(() => { barHint.textContent = "Right-click for options · Drag to reorder"; }, 2000);
+  }
   render(presetNames, activePreset);
 }
 
@@ -260,7 +317,7 @@ function cancelRename() {
 
 // ─── Save to disk ─────────────────────────────────────────────────────────────
 
-async function savePreset(index: number) {
+async function savePreset(_index: number) {
   hideContextMenu();
   barHint.textContent = `Save to disk → à implémenter`;
   setTimeout(() => { barHint.textContent = "Right-click for options · Drag to reorder"; }, 3000);
@@ -269,7 +326,7 @@ async function savePreset(index: number) {
 
 // ─── Load from disk ───────────────────────────────────────────────────────────
 
-async function loadPreset(index: number) {
+async function loadPreset(_index: number) {
   hideContextMenu();
   barHint.textContent = `Load from disk → à implémenter`;
   setTimeout(() => { barHint.textContent = "Right-click for options · Drag to reorder"; }, 3000);
@@ -396,6 +453,11 @@ function onDragEnd() {
 
 window.addEventListener("DOMContentLoaded", () => {
   setStatus("waiting", "En attente...");
+  updateAppWidth([]);
   loadPresets();
-  refreshInterval = window.setInterval(loadPresets, 1500);
+  window.setInterval(loadPresets, 1500);
+});
+
+window.addEventListener("resize", () => {
+  updateAppWidth(presetNames);
 });

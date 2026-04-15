@@ -27,8 +27,6 @@ impl Connect {
 impl Mode for Connect {
 
     fn start(&mut self, state: &mut HelixState) {
-        println!("[Connect] démarrage de la séquence de connexion");
-
         // Kempline : x1x10_cnt = x2x10_cnt = x80x10_cnt = 0x02
         state.x1_cnt  = 0x02;
         state.x2_cnt  = 0x02;
@@ -249,8 +247,6 @@ impl Mode for Connect {
         } else if Standard::check_keep_alive(data, state) {
             return false;
 
-        } else {
-            println!("[Connect] paquet non reconnu : {:02x?}", data);
         }
 
         // Si on a reçu x11 sur x2 ET sur x80 → connexion établie
@@ -264,6 +260,5 @@ impl Mode for Connect {
     }
 
     fn shutdown(&mut self, _state: &mut HelixState) {
-        println!("[Connect] arrêt");
     }
 }

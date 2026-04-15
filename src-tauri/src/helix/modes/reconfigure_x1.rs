@@ -12,8 +12,6 @@ impl ReconfigureX1 {
 impl Mode for ReconfigureX1 {
 
     fn start(&mut self, state: &mut HelixState) {
-        println!("[ReconfigureX1] démarré");
-
         // Kempline : self.helix_usb.x1x10_cnt = 0x2
         state.x1_cnt = 0x02;
 
@@ -62,15 +60,11 @@ impl Mode for ReconfigureX1 {
 
         } else if Standard::check_keep_alive(data, state) {
             return false;
-
-        } else {
-            println!("[ReconfigureX1] paquet non reconnu : {:02x?}", data);
         }
 
         true
     }
 
     fn shutdown(&mut self, _state: &mut HelixState) {
-        println!("[ReconfigureX1] arrêt");
     }
 }
