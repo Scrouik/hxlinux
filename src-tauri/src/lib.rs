@@ -335,11 +335,44 @@ lazy_static! {
         }
         map
     };
+    static ref MODULE_FALLBACKS: HashMap<String, [String; 2]> = {
+        let mut map = HashMap::new();
+        // Missing from current local modules.py snapshot but observed on device.
+        map.insert(
+            "cd02a7".to_string(),
+            [
+                String::from("Distortion"),
+                String::from("Pillars"),
+            ],
+        );
+        map
+    };
 }
 
 /// Parse les slots d'un preset brut.
 /// Kempline : split par [0x82, 0x13], extrait l'ID entre markers 0x19 et 0x1a.
 fn parse_preset_slots(data: &[u8]) -> Vec<[String; 2]> {
+    #[derive(Clone)]
+    struct ParsedSlot {
+        category: String,
+        name: String,
+        grid_pos: Option<u8>,
+    }
+
+    fn extract_grid_pos(chunk: &[u8], scan_from: usize) -> Option<u8> {
+        // The block payload uses small tag/value pairs; tag 0x02 carries
+        // a stable slot position we can use to detect branch wraps.
+        let end = chunk.len().min(scan_from.saturating_add(40));
+        let mut i = scan_from;
+        while i + 1 < end {
+            if chunk[i] == 0x02 {
+                return Some(chunk[i + 1]);
+            }
+            i += 1;
+        }
+        None
+    }
+
     let mut chunks: Vec<&[u8]> = Vec::new();
     let mut start = 0usize;
     let mut i = 0usize;
@@ -358,7 +391,7 @@ fn parse_preset_slots(data: &[u8]) -> Vec<[String; 2]> {
         chunks.push(&data[start..]);
     }
 
-    let mut result = Vec::new();
+    let mut parsed_slots: Vec<ParsedSlot> = Vec::new();
     for chunk in chunks {
         let mut cursor = 0usize;
         while cursor < chunk.len() {
@@ -371,18 +404,72 @@ fn parse_preset_slots(data: &[u8]) -> Vec<[String; 2]> {
                         for b in id_bytes {
                             let _ = write!(&mut id_hex, "{:02x}", b);
                         }
-                        if let Some(entry) = MODULES_BY_ID.get(&id_hex) {
-                            result.push(entry.clone());
+                        let (category, name) = if let Some(entry) = MODULES_BY_ID
+                            .get(&id_hex)
+                            .or_else(|| MODULE_FALLBACKS.get(&id_hex))
+                        {
+                            (entry[0].clone(), entry[1].clone())
                         } else {
-                            result.push([String::from("Unknown"), id_hex]);
-                        }
+                            (String::from("Unknown"), id_hex)
+                        };
+                        parsed_slots.push(ParsedSlot {
+                            category,
+                            name,
+                            grid_pos: extract_grid_pos(chunk, id_start + rel_end + 1),
+                        });
                     }
-                    break;
+                    cursor = id_start + rel_end + 1;
+                    continue;
                 }
             }
             cursor += 1;
         }
     }
+
+    // Dédupliquer les doublons consécutifs (certains dumps peuvent contenir
+    // une répétition du flux de blocs).
+    let mut deduped: Vec<ParsedSlot> = Vec::with_capacity(parsed_slots.len());
+    for slot in parsed_slots {
+        let is_dup = deduped.last().map_or(false, |prev| {
+            prev.category == slot.category && prev.name == slot.name
+        });
+        if !is_dup {
+            deduped.push(slot);
+        }
+    }
+
+    // Heuristique de routing:
+    // si un bloc d'ampli est suivi plus tard d'un bloc avec une position
+    // de grille plus basse, on injecte un marqueur de split avant l'ampli.
+    let mut split_before_idx: Option<usize> = None;
+    for (i, slot) in deduped.iter().enumerate() {
+        let is_amp = slot.category == "Amp" || slot.category == "Preamp" || slot.category == "Amp+Cab";
+        let amp_pos = slot.grid_pos;
+        if !is_amp || amp_pos.is_none() {
+            continue;
+        }
+        let amp_pos = amp_pos.unwrap();
+        if deduped
+            .iter()
+            .skip(i + 1)
+            .any(|s| s.grid_pos.map_or(false, |p| p < amp_pos))
+        {
+            split_before_idx = Some(i);
+            break;
+        }
+    }
+
+    let mut result = Vec::new();
+    for (idx, slot) in deduped.iter().enumerate() {
+        if split_before_idx == Some(idx) {
+            result.push([
+                String::from("Routing"),
+                String::from("Split (branche parallèle)"),
+            ]);
+        }
+        result.push([slot.category.clone(), slot.name.clone()]);
+    }
+
     result
 }
 
