@@ -1,6 +1,6 @@
 // ===========================================================
 // helix/usb_monitor.rs
-// Surveillance branchement/débranchement USB du HX Stomp XL
+// Surveillance branchement/débranchement des devices HX supportés
 // Équivalent de UsbMonitor dans kempline
 // ===========================================================
 
@@ -11,9 +11,12 @@ use std::time::Duration;
 
 use crate::helix::HelixState;
 
-// Identifiants USB du HX Stomp XL
-const HX_VID: u16 = 0x0e41;
-const HX_PID: u16 = 0x4253;
+const SUPPORTED_DEVICES: &[(u16, u16)] = &[
+    (0x0e41, 0x4253), // HX Stomp XL
+    (0x0e41, 0x4246), // HX Stomp
+    (0x0e41, 0x4248), // Helix Floor
+    (0x0e41, 0x424a), // Helix LT
+];
 
 // Intervalle de polling (kempline : POLLING_INTERVAL_IN_SEC = 1)
 const POLL_INTERVAL_MS: u64 = 1000;
@@ -38,7 +41,11 @@ pub fn start_monitor(
                 .and_then(|list| {
                     list.iter().find(|d| {
                         d.device_descriptor()
-                            .map(|desc| desc.vendor_id() == HX_VID && desc.product_id() == HX_PID)
+                            .map(|desc| {
+                                SUPPORTED_DEVICES
+                                    .iter()
+                                    .any(|(vid, pid)| desc.vendor_id() == *vid && desc.product_id() == *pid)
+                            })
                             .unwrap_or(false)
                     })
                     .map(|_| true)

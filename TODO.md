@@ -2,8 +2,8 @@
 
 ## Fonctionnalités à implémenter
 
-- [ ] **Déplacement de presets** — Drag & drop dans la liste avec décalage réel sur le HX.
-      Nécessite la lecture et l'écriture complète des données d'un preset (pas encore implémenté).
+- [ ] **Déplacement de presets (INSERT réel)** — Drag & drop dans la liste avec décalage réel sur le HX (comportement HX Edit).
+      Statut: en pause. Prochaine étape: capturer sous Windows les paquets USB d'un move (ex: 120 -> 123) dans HX Edit, puis implémenter `move_preset_insert(from, to)` côté Rust + appel UI.
 
 - [ ] **Corriger l'instabilité du HX après déconnexion** — Le pédalier se retrouve dans un état instable après une déconnexion USB. À investiguer et corriger.
 

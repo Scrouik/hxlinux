@@ -18,6 +18,7 @@ const ctxSave     = document.getElementById("ctx-save")!;
 const ctxLoad     = document.getElementById("ctx-load")!;
 const statusDot   = document.getElementById("status-dot")!;
 const statusText  = document.getElementById("status-text")!;
+const statusHelp  = document.getElementById("status-help")!;
 const barActive   = document.getElementById("bar-active")!;
 const barHint     = document.getElementById("bar-hint")!;
 const presetCount = document.getElementById("preset-count")!;
@@ -25,11 +26,26 @@ const appRoot     = document.querySelector(".app") as HTMLElement;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function setStatus(state: "waiting" | "loading" | "connected", text: string) {
+function setStatus(
+  state: "waiting" | "loading" | "connected",
+  text: string,
+  helpTooltip?: string
+) {
   statusDot.className = "status-dot";
   if (state === "connected") statusDot.classList.add("connected");
   if (state === "loading")   statusDot.classList.add("loading");
   statusText.textContent = text;
+  if (helpTooltip) {
+    statusHelp.textContent = "?";
+    statusHelp.setAttribute("data-tooltip", helpTooltip);
+    statusHelp.title = "";
+    statusHelp.classList.add("visible");
+  } else {
+    statusHelp.textContent = "";
+    statusHelp.removeAttribute("data-tooltip");
+    statusHelp.title = "";
+    statusHelp.classList.remove("visible");
+  }
 }
 
 function padNum(n: number): string {
@@ -135,11 +151,16 @@ function render(names: string[], active: number) {
 // ─── Load presets ─────────────────────────────────────────────────────────────
 
 async function loadPresets() {
+  const firmwareHint =
+    "If your HX is connected but still not detected, your firmware may be unsupported. Please update device firmware and retry.";
   try {
     const names = await invoke<string[]>("get_preset_names");
+    const deviceName = await invoke<string | null>("get_connected_device_name");
+    const connectionHint = await invoke<string>("get_connection_hint_text");
 
     if (names.length === 0) {
-      setStatus("loading", "Loading...");
+      const showHint = connectionHint.startsWith("No HX detected");
+      setStatus("loading", connectionHint, showHint ? firmwareHint : undefined);
       return;
     }
 
@@ -151,7 +172,7 @@ async function loadPresets() {
       render(presetNames, activePreset);
     }
 
-    setStatus("connected", "HX Stomp XL");
+    setStatus("connected", deviceName ?? "HX connecté");
 
     // Scroll vers le preset actif au premier chargement
     const activeEl = list.querySelector(".active") as HTMLElement | null;
@@ -161,7 +182,13 @@ async function loadPresets() {
     }
 
   } catch {
-    setStatus("waiting", "En attente du HX...");
+    try {
+      const connectionHint = await invoke<string>("get_connection_hint_text");
+      const showHint = connectionHint.startsWith("No HX detected");
+      setStatus("waiting", connectionHint, showHint ? firmwareHint : undefined);
+    } catch {
+      setStatus("waiting", "No HX detected (unplugged or powered off)", firmwareHint);
+    }
     presetNames = [];
     activePreset = -1;
     render([], -1);

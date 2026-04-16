@@ -6,6 +6,7 @@
 // ===========================================================
 
 mod helix;
+mod stomp_layout;
 
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,8 +36,12 @@ use helix::modes::request_preset::RequestPreset;
 use std::time::Duration;
 use lazy_static::lazy_static;
 
-const HX_VID: u16 = 0x0e41;
-const HX_PID: u16 = 0x4253;
+const SUPPORTED_DEVICES: &[(&str, u16, u16)] = &[
+    ("HX Stomp XL", 0x0e41, 0x4253),
+    ("HX Stomp", 0x0e41, 0x4246),
+    ("Helix Floor", 0x0e41, 0x4248),
+    ("Helix LT", 0x0e41, 0x424a),
+];
 const EXPECTED_PRESET_COUNT: usize = 125;
 const WINDOW_LAYOUT_FILE: &str = "window-layout.json";
 
@@ -113,10 +118,61 @@ fn save_window_layout(app: &tauri::AppHandle) {
 struct AppState {
     preset_names:  Vec<String>,
     active_preset: usize,
+    connected_device_name: Option<String>,
+    connection_issue_hint: Option<String>,
     // Accès au HelixState pour envoyer des commandes USB depuis Tauri
     helix_state:   Option<Arc<Mutex<HelixState>>>,
     // Handle USB pour les commandes directes (ex: MIDI Program Change sur 0x02)
     usb_handle:    Option<Arc<rusb::DeviceHandle<rusb::GlobalContext>>>,
+}
+
+enum UsbDiscovery {
+    NoHxVisible,
+    SupportedVisible(&'static str),
+    UnsupportedHxVisible { vid: u16, pid: u16 },
+}
+
+fn discover_hx_usb() -> UsbDiscovery {
+    let devices = match rusb::devices() {
+        Ok(d) => d,
+        Err(_) => return UsbDiscovery::NoHxVisible,
+    };
+
+    let mut saw_line6 = false;
+    let mut first_line6_pid: Option<(u16, u16)> = None;
+
+    for device in devices.iter() {
+        let desc = match device.device_descriptor() {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        if desc.vendor_id() != 0x0e41 {
+            continue;
+        }
+        saw_line6 = true;
+        if first_line6_pid.is_none() {
+            first_line6_pid = Some((desc.vendor_id(), desc.product_id()));
+        }
+        if let Some((name, _, _)) = SUPPORTED_DEVICES
+            .iter()
+            .find(|(_, vid, pid)| desc.vendor_id() == *vid && desc.product_id() == *pid)
+        {
+            return UsbDiscovery::SupportedVisible(*name);
+        }
+    }
+
+    if saw_line6 {
+        if let Some((vid, pid)) = first_line6_pid {
+            UsbDiscovery::UnsupportedHxVisible { vid, pid }
+        } else {
+            UsbDiscovery::UnsupportedHxVisible {
+                vid: 0x0e41,
+                pid: 0x0000,
+            }
+        }
+    } else {
+        UsbDiscovery::NoHxVisible
+    }
 }
 
 // ===========================================================
@@ -136,6 +192,30 @@ fn get_preset_names(state: tauri::State<Arc<Mutex<AppState>>>) -> Vec<String> {
 #[tauri::command]
 fn get_active_preset(state: tauri::State<Arc<Mutex<AppState>>>) -> usize {
     state.lock().unwrap().active_preset
+}
+
+#[tauri::command]
+fn get_connected_device_name(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<String> {
+    state.lock().unwrap().connected_device_name.clone()
+}
+
+#[tauri::command]
+fn get_connection_hint_text(state: tauri::State<Arc<Mutex<AppState>>>) -> String {
+    let (connected_name, issue_hint) = {
+        let app = state.lock().unwrap();
+        (app.connected_device_name.clone(), app.connection_issue_hint.clone())
+    };
+    if let Some(name) = connected_name {
+        return format!("{name} connected");
+    }
+    match discover_hx_usb() {
+        UsbDiscovery::NoHxVisible => "No HX detected (unplugged or powered off)".to_string(),
+        UsbDiscovery::SupportedVisible(name) => issue_hint
+            .unwrap_or_else(|| format!("{name} detected (initializing...)")),
+        UsbDiscovery::UnsupportedHxVisible { vid, pid } => {
+            format!("Unknown HX USB ID {vid:04x}:{pid:04x} (unsupported)")
+        }
+    }
 }
 
 /// Déclenche une lecture du nom du preset actif (via `RequestPresetName`).
@@ -396,6 +476,39 @@ fn get_active_preset_routing_markers(
         .map(|p| [p.category, p.name])
         .collect();
     Some(markers)
+}
+
+/// Grille Kempline 16 cases + chaîne 10 entrées (8 colonnes + Split + Merge) et colonnes Split/Merge.
+#[tauri::command]
+fn get_active_preset_stomp_layout(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Option<stomp_layout::ActivePresetStompLayout> {
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        (app.active_preset, app.helix_state.clone()?)
+    };
+
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() {
+        return None;
+    }
+    if s.preset_index != active_preset {
+        return None;
+    }
+    let grid = try_parse_preset_kempline_grid(&s.preset_data)?;
+    let cells: Vec<stomp_layout::KemplineCell> = grid
+        .into_iter()
+        .map(|p| stomp_layout::KemplineCell {
+            category: p.category,
+            name: p.name,
+            grid_x: p.grid_x,
+            grid_y: p.grid_y,
+        })
+        .collect();
+    Some(stomp_layout::compute_stomp_layout_from_kempline_grid_with_usb(
+        &cells,
+        &s.preset_data,
+    ))
 }
 
 lazy_static! {
@@ -791,6 +904,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_preset_names,
             get_active_preset,
+            get_connected_device_name,
+            get_connection_hint_text,
             request_active_preset_name,
             rename_preset,
             activate_preset,
@@ -799,6 +914,7 @@ pub fn run() {
             get_active_preset_slots,
             get_active_preset_slots_debug,
             get_active_preset_routing_markers,
+            get_active_preset_stomp_layout,
             get_preset_data_hex,
         ])
         .setup(move |app| {
@@ -832,17 +948,29 @@ pub fn run() {
 // ===========================================================
 fn start_monitor(app_state: Arc<Mutex<AppState>>) {
     let stop_monitor = Arc::new(AtomicBool::new(false));
+    let state_for_connect = Arc::clone(&app_state);
+    let state_for_lost = Arc::clone(&app_state);
 
     helix::usb_monitor::start_monitor(
         Arc::new(Mutex::new(HelixState::new())),
         Arc::clone(&stop_monitor),
         Arc::new(move || {
-            let state = Arc::clone(&app_state);
+            let state = Arc::clone(&state_for_connect);
+            {
+                let mut app = state.lock().unwrap();
+                app.connection_issue_hint = None;
+            }
             thread::spawn(move || {
                 start_helix(state);
             });
         }),
-        Arc::new(|| {}),
+        Arc::new(move || {
+            let mut app = state_for_lost.lock().unwrap();
+            app.helix_state = None;
+            app.usb_handle = None;
+            app.connected_device_name = None;
+            app.connection_issue_hint = None;
+        }),
     );
 }
 
@@ -850,18 +978,25 @@ fn start_monitor(app_state: Arc<Mutex<AppState>>) {
 // Connexion complète au HX et boucle de traitement
 // ===========================================================
 fn start_helix(app_state: Arc<Mutex<AppState>>) {
-    // Ouvrir le device USB
-    let handle = match rusb::open_device_with_vid_pid(HX_VID, HX_PID) {
-        Some(h) => Arc::new(h),
+    // Ouvrir le premier device supporté trouvé (HX Stomp XL / Stomp / Floor / LT).
+    let (device_name, handle) = match find_supported_device_handle() {
+        Some(tuple) => tuple,
         None => {
-            eprintln!("[Helix] HX non trouvé");
+            eprintln!("[Helix] Aucun device HX supporté trouvé");
+            let mut app = app_state.lock().unwrap();
+            app.connection_issue_hint = None;
             return;
         }
     };
+    eprintln!("[Helix] Device connecté: {}", device_name);
 
     // Réclamer l'interface USB
     if let Err(e) = handle.claim_interface(0) {
         eprintln!("[Helix] erreur claim_interface : {}", e);
+        let mut app = app_state.lock().unwrap();
+        app.connected_device_name = Some(device_name.to_string());
+        app.connection_issue_hint =
+            Some("Protocol handshake failed (possible firmware mismatch)".to_string());
         return;
     }
 
@@ -913,6 +1048,8 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
         let mut app = app_state.lock().unwrap();
         app.helix_state = Some(Arc::clone(&state));
         app.usb_handle  = Some(Arc::clone(&handle));
+        app.connected_device_name = Some(device_name.to_string());
+        app.connection_issue_hint = None;
     }
 
     // -- Démarrer usb_writer --
@@ -1052,6 +1189,7 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
                     s.just_fetched_preset_names = false;
                     s.got_preset = false;
                     app.active_preset = s.preset_index;
+                    app.connection_issue_hint = None;
                 }
                 *m = Box::new(Standard);
                 m.start(&mut s);
@@ -1071,6 +1209,11 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
                 m.start(&mut s);
             }
             Err(_) => {
+                let mut app = app_state.lock().unwrap();
+                if app.connected_device_name.is_some() {
+                    app.connection_issue_hint =
+                        Some("Protocol handshake failed (possible firmware mismatch)".to_string());
+                }
                 break;
             }
         }
@@ -1089,5 +1232,29 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
     {
         let mut app = app_state.lock().unwrap();
         app.helix_state = None;
+        app.usb_handle = None;
+        if app.connected_device_name.is_none() {
+            app.connection_issue_hint = None;
+        }
+        app.connected_device_name = None;
     }
+}
+
+fn find_supported_device_handle() -> Option<(&'static str, Arc<rusb::DeviceHandle<rusb::GlobalContext>>)> {
+    let devices = rusb::devices().ok()?;
+    for device in devices.iter() {
+        let desc = match device.device_descriptor() {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        if let Some((name, _, _)) = SUPPORTED_DEVICES
+            .iter()
+            .find(|(_, vid, pid)| desc.vendor_id() == *vid && desc.product_id() == *pid)
+        {
+            if let Ok(handle) = device.open() {
+                return Some((*name, Arc::new(handle)));
+            }
+        }
+    }
+    None
 }

@@ -9,6 +9,7 @@ let lastRequestedPresetIndex = -1;
 const ENABLE_PRESET_CONTENT = true;
 let requestedPresetNameIndex = -1;
 let debugRoutingMode = localStorage.getItem("models_debug_routing") === "1";
+let connectedDeviceName: string | null = null;
 
 const statusEl = document.getElementById("status") as HTMLElement;
 const presetLabelEl = document.getElementById("preset-label") as HTMLElement;
@@ -32,6 +33,28 @@ function renderEmpty(text: string) {
 
 type SlotDebug = { category: string; name: string; gridX?: string; gridY?: string };
 
+/** Réponse `get_active_preset_stomp_layout` (serde camelCase). */
+type ActivePresetStompLayout = {
+  routing: {
+    splitAfterCol: number;
+    mergeAfterCol: number;
+    inferredFrom: string;
+    kemplineGridOk: boolean;
+  };
+  chain: Array<{
+    index: number;
+    kind: string;
+    topCategory: string;
+    topName: string;
+    bottomCategory: string;
+    bottomName: string;
+    topGridX: number | null;
+    topGridY: number | null;
+    bottomGridX: number | null;
+    bottomGridY: number | null;
+  }>;
+};
+
 const CATEGORY_ICON_BY_KEY: Record<string, string> = {
   distortion: "FX_HX_Category_Distortion.png",
   dynamic: "FX_HX_Category_Dynamics.png",
@@ -51,6 +74,26 @@ const CATEGORY_ICON_BY_KEY: Record<string, string> = {
   routing: "FX_HX_Category_Split.png",
 };
 
+/** Diminutif du type d’effet (comme HX Edit : Dyn, Dis…), pas du nom du modèle. */
+const EFFECT_TYPE_ABBREV: Record<string, string> = {
+  distortion: "Dis",
+  dynamic: "Dyn",
+  dynamics: "Dyn",
+  eq: "EQ",
+  modulation: "Mod",
+  delay: "Del",
+  reverb: "Rev",
+  "pitch/synth": "Pch",
+  filter: "Flt",
+  wah: "Wah",
+  "vol/pan": "Vol",
+  amp: "Amp",
+  preamp: "Pre",
+  "amp+cab": "AmC",
+  cab: "Cab",
+  "impulse response": "IR",
+};
+
 function normalizeCategory(category: string): string {
   return category.trim().toLowerCase();
 }
@@ -65,39 +108,130 @@ function iconForCategory(category: string, name: string): string | null {
   return `/src-tauri/resources/icons_category/${filename}`;
 }
 
+function lettersOnlyAlpha(s: string): string {
+  return s.replace(/[^a-zA-Z]/g, "");
+}
+
+/**
+ * Diminutif du **type** d’effet (catégorie), ex. Rochester Comp en Dynamics → « Dyn ».
+ */
+function abbrevEffectType(category: string, name: string): string {
+  const key = normalizeCategory(category);
+  if (key === "routing") {
+    const n = name.toLowerCase();
+    if (n.includes("merge")) return "Mrg";
+    if (n.includes("split")) return "Spt";
+    return "Rte";
+  }
+  const mapped = EFFECT_TYPE_ABBREV[key];
+  if (mapped) return mapped;
+  const raw = lettersOnlyAlpha(category);
+  if (raw.length >= 3) return raw.slice(0, 3);
+  if (raw.length > 0) return raw;
+  return "???";
+}
+
+/** Infobulle : nom du modèle uniquement (le type est déjà visible via l’icône). */
+function slotTooltipText(slot: SlotDebug): string {
+  const nm = slot.name.trim() || "—";
+  if (!debugRoutingMode || (!slot.gridX && !slot.gridY)) return nm;
+  return `${nm}\nGrille x:${slot.gridX ?? "—"} y:${slot.gridY ?? "—"}`;
+}
+
 function isAmpCategory(category: string): boolean {
   const c = normalizeCategory(category);
   return c === "amp" || c === "preamp" || c === "amp+cab";
 }
 
+function isSingleDspDevice(name: string | null): boolean {
+  if (!name) return false;
+  return name.toLowerCase().includes("stomp");
+}
+
+function isEmptyGridCell(slot: SlotDebug): boolean {
+  return !slot.category && slot.name === "<empty>";
+}
+
+function countRealBlocks(slots: SlotDebug[]): number {
+  return slots.filter((s) => !isEmptyGridCell(s)).length;
+}
+
+/** Nombre de cases vides consécutives depuis le début d'une rangée (8 cases). */
+function countLeadingEmptiesInRow(slots: SlotDebug[], rowStart: number, len: number): number {
+  let n = 0;
+  for (let i = 0; i < len; i += 1) {
+    if (isEmptyGridCell(slots[rowStart + i])) n += 1;
+    else break;
+  }
+  return n;
+}
+
+/** Dernier index occupé dans une rangée (0..len-1), ou -1 si tout vide. */
+function lastFilledSlotRowIndex(slots: SlotDebug[], rowStart: number, len: number): number {
+  for (let i = len - 1; i >= 0; i -= 1) {
+    if (!isEmptyGridCell(slots[rowStart + i])) return i;
+  }
+  return -1;
+}
+
+/**
+ * Colonnes 0..8 alignées sur les 8 slots visuels (après INPUT) : bordure verticale
+ * du split après `splitCol` slots vides communs en tête ; merge après la dernière
+ * colonne occupée sur A ou B (heuristique grille Kempline).
+ */
+function computeRoutingJunctionColumns(slots: SlotDebug[]): { splitCol: number; mergeCol: number } {
+  const leadA = countLeadingEmptiesInRow(slots, 0, 8);
+  const leadB = countLeadingEmptiesInRow(slots, 8, 8);
+  const lastA = lastFilledSlotRowIndex(slots, 0, 8);
+  const lastB = lastFilledSlotRowIndex(slots, 8, 8);
+  const hasAnyB = lastB >= 0;
+
+  let splitCol = hasAnyB ? Math.max(leadA, leadB) : leadA;
+  splitCol = Math.min(8, Math.max(0, splitCol));
+
+  const lastUsed = Math.max(lastA, lastB);
+  let mergeCol = lastUsed < 0 ? 8 : Math.min(8, lastUsed + 1);
+  if (mergeCol <= splitCol) mergeCol = Math.min(8, splitCol + 1);
+  return { splitCol, mergeCol };
+}
+
 function makeNode(slot: SlotDebug): HTMLElement {
   const item = document.createElement("div");
-  item.className = "node" + (normalizeCategory(slot.category) === "routing" ? " routing" : "");
+  item.className =
+    "node node--hx-slot" + (normalizeCategory(slot.category) === "routing" ? " routing" : "");
 
-  const title = document.createElement("div");
-  title.className = "node-title";
+  const tip = slotTooltipText(slot);
+  item.setAttribute("aria-label", tip.replace(/\n/g, " — "));
+
+  const iconWrap = document.createElement("div");
+  iconWrap.className = "node-icon-wrap";
+  iconWrap.title = tip;
   const iconPath = iconForCategory(slot.category, slot.name);
   if (iconPath) {
     const img = document.createElement("img");
+    img.className = "node-icon-img";
     img.src = iconPath;
     img.alt = "";
-    title.appendChild(img);
+    img.width = 20;
+    img.height = 20;
+    iconWrap.appendChild(img);
+  } else {
+    const ph = document.createElement("div");
+    ph.className = "node-icon-fallback";
+    ph.textContent = "?";
+    iconWrap.appendChild(ph);
   }
-  const titleText = document.createElement("span");
-  titleText.textContent = slot.category.toUpperCase();
-  title.appendChild(titleText);
 
-  const name = document.createElement("div");
-  name.className = "node-name";
-  name.textContent = slot.name;
+  const abbr = document.createElement("div");
+  abbr.className = "node-abbr";
+  abbr.textContent = abbrevEffectType(slot.category, slot.name);
 
-  item.appendChild(title);
-  item.appendChild(name);
+  item.appendChild(iconWrap);
+  item.appendChild(abbr);
+
   if (debugRoutingMode && (slot.gridX || slot.gridY)) {
     const debug = document.createElement("div");
-    debug.className = "node-name";
-    debug.style.opacity = "0.7";
-    debug.style.fontSize = "11px";
+    debug.className = "node-debug-grid";
     debug.textContent = `x:${slot.gridX || "-"} y:${slot.gridY || "-"}`;
     item.appendChild(debug);
   }
@@ -134,15 +268,20 @@ function isKemplineGrid16(slots: SlotDebug[]): boolean {
 
 function makeEmptySlotNode(): HTMLElement {
   const item = document.createElement("div");
-  item.className = "node node-empty";
-  const title = document.createElement("div");
-  title.className = "node-title";
-  title.textContent = "—";
-  const name = document.createElement("div");
-  name.className = "node-name";
-  name.textContent = "vide";
-  item.appendChild(title);
-  item.appendChild(name);
+  item.className = "node node-empty node--hx-slot";
+  const iconWrap = document.createElement("div");
+  iconWrap.className = "node-icon-wrap";
+  const ph = document.createElement("div");
+  ph.className = "node-icon-fallback node-icon-fallback--empty";
+  ph.textContent = "—";
+  ph.title = "Slot vide";
+  iconWrap.appendChild(ph);
+  const abbr = document.createElement("div");
+  abbr.className = "node-abbr node-abbr--empty";
+  abbr.textContent = "—";
+  abbr.title = "Slot vide";
+  item.appendChild(iconWrap);
+  item.appendChild(abbr);
   return item;
 }
 
@@ -154,101 +293,109 @@ function makeIoNode(label: string): HTMLElement {
   return el;
 }
 
-/** Espace réservé même largeur qu'un nœud I/O pour aligner la rangée du bas. */
-function makeIoSpacer(): HTMLElement {
-  const el = document.createElement("div");
-  el.className = "hx-io hx-io-spacer";
-  el.setAttribute("aria-hidden", "true");
-  return el;
+/** Même carte que les slots (icône catégorie + libellé), pour split / merge dans la matrice. */
+function makePathRoutingNode(kind: "split" | "merge", detailTitle: string): HTMLElement {
+  const name = kind === "split" ? "Split" : "Merge";
+  const item = makeNode({ category: "Routing", name });
+  item.classList.add("hx-matrix-routing-node");
+  item.setAttribute("aria-label", detailTitle.replace(/\n/g, " — "));
+  const abbr = item.querySelector(".node-abbr");
+  if (abbr) abbr.textContent = kind === "split" ? "split" : "merge";
+  const iconWrap = item.querySelector(".node-icon-wrap");
+  if (iconWrap) (iconWrap as HTMLElement).title = detailTitle;
+  return item;
 }
 
-/** Split / Merge entre les deux paths (colonne alignée sur les effets, pas sur INPUT). */
-function renderRoutingJunction(routing: [string, string][]) {
-  const wrap = document.createElement("div");
-  wrap.className = "hx-routing-junction";
-  const gutter = document.createElement("div");
-  gutter.className = "hx-routing-gutter";
-  const body = document.createElement("div");
-  body.className = "hx-routing-junction-body";
-  const rail = document.createElement("div");
-  rail.className = "hx-routing-rail";
-  const inner = document.createElement("div");
-  inner.className = "hx-routing-junction-inner";
-  for (const [, name] of routing) {
-    const n = document.createElement("div");
-    n.className = "routing-chip hx-routing-node";
-    n.textContent = name;
-    inner.appendChild(n);
-  }
-  body.appendChild(rail);
-  body.appendChild(inner);
-  wrap.appendChild(gutter);
-  wrap.appendChild(body);
-  return wrap;
-}
-
-function appendSlotCell(row: HTMLElement, slot: SlotDebug) {
-  if (row.childElementCount > 0) appendPipe(row);
-  if (!slot.category && slot.name === "<empty>") {
-    row.appendChild(makeEmptySlotNode());
-  } else {
-    row.appendChild(makeNode(slot));
-  }
+function gridSlotNode(slot: SlotDebug): HTMLElement {
+  if (!slot.category && slot.name === "<empty>") return makeEmptySlotNode();
+  return makeNode(slot);
 }
 
 /**
- * Grille 16 cases : présentation inspirée de HX Edit (flux gauche → droite,
- * Path 1A / 1B, I/O, zone Split–Merge entre les rangées).
+ * Grille 16 cases Kempline : matrice **2 lignes × 19 colonnes**.
+ * Col 1 INPUT, col 2 split si `splitAfterCol === 0`, cols 3–17 modèles / routage alternés,
+ * col 19 MAIN L/R ; ligne 2 = branche B si des blocs y sont présents.
+ * Positions split/merge : stomp si `kemplineGridOk`, sinon heuristique d’occupation (pas
+ * seulement `get_active_preset_routing_markers`, souvent vide alors que la branche B existe).
  */
-function renderGrid16(slots: SlotDebug[], routing: [string, string][]) {
+function renderGrid16(
+  slots: SlotDebug[],
+  routing: [string, string][],
+  stompLayout: ActivePresetStompLayout | null,
+) {
+  const lastB = lastFilledSlotRowIndex(slots, 8, 8);
+  const hasBranchB = lastB >= 0;
+  /** Marqueurs routage affichés : API et/ou branche B réelle (sans quoi routingCols restait null). */
+  const showRoutingUi = routing.length > 0 || hasBranchB;
+
+  const routingCols =
+    stompLayout != null && stompLayout.routing.kemplineGridOk === true
+      ? {
+          splitCol: stompLayout.routing.splitAfterCol,
+          mergeCol: stompLayout.routing.mergeAfterCol,
+        }
+      : computeRoutingJunctionColumns(slots);
+
+  const splitEntry = routing.find(([, name]) => name.toLowerCase().includes("split"));
+  const mergeEntry = routing.find(([, name]) => name.toLowerCase().includes("merge"));
+  const splitTip = splitEntry ? `${splitEntry[0]}: ${splitEntry[1]}` : "Split";
+  const mergeTip = mergeEntry ? `${mergeEntry[0]}: ${mergeEntry[1]}` : "Merge";
+
   const root = document.createElement("div");
-  root.className = "flow grid16 hx-edit-chain";
+  root.className = "flow grid16 hx-edit-chain hx-matrix";
 
-  const mkPathBlock = (
-    pathLabel: string,
-    slice: SlotDebug[],
-    opts: { lead: HTMLElement | null; tail: HTMLElement | null },
-  ) => {
-    const wrap = document.createElement("div");
-    wrap.className = "grid16-row-wrap hx-path-block";
-    const lab = document.createElement("div");
-    lab.className = "grid16-branch-label";
-    lab.textContent = pathLabel;
-    const row = document.createElement("div");
-    row.className = "flow-row grid16-row hx-path-row";
-    if (opts.lead) {
-      row.appendChild(opts.lead);
-      appendPipe(row);
-    }
-    for (const slot of slice) {
-      appendSlotCell(row, slot);
-    }
-    if (opts.tail) {
-      appendPipe(row);
-      row.appendChild(opts.tail);
-    }
-    wrap.appendChild(lab);
-    wrap.appendChild(row);
-    return wrap;
-  };
+  const grid = document.createElement("div");
+  grid.className = "hx-matrix-grid";
 
-  root.appendChild(
-    mkPathBlock("Path 1A — slots 1 à 8", slots.slice(0, 8), {
-      lead: makeIoNode("INPUT"),
-      tail: null,
-    }),
-  );
+  const NUM_ROWS = 2;
+  const NUM_COLS = 19;
 
-  if (routing.length > 0) {
-    root.appendChild(renderRoutingJunction(routing));
+  function wrapCell(row: number, col: number, inner: HTMLElement | null): HTMLElement {
+    const w = document.createElement("div");
+    w.className = "hx-matrix-cell" + (inner ? "" : " hx-matrix-cell--empty");
+    w.style.gridRow = String(row);
+    w.style.gridColumn = String(col);
+    if (inner) w.appendChild(inner);
+    return w;
   }
 
-  root.appendChild(
-    mkPathBlock("Path 1B — slots 11 à 18", slots.slice(8, 16), {
-      lead: makeIoSpacer(),
-      tail: makeIoNode("MAIN L/R"),
-    }),
-  );
+  function routingAtBoundary(boundary: number): HTMLElement | null {
+    if (!showRoutingUi) return null;
+    const { splitCol, mergeCol } = routingCols;
+    if (boundary < 1 || boundary > 8) return null;
+    if (mergeCol === boundary) return makePathRoutingNode("merge", mergeTip);
+    if (splitCol === boundary) return makePathRoutingNode("split", splitTip);
+    return null;
+  }
+
+  for (let row = 1; row <= NUM_ROWS; row += 1) {
+    for (let col = 1; col <= NUM_COLS; col += 1) {
+      let inner: HTMLElement | null = null;
+
+      if (col === 1) {
+        if (row === 1) inner = makeIoNode("INPUT");
+      } else if (col === 2) {
+        if (row === 1 && showRoutingUi && routingCols.splitCol === 0) {
+          inner = makePathRoutingNode("split", splitTip);
+        }
+      } else if (col === 19) {
+        if (row === 1) inner = makeIoNode("MAIN L/R");
+      } else if (col >= 3 && col <= 17 && (col - 3) % 2 === 0) {
+        const i = (col - 3) / 2;
+        if (i >= 0 && i <= 7) {
+          if (row === 1) inner = gridSlotNode(slots[i]!);
+          else if (row === 2 && showRoutingUi && hasBranchB) inner = gridSlotNode(slots[8 + i]!);
+        }
+      } else if (col >= 4 && col <= 18 && (col - 4) % 2 === 0) {
+        const j = (col - 4) / 2;
+        if (row === 1 && j >= 0 && j <= 7) inner = routingAtBoundary(j + 1);
+      }
+
+      grid.appendChild(wrapCell(row, col, inner));
+    }
+  }
+
+  root.appendChild(grid);
 
   contentEl.innerHTML = "";
   contentEl.appendChild(root);
@@ -337,7 +484,11 @@ function buildFlowSections(slots: SlotDebug[]) {
   return { pre, split, branchA, branchB, merge, post: mainPost, hasSplit: true };
 }
 
-function renderSlots(rawSlots: SlotDebug[], routingFromFlow: [string, string][] = []) {
+function renderSlots(
+  rawSlots: SlotDebug[],
+  routingFromFlow: [string, string][] = [],
+  stompLayout: ActivePresetStompLayout | null = null,
+) {
   if (rawSlots.length === 0) {
     renderEmpty("Aucun bloc detecte dans ce preset.");
     return;
@@ -345,7 +496,7 @@ function renderSlots(rawSlots: SlotDebug[], routingFromFlow: [string, string][] 
 
   const slots: SlotDebug[] = rawSlots;
   if (isKemplineGrid16(slots)) {
-    renderGrid16(slots, routingFromFlow);
+    renderGrid16(slots, routingFromFlow, stompLayout);
     return;
   }
 
@@ -453,6 +604,7 @@ async function requestLoadForPreset(index: number) {
         // Evite d'afficher une vieille réponse si l'utilisateur a recliqué ailleurs.
         if (currentPresetIndex === index) {
           let routingFlow: [string, string][] = [];
+          let stompLayout: ActivePresetStompLayout | null = null;
           if (isKemplineGrid16(normalizedSlots)) {
             try {
               const r = await invoke<[string, string][] | null>("get_active_preset_routing_markers");
@@ -460,12 +612,24 @@ async function requestLoadForPreset(index: number) {
             } catch {
               console.warn("[PresetDebug][models] get_active_preset_routing_markers error");
             }
+            try {
+              stompLayout = await invoke<ActivePresetStompLayout | null>("get_active_preset_stomp_layout");
+            } catch {
+              console.warn("[PresetDebug][models] get_active_preset_stomp_layout error");
+            }
           }
-          renderSlots(normalizedSlots, routingFlow);
+          renderSlots(normalizedSlots, routingFlow, stompLayout);
+          const realBlocks = countRealBlocks(normalizedSlots);
+          const singleDsp = isSingleDspDevice(connectedDeviceName);
+          const dspSuffix = singleDsp ? ` (${realBlocks}/8 max)` : "";
+          const overLimit =
+            singleDsp && realBlocks > 8
+              ? " - warning: parsed blocks exceed Stomp DSP budget"
+              : "";
           setStatus(
             debugRoutingMode
-              ? `${normalizedSlots.length} blocs detectes (debug routing ON)`
-              : `${normalizedSlots.length} blocs detectes`,
+              ? `${realBlocks} blocks detected${dspSuffix} (debug routing ON)${overLimit}`
+              : `${realBlocks} blocks detected${dspSuffix}${overLimit}`,
           );
 
           // Corrige le nom affiché (liste et label) en demandant le nom réel du preset actif.
@@ -506,6 +670,7 @@ function scheduleLoadForPreset(index: number, force = false) {
 
 async function refresh() {
   try {
+    connectedDeviceName = await invoke<string | null>("get_connected_device_name");
     const names = await invoke<string[]>("get_preset_names");
     const active = await invoke<number>("get_active_preset");
 
