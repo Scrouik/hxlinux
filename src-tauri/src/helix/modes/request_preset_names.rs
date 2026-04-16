@@ -7,6 +7,7 @@
 use std::thread;
 use std::time::Duration;
 use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 use crate::helix::{Mode, HelixState, ModeRequest};
 use crate::helix::packet::{OutPacket, byte_cmp};
@@ -14,6 +15,8 @@ use crate::helix::modes::standard::Standard;
 use crate::pattern;
 
 const EXPECTED_PRESET_COUNT: usize = 125;
+
+static DEBUG_EXTRACT_PRESET_INDEX_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
 pub struct RequestPresetNames {
     preset_names_stream:          Vec<u8>,
@@ -63,67 +66,104 @@ impl RequestPresetNames {
         }
     }
 
-    /// Parse les noms dans le stream accumulé
-    /// Kempline : parse_preset_names()
-    /// Retourne le nombre de noms décodés
-    fn parse_preset_names(&mut self) -> usize {
-        // Pattern marqueur : [0x81, 0xcd, 0x00]
-        let pattern = [0x81u8, 0xcd, 0x00];
-        let record_len = 25;
+    /// Parse les noms dans le stream accumulé.
+    ///
+    /// IMPORTANT:
+    /// Les captures montrent des records de nom à longueur variable (et parfois
+    /// coupés entre 2 paquets USB). On ne peut donc pas découper par taille fixe.
+    /// On segmente de marqueur `81 cd 00` à marqueur suivant.
+    fn parse_preset_names(&mut self, finalize: bool) -> usize {
+        let marker = [0x81u8, 0xcd, 0x00];
 
         loop {
-            let search_limit = if self.preset_names_stream.len() >= pattern.len() {
-                self.preset_names_stream.len() - pattern.len() + 1
-            } else {
-                break;
-            };
-
-            if self.stream_parse_idx >= search_limit {
+            let len = self.preset_names_stream.len();
+            if len < marker.len() {
                 break;
             }
 
-            // Chercher le marqueur à partir de stream_parse_idx
-            let marker_idx = self.preset_names_stream[self.stream_parse_idx..]
-                .windows(pattern.len())
-                .position(|w| w == pattern)
-                .map(|p| p + self.stream_parse_idx);
+            // Trouver le prochain marqueur à partir de stream_parse_idx
+            let search_start = self.stream_parse_idx.min(len.saturating_sub(marker.len()));
+            let marker_idx = self.preset_names_stream[search_start..]
+                .windows(marker.len())
+                .position(|w| w == marker)
+                .map(|p| p + search_start);
 
             let marker_idx = match marker_idx {
                 Some(i) => i,
                 None => {
-                    self.stream_parse_idx = search_limit;
+                    // Conserver une petite queue pour gérer un marqueur qui chevauche 2 paquets.
+                    if !finalize {
+                        self.stream_parse_idx = len.saturating_sub(marker.len() - 1);
+                    } else {
+                        self.stream_parse_idx = len;
+                    }
                     break;
                 }
             };
 
-            // Vérifier qu'on a assez de bytes pour un record complet
-            if marker_idx + record_len > self.preset_names_stream.len() {
-                self.stream_parse_idx = marker_idx;
+            // Chercher le marqueur suivant => fin du record courant
+            let next_search_start = marker_idx + marker.len();
+            let next_marker_idx = if next_search_start + marker.len() <= len {
+                self.preset_names_stream[next_search_start..]
+                    .windows(marker.len())
+                    .position(|w| w == marker)
+                    .map(|p| p + next_search_start)
+            } else {
+                None
+            };
+
+            let record_end = match next_marker_idx {
+                Some(i) => i,
+                None => {
+                    if !finalize {
+                        // Record potentiellement incomplet (coupé entre paquets)
+                        self.stream_parse_idx = marker_idx;
+                        break;
+                    }
+                    len
+                }
+            };
+
+            if record_end <= marker_idx || record_end > len {
                 break;
             }
 
-            let record = &self.preset_names_stream[marker_idx..marker_idx + record_len];
+            let record = &self.preset_names_stream[marker_idx..record_end];
 
-            // Extraire le nom (bytes 9..25, jusqu'à 0x00)
-            let name_bytes = &record[9..25];
-            let name: String = name_bytes.iter()
-                .take_while(|&&b| b != 0x00)
-                .map(|&b| if (32..=126).contains(&b) { b as char } else { '?' })
-                .collect();
-
-            // Extraire l'index du preset (kempline : _extract_record_preset_index)
-            let preset_idx = self.extract_preset_index(record);
-
-            match preset_idx {
-                Some(idx) => {
-                    self.decoded_names_by_index.entry(idx).or_insert(name);
+            // Le nom démarre après `6d xx` et se termine au premier `00`.
+            let name = if let Some(pos_6d) = record.iter().position(|&b| b == 0x6d) {
+                let start = pos_6d.saturating_add(2);
+                if start < record.len() {
+                    let end_rel = record[start..]
+                        .iter()
+                        .position(|&b| b == 0x00)
+                        .unwrap_or(record.len() - start);
+                    let end = start + end_rel;
+                    record[start..end]
+                        .iter()
+                        .map(|&b| if (32..=126).contains(&b) { b as char } else { '?' })
+                        .collect::<String>()
+                } else {
+                    String::new()
                 }
-                None => {
-                    self.decoded_names_fallback.push(name);
+            } else {
+                String::new()
+            };
+
+            if !name.is_empty() {
+                // Tentative d'indexation (souvent absente sur ce flux), sinon fallback séquentiel.
+                let preset_idx = self.extract_preset_index(record);
+                match preset_idx {
+                    Some(idx) => {
+                        self.decoded_names_by_index.entry(idx).or_insert(name);
+                    }
+                    None => {
+                        self.decoded_names_fallback.push(name);
+                    }
                 }
             }
 
-            self.stream_parse_idx = marker_idx + record_len;
+            self.stream_parse_idx = record_end;
         }
 
         self.decoded_names_by_index.len() + self.decoded_names_fallback.len()
@@ -148,6 +188,28 @@ impl RequestPresetNames {
         }
 
         if idx_6b < 0 || idx_6c < 0 {
+            let n = DEBUG_EXTRACT_PRESET_INDEX_FAILURES.fetch_add(1, AtomicOrdering::Relaxed);
+            if n < 12 {
+                let mut pos_6b: Vec<usize> = Vec::new();
+                let mut pos_6c: Vec<usize> = Vec::new();
+                for (i, b) in record.iter().enumerate() {
+                    if *b == 0x6b {
+                        pos_6b.push(i);
+                    } else if *b == 0x6c {
+                        pos_6c.push(i);
+                    }
+                }
+                eprintln!(
+                    "[PresetDebug][extract_preset_index] fail n={} record_prefix={:02x?} metadata={:02x?} idx_6b={} idx_6c={} pos6b={:?} pos6c={:?}",
+                    n,
+                    &record.iter().take(12).cloned().collect::<Vec<u8>>(),
+                    metadata,
+                    idx_6b,
+                    idx_6c,
+                    pos_6b,
+                    pos_6c
+                );
+            }
             return None;
         }
 
@@ -155,6 +217,19 @@ impl RequestPresetNames {
         if candidate < EXPECTED_PRESET_COUNT {
             Some(candidate)
         } else {
+            let n = DEBUG_EXTRACT_PRESET_INDEX_FAILURES.fetch_add(1, AtomicOrdering::Relaxed);
+            if n < 12 {
+                let metadata = &record[3..9];
+                eprintln!(
+                    "[PresetDebug][extract_preset_index] candidate_oob n={} idx_6b={} idx_6c={} candidate={} metadata={:02x?} record_prefix={:02x?}",
+                    n,
+                    idx_6b,
+                    idx_6c,
+                    candidate,
+                    metadata,
+                    &record.iter().take(12).cloned().collect::<Vec<u8>>()
+                );
+            }
             None
         }
     }
@@ -171,13 +246,63 @@ impl RequestPresetNames {
             }
         }
 
-        let mut fallback_iter = self.decoded_names_fallback.iter();
-        for slot in aligned.iter_mut() {
-            if slot == &placeholder {
-                match fallback_iter.next() {
-                    Some(name) => *slot = name.clone(),
-                    None => break,
+        // Safety-first:
+        // Quand on ne peut pas extraire l'index d'un record, on stocke son nom dans `decoded_names_fallback`.
+        // Le remplissage "dans l'ordre" peut créer un décalage si le flux a des trous (presets manquants) au
+        // milieu de la liste. Pour garder l'alignement strict index↔preset, on ne consomme le fallback que si
+        // les seules entrées manquantes (<empty>) sont un suffixe en fin de liste.
+        let last_filled = aligned.iter().rposition(|s| s != &placeholder);
+        if let Some(last_filled) = last_filled {
+            let suffix_start = last_filled + 1;
+            let has_placeholder_in_middle = aligned[..suffix_start]
+                .iter()
+                .any(|s| s == &placeholder);
+
+            if has_placeholder_in_middle {
+                eprintln!(
+                    "[PresetDebug][request_preset_names] fallback skipped (holes in middle). \
+decoded_by_index={} fallback_count={} suffix_start={}",
+                    self.decoded_names_by_index.len(),
+                    self.decoded_names_fallback.len(),
+                    suffix_start
+                );
+                return aligned;
+            }
+
+            let suffix_len = EXPECTED_PRESET_COUNT.saturating_sub(suffix_start);
+            if self.decoded_names_fallback.len() != suffix_len {
+                eprintln!(
+                    "[PresetDebug][request_preset_names] fallback not used (count mismatch). \
+decoded_by_index={} fallback_count={} suffix_len={}",
+                    self.decoded_names_by_index.len(),
+                    self.decoded_names_fallback.len(),
+                    suffix_len
+                );
+                return aligned;
+            }
+
+            let mut fallback_iter = self.decoded_names_fallback.iter();
+            for slot in aligned[suffix_start..].iter_mut() {
+                if slot == &placeholder {
+                    if let Some(name) = fallback_iter.next() {
+                        *slot = name.clone();
+                    }
                 }
+            }
+        } else {
+            // Cas observé sur certains dumps: aucun index 6b/6c exploitable,
+            // mais une liste fallback quasi complète est disponible.
+            // On rétablit alors un mapping séquentiel (best-effort) pour ne pas
+            // afficher une liste entièrement vide.
+            eprintln!(
+                "[PresetDebug][request_preset_names] no indexable names; using sequential fallback (fallback_count={})",
+                self.decoded_names_fallback.len()
+            );
+            for (idx, name) in self.decoded_names_fallback.iter().enumerate() {
+                if idx >= EXPECTED_PRESET_COUNT {
+                    break;
+                }
+                aligned[idx] = name.clone();
             }
         }
 
@@ -192,12 +317,23 @@ impl RequestPresetNames {
         }
         self.transfer_complete = true;
         self.cancel_watchdog();
-        self.parse_preset_names();
+        self.parse_preset_names(true);
 
         let names = self.build_aligned_names();
 
+        // Trace utile pour comprendre l'ordre de remplissage quand l'indexation échoue.
+        // (On limite volontairement au début pour ne pas spammer.)
+        for idx in 0..13 {
+            let n = names.get(idx).cloned().unwrap_or_default();
+            eprintln!(
+                "[PresetDebug][request_preset_names] aligned idx={} name='{}'",
+                idx, n
+            );
+        }
+
         state.preset_names     = names;
         state.got_preset_names = true;
+        state.just_fetched_preset_names = true;
         state.new_session_no();
         // Plus de switch_mode ici — c'est lib.rs qui switche
     }
@@ -281,7 +417,7 @@ impl Mode for RequestPresetNames {
             
 
             // Vérifier si on a tous les noms
-            let count = self.parse_preset_names();
+            let count = self.parse_preset_names(false);
             if count >= EXPECTED_PRESET_COUNT {
                 self.finish_transfer(state);
             }
@@ -314,7 +450,7 @@ impl Mode for RequestPresetNames {
             // Réarmer le watchdog
             self.arm_watchdog();
 
-            let count = self.parse_preset_names();
+            let count = self.parse_preset_names(false);
             if count >= EXPECTED_PRESET_COUNT {
                 self.finish_transfer(state);
             }

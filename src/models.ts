@@ -6,6 +6,8 @@ let loadedPresetIndex = -1;
 let loading = false;
 let pendingPresetIndex = -1;
 let lastRequestedPresetIndex = -1;
+const ENABLE_PRESET_CONTENT = true;
+let requestedPresetNameIndex = -1;
 let debugRoutingMode = localStorage.getItem("models_debug_routing") === "1";
 
 const statusEl = document.getElementById("status") as HTMLElement;
@@ -120,6 +122,138 @@ function appendPlaceholder(row: HTMLElement) {
   row.appendChild(placeholder);
 }
 
+/** 16 cases : grille Kempline (8 + 8), slots vides = catégorie vide + nom `<empty>`. */
+function isKemplineGrid16(slots: SlotDebug[]): boolean {
+  if (slots.length !== 16) return false;
+  return slots.every((s) => {
+    const emptyCell = !s.category && s.name === "<empty>";
+    const filled = s.category.length > 0;
+    return emptyCell || filled;
+  });
+}
+
+function makeEmptySlotNode(): HTMLElement {
+  const item = document.createElement("div");
+  item.className = "node node-empty";
+  const title = document.createElement("div");
+  title.className = "node-title";
+  title.textContent = "—";
+  const name = document.createElement("div");
+  name.className = "node-name";
+  name.textContent = "vide";
+  item.appendChild(title);
+  item.appendChild(name);
+  return item;
+}
+
+/** Nœuds d'extrémité façon HX Edit (Input / Main L·R). */
+function makeIoNode(label: string): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "hx-io";
+  el.textContent = label;
+  return el;
+}
+
+/** Espace réservé même largeur qu'un nœud I/O pour aligner la rangée du bas. */
+function makeIoSpacer(): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "hx-io hx-io-spacer";
+  el.setAttribute("aria-hidden", "true");
+  return el;
+}
+
+/** Split / Merge entre les deux paths (colonne alignée sur les effets, pas sur INPUT). */
+function renderRoutingJunction(routing: [string, string][]) {
+  const wrap = document.createElement("div");
+  wrap.className = "hx-routing-junction";
+  const gutter = document.createElement("div");
+  gutter.className = "hx-routing-gutter";
+  const body = document.createElement("div");
+  body.className = "hx-routing-junction-body";
+  const rail = document.createElement("div");
+  rail.className = "hx-routing-rail";
+  const inner = document.createElement("div");
+  inner.className = "hx-routing-junction-inner";
+  for (const [, name] of routing) {
+    const n = document.createElement("div");
+    n.className = "routing-chip hx-routing-node";
+    n.textContent = name;
+    inner.appendChild(n);
+  }
+  body.appendChild(rail);
+  body.appendChild(inner);
+  wrap.appendChild(gutter);
+  wrap.appendChild(body);
+  return wrap;
+}
+
+function appendSlotCell(row: HTMLElement, slot: SlotDebug) {
+  if (row.childElementCount > 0) appendPipe(row);
+  if (!slot.category && slot.name === "<empty>") {
+    row.appendChild(makeEmptySlotNode());
+  } else {
+    row.appendChild(makeNode(slot));
+  }
+}
+
+/**
+ * Grille 16 cases : présentation inspirée de HX Edit (flux gauche → droite,
+ * Path 1A / 1B, I/O, zone Split–Merge entre les rangées).
+ */
+function renderGrid16(slots: SlotDebug[], routing: [string, string][]) {
+  const root = document.createElement("div");
+  root.className = "flow grid16 hx-edit-chain";
+
+  const mkPathBlock = (
+    pathLabel: string,
+    slice: SlotDebug[],
+    opts: { lead: HTMLElement | null; tail: HTMLElement | null },
+  ) => {
+    const wrap = document.createElement("div");
+    wrap.className = "grid16-row-wrap hx-path-block";
+    const lab = document.createElement("div");
+    lab.className = "grid16-branch-label";
+    lab.textContent = pathLabel;
+    const row = document.createElement("div");
+    row.className = "flow-row grid16-row hx-path-row";
+    if (opts.lead) {
+      row.appendChild(opts.lead);
+      appendPipe(row);
+    }
+    for (const slot of slice) {
+      appendSlotCell(row, slot);
+    }
+    if (opts.tail) {
+      appendPipe(row);
+      row.appendChild(opts.tail);
+    }
+    wrap.appendChild(lab);
+    wrap.appendChild(row);
+    return wrap;
+  };
+
+  root.appendChild(
+    mkPathBlock("Path 1A — slots 1 à 8", slots.slice(0, 8), {
+      lead: makeIoNode("INPUT"),
+      tail: null,
+    }),
+  );
+
+  if (routing.length > 0) {
+    root.appendChild(renderRoutingJunction(routing));
+  }
+
+  root.appendChild(
+    mkPathBlock("Path 1B — slots 11 à 18", slots.slice(8, 16), {
+      lead: makeIoSpacer(),
+      tail: makeIoNode("MAIN L/R"),
+    }),
+  );
+
+  contentEl.innerHTML = "";
+  contentEl.appendChild(root);
+}
+
 function buildFlowSections(slots: SlotDebug[]) {
   const splitIdx = slots.findIndex(
     (s) => normalizeCategory(s.category) === "routing" && s.name.toLowerCase().includes("split"),
@@ -203,13 +337,18 @@ function buildFlowSections(slots: SlotDebug[]) {
   return { pre, split, branchA, branchB, merge, post: mainPost, hasSplit: true };
 }
 
-function renderSlots(rawSlots: SlotDebug[]) {
+function renderSlots(rawSlots: SlotDebug[], routingFromFlow: [string, string][] = []) {
   if (rawSlots.length === 0) {
     renderEmpty("Aucun bloc detecte dans ce preset.");
     return;
   }
 
   const slots: SlotDebug[] = rawSlots;
+  if (isKemplineGrid16(slots)) {
+    renderGrid16(slots, routingFromFlow);
+    return;
+  }
+
   const flow = buildFlowSections(slots);
 
   const root = document.createElement("div");
@@ -246,6 +385,13 @@ function renderSlots(rawSlots: SlotDebug[]) {
 }
 
 async function requestLoadForPreset(index: number) {
+  if (!ENABLE_PRESET_CONTENT) {
+    loading = false;
+    loadedPresetIndex = index;
+    // On laisse la fenêtre models "inerte" mais on évite les appels backend.
+    renderEmpty("Lecture du preset désactive (debug).");
+    return;
+  }
   if (loading) {
     pendingPresetIndex = index;
     console.log(`[PresetDebug][models] queued preset=${index} while loading`);
@@ -306,12 +452,32 @@ async function requestLoadForPreset(index: number) {
           : (slots as [string, string][]).map(([category, name]) => ({ category, name }));
         // Evite d'afficher une vieille réponse si l'utilisateur a recliqué ailleurs.
         if (currentPresetIndex === index) {
-          renderSlots(normalizedSlots);
+          let routingFlow: [string, string][] = [];
+          if (isKemplineGrid16(normalizedSlots)) {
+            try {
+              const r = await invoke<[string, string][] | null>("get_active_preset_routing_markers");
+              routingFlow = r ?? [];
+            } catch {
+              console.warn("[PresetDebug][models] get_active_preset_routing_markers error");
+            }
+          }
+          renderSlots(normalizedSlots, routingFlow);
           setStatus(
             debugRoutingMode
               ? `${normalizedSlots.length} blocs detectes (debug routing ON)`
               : `${normalizedSlots.length} blocs detectes`,
           );
+
+          // Corrige le nom affiché (liste et label) en demandant le nom réel du preset actif.
+          // Utile quand `get_preset_names()` peut être temporairement désaligné à cause de presets "vides".
+          if (requestedPresetNameIndex !== index) {
+            requestedPresetNameIndex = index;
+            try {
+              await invoke("request_active_preset_name");
+            } catch {
+              // Best-effort : l'UI sera corrigée au prochain refresh si possible.
+            }
+          }
         }
         loading = false;
         if (pendingPresetIndex >= 0 && pendingPresetIndex !== loadedPresetIndex) {
@@ -328,6 +494,9 @@ async function requestLoadForPreset(index: number) {
 
 function scheduleLoadForPreset(index: number, force = false) {
   if (index < 0) return;
+  if (!ENABLE_PRESET_CONTENT) {
+    return;
+  }
   // Evite les retriggers continus sur le meme preset.
   if (!force && (index === loadedPresetIndex || index === lastRequestedPresetIndex)) {
     return;
@@ -355,6 +524,7 @@ async function refresh() {
       console.log(`[PresetDebug][models] active preset changed ${currentPresetIndex} -> ${active}`);
       currentPresetIndex = active;
       loadedPresetIndex = -1;
+      requestedPresetNameIndex = -1;
       renderEmpty("Chargement des modeles...");
       scheduleLoadForPreset(active, true);
     }
@@ -389,6 +559,7 @@ window.addEventListener("DOMContentLoaded", () => {
     console.log(`[PresetDebug][models] event models:load-preset index=${index}`);
     currentPresetIndex = index;
     loadedPresetIndex = -1;
+    requestedPresetNameIndex = -1;
     renderEmpty("Chargement des modeles...");
     scheduleLoadForPreset(index, true);
   });

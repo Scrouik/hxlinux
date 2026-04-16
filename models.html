@@ -120,6 +120,128 @@
         font-size: 13px;
         color: var(--text-muted);
       }
+      /* Alignement sous la première colonne de blocs (après INPUT + pipe), façon HX Edit */
+      .hx-edit-chain {
+        --hx-io-w: 72px;
+        --hx-pipe-w: 22px;
+        --hx-gap: 10px;
+        --hx-slot-start: calc(var(--hx-io-w) + var(--hx-gap) + var(--hx-pipe-w) + var(--hx-gap));
+      }
+      .hx-io {
+        flex: 0 0 var(--hx-io-w);
+        width: var(--hx-io-w);
+        min-height: 60px;
+        white-space: nowrap;
+        border-radius: 8px;
+        border: 1px solid #3a3a42;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        font-weight: 700;
+        color: #9a9aa4;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        background: linear-gradient(180deg, #1c1c22 0%, #141418 100%);
+      }
+      .hx-io-spacer {
+        visibility: hidden;
+        pointer-events: none;
+        border-color: transparent;
+        background: transparent;
+      }
+      .hx-path-block .grid16-branch-label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .grid16-row-wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .grid16-branch-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-muted);
+        letter-spacing: 0.02em;
+      }
+      .grid16-row {
+        padding-bottom: 4px;
+        border-bottom: 1px solid var(--border);
+      }
+      .hx-path-block .grid16-row {
+        border-bottom: none;
+        padding-bottom: 0;
+      }
+      .hx-edit-chain > .grid16-row-wrap:last-child .grid16-row {
+        border-bottom: none;
+        padding-bottom: 0;
+      }
+      .node-empty {
+        border-style: dashed;
+        opacity: 0.85;
+        background: #0f0f12;
+      }
+      .node-empty .node-title {
+        color: var(--text-muted);
+      }
+      .node-empty .node-name {
+        color: var(--text-muted);
+        font-size: 11px;
+      }
+      .hx-routing-junction {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        min-height: 40px;
+        margin: 2px 0 6px 0;
+      }
+      .hx-routing-gutter {
+        flex: 0 0 var(--hx-slot-start);
+        width: var(--hx-slot-start);
+        min-height: 1px;
+      }
+      .hx-routing-junction-body {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 12px;
+        flex: 1;
+        min-width: 0;
+      }
+      .hx-routing-rail {
+        width: 3px;
+        align-self: stretch;
+        min-height: 32px;
+        border-radius: 2px;
+        background: linear-gradient(180deg, #c44a3a 0%, #8a3228 100%);
+        opacity: 0.92;
+      }
+      .hx-routing-junction-inner {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      .routing-chip {
+        font-size: 10px;
+        font-weight: 600;
+        color: #c8c8d0;
+        padding: 5px 12px;
+        border-radius: 6px;
+        border: 1px solid #5a5a62;
+        background: #1e1e24;
+      }
+      .hx-routing-node {
+        letter-spacing: 0.02em;
+      }
+      .hx-edit-chain > .hx-path-block ~ .hx-path-block {
+        margin-top: 8px;
+        padding-top: 10px;
+        border-top: 1px solid var(--border);
+      }
     </style>
   </head>
   <body>

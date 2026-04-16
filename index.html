@@ -51,8 +51,31 @@
         display: flex;
         flex-direction: column;
         height: 100vh;
-        min-width: 360px;
-        max-width: calc(100vw - 24px);
+        width: 100vw;
+        min-width: 980px;
+      }
+
+      .workspace {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+      }
+
+      .list-pane {
+        display: flex;
+        flex-direction: column;
+        flex: 0 0 auto;
+        width: calc(16ch + 124px);
+        min-width: calc(16ch + 112px);
+        max-width: calc(16ch + 136px);
+        border-right: 1px solid var(--border);
+      }
+
+      .models-pane {
+        flex: 1;
+        min-width: 520px;
+        display: flex;
+        flex-direction: column;
       }
 
       /* ─── HEADER ─── */
@@ -355,6 +378,247 @@
       .statusbar-item.active-preset {
         color: var(--green);
       }
+
+      .statusbar-item.hint {
+        margin-left: auto;
+      }
+
+      /* ─── MODELS PANEL (ex models.html) ─── */
+      .models-header {
+        height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 0 14px;
+        background: var(--bg-surface);
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+      }
+
+      .models-title {
+        color: var(--amber);
+        font-weight: 600;
+        letter-spacing: 0.04em;
+      }
+
+      .models-preset {
+        font-size: 12px;
+        color: var(--green);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .models-status {
+        font-size: 12px;
+        color: var(--text-dim);
+        padding: 8px 14px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .models-content {
+        flex: 1;
+        overflow: auto;
+        padding: 12px;
+      }
+
+      .models-pane .flow {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: max-content;
+      }
+
+      .models-pane .flow-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 64px;
+      }
+
+      .models-pane .node {
+        width: 132px;
+        min-height: 60px;
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #121215;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
+
+      .models-pane .node-title {
+        font-size: 11px;
+        color: var(--amber);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .models-pane .node-title img {
+        width: 15px;
+        height: 15px;
+        object-fit: contain;
+      }
+
+      .models-pane .node-name {
+        font-size: 12px;
+        line-height: 1.25;
+      }
+
+      .models-pane .node.routing {
+        border-color: #5a5a62;
+      }
+
+      .models-pane .node.routing .node-title {
+        color: #b8b8c0;
+      }
+
+      .models-pane .pipe {
+        width: 22px;
+        height: 2px;
+        background: #4a4a52;
+        flex: 0 0 auto;
+      }
+
+      .models-pane .placeholder {
+        width: 132px;
+        min-height: 60px;
+        opacity: 0;
+      }
+
+      .models-pane .empty {
+        font-size: 13px;
+        color: var(--text-dim);
+      }
+
+      .models-pane .hx-edit-chain {
+        --hx-io-w: 72px;
+        --hx-pipe-w: 22px;
+        --hx-gap: 10px;
+        --hx-slot-start: calc(var(--hx-io-w) + var(--hx-gap) + var(--hx-pipe-w) + var(--hx-gap));
+      }
+
+      .models-pane .hx-io {
+        flex: 0 0 var(--hx-io-w);
+        width: var(--hx-io-w);
+        min-height: 60px;
+        white-space: nowrap;
+        border-radius: 8px;
+        border: 1px solid #3a3a42;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        font-weight: 700;
+        color: #9a9aa4;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        background: linear-gradient(180deg, #1c1c22 0%, #141418 100%);
+      }
+
+      .models-pane .hx-io-spacer {
+        visibility: hidden;
+        pointer-events: none;
+        border-color: transparent;
+        background: transparent;
+      }
+
+      .models-pane .grid16-row-wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .models-pane .grid16-branch-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-dim);
+        letter-spacing: 0.02em;
+      }
+
+      .models-pane .grid16-row {
+        padding-bottom: 4px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .models-pane .hx-path-block .grid16-row {
+        border-bottom: none;
+        padding-bottom: 0;
+      }
+
+      .models-pane .node-empty {
+        border-style: dashed;
+        opacity: 0.85;
+        background: #0f0f12;
+      }
+
+      .models-pane .node-empty .node-title,
+      .models-pane .node-empty .node-name {
+        color: var(--text-dim);
+      }
+
+      .models-pane .node-empty .node-name {
+        font-size: 11px;
+      }
+
+      .models-pane .hx-routing-junction {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        min-height: 40px;
+        margin: 2px 0 6px 0;
+      }
+
+      .models-pane .hx-routing-gutter {
+        flex: 0 0 var(--hx-slot-start);
+        width: var(--hx-slot-start);
+        min-height: 1px;
+      }
+
+      .models-pane .hx-routing-junction-body {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 12px;
+        flex: 1;
+        min-width: 0;
+      }
+
+      .models-pane .hx-routing-rail {
+        width: 3px;
+        align-self: stretch;
+        min-height: 32px;
+        border-radius: 2px;
+        background: linear-gradient(180deg, #c44a3a 0%, #8a3228 100%);
+        opacity: 0.92;
+      }
+
+      .models-pane .hx-routing-junction-inner {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .models-pane .routing-chip {
+        font-size: 10px;
+        font-weight: 600;
+        color: #c8c8d0;
+        padding: 5px 12px;
+        border-radius: 6px;
+        border: 1px solid #5a5a62;
+        background: #1e1e24;
+      }
+
+      .models-pane .hx-edit-chain > .hx-path-block ~ .hx-path-block {
+        margin-top: 8px;
+        padding-top: 10px;
+        border-top: 1px solid var(--border);
+      }
     </style>
   </head>
   <body>
@@ -377,15 +641,30 @@
         </div>
       </header>
 
-      <!-- Preset list -->
-      <div class="list-container" id="list-container">
-        <ul id="preset-list" style="list-style:none;"></ul>
+      <div class="workspace">
+        <section class="list-pane">
+          <div class="list-container" id="list-container">
+            <ul id="preset-list" style="list-style:none;"></ul>
+          </div>
+        </section>
+        <section class="models-pane" aria-label="HX Models">
+          <header class="models-header">
+            <div class="models-title">HX Models</div>
+            <div class="models-preset" id="preset-label">--</div>
+          </header>
+          <div class="models-status" id="status">En attente...</div>
+          <main class="models-content" id="content">
+            <div class="empty">Aucun modele charge.</div>
+          </main>
+        </section>
       </div>
 
-      <!-- Status bar -->
       <footer class="statusbar">
         <div class="statusbar-item active-preset" id="bar-active">
           — no preset —
+        </div>
+        <div class="statusbar-item hint" id="bar-hint">
+          Right-click for options · Drag to reorder
         </div>
       </footer>
 
@@ -415,5 +694,6 @@
     </div>
 
     <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="/src/models.ts"></script>
   </body>
 </html>

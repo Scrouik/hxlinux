@@ -45,6 +45,7 @@ impl Mode for RequestPresetName {
 
     fn start(&mut self, state: &mut HelixState) {
         self.preset_name_data.clear();
+        // `active_preset_name` sera mis à jour lors de la réception complète.
 
         let double  = state.preset_data_packet_double();
         let session = state.session_no;
@@ -90,6 +91,29 @@ impl Mode for RequestPresetName {
                 if self.preset_name_data.len() > 24 {
                     state.preset_index = self.preset_name_data[24] as usize;
                 }
+
+                // Extraire le nom du preset actif (traduction de request_preset_name.py)
+                // Kempline : slot_number_idx = 27; lecture jusqu'à 27+24 (ou 0x00).
+                let name_start = 27usize;
+                let name_end = name_start.saturating_add(24);
+                let mut decoded = String::new();
+                if self.preset_name_data.len() > name_start {
+                    let slice = &self.preset_name_data[name_start..self.preset_name_data.len().min(name_end)];
+                    for &b in slice {
+                        if b == 0x00 {
+                            break;
+                        }
+                        decoded.push(if (32..=126).contains(&b) { b as char } else { '?' });
+                    }
+                }
+                let decoded = if decoded.is_empty() { "<empty>".to_string() } else { decoded };
+                state.active_preset_name = Some(decoded);
+                state.active_preset_name_index = Some(state.preset_index);
+                eprintln!(
+                    "[PresetDebug][RequestPresetName] active preset={} name='{}'",
+                    state.preset_index,
+                    state.active_preset_name.as_ref().unwrap()
+                );
                 // Au démarrage, on garde la séquence historique complète.
                 // En mode nominal (noms déjà chargés), on évite de relancer
                 // RequestPreset/RequestPresetNames à chaque changement preset.

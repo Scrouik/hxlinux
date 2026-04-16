@@ -17,8 +17,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::thread;
 use tauri::{
-    LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, Size, WebviewUrl,
-    WebviewWindowBuilder, WindowEvent,
+    LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, Size, WindowEvent,
 };
 use serde::{Deserialize, Serialize};
 
@@ -126,12 +125,33 @@ struct AppState {
 
 #[tauri::command]
 fn get_preset_names(state: tauri::State<Arc<Mutex<AppState>>>) -> Vec<String> {
+    // IMPORTANT pour le debug:
+    // On ne fait aucun correctif "UX" ici: on renvoie la liste brute telle que
+    // reconstruite par `RequestPresetNames`.
+    // Les corrections seront réintroduites seulement une fois que le décodage
+    // index->nom est stabilisé.
     state.lock().unwrap().preset_names.clone()
 }
 
 #[tauri::command]
 fn get_active_preset(state: tauri::State<Arc<Mutex<AppState>>>) -> usize {
     state.lock().unwrap().active_preset
+}
+
+/// Déclenche une lecture du nom du preset actif (via `RequestPresetName`).
+/// Utile pour corriger les UI quand `get_preset_names()` est temporairement désaligné.
+#[tauri::command]
+fn request_active_preset_name(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Result<(), String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone().ok_or("HX non connecté")?
+    };
+
+    let s = helix_arc.lock().unwrap();
+    s.switch_mode(ModeRequest::RequestPresetName);
+    Ok(())
 }
 
 /// Renomme un preset sur le HX.
@@ -149,11 +169,11 @@ fn rename_preset(
     };
     let helix_arc = helix_arc.ok_or("HX non connecté")?;
 
-    // Limiter à 24 caractères ASCII — limite du HX
+    // Limiter à 16 caractères ASCII — limite produit utilisée par l'application.
     let text: Vec<u8> = name
         .chars()
         .filter(|c| c.is_ascii())
-        .take(24)
+        .take(16)
         .map(|c| c as u8)
         .collect();
 
@@ -250,15 +270,31 @@ fn get_preset_data_hex(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<Stri
 /// Déclenche la lecture du contenu du preset actif sur le HX.
 #[tauri::command]
 fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(), String> {
-    let helix_arc = {
+    let (active_preset, helix_arc) = {
         let app = state.lock().unwrap();
-        app.helix_state.clone().ok_or("HX non connecté")?
+        (
+            app.active_preset,
+            app.helix_state.clone().ok_or("HX non connecté")?,
+        )
     };
     let mut s = helix_arc.lock().unwrap();
     if s.preset_content_only && !s.preset_data_ready {
         eprintln!("[PresetDebug][request_preset_content] already in progress, skip");
         return Ok(());
     }
+    // L'UI met à jour `active_preset` (ex. après `activate_preset` + MIDI PC) avant cette
+    // commande, alors que `preset_index` côté Helix ne bouge qu'avec les paquets USB x2 ou
+    // l'écoute MIDI — parfois après le dump, ou jamais si `RequestPresetName` est ignoré
+    // pendant `preset_content_only`. Sans cette ligne, `get_active_preset_slots` reste à
+    // None et la fenêtre models timeoute.
+    if s.preset_index != active_preset {
+        eprintln!(
+            "[PresetDebug][request_preset_content] sync helix preset_index {} -> app active_preset {}",
+            s.preset_index,
+            active_preset
+        );
+    }
+    s.preset_index = active_preset;
     s.preset_data_ready = false;
     s.preset_data.clear();
     s.preset_content_only = true;
@@ -336,6 +372,32 @@ fn get_active_preset_slots_debug(state: tauri::State<Arc<Mutex<AppState>>>) -> O
     Some(parse_preset_slots_debug(&s.preset_data))
 }
 
+/// Marqueurs de routing synthétiques (Split / Merge) issus du parseur « flux »,
+/// pour compléter l'affichage grille 16 cases où le split n'occupe pas un slot assignable.
+#[tauri::command]
+fn get_active_preset_routing_markers(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Option<Vec<[String; 2]>> {
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        (app.active_preset, app.helix_state.clone()?)
+    };
+
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() {
+        return None;
+    }
+    if s.preset_index != active_preset {
+        return None;
+    }
+    let markers: Vec<[String; 2]> = parse_preset_slots_internal(&s.preset_data)
+        .into_iter()
+        .filter(|p| p.category == "Routing")
+        .map(|p| [p.category, p.name])
+        .collect();
+    Some(markers)
+}
+
 lazy_static! {
     static ref MODULES_BY_ID: HashMap<String, [String; 2]> = {
         let mut map = HashMap::new();
@@ -375,6 +437,28 @@ struct ParsedSlot {
     grid_y: Option<u8>,
 }
 
+/// Découpe le flux preset aux marqueurs [0x82, 0x13] (équivalent Kempline `split('8213')` sur l'hex).
+fn split_preset_by_8213(data: &[u8]) -> Vec<&[u8]> {
+    let mut chunks: Vec<&[u8]> = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i + 1 < data.len() {
+        if data[i] == 0x82 && data[i + 1] == 0x13 {
+            if i > start {
+                chunks.push(&data[start..i]);
+            }
+            start = i + 2;
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    if start < data.len() {
+        chunks.push(&data[start..]);
+    }
+    chunks
+}
+
 /// Parse les slots d'un preset brut.
 /// Kempline : split par [0x82, 0x13], extrait l'ID entre markers 0x19 et 0x1a.
 fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
@@ -401,23 +485,7 @@ fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
         None
     }
 
-    let mut chunks: Vec<&[u8]> = Vec::new();
-    let mut start = 0usize;
-    let mut i = 0usize;
-    while i + 1 < data.len() {
-        if data[i] == 0x82 && data[i + 1] == 0x13 {
-            if i > start {
-                chunks.push(&data[start..i]);
-            }
-            start = i + 2;
-            i += 2;
-        } else {
-            i += 1;
-        }
-    }
-    if start < data.len() {
-        chunks.push(&data[start..]);
-    }
+    let chunks = split_preset_by_8213(data);
 
     let mut parsed_slots: Vec<ParsedSlot> = Vec::new();
     for chunk in chunks {
@@ -535,7 +603,137 @@ fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
     result
 }
 
+/// Marqueur de slot vide (Kempline `request_preset.py` : `0814c0`).
+const KEMPLINE_EMPTY_SLOT: [u8; 3] = [0x08, 0x14, 0xc0];
+
+/// Indices des 16 blocs assignables dans la fenêtre de 20 segments (slots 1–8 puis 11–18).
+const KEMPLINE_ASSIG_INDICES: [usize; 16] =
+    [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18];
+
+fn extract_grid_xy_after_id(chunk: &[u8], scan_from: usize) -> (Option<u8>, Option<u8>) {
+    let end = chunk.len().min(scan_from.saturating_add(40));
+    let mut gx = None;
+    let mut gy = None;
+    let mut i = scan_from;
+    while i + 1 < end {
+        if chunk[i] == 0x02 && gx.is_none() {
+            gx = Some(chunk[i + 1]);
+        }
+        if chunk[i] == 0x03 && gy.is_none() {
+            gy = Some(chunk[i + 1]);
+        }
+        i += 1;
+    }
+    (gx, gy)
+}
+
+/// Premier module 0x19…0x1a dans un segment de slot assignable.
+fn extract_first_module_from_assignable_chunk(chunk: &[u8]) -> ParsedSlot {
+    let mut cursor = 0usize;
+    while cursor < chunk.len() {
+        if chunk[cursor] == 0x19 {
+            let id_start = cursor + 1;
+            if let Some(rel_end) = chunk[id_start..].iter().position(|&b| b == 0x1a) {
+                let id_bytes = &chunk[id_start..id_start + rel_end];
+                if !id_bytes.is_empty() {
+                    let mut id_hex = String::with_capacity(id_bytes.len() * 2);
+                    for b in id_bytes {
+                        let _ = write!(&mut id_hex, "{:02x}", b);
+                    }
+                    let (category, name) = if let Some(entry) = MODULES_BY_ID
+                        .get(&id_hex)
+                        .or_else(|| MODULE_FALLBACKS.get(&id_hex))
+                    {
+                        (entry[0].clone(), entry[1].clone())
+                    } else {
+                        (String::from("Unknown"), id_hex)
+                    };
+                    let after = id_start + rel_end + 1;
+                    let (grid_x, grid_y) = extract_grid_xy_after_id(chunk, after);
+                    return ParsedSlot {
+                        category,
+                        name,
+                        grid_x,
+                        grid_y,
+                    };
+                }
+                cursor = id_start + rel_end + 1;
+                continue;
+            }
+        }
+        cursor += 1;
+    }
+    ParsedSlot {
+        category: String::from("Unknown"),
+        name: String::from("(sans id)"),
+        grid_x: None,
+        grid_y: None,
+    }
+}
+
+/// Grille fixe 8 + 8 emplacements (Kempline `preset_info_complete`) : None si le dump ne suit pas ce format.
+fn try_parse_preset_kempline_grid(data: &[u8]) -> Option<Vec<ParsedSlot>> {
+    const WIN: usize = 20;
+    let segs = split_preset_by_8213(data);
+    let slot1 = segs.iter().position(|seg| {
+        seg.first()
+            .map(|b| *b == 0x06 || *b == 0x08)
+            .unwrap_or(false)
+    })?;
+    if slot1 == 0 {
+        return None;
+    }
+    let start = slot1.checked_sub(1)?;
+    let end = start.checked_add(WIN)?;
+    if segs.len() < end {
+        return None;
+    }
+    let w = &segs[start..end];
+    if w[0].first().copied() != Some(0x00) {
+        return None;
+    }
+    if w[9].first().copied() != Some(0x01) {
+        return None;
+    }
+    if w[10].first().copied() != Some(0x02) {
+        return None;
+    }
+    if w[19].first().copied() != Some(0x03) {
+        return None;
+    }
+    for &idx in &KEMPLINE_ASSIG_INDICES {
+        let fb = w[idx].first().copied()?;
+        if fb != 0x06 && fb != 0x08 {
+            return None;
+        }
+    }
+
+    let mut out: Vec<ParsedSlot> = Vec::with_capacity(16);
+    for &idx in &KEMPLINE_ASSIG_INDICES {
+        let seg = w[idx];
+        let cell = if seg.len() == 3 && seg == KEMPLINE_EMPTY_SLOT.as_slice() {
+            ParsedSlot {
+                category: String::new(),
+                name: String::from("<empty>"),
+                grid_x: None,
+                grid_y: None,
+            }
+        } else {
+            extract_first_module_from_assignable_chunk(seg)
+        };
+        out.push(cell);
+    }
+    eprintln!(
+        "[PresetDebug][try_parse_preset_kempline_grid] ok: 16 assignable slots from {} segments",
+        segs.len()
+    );
+    Some(out)
+}
+
 fn parse_preset_slots(data: &[u8]) -> Vec<[String; 2]> {
+    if let Some(grid) = try_parse_preset_kempline_grid(data) {
+        return grid.into_iter().map(|s| [s.category, s.name]).collect();
+    }
     parse_preset_slots_internal(data)
         .into_iter()
         .map(|s| [s.category, s.name])
@@ -543,6 +741,19 @@ fn parse_preset_slots(data: &[u8]) -> Vec<[String; 2]> {
 }
 
 fn parse_preset_slots_debug(data: &[u8]) -> Vec<[String; 4]> {
+    if let Some(grid) = try_parse_preset_kempline_grid(data) {
+        return grid
+            .into_iter()
+            .map(|s| {
+                [
+                    s.category,
+                    s.name,
+                    s.grid_x.map(|v| v.to_string()).unwrap_or_default(),
+                    s.grid_y.map(|v| v.to_string()).unwrap_or_default(),
+                ]
+            })
+            .collect();
+    }
     parse_preset_slots_internal(data)
         .into_iter()
         .map(|s| {
@@ -576,67 +787,32 @@ pub fn run() {
                     api.prevent_close();
                 }
             }
-            if let WindowEvent::Focused(true) = event {
-                if window.label() == "main" {
-                    if let Some(models_window) = window.app_handle().get_webview_window("models") {
-                        let _ = models_window.unminimize();
-                        let _ = models_window.show();
-                        // Bring models window to front without changing keyboard focus.
-                        let _ = models_window.set_always_on_top(true);
-                        let _ = models_window.set_always_on_top(false);
-                    }
-                }
-            }
         })
         .invoke_handler(tauri::generate_handler![
             get_preset_names,
             get_active_preset,
+            request_active_preset_name,
             rename_preset,
             activate_preset,
             request_preset_content,
             get_preset_slots,
             get_active_preset_slots,
             get_active_preset_slots_debug,
+            get_active_preset_routing_markers,
             get_preset_data_hex,
         ])
         .setup(move |app| {
-            let models_window = WebviewWindowBuilder::new(
-                app,
-                "models",
-                WebviewUrl::App("models.html".into()),
-            )
-            .title("HX Models")
-            .inner_size(560.0, 760.0)
-            .min_inner_size(420.0, 420.0)
-            .resizable(true)
-            .closable(false)
-            .focused(false)
-            .build();
-            if let (Ok(models_window), Some(main_window)) =
-                (models_window, app.get_webview_window("main"))
-            {
+            if let Some(main_window) = app.get_webview_window("main") {
                 if let Some(saved_layout) = read_window_layout(&app.app_handle()) {
                     if let Some(main) = &saved_layout.main {
                         apply_window_geometry(&main_window, main);
                     }
-                    if let Some(models) = &saved_layout.models {
-                        apply_window_geometry(&models_window, models);
-                    }
                 } else {
                     let target_height = 760.0;
                     let _ = main_window
-                        .set_size(Size::Logical(LogicalSize::new(800.0, target_height)));
+                        .set_size(Size::Logical(LogicalSize::new(1280.0, target_height)));
                     let _ = main_window
                         .set_position(Position::Logical(LogicalPosition::new(80.0, 80.0)));
-                    if let (Ok(main_pos), Ok(main_size)) =
-                        (main_window.outer_position(), main_window.outer_size())
-                    {
-                        let models_x = main_pos.x + main_size.width as i32;
-                        let models_y = main_pos.y;
-                        let _ = models_window.set_position(Position::Physical(
-                            PhysicalPosition::new(models_x, models_y),
-                        ));
-                    }
                 }
                 let _ = main_window.set_focus();
             }
@@ -870,14 +1046,10 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
                 {
                     let mut app = app_state.lock().unwrap();
                     // Ne jamais écraser la liste globale avec un état partiel.
-                    if !s.got_preset && s.preset_names.len() >= EXPECTED_PRESET_COUNT {
+                    if s.just_fetched_preset_names && s.preset_names.len() >= EXPECTED_PRESET_COUNT {
                         app.preset_names = s.preset_names.clone();
-                    } else if !s.got_preset {
-                        eprintln!(
-                            "[PresetDebug][Standard] skip preset_names overwrite len={}",
-                            s.preset_names.len()
-                        );
                     }
+                    s.just_fetched_preset_names = false;
                     s.got_preset = false;
                     app.active_preset = s.preset_index;
                 }

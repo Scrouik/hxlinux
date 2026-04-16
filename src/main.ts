@@ -56,6 +56,11 @@ function computeLongestPresetWidth(names: string[]): number {
 }
 
 function updateAppWidth(names: string[]) {
+  // Mode fenêtre unique: la largeur est gérée par le layout split (list + models).
+  if (document.querySelector(".models-pane")) {
+    appRoot.style.width = "";
+    return;
+  }
   // Liens fixes d'une ligne : paddings + handle + numéro + gaps + marge.
   const listChromeWidth = 32 + 16 + 28 + 24 + 20;
   const longestPresetWidth = computeLongestPresetWidth(names);
@@ -245,7 +250,8 @@ function startRename(index: number) {
   input.type = "text";
   input.className = "rename-input";
   input.value = currentName;
-  input.maxLength = 24;
+  // Limite UI alignée avec la contrainte produit: 16 caractères max.
+  input.maxLength = 16;
   input.spellcheck = false;
 
   nameEl.replaceWith(input);

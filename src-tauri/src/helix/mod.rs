@@ -63,6 +63,9 @@ pub struct HelixState {
     // Preset actif
     pub preset_index: usize,
     pub preset_names: Vec<String>,
+    // Nom du preset actif (mis à jour par `RequestPresetName`)
+    pub active_preset_name: Option<String>,
+    pub active_preset_name_index: Option<usize>,
 
     // Canal vers usb_writer
     pub tx: Option<Sender<OutPacket>>,
@@ -77,6 +80,10 @@ pub struct HelixState {
     // Flags
     pub connected:       bool,
     pub got_preset_names: bool,
+    // Indique que `preset_names` vient d'être reconstruit par le mode
+    // `RequestPresetNames` (utile pour éviter d'écraser une liste déjà corrigée
+    // pendant d'autres transitions de mode).
+    pub just_fetched_preset_names: bool,
 
     // Données brutes du dernier preset lu
     pub preset_data:       Vec<u8>,
@@ -108,11 +115,14 @@ impl HelixState {
             session_no:         0x1a,
             preset_index:       0,
             preset_names:       Vec::new(),
+            active_preset_name: None,
+            active_preset_name_index: None,
             tx:                 None,
             mode_tx:            None,
             keepalive_tx:       None,
             connected:          false,
             got_preset_names:   false,
+            just_fetched_preset_names: false,
             preset_data:        Vec::new(),
             preset_data_ready:  false,
             preset_content_only: false,
