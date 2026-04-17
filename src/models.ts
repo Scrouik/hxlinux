@@ -76,7 +76,7 @@ const CATEGORY_ICON_BY_KEY: Record<string, string> = {
 
 /** Diminutif du type d’effet (comme HX Edit : Dyn, Dis…), pas du nom du modèle. */
 const EFFECT_TYPE_ABBREV: Record<string, string> = {
-  distortion: "Dis",
+  distortion: "Dist",
   dynamic: "Dyn",
   dynamics: "Dyn",
   eq: "EQ",
@@ -84,7 +84,7 @@ const EFFECT_TYPE_ABBREV: Record<string, string> = {
   delay: "Del",
   reverb: "Rev",
   "pitch/synth": "Pch",
-  filter: "Flt",
+  filter: "Filt",
   wah: "Wah",
   "vol/pan": "Vol",
   amp: "Amp",
@@ -131,11 +131,9 @@ function abbrevEffectType(category: string, name: string): string {
   return "???";
 }
 
-/** Infobulle : nom du modèle uniquement (le type est déjà visible via l’icône). */
+/** Infobulle : nom du modèle uniquement. */
 function slotTooltipText(slot: SlotDebug): string {
-  const nm = slot.name.trim() || "—";
-  if (!debugRoutingMode || (!slot.gridX && !slot.gridY)) return nm;
-  return `${nm}\nGrille x:${slot.gridX ?? "—"} y:${slot.gridY ?? "—"}`;
+  return slot.name.trim() || "—";
 }
 
 function isAmpCategory(category: string): boolean {
@@ -195,25 +193,27 @@ function computeRoutingJunctionColumns(slots: SlotDebug[]): { splitCol: number; 
   return { splitCol, mergeCol };
 }
 
-function makeNode(slot: SlotDebug): HTMLElement {
+function makeNode(slot: SlotDebug, opts?: { showTypeAbbrev?: boolean }): HTMLElement {
+  const showTypeAbbrev = opts?.showTypeAbbrev !== false;
   const item = document.createElement("div");
   item.className =
     "node node--hx-slot" + (normalizeCategory(slot.category) === "routing" ? " routing" : "");
+  if (!showTypeAbbrev) item.classList.add("node--icon-only");
 
   const tip = slotTooltipText(slot);
   item.setAttribute("aria-label", tip.replace(/\n/g, " — "));
+  item.title = tip;
 
   const iconWrap = document.createElement("div");
   iconWrap.className = "node-icon-wrap";
-  iconWrap.title = tip;
   const iconPath = iconForCategory(slot.category, slot.name);
   if (iconPath) {
     const img = document.createElement("img");
     img.className = "node-icon-img";
     img.src = iconPath;
     img.alt = "";
-    img.width = 20;
-    img.height = 20;
+    img.width = 22;
+    img.height = 22;
     iconWrap.appendChild(img);
   } else {
     const ph = document.createElement("div");
@@ -222,19 +222,15 @@ function makeNode(slot: SlotDebug): HTMLElement {
     iconWrap.appendChild(ph);
   }
 
-  const abbr = document.createElement("div");
-  abbr.className = "node-abbr";
-  abbr.textContent = abbrevEffectType(slot.category, slot.name);
-
   item.appendChild(iconWrap);
-  item.appendChild(abbr);
 
-  if (debugRoutingMode && (slot.gridX || slot.gridY)) {
-    const debug = document.createElement("div");
-    debug.className = "node-debug-grid";
-    debug.textContent = `x:${slot.gridX || "-"} y:${slot.gridY || "-"}`;
-    item.appendChild(debug);
+  if (showTypeAbbrev) {
+    const abbr = document.createElement("div");
+    abbr.className = "node-abbr";
+    abbr.textContent = abbrevEffectType(slot.category, slot.name);
+    item.appendChild(abbr);
   }
+
   return item;
 }
 
@@ -268,53 +264,98 @@ function isKemplineGrid16(slots: SlotDebug[]): boolean {
 
 function makeEmptySlotNode(): HTMLElement {
   const item = document.createElement("div");
-  item.className = "node node-empty node--hx-slot";
-  const iconWrap = document.createElement("div");
-  iconWrap.className = "node-icon-wrap";
-  const ph = document.createElement("div");
-  ph.className = "node-icon-fallback node-icon-fallback--empty";
-  ph.textContent = "—";
-  ph.title = "Slot vide";
-  iconWrap.appendChild(ph);
-  const abbr = document.createElement("div");
-  abbr.className = "node-abbr node-abbr--empty";
-  abbr.textContent = "—";
-  abbr.title = "Slot vide";
-  item.appendChild(iconWrap);
-  item.appendChild(abbr);
+  item.className = "node node-empty node--hx-slot node-empty-flat";
+  item.title = "Slot vide";
+  item.setAttribute("aria-label", "Slot vide");
   return item;
 }
 
-/** Nœuds d'extrémité façon HX Edit (Input / Main L·R). */
-function makeIoNode(label: string): HTMLElement {
+const IO_INPUT_ICON = "/src-tauri/resources/icons_category/icon-input-category.png";
+const IO_OUTPUT_ICON = "/src-tauri/resources/icons_category/icon-output-category.png";
+
+/** Nœuds d'extrémité façon HX Edit (icônes Input / Main L·R). */
+function makeIoNode(kind: "input" | "output"): HTMLElement {
   const el = document.createElement("div");
-  el.className = "hx-io";
-  el.textContent = label;
+  el.className = "hx-io hx-io--icon";
+  const img = document.createElement("img");
+  img.className = "hx-io-icon";
+  img.decoding = "async";
+  if (kind === "input") {
+    img.src = IO_INPUT_ICON;
+    img.alt = "Input";
+    el.setAttribute("aria-label", "Input");
+    el.title = "Input";
+  } else {
+    img.src = IO_OUTPUT_ICON;
+    img.alt = "Main L/R";
+    el.setAttribute("aria-label", "Main L/R");
+    el.title = "Main L/R";
+  }
+  el.appendChild(img);
   return el;
 }
 
-/** Même carte que les slots (icône catégorie + libellé), pour split / merge dans la matrice. */
-function makePathRoutingNode(kind: "split" | "merge", detailTitle: string): HTMLElement {
-  const name = kind === "split" ? "Split" : "Merge";
-  const item = makeNode({ category: "Routing", name });
-  item.classList.add("hx-matrix-routing-node");
-  item.setAttribute("aria-label", detailTitle.replace(/\n/g, " — "));
-  const abbr = item.querySelector(".node-abbr");
-  if (abbr) abbr.textContent = kind === "split" ? "split" : "merge";
-  const iconWrap = item.querySelector(".node-icon-wrap");
-  if (iconWrap) (iconWrap as HTMLElement).title = detailTitle;
-  return item;
+/** Texte infobulle / aria pour une jonction split ou merge en matrice. */
+function routingMatrixTooltip(kind: "split" | "merge", detailTitle: string): string {
+  const label = kind === "split" ? "Split" : "Merge";
+  const d = detailTitle.replace(/\n/g, " ").trim();
+  if (!d || d === label) return label;
+  return `${label} — ${d}`;
+}
+
+/** Split / merge en matrice : pas d’icône ni cadre type slot — petit disque 16×16 centré ; `title` sur la cellule grille. */
+function makePathRoutingNode(kind: "split" | "merge"): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = `hx-matrix-routing-marker hx-matrix-routing-marker--${kind}`;
+  wrap.dataset.routingMarker = kind;
+  const dot = document.createElement("span");
+  dot.className = "hx-matrix-routing-marker-dot";
+  wrap.appendChild(dot);
+  return wrap;
 }
 
 function gridSlotNode(slot: SlotDebug): HTMLElement {
   if (!slot.category && slot.name === "<empty>") return makeEmptySlotNode();
-  return makeNode(slot);
+  /* Matrice : catégorie sur la ligne dédiée ; la cellule ne garde que l’icône (+ infobulle nom). */
+  return makeNode(slot, { showTypeAbbrev: false });
+}
+
+/** Libellé catégorie (ligne « description path ») sous une colonne de slot. */
+function makeMatrixCategoryCell(slot: SlotDebug): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "hx-matrix-category";
+  const empty = !slot.category && slot.name === "<empty>";
+  if (empty) {
+    el.textContent = "empty";
+    el.title = "empty";
+    return el;
+  }
+  const cat = slot.category.trim();
+  el.textContent = cat;
+  if (cat) el.title = cat;
+  return el;
+}
+
+/** Texte fixe sur la ligne de description (sous Input / Main L·R). */
+function makeMatrixDescriptionLabel(text: string): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "hx-matrix-category";
+  el.textContent = text;
+  el.title = text;
+  return el;
 }
 
 /**
- * Grille 16 cases Kempline : matrice **2 lignes × 19 colonnes**.
- * Col 1 INPUT, col 2 split si `splitAfterCol === 0`, cols 3–17 modèles / routage alternés,
- * col 19 MAIN L/R ; ligne 2 = branche B si des blocs y sont présents.
+ * Grille 16 cases Kempline : matrice **5 lignes × 19 colonnes** (nomenclature fixe) :
+ * - **Ligne 1** = path 1 (trait horizontal décoratif derrière les icônes / slots)
+ * - **Ligne 2** = description path 1 (`input` / `Main L/R` uniquement sous I-O ; `empty` ou catégorie par slot)
+ * - **Ligne 3** = ligne de séparation (espace vertical uniquement, sans trait)
+ * - **Ligne 4** = path 2 (même calque `hx-matrix-path-rail` que path 1, **une seule** ligne continue sur
+ *   les colonnes split…merge path 1 inclus — pas de segments par cellule pour éviter les coupures au gap)
+ * - **Ligne 5** = description path 2 (slots vides → `empty` ; pas de libellé sous Input / Main L·R)
+ *
+ * Col 1 icône Input, col 2 split si `splitAfterCol === 0`, cols 3–17 modèles / routage alternés,
+ * col 19 icône Main L/R.
  * Positions split/merge : stomp si `kemplineGridOk`, sinon heuristique d’occupation (pas
  * seulement `get_active_preset_routing_markers`, souvent vide alors que la branche B existe).
  */
@@ -347,15 +388,34 @@ function renderGrid16(
   const grid = document.createElement("div");
   grid.className = "hx-matrix-grid";
 
-  const NUM_ROWS = 2;
+  /** Nomenclature lignes grille (1-based, `grid-row`). */
+  const LINE_PATH_1 = 1;
+  const LINE_DESC_PATH_1 = 2;
+  const LINE_SEPARATOR = 3;
+  const LINE_PATH_2 = 4;
+  const LINE_DESC_PATH_2 = 5;
+  const NUM_ROWS = 5;
   const NUM_COLS = 19;
 
-  function wrapCell(row: number, col: number, inner: HTMLElement | null): HTMLElement {
+  function wrapCell(
+    row: number,
+    col: number,
+    inner: HTMLElement | null,
+    opts?: { descriptionPathRow?: boolean },
+  ): HTMLElement {
     const w = document.createElement("div");
-    w.className = "hx-matrix-cell" + (inner ? "" : " hx-matrix-cell--empty");
+    let cls = "hx-matrix-cell" + (inner ? "" : " hx-matrix-cell--empty");
+    if (opts?.descriptionPathRow) cls += " hx-matrix-cell--description-path";
+    w.className = cls;
     w.style.gridRow = String(row);
     w.style.gridColumn = String(col);
     if (inner) w.appendChild(inner);
+    const rk = inner?.dataset?.routingMarker;
+    if (rk === "split" || rk === "merge") {
+      const tip = routingMatrixTooltip(rk, rk === "split" ? splitTip : mergeTip);
+      w.title = tip;
+      w.setAttribute("aria-label", tip);
+    }
     return w;
   }
 
@@ -363,35 +423,83 @@ function renderGrid16(
     if (!showRoutingUi) return null;
     const { splitCol, mergeCol } = routingCols;
     if (boundary < 1 || boundary > 8) return null;
-    if (mergeCol === boundary) return makePathRoutingNode("merge", mergeTip);
-    if (splitCol === boundary) return makePathRoutingNode("split", splitTip);
+    if (mergeCol === boundary) return makePathRoutingNode("merge");
+    if (splitCol === boundary) return makePathRoutingNode("split");
     return null;
   }
 
+  /** Trait horizontal discret sur la ligne de path, derrière les icônes / blocs (z-index). */
+  function appendPathRowRail(targetRow: number, gridColumn: string = "1 / -1") {
+    const rail = document.createElement("div");
+    rail.className = "hx-matrix-path-rail";
+    rail.setAttribute("role", "presentation");
+    rail.setAttribute("aria-hidden", "true");
+    rail.style.gridRow = String(targetRow);
+    rail.style.gridColumn = gridColumn;
+    grid.appendChild(rail);
+  }
+
+  appendPathRowRail(LINE_PATH_1);
+
+  /** Colonne grille (1–19) du marqueur split — aligné sur `routingAtBoundary` / col. 2 si split au départ. */
+  function splitMarkerGridCol1(splitCol: number): number {
+    return splitCol === 0 ? 2 : 2 * splitCol + 2;
+  }
+  /** Colonne grille (1–19) du marqueur merge (frontières 4, 6, …, 18). */
+  function mergeMarkerGridCol1(mergeCol: number): number {
+    return 2 * mergeCol + 2;
+  }
+
+  const splitGridCol1 = splitMarkerGridCol1(routingCols.splitCol);
+  const mergeGridCol1 = mergeMarkerGridCol1(routingCols.mergeCol);
+  const path2RailByGridCols = mergeGridCol1 >= splitGridCol1;
+  if (showRoutingUi && hasBranchB && path2RailByGridCols) {
+    /* Une seule ligne continue (même rendu que path 1), colonnes split…merge incluses. */
+    appendPathRowRail(LINE_PATH_2, `${splitGridCol1} / ${mergeGridCol1 + 1}`);
+  }
+
   for (let row = 1; row <= NUM_ROWS; row += 1) {
+    if (row === LINE_SEPARATOR) {
+      const bar = document.createElement("div");
+      bar.className = "hx-matrix-separator-bar";
+      bar.setAttribute("role", "presentation");
+      bar.setAttribute("aria-hidden", "true");
+      bar.style.gridRow = String(LINE_SEPARATOR);
+      bar.style.gridColumn = "1 / -1";
+      grid.appendChild(bar);
+      continue;
+    }
+
+    const descriptionPathRow = row === LINE_DESC_PATH_1 || row === LINE_DESC_PATH_2;
     for (let col = 1; col <= NUM_COLS; col += 1) {
       let inner: HTMLElement | null = null;
 
-      if (col === 1) {
-        if (row === 1) inner = makeIoNode("INPUT");
+      if (row === LINE_DESC_PATH_1 && col === 1) {
+        inner = makeMatrixDescriptionLabel("input");
+      } else if (row === LINE_DESC_PATH_1 && col === 19) {
+        inner = makeMatrixDescriptionLabel("Main L/R");
+      } else if (col === 1) {
+        if (row === LINE_PATH_1) inner = makeIoNode("input");
       } else if (col === 2) {
-        if (row === 1 && showRoutingUi && routingCols.splitCol === 0) {
-          inner = makePathRoutingNode("split", splitTip);
+        if (row === LINE_PATH_1 && showRoutingUi && routingCols.splitCol === 0) {
+          inner = makePathRoutingNode("split");
         }
       } else if (col === 19) {
-        if (row === 1) inner = makeIoNode("MAIN L/R");
+        if (row === LINE_PATH_1) inner = makeIoNode("output");
       } else if (col >= 3 && col <= 17 && (col - 3) % 2 === 0) {
         const i = (col - 3) / 2;
         if (i >= 0 && i <= 7) {
-          if (row === 1) inner = gridSlotNode(slots[i]!);
-          else if (row === 2 && showRoutingUi && hasBranchB) inner = gridSlotNode(slots[8 + i]!);
+          if (row === LINE_PATH_1) inner = gridSlotNode(slots[i]!);
+          else if (row === LINE_DESC_PATH_1) inner = makeMatrixCategoryCell(slots[i]!);
+          else if (row === LINE_PATH_2 && showRoutingUi && hasBranchB) inner = gridSlotNode(slots[8 + i]!);
+          else if (row === LINE_DESC_PATH_2) inner = makeMatrixCategoryCell(slots[8 + i]!);
         }
       } else if (col >= 4 && col <= 18 && (col - 4) % 2 === 0) {
         const j = (col - 4) / 2;
-        if (row === 1 && j >= 0 && j <= 7) inner = routingAtBoundary(j + 1);
+        if (row === LINE_PATH_1 && j >= 0 && j <= 7) inner = routingAtBoundary(j + 1);
       }
 
-      grid.appendChild(wrapCell(row, col, inner));
+      grid.appendChild(wrapCell(row, col, inner, { descriptionPathRow }));
     }
   }
 

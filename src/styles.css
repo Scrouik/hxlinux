@@ -515,7 +515,7 @@ html, body {
   gap: 5px;
 }
 
-/* Blocs FX grille / chaîne : icône catégorie 20×20 + diminutif 3 lettres (style HX Edit). */
+/* Blocs FX grille / chaîne : icône catégorie 22×22 (même taille que Input / Main L·R) + diminutif optionnel. */
 .models-pane .node.node--hx-slot {
   width: var(--models-slot-node-w);
   min-width: var(--models-slot-node-w);
@@ -523,6 +523,13 @@ html, body {
   padding: 6px 4px 8px;
   align-items: center;
   gap: 4px;
+}
+
+/* Grille 16 : pas de diminutif type sous l’icône (ligne catégorie séparée). */
+.models-pane .node.node--hx-slot.node--icon-only {
+  justify-content: center;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
 .models-pane .node-icon-wrap {
@@ -533,15 +540,15 @@ html, body {
 }
 
 .models-pane .node-icon-img {
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   object-fit: contain;
   display: block;
 }
 
 .models-pane .node-icon-fallback {
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -573,15 +580,6 @@ html, body {
 .models-pane .node-abbr--empty {
   color: var(--text-dim);
   font-weight: 600;
-}
-
-.models-pane .node-debug-grid {
-  font-size: 9px;
-  line-height: 1.2;
-  color: var(--text-dim);
-  opacity: 0.85;
-  text-align: center;
-  width: 100%;
 }
 
 .models-pane .node-title {
@@ -661,6 +659,19 @@ html, body {
   background: linear-gradient(180deg, #1c1c22 0%, #141418 100%);
 }
 
+.models-pane .hx-io.hx-io--icon {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.models-pane .hx-io-icon {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  display: block;
+  opacity: 0.95;
+}
+
 .models-pane .hx-io-spacer {
   visibility: hidden;
   pointer-events: none;
@@ -697,42 +708,158 @@ html, body {
   background: #0f0f12;
 }
 
-.models-pane .node-empty .node-abbr--empty,
-.models-pane .node-empty .node-icon-fallback--empty {
-  color: var(--text-dim);
+/* Slot vide en grille : pas de tirets, fond = fond de page, seul le cadre reste visible. */
+.models-pane .node-empty.node-empty-flat {
+  padding: 0;
+  gap: 0;
+  justify-content: center;
+  align-items: center;
+  background: var(--bg-base);
+  opacity: 1;
 }
 
-/* Matrice preset 2×19 (INPUT / routage / slots / MAIN L·R). */
+/* Matrice 5×19 : L1 path 1, L2 desc path 1, L3 séparation, L4 path 2, L5 desc path 2.
+ * Colonnes 1-based : impaires = slots / I/O (plus larges) ; paires = jonctions split-merge (~moitié). */
 .models-pane .hx-matrix-grid {
   display: grid;
-  grid-template-columns: repeat(19, minmax(44px, 1fr));
-  grid-template-rows: auto auto;
-  gap: 6px 4px;
-  align-items: center;
+  grid-template-columns: repeat(9, minmax(36px, 2fr) minmax(18px, 1fr)) minmax(36px, 2fr);
+  grid-template-rows: repeat(5, auto);
+  gap: 2px 4px;
+  align-items: start;
   width: 100%;
+  isolation: isolate;
+  /* Même « type » de trait path 1 et path 2 (même classe `hx-matrix-path-rail`). */
+  --hx-path-rail-inset: 6px;
+  --hx-path-rail-height: 1px;
+  --hx-path-rail-bg: rgba(255, 255, 255, 0.92);
+  --hx-path-rail-shadow: 0 0 1px rgba(255, 255, 255, 0.35);
+}
+
+/* Trait sur la ligne de path uniquement : calque pleine largeur, sous les cellules. */
+.models-pane .hx-matrix-path-rail {
+  position: relative;
+  z-index: 0;
+  grid-column: 1 / -1;
+  pointer-events: none;
+  align-self: stretch;
+  min-height: 0;
+}
+
+.models-pane .hx-matrix-path-rail::before {
+  content: "";
+  position: absolute;
+  left: var(--hx-path-rail-inset);
+  right: var(--hx-path-rail-inset);
+  top: 50%;
+  transform: translateY(-50%);
+  height: var(--hx-path-rail-height);
+  background: var(--hx-path-rail-bg);
+  box-shadow: var(--hx-path-rail-shadow);
+}
+
+/* Ligne 3 : espace uniquement (pas de trait : évite toute confusion avec un signal / câble). */
+.models-pane .hx-matrix-separator-bar {
+  z-index: 0;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-sizing: border-box;
+  pointer-events: none;
 }
 
 .models-pane .hx-matrix-cell {
+  position: relative;
+  z-index: 1;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   min-height: 56px;
   min-width: 0;
+  padding-top: 2px;
+  box-sizing: border-box;
 }
 
 .models-pane .hx-matrix-cell--empty {
   min-height: 8px;
 }
 
+/* Lignes 2 et 4 : texte collé en haut, proche du path au-dessus. */
+.models-pane .hx-matrix-cell.hx-matrix-cell--description-path {
+  min-height: 0;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin-top: -1px;
+}
+
+.models-pane .hx-matrix-cell.hx-matrix-cell--description-path.hx-matrix-cell--empty {
+  min-height: 2px;
+  margin-top: 0;
+}
+
+.models-pane .hx-matrix-category {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 0 2px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Même gabarit que `.node.node--hx-slot` : l’icône est 22×22 dans les deux cas, ce n’est pas le PNG. */
 .models-pane .hx-matrix-cell .hx-io {
   width: 100%;
   max-width: 100%;
   min-width: 0;
   flex: 1 1 auto;
+  min-height: 52px;
+  padding: 6px 4px 8px;
 }
 
-.models-pane .hx-matrix-routing-node {
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+/* Infobulle au survol de toute la cellule : la carte remplit la zone cliquable/survolable. */
+.models-pane .hx-matrix-cell > .node.node--hx-slot {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Jonctions split / merge : pas de carte slot, disque 16×16 centré (path 1). */
+.models-pane .hx-matrix-routing-marker {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 52px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+
+.models-pane .hx-matrix-routing-marker-dot {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  background: #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
 }
 
 .models-pane .hx-routing-rail {
