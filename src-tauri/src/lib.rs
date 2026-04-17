@@ -573,7 +573,9 @@ fn split_preset_by_8213(data: &[u8]) -> Vec<&[u8]> {
 }
 
 /// Parse les slots d'un preset brut.
-/// Kempline : split par [0x82, 0x13], extrait l'ID entre markers 0x19 et 0x1a.
+/// Décodage "best effort" : on segmente sur [0x82, 0x13], puis on retient
+/// au plus un module par segment (priorité à un ID connu dans MODULES_BY_ID).
+/// Cela évite de sur-parser des séquences 0x19..0x1a parasites.
 fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
     fn extract_grid_x(chunk: &[u8], scan_from: usize) -> Option<u8> {
         let end = chunk.len().min(scan_from.saturating_add(40));
@@ -602,37 +604,63 @@ fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
 
     let mut parsed_slots: Vec<ParsedSlot> = Vec::new();
     for chunk in chunks {
+        if chunk.is_empty() {
+            continue;
+        }
+        let is_assignable_chunk = matches!(chunk.first().copied(), Some(0x06 | 0x08));
+        let mut best_unknown: Option<ParsedSlot> = None;
         let mut cursor = 0usize;
+
         while cursor < chunk.len() {
-            if chunk[cursor] == 0x19 {
-                let id_start = cursor + 1;
-                if let Some(rel_end) = chunk[id_start..].iter().position(|&b| b == 0x1a) {
-                    let id_bytes = &chunk[id_start..id_start + rel_end];
-                    if !id_bytes.is_empty() {
-                        let mut id_hex = String::with_capacity(id_bytes.len() * 2);
-                        for b in id_bytes {
-                            let _ = write!(&mut id_hex, "{:02x}", b);
-                        }
-                        let (category, name) = if let Some(entry) = MODULES_BY_ID
-                            .get(&id_hex)
-                            .or_else(|| MODULE_FALLBACKS.get(&id_hex))
-                        {
-                            (entry[0].clone(), entry[1].clone())
-                        } else {
-                            (String::from("Unknown"), id_hex)
-                        };
-                        parsed_slots.push(ParsedSlot {
-                            category,
-                            name,
-                            grid_x: extract_grid_x(chunk, id_start + rel_end + 1),
-                            grid_y: extract_grid_y(chunk, id_start + rel_end + 1),
-                        });
-                    }
-                    cursor = id_start + rel_end + 1;
+            if chunk[cursor] != 0x19 {
+                cursor += 1;
+                continue;
+            }
+            let id_start = cursor + 1;
+            if let Some(rel_end) = chunk[id_start..].iter().position(|&b| b == 0x1a) {
+                let id_bytes = &chunk[id_start..id_start + rel_end];
+                let after_id = id_start + rel_end + 1;
+                cursor = after_id;
+                if id_bytes.is_empty() {
                     continue;
                 }
+
+                let mut id_hex = String::with_capacity(id_bytes.len() * 2);
+                for b in id_bytes {
+                    let _ = write!(&mut id_hex, "{:02x}", b);
+                }
+
+                if let Some(entry) = MODULES_BY_ID
+                    .get(&id_hex)
+                    .or_else(|| MODULE_FALLBACKS.get(&id_hex))
+                {
+                    parsed_slots.push(ParsedSlot {
+                        category: entry[0].clone(),
+                        name: entry[1].clone(),
+                        grid_x: extract_grid_x(chunk, after_id),
+                        grid_y: extract_grid_y(chunk, after_id),
+                    });
+                    // Un segment transporte au plus un module utile pour le fallback.
+                    break;
+                }
+
+                // On garde un inconnu uniquement dans un segment assignable
+                // (évite les faux positifs issus d'autres métadonnées).
+                if is_assignable_chunk && best_unknown.is_none() {
+                    best_unknown = Some(ParsedSlot {
+                        category: String::from("Unknown"),
+                        name: id_hex,
+                        grid_x: extract_grid_x(chunk, after_id),
+                        grid_y: extract_grid_y(chunk, after_id),
+                    });
+                }
+                continue;
             }
             cursor += 1;
+        }
+
+        if let Some(slot) = best_unknown {
+            parsed_slots.push(slot);
         }
     }
 
@@ -648,72 +676,10 @@ fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
         }
     }
 
-    // Heuristique de routing:
-    // si un bloc d'ampli est suivi plus tard d'un bloc avec une position
-    // de grille plus basse, on injecte un marqueur de split avant l'ampli.
-    let mut split_before_idx: Option<usize> = None;
-    for (i, slot) in deduped.iter().enumerate() {
-        let is_amp = slot.category == "Amp" || slot.category == "Preamp" || slot.category == "Amp+Cab";
-        let amp_pos = slot.grid_x;
-        if !is_amp || amp_pos.is_none() {
-            continue;
-        }
-        let amp_pos = amp_pos.unwrap();
-        if deduped
-            .iter()
-            .skip(i + 1)
-            .any(|s| s.grid_x.map_or(false, |p| p < amp_pos))
-        {
-            split_before_idx = Some(i);
-            break;
-        }
-    }
-
-    // Merge/Mixer : le retour sur grid_x (premier slot avec x >= ancre après
-    // une colonne plus basse) arrive trop tôt si l'ordre sérialisé mélange la
-    // chaîne commune et la branche B (effets post-merge avant l'ampli B, etc.).
-    // Helix liste souvent : ampli A, chaîne après merge, puis ampli B et la suite
-    // sur la branche basse — le point de jonction visuel est donc juste après
-    // le premier ampli (même indice que le split), pas au premier « rebond » de x.
-    let merge_before_idx: Option<usize> = split_before_idx.map(|s| {
-        let m = s.saturating_add(1);
-        if m >= deduped.len() {
-            deduped.len()
-        } else {
-            m
-        }
-    });
-
-    let mut result = Vec::new();
-    for (idx, slot) in deduped.iter().enumerate() {
-        if split_before_idx == Some(idx) {
-            result.push(ParsedSlot {
-                category: String::from("Routing"),
-                name: String::from("Split (branche parallèle)"),
-                grid_x: None,
-                grid_y: None,
-            });
-        }
-        if merge_before_idx == Some(idx) {
-            result.push(ParsedSlot {
-                category: String::from("Routing"),
-                name: String::from("Merge/Mixer"),
-                grid_x: None,
-                grid_y: None,
-            });
-        }
-        result.push(slot.clone());
-    }
-    if merge_before_idx == Some(deduped.len()) {
-        result.push(ParsedSlot {
-            category: String::from("Routing"),
-            name: String::from("Merge/Mixer"),
-            grid_x: None,
-            grid_y: None,
-        });
-    }
-
-    result
+    // Important: on ne doit pas inventer de blocs de routing dans ce parseur
+    // de secours. Des marqueurs synthétiques peuvent décaler/altérer les données
+    // remontées alors qu'on cherche ici un reflet brut des modules décodés.
+    deduped
 }
 
 /// Marqueur de slot vide (Kempline `request_preset.py` : `0814c0`).

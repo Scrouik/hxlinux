@@ -180,12 +180,14 @@ fn split_merge_from_grid_x(grid: &[KemplineCell], occ: (u8, u8)) -> Option<(u8, 
     Some((split, merge))
 }
 
-/// Indices `merge_after_col` / `split_after_col` : colonnes 0–8 (même convention que l’UI).
+/// Lit les colonnes split/merge depuis le corps preset USB.
 ///
-/// Corps preset tel qu’accumulé par `RequestPreset` (octets **après** les 16 premiers de chaque chunk ED03).
-/// Sur captures usbmon (Stomp), la **2ᵉ** occurrence du triplet `0x0d XX 0x0a` semble suivre `join.@position` des `.hlx`
-/// avec **`merge_after_col ≈ XX - 1`** quand il y a **exactement** deux occurrences — heuristique expérimentale.
-pub fn merge_after_col_from_usb_preset_body(data: &[u8]) -> Option<u8> {
+/// Corps preset tel qu’accumulé par `RequestPreset` (octets **après** les 16 premiers
+/// de chaque chunk ED03).
+///
+/// Sur captures usbmon (Stomp), quand il y a exactement deux motifs `0x0d XX 0x0a`,
+/// le 1er `XX` encode le split et le 2e encode le merge, avec la convention `col = XX - 1`.
+pub fn split_merge_from_usb_preset_body(data: &[u8]) -> Option<(u8, u8)> {
     let mut mids: Vec<u8> = Vec::new();
     for i in 0..data.len().saturating_sub(2) {
         if data[i] == 0x0d && data[i + 2] == 0x0a {
@@ -195,11 +197,22 @@ pub fn merge_after_col_from_usb_preset_body(data: &[u8]) -> Option<u8> {
     if mids.len() != 2 {
         return None;
     }
-    let mid = mids[1];
-    if mid == 0 {
+    let split_mid = mids[0];
+    let merge_mid = mids[1];
+    if split_mid == 0 || merge_mid == 0 {
         return None;
     }
-    Some(mid.saturating_sub(1).min(8))
+    let split = split_mid.saturating_sub(1).min(8);
+    let merge = merge_mid.saturating_sub(1).min(8);
+    if merge <= split {
+        return None;
+    }
+    Some((split, merge))
+}
+
+/// Compat helper: ne retourne que `merge_after_col`.
+pub fn merge_after_col_from_usb_preset_body(data: &[u8]) -> Option<u8> {
+    split_merge_from_usb_preset_body(data).map(|(_, merge)| merge)
 }
 
 fn build_chain(grid: &[KemplineCell]) -> Vec<StompChainEntry> {
@@ -292,20 +305,18 @@ pub fn compute_stomp_layout_from_kempline_grid(grid: &[KemplineCell]) -> ActiveP
     ActivePresetStompLayout { routing, chain }
 }
 
-/// Comme [`compute_stomp_layout_from_kempline_grid`], puis tente d’affiner **`merge_after_col`** depuis le **flux USB**
-/// (`merge_after_col_from_usb_preset_body`) lorsque le motif est reconnu.
+/// Comme [`compute_stomp_layout_from_kempline_grid`], puis tente d’affiner split/merge depuis le flux USB
+/// (`split_merge_from_usb_preset_body`) lorsque le motif est reconnu.
 pub fn compute_stomp_layout_from_kempline_grid_with_usb(
     grid: &[KemplineCell],
     raw_preset: &[u8],
 ) -> ActivePresetStompLayout {
     let mut layout = compute_stomp_layout_from_kempline_grid(grid);
-    if let Some(usb_merge) = merge_after_col_from_usb_preset_body(raw_preset) {
-        let split = layout.routing.split_after_col;
-        if usb_merge > split {
-            layout.routing.merge_after_col = usb_merge;
-            let base = layout.routing.inferred_from.clone();
-            layout.routing.inferred_from = format!("{base};usb_merge_od");
-        }
+    if let Some((usb_split, usb_merge)) = split_merge_from_usb_preset_body(raw_preset) {
+        layout.routing.split_after_col = usb_split;
+        layout.routing.merge_after_col = usb_merge;
+        let base = layout.routing.inferred_from.clone();
+        layout.routing.inferred_from = format!("{base};usb_split_merge_od");
     }
     layout
 }
@@ -376,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn usb_od_triple_second_middle_maps_merge() {
+    fn usb_od_triples_map_split_and_merge() {
         let mut v = vec![0u8; 500];
         v[100] = 0x0d;
         v[101] = 0x01;
@@ -384,6 +395,7 @@ mod tests {
         v[200] = 0x0d;
         v[201] = 0x05;
         v[202] = 0x0a;
+        assert_eq!(super::split_merge_from_usb_preset_body(&v), Some((0, 4)));
         assert_eq!(super::merge_after_col_from_usb_preset_body(&v), Some(4));
     }
 
@@ -406,6 +418,18 @@ mod tests {
     }
 
     #[test]
+    fn usb_od_triple_rejects_merge_not_after_split() {
+        let mut v = vec![0u8; 50];
+        v[0] = 0x0d;
+        v[1] = 0x04;
+        v[2] = 0x0a;
+        v[10] = 0x0d;
+        v[11] = 0x03;
+        v[12] = 0x0a;
+        assert!(super::split_merge_from_usb_preset_body(&v).is_none());
+    }
+
+    #[test]
     fn with_usb_overrides_merge_when_hint_valid() {
         let mut g = (0..16).map(|_| empty()).collect::<Vec<_>>();
         g[0] = empty();
@@ -420,8 +444,8 @@ mod tests {
         raw[201] = 0x08;
         raw[202] = 0x0a;
         let layout = super::compute_stomp_layout_from_kempline_grid_with_usb(&g, &raw);
-        assert_eq!(layout.routing.split_after_col, 2);
+        assert_eq!(layout.routing.split_after_col, 0);
         assert_eq!(layout.routing.merge_after_col, 7);
-        assert!(layout.routing.inferred_from.contains("usb_merge_od"));
+        assert!(layout.routing.inferred_from.contains("usb_split_merge_od"));
     }
 }
