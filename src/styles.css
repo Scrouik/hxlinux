@@ -496,6 +496,23 @@ html, body {
   min-width: max-content;
 }
 
+/* Fenêtre Models : le main ne doit pas imposer toute la largeur aux enfants flex. */
+#content.models-pane {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+/* Matrice seule : largeur = grille uniquement (pas d’étirement sur le main). */
+.models-pane .flow.hx-matrix {
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  flex-shrink: 0;
+  /* Évite que l’enfant grille ne s’étire en cross-axis (largeur) comme un flex item « stretch ». */
+  align-items: flex-start;
+}
+
 .models-pane .flow-row {
   display: flex;
   align-items: center;
@@ -519,10 +536,33 @@ html, body {
 .models-pane .node.node--hx-slot {
   width: var(--models-slot-node-w);
   min-width: var(--models-slot-node-w);
+  max-width: var(--models-slot-node-w);
+  box-sizing: border-box;
   min-height: 52px;
   padding: 6px 4px 8px;
   align-items: center;
   gap: 4px;
+}
+
+/* Chaîne linéaire (non grille Kempline) : mêmes gabarits 56×56 que la matrice. */
+.models-pane .flow-row > .node.node--hx-slot {
+  flex: 0 0 var(--models-slot-node-w);
+  width: var(--models-slot-node-w);
+  min-width: var(--models-slot-node-w);
+  max-width: var(--models-slot-node-w);
+  height: var(--models-slot-node-w);
+  min-height: var(--models-slot-node-w);
+  max-height: var(--models-slot-node-w);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.models-pane .flow-row > .placeholder {
+  flex: 0 0 var(--models-slot-node-w);
+  height: var(--models-slot-node-w);
+  min-height: var(--models-slot-node-w);
+  max-height: var(--models-slot-node-w);
+  box-sizing: border-box;
 }
 
 /* Grille 16 : pas de diminutif type sous l’icône (ligne catégorie séparée). */
@@ -679,29 +719,6 @@ html, body {
   background: transparent;
 }
 
-.models-pane .grid16-row-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.models-pane .grid16-branch-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-dim);
-  letter-spacing: 0.02em;
-}
-
-.models-pane .grid16-row {
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--border);
-}
-
-.models-pane .hx-path-block .grid16-row {
-  border-bottom: none;
-  padding-bottom: 0;
-}
-
 .models-pane .node-empty {
   border-style: dashed;
   opacity: 0.85;
@@ -718,86 +735,100 @@ html, body {
   opacity: 1;
 }
 
-/* Matrice 5×19 : L1 path 1, L2 desc path 1, L3 séparation, L4 path 2, L5 desc path 2.
- * Colonnes 1-based : impaires = slots / I/O (plus larges) ; paires = jonctions split-merge (~moitié). */
+/* Matrice 4×20 : L1 Path 1, L2 Description Path 1, L3 Path 2, L4 Description Path 2 ; col 20 = n° ligne (debug). */
 .models-pane .hx-matrix-grid {
+  --hx-matrix-cell: 56px;
+  --hx-matrix-cols: 20;
   display: grid;
-  grid-template-columns: repeat(9, minmax(36px, 2fr) minmax(18px, 1fr)) minmax(36px, 2fr);
-  grid-template-rows: repeat(5, auto);
-  gap: 2px 4px;
-  align-items: start;
-  width: 100%;
-  isolation: isolate;
-  /* Même « type » de trait path 1 et path 2 (même classe `hx-matrix-path-rail`). */
-  --hx-path-rail-inset: 6px;
-  --hx-path-rail-height: 1px;
-  --hx-path-rail-bg: rgba(255, 255, 255, 0.92);
-  --hx-path-rail-shadow: 0 0 1px rgba(255, 255, 255, 0.35);
-}
-
-/* Trait sur la ligne de path uniquement : calque pleine largeur, sous les cellules. */
-.models-pane .hx-matrix-path-rail {
-  position: relative;
-  z-index: 0;
-  grid-column: 1 / -1;
-  pointer-events: none;
-  align-self: stretch;
-  min-height: 0;
-}
-
-.models-pane .hx-matrix-path-rail::before {
-  content: "";
-  position: absolute;
-  left: var(--hx-path-rail-inset);
-  right: var(--hx-path-rail-inset);
-  top: 50%;
-  transform: translateY(-50%);
-  height: var(--hx-path-rail-height);
-  background: var(--hx-path-rail-bg);
-  box-shadow: var(--hx-path-rail-shadow);
-}
-
-/* Ligne 3 : espace uniquement (pas de trait : évite toute confusion avec un signal / câble). */
-.models-pane .hx-matrix-separator-bar {
-  z-index: 0;
-  height: 18px;
-  margin: 0;
-  padding: 0;
-  border: none;
-  background: transparent;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  grid-template-columns: repeat(20, 56px);
+  grid-template-rows: repeat(4, 56px);
+  gap: 0;
+  row-gap: 0;
+  column-gap: 0;
+  align-items: stretch;
+  justify-items: stretch;
+  justify-content: start;
+  align-content: start;
+  width: calc(var(--hx-matrix-cols) * var(--hx-matrix-cell));
+  min-width: calc(var(--hx-matrix-cols) * var(--hx-matrix-cell));
+  max-width: calc(var(--hx-matrix-cols) * var(--hx-matrix-cell));
   box-sizing: border-box;
-  pointer-events: none;
+  isolation: isolate;
 }
+
+/*
+ * REVERT (matrice 5 lignes + rangée séparateur ligne 3) :
+ * .models-pane .hx-matrix-separator-bar {
+ *   z-index: 0;
+ *   height: 0;
+ *   min-height: 0;
+ *   max-height: 0;
+ *   margin: 0;
+ *   padding: 0;
+ *   border: none;
+ *   background: transparent;
+ *   box-sizing: border-box;
+ *   pointer-events: none;
+ *   overflow: hidden;
+ * }
+ */
 
 .models-pane .hx-matrix-cell {
   position: relative;
   z-index: 1;
   display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  min-height: 56px;
+  /* Par défaut : le contenu remplit la case (évite « pilules » plus basses sur les slots vides). */
+  align-items: stretch;
+  justify-content: stretch;
+  width: var(--hx-matrix-cell);
+  height: var(--hx-matrix-cell);
   min-width: 0;
-  padding-top: 2px;
+  min-height: 0;
+  max-width: var(--hx-matrix-cell);
+  max-height: var(--hx-matrix-cell);
+  padding: 0;
   box-sizing: border-box;
+  overflow: hidden;
 }
 
 .models-pane .hx-matrix-cell--empty {
-  min-height: 8px;
+  min-width: 0;
+  min-height: 0;
 }
 
-/* Lignes 2 et 4 : texte collé en haut, proche du path au-dessus. */
+/* Lignes « Description Path 1 » (2) et « Description Path 2 » (4) : texte en haut ; icône verticale L2 : cas particulier. */
 .models-pane .hx-matrix-cell.hx-matrix-cell--description-path {
-  min-height: 0;
   align-items: flex-start;
   justify-content: center;
-  padding-top: 0;
-  padding-bottom: 0;
-  margin-top: -1px;
+  padding: 2px 0 0 0;
+  margin: 0;
+}
+
+/* Colonne split/merge sur « Description Path 1 » (L2) : trait centré (pas le même alignement que le texte catégorie). */
+.models-pane .hx-matrix-cell.hx-matrix-cell--description-path.hx-matrix-cell--r2-junction-vline {
+  align-items: center;
+  justify-content: center;
+  padding: 0;
 }
 
 .models-pane .hx-matrix-cell.hx-matrix-cell--description-path.hx-matrix-cell--empty {
-  min-height: 2px;
-  margin-top: 0;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+}
+
+.models-pane .hx-matrix-r2-vline {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
 }
 
 .models-pane .hx-matrix-category {
@@ -816,31 +847,104 @@ html, body {
   white-space: nowrap;
 }
 
+/* Colonne 20 : indice de ligne grille (vérification layout). */
+.models-pane .hx-matrix-cell--row-line-debug {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.models-pane .hx-matrix-row-line-debug {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  line-height: 1;
+  user-select: text;
+}
+
+/*
+ * REVERT (5 lignes + cellule debug « 3 » sur rangée séparateur hauteur 0) :
+ * .models-pane .hx-matrix-cell.hx-matrix-cell--row-line-debug-sep {
+ *   height: auto !important;
+ *   max-height: 22px !important;
+ *   min-height: 18px;
+ *   overflow: visible;
+ *   z-index: 3;
+ *   align-self: center;
+ * }
+ */
+
 /* Même gabarit que `.node.node--hx-slot` : l’icône est 22×22 dans les deux cas, ce n’est pas le PNG. */
 .models-pane .hx-matrix-cell .hx-io {
+  box-sizing: border-box;
   width: 100%;
   max-width: 100%;
   min-width: 0;
   flex: 1 1 auto;
-  min-height: 52px;
-  padding: 6px 4px 8px;
+  align-self: stretch;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  padding: 4px 2px;
 }
 
-/* Infobulle au survol de toute la cellule : la carte remplit la zone cliquable/survolable. */
+/* Infobulle au survol de toute la cellule : contenu limité à la cellule 56×56. */
 .models-pane .hx-matrix-cell > .node.node--hx-slot {
+  box-sizing: border-box;
   width: 100%;
   min-width: 0;
   max-width: 100%;
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  padding: 4px 2px 4px;
 }
 
-/* Jonctions split / merge : pas de carte slot, disque 16×16 centré (path 1). */
+.models-pane .hx-matrix-cell > .node.node--hx-slot.node--icon-only {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+/* Slot vide matrice : occupe toute la case pour hauteur identique aux blocs avec icône. */
+.models-pane .hx-matrix-cell > .node-empty.node-empty-flat.node--hx-slot {
+  flex: 1 1 auto;
+  align-self: stretch;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+}
+
+/* Colonnes paires (path 1) : décorations grille — pas les cartes slot (icônes catégorie 22×22). */
+.models-pane .hx-matrix-junction-line {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-height: 56px;
+  margin: 0;
+  padding: 0 1px;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
 .models-pane .hx-matrix-routing-marker {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  min-height: 52px;
+  min-height: 0;
+  max-height: 56px;
   margin: 0;
-  padding: 0;
+  padding: 0 1px;
   border: none;
   background: transparent;
   box-shadow: none;
@@ -850,49 +954,34 @@ html, body {
   pointer-events: auto;
 }
 
-.models-pane .hx-matrix-routing-marker-dot {
-  display: block;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  flex: 0 0 auto;
+/* Trait vertical split/merge : « Description Path 1 » (L2) = `.hx-matrix-r2-vline` ; pas d’overlay L3 (évite chevauchement avec `Icons_link_*`). */
+.models-pane .hx-matrix-vspan,
+.models-pane .hx-matrix-path2-link {
   box-sizing: border-box;
-  border: 1px solid rgba(0, 0, 0, 0.35);
-  background: #ffffff;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0 1px;
+  border: none;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 2;
 }
 
-.models-pane .hx-routing-rail {
-  width: 3px;
-  align-self: stretch;
-  min-height: 32px;
-  border-radius: 2px;
-  background: linear-gradient(180deg, #c44a3a 0%, #8a3228 100%);
-  opacity: 0.92;
-}
-
-.models-pane .routing-chip {
-  font-size: 10px;
-  font-weight: 600;
-  color: #c8c8d0;
-  padding: 5px 12px;
-  border-radius: 6px;
-  border: 1px solid #5a5a62;
-  background: #1e1e24;
-}
-
-.models-pane .routing-chip-split {
-  border-color: #9f4236;
-  color: #f2a394;
-}
-
-.models-pane .routing-chip-merge {
-  border-color: #4b6e9f;
-  color: #a7c5f2;
-}
-
-.models-pane .hx-edit-chain > .hx-path-block ~ .hx-path-block {
-  margin-top: 8px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
+/* Images décor grille (colonnes paires + vspan) : PNG typiquement 56×56. */
+.models-pane .hx-matrix-junction-line-img,
+.models-pane .hx-matrix-routing-marker-img,
+.models-pane .hx-matrix-vspan-img {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+  opacity: 0.95;
 }

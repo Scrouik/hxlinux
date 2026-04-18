@@ -210,8 +210,9 @@ pub fn split_merge_from_usb_preset_body(data: &[u8]) -> Option<(u8, u8)> {
     Some((split, merge))
 }
 
-/// Compat helper: ne retourne que `merge_after_col`.
-pub fn merge_after_col_from_usb_preset_body(data: &[u8]) -> Option<u8> {
+/// Helper pour les tests : `merge_after_col` seul depuis le corps preset USB.
+#[cfg(test)]
+fn merge_after_col_from_usb_preset_body(data: &[u8]) -> Option<u8> {
     split_merge_from_usb_preset_body(data).map(|(_, merge)| merge)
 }
 
