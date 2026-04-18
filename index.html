@@ -42,9 +42,26 @@
             <div class="models-preset" id="preset-label">--</div>
           </header>
           <div class="models-status" id="status">En attente...</div>
-          <main class="models-content" id="content">
-            <div class="empty">Aucun modele charge.</div>
-          </main>
+          <div class="models-main-stack">
+            <main class="models-content models-matrix-host" id="content">
+              <div class="empty">Aucun modele charge.</div>
+            </main>
+            <section
+              class="models-params-pane"
+              id="models-params-pane"
+              data-hx-pane="models-params"
+              aria-labelledby="models-params-pane-title"
+            >
+              <header class="models-params-pane-header">
+                <h2 class="models-params-pane-title" id="models-params-pane-title"></h2>
+              </header>
+              <div class="models-params-inner">
+                <p class="models-params-placeholder">
+                  Les paramètres du bloc sélectionné s’afficheront ici.
+                </p>
+              </div>
+            </section>
+          </div>
         </section>
       </div>
 

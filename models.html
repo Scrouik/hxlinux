@@ -55,10 +55,9 @@
         font-size: 12px;
         color: var(--text-muted);
       }
+      /* Layout haut/bas : voir `.models-main-stack` dans styles.css (import models.ts). */
       .content {
-        flex: 1;
         overflow: auto;
-        padding: 12px;
       }
       .flow {
         display: flex;
@@ -251,9 +250,26 @@
         <div class="preset" id="preset-label">--</div>
       </header>
       <div class="status" id="status" style="padding:8px 14px;border-bottom:1px solid var(--border);">En attente...</div>
-      <main class="content models-pane" id="content">
-        <div class="empty">Aucun modele charge.</div>
-      </main>
+      <div class="models-main-stack">
+        <main class="content models-pane models-content models-matrix-host" id="content">
+          <div class="empty">Aucun modele charge.</div>
+        </main>
+        <section
+          class="models-params-pane"
+          id="models-params-pane"
+          data-hx-pane="models-params"
+          aria-labelledby="models-params-pane-title"
+        >
+          <header class="models-params-pane-header">
+            <h2 class="models-params-pane-title" id="models-params-pane-title"></h2>
+          </header>
+          <div class="models-params-inner">
+            <p class="models-params-placeholder">
+              Les paramètres du bloc sélectionné s’afficheront ici.
+            </p>
+          </div>
+        </section>
+      </div>
     </div>
     <script type="module" src="/src/models.ts"></script>
   </body>

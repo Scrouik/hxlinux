@@ -511,7 +511,27 @@ fn get_active_preset_stomp_layout(
     ))
 }
 
+/// Lecture d’un fichier JSON de définition de modèles (`resources/models/{file_base}.models`).
+#[tauri::command]
+fn read_models_definition_file(app: tauri::AppHandle, file_base: String) -> Result<String, String> {
+    if !file_base
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err("nom de fichier .models invalide".into());
+    }
+    let path = app
+        .path()
+        .resource_dir()
+        .map_err(|e| e.to_string())?
+        .join("resources/models")
+        .join(format!("{}.models", file_base));
+    fs::read_to_string(&path).map_err(|e| format!("{}: {}", path.display(), e))
+}
+
 lazy_static! {
+    /// ID module (hex entre 0x19…0x1a) → `[catégorie, nom]` selon `Kempline/modules.py`.
+    /// Les `nom` sont souvent des libellés longs (≠ `name` court dans `resources/models/*.models`).
     static ref MODULES_BY_ID: HashMap<String, [String; 2]> = {
         let mut map = HashMap::new();
         let modules_py = include_str!("../../Kempline/modules.py");
@@ -882,6 +902,7 @@ pub fn run() {
             get_active_preset_routing_markers,
             get_active_preset_stomp_layout,
             get_preset_data_hex,
+            read_models_definition_file,
         ])
         .setup(move |app| {
             if let Some(main_window) = app.get_webview_window("main") {

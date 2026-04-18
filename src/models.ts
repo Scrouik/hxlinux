@@ -17,6 +17,86 @@ const statusEl = document.getElementById("status") as HTMLElement;
 const presetLabelEl = document.getElementById("preset-label") as HTMLElement;
 const contentEl = document.getElementById("content") as HTMLElement;
 
+type SlotDebug = { category: string; name: string; gridX?: string; gridY?: string };
+
+const MODELS_PARAMS_IDLE_PLACEHOLDER =
+  "Les paramètres du bloc sélectionné s'afficheront ici.";
+
+function getModelsParamsInner(): HTMLElement | null {
+  return document.querySelector("#models-params-pane .models-params-inner");
+}
+
+function getModelsParamsPaneTitleEl(): HTMLElement | null {
+  return document.getElementById("models-params-pane-title");
+}
+
+/** En-tête du panneau : nom de catégorie du modèle (ex. « Amp »), vide si aucun bloc ciblé. */
+function setModelsParamsPaneCategory(category: string) {
+  const el = getModelsParamsPaneTitleEl();
+  if (!el) return;
+  el.textContent = category.trim();
+}
+
+let selectedParamsSlotEl: HTMLElement | null = null;
+
+function clearSlotSelectionVisual() {
+  if (selectedParamsSlotEl) {
+    selectedParamsSlotEl.classList.remove("node--selected");
+    selectedParamsSlotEl = null;
+  }
+}
+
+function resetModelsParamsIdleHint() {
+  setModelsParamsPaneCategory("");
+  const inner = getModelsParamsInner();
+  if (!inner) return;
+  inner.replaceChildren();
+  const p = document.createElement("p");
+  p.className = "models-params-placeholder";
+  p.textContent = MODELS_PARAMS_IDLE_PLACEHOLDER;
+  inner.appendChild(p);
+}
+
+/** Panneau Paramètres Models : aucun contenu (ex. clic sur un slot vide). */
+function clearModelsParamsPaneContent() {
+  setModelsParamsPaneCategory("");
+  const inner = getModelsParamsInner();
+  if (!inner) return;
+  inner.replaceChildren();
+}
+
+/**
+ * `slot === null` : slot vide (clic → rien dans le panneau).
+ * Sinon : bloc avec modèle (définitions `.models` + liste paramètre / valeur).
+ */
+function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
+  el.classList.add("node--params-clickable");
+  el.tabIndex = 0;
+  el.setAttribute("role", "button");
+  const activate = () => {
+    if (slot === null) {
+      clearSlotSelectionVisual();
+      clearModelsParamsPaneContent();
+      return;
+    }
+    clearSlotSelectionVisual();
+    selectedParamsSlotEl = el;
+    el.classList.add("node--selected");
+    void loadAndShowModelsParamsForSlot(slot);
+  };
+  el.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    activate();
+  });
+  el.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      activate();
+    }
+  });
+}
+
 function padNum(n: number): string {
   return String(n).padStart(3, "0");
 }
@@ -30,10 +110,10 @@ function setStatus(text: string) {
 }
 
 function renderEmpty(text: string) {
+  clearSlotSelectionVisual();
+  resetModelsParamsIdleHint();
   contentEl.innerHTML = `<div class="empty">${text}</div>`;
 }
-
-type SlotDebug = { category: string; name: string; gridX?: string; gridY?: string };
 
 /** Réponse `get_active_preset_stomp_layout` (serde camelCase). */
 type ActivePresetStompLayout = {
@@ -123,6 +203,316 @@ function normalizeCategory(category: string): string {
   return category.trim().toLowerCase();
 }
 
+// --- Fichiers `src-tauri/resources/models/*.models` (panneau Paramètres Models) ---
+
+type ModelParamDefJson = {
+  symbolicID: string;
+  name: string;
+  displayType?: string;
+  min?: number;
+  max?: number;
+  default?: number | string | boolean;
+};
+
+type ModelDefinitionJson = {
+  symbolicID?: string;
+  name: string;
+  params?: ModelParamDefJson[];
+};
+
+const modelsDefinitionsCache = new Map<string, ModelDefinitionJson[]>();
+let modelsParamsLoadSeq = 0;
+
+/** Bases de fichiers `.models` à essayer dans l’ordre (sans extension). */
+function modelsDefinitionFileBasesForCategory(category: string): string[] {
+  const k = normalizeCategory(category);
+  const m: Record<string, string[]> = {
+    amp: ["amp"],
+    preamp: ["preamp"],
+    "amp+cab": ["amp", "cab", "preamp"],
+    cab: ["cab"],
+    ir: ["cabmicirs", "cabmicirswithpan"],
+    "impulse response": ["cabmicirs", "cabmicirswithpan"],
+    delay: ["delay"],
+    reverb: ["reverb"],
+    dynamics: ["compressor", "gate"],
+    dynamic: ["compressor", "gate"],
+    eq: ["eq"],
+    modulation: ["modulation"],
+    distortion: ["distortion"],
+    filter: ["filter"],
+    wah: ["wah"],
+    "pitch/synth": ["pitch-synth"],
+    "pitch synth": ["pitch-synth"],
+    "volume/pan": ["volumepan"],
+    "vol/pan": ["volumepan"],
+    "send/return": ["sendreturn"],
+    looper: ["fixed"],
+    input: ["io"],
+    output: ["io"],
+  };
+  return m[k] ?? [];
+}
+
+async function loadModelsDefinitionArray(fileBase: string): Promise<ModelDefinitionJson[]> {
+  const hit = modelsDefinitionsCache.get(fileBase);
+  if (hit) return hit;
+  const url = `/src-tauri/resources/models/${fileBase}.models`;
+  const res = await fetch(url);
+  let raw: string;
+  if (res.ok) {
+    raw = await res.text();
+  } else {
+    raw = await invoke<string>("read_models_definition_file", { fileBase });
+  }
+  const parsed = JSON.parse(raw) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error("Format .models invalide (tableau attendu).");
+  }
+  modelsDefinitionsCache.set(fileBase, parsed as ModelDefinitionJson[]);
+  return parsed as ModelDefinitionJson[];
+}
+
+/**
+ * Le nom de slot côté USB / `parse_preset_slots` vient de `MODULES_BY_ID`
+ * (`Kempline/modules.py` dans `lib.rs`) : libellés longs type
+ * « Ampeg SVT Brt Bass Ampeg SVT (bright channel) (mono) ».
+ * Les fichiers `*.models` utilisent le `name` court (« Ampeg SVT Brt ») + `symbolicID`.
+ */
+function stripKemplineMonoStereoSuffix(s: string): string {
+  return s.replace(/\s*\((mono|stereo)\)\s*$/i, "").trim();
+}
+
+function modelCatalogNameMatchesKemplineSlot(catalogName: string, kemplineSlotName: string): boolean {
+  const cn = catalogName.trim();
+  const kn = kemplineSlotName.trim();
+  if (!cn || !kn) return false;
+  if (kn === cn) return true;
+  if (kn.startsWith(`${cn} `) || kn.startsWith(`${cn}(`)) return true;
+  const knStrip = stripKemplineMonoStereoSuffix(kn);
+  if (knStrip === cn) return true;
+  if (knStrip.startsWith(`${cn} `) || knStrip.startsWith(`${cn}(`)) return true;
+  return false;
+}
+
+/** Associe le libellé preset Kempline à une entrée du JSON `.models` (meilleur préfixe = `name` le plus long). */
+function pickModelDefinitionForKemplineName(
+  list: ModelDefinitionJson[],
+  kemplineSlotName: string,
+): ModelDefinitionJson | null {
+  const kn = kemplineSlotName.trim();
+  if (!kn) return null;
+  const exact = list.find((e) => e.name.trim() === kn);
+  if (exact) return exact;
+  const stripped = stripKemplineMonoStereoSuffix(kn);
+  const exactStrip = list.find((e) => e.name.trim() === stripped);
+  if (exactStrip) return exactStrip;
+
+  let best: ModelDefinitionJson | null = null;
+  let bestLen = -1;
+  for (const e of list) {
+    const n = (e.name || "").trim();
+    if (!n) continue;
+    if (!modelCatalogNameMatchesKemplineSlot(n, kn)) continue;
+    if (n.length > bestLen) {
+      bestLen = n.length;
+      best = e;
+    }
+  }
+  return best;
+}
+
+async function findModelDefinitionForSlot(
+  slot: SlotDebug,
+): Promise<{ entry: ModelDefinitionJson; fileBase: string } | null> {
+  const nameTarget = slot.name.trim();
+  if (!nameTarget || nameTarget === "<empty>") return null;
+  const bases = modelsDefinitionFileBasesForCategory(slot.category);
+  if (bases.length === 0) return null;
+  for (const fileBase of bases) {
+    let list: ModelDefinitionJson[];
+    try {
+      list = await loadModelsDefinitionArray(fileBase);
+    } catch {
+      continue;
+    }
+    const entry = pickModelDefinitionForKemplineName(list, nameTarget);
+    if (entry) return { entry, fileBase };
+  }
+  return null;
+}
+
+function formatParamDefaultDisplay(p: ModelParamDefJson): string {
+  const v = p.default;
+  if (v === undefined || v === null) return "—";
+  if (typeof v === "number" && Number.isFinite(v)) {
+    const s = String(v);
+    if (s.includes("e") || s.includes("E")) return v.toPrecision(4);
+    return s;
+  }
+  return String(v);
+}
+
+function showModelsParamsLoading() {
+  const inner = getModelsParamsInner();
+  if (!inner) return;
+  inner.replaceChildren();
+  const p = document.createElement("p");
+  p.className = "models-params-placeholder";
+  p.textContent = "Chargement des paramètres…";
+  inner.appendChild(p);
+}
+
+function renderModelsParamsPane(
+  slot: SlotDebug,
+  params: ModelParamDefJson[],
+  resolvedCatalogModelName?: string,
+) {
+  setModelsParamsPaneCategory(slot.category);
+  const inner = getModelsParamsInner();
+  if (!inner) return;
+  inner.replaceChildren();
+  const head = document.createElement("div");
+  head.className = "models-params-model-head";
+  const title = document.createElement("div");
+  title.className = "models-params-model-title";
+  title.textContent = (resolvedCatalogModelName ?? slot.name).trim() || "—";
+  if (resolvedCatalogModelName && resolvedCatalogModelName.trim() !== slot.name.trim()) {
+    const usb = document.createElement("div");
+    usb.className = "models-params-model-usb-name";
+    usb.textContent = slot.name.trim();
+    head.append(title, usb);
+  } else {
+    head.append(title);
+  }
+
+  const list = document.createElement("ul");
+  list.className = "models-params-list";
+  for (const p of params) {
+    const li = document.createElement("li");
+    li.className = "models-params-row";
+    const label = document.createElement("span");
+    label.className = "models-params-row-name";
+    label.textContent = (p.name || p.symbolicID || "").trim() || "—";
+    const val = document.createElement("span");
+    val.className = "models-params-row-value";
+    val.textContent = formatParamDefaultDisplay(p);
+    li.append(label, val);
+    list.appendChild(li);
+  }
+  inner.append(head, list);
+}
+
+function showModelsParamsNotFound(slot: SlotDebug) {
+  setModelsParamsPaneCategory(slot.category);
+  const inner = getModelsParamsInner();
+  if (!inner) return;
+  inner.replaceChildren();
+  const p = document.createElement("p");
+  p.className = "models-params-placeholder";
+  p.textContent = `Aucune définition « ${slot.name.trim()} » pour la catégorie « ${slot.category.trim()} ».`;
+  inner.appendChild(p);
+}
+
+function showModelsParamsError(message: string) {
+  setModelsParamsPaneCategory("");
+  const inner = getModelsParamsInner();
+  if (!inner) return;
+  inner.replaceChildren();
+  const p = document.createElement("p");
+  p.className = "models-params-placeholder models-params-error";
+  p.textContent = message;
+  inner.appendChild(p);
+}
+
+async function loadAndShowModelsParamsForSlot(slot: SlotDebug) {
+  const seq = ++modelsParamsLoadSeq;
+  setModelsParamsPaneCategory(slot.category);
+  showModelsParamsLoading();
+  const nk = normalizeCategory(slot.category);
+  if (nk === "routing" || nk === "none" || nk === "favorites") {
+    if (seq === modelsParamsLoadSeq) showModelsParamsNotFound(slot);
+    return;
+  }
+  try {
+    const found = await findModelDefinitionForSlot(slot);
+    if (seq !== modelsParamsLoadSeq) return;
+    if (!found) {
+      showModelsParamsNotFound(slot);
+      return;
+    }
+    const short = found.entry.name.trim();
+    kemplineTooltipCache.set(tooltipCacheKey(slot), short);
+    applyShortNameToSlotNodes(slot, short);
+    renderModelsParamsPane(slot, found.entry.params ?? [], short);
+  } catch (e) {
+    if (seq !== modelsParamsLoadSeq) return;
+    showModelsParamsError(e instanceof Error ? e.message : String(e));
+  }
+}
+
+/** Même clé que pour le cache des infobulles (catégorie normalisée + nom Kempline brut). */
+function tooltipCacheKey(slot: SlotDebug): string {
+  return JSON.stringify([normalizeCategory(slot.category), slot.name.trim()]);
+}
+
+const kemplineTooltipCache = new Map<string, string>();
+
+async function resolveShortModelDisplayName(slot: SlotDebug): Promise<string> {
+  const key = tooltipCacheKey(slot);
+  const hit = kemplineTooltipCache.get(key);
+  if (hit !== undefined) return hit;
+  const found = await findModelDefinitionForSlot(slot);
+  const display = (found?.entry.name ?? slot.name).trim() || "—";
+  kemplineTooltipCache.set(key, display);
+  return display;
+}
+
+function applyShortNameToSlotNodes(slot: SlotDebug, tip: string) {
+  const cat = slot.category.trim();
+  const kn = slot.name.trim();
+  const aria = tip.replace(/\n/g, " — ");
+  for (const el of contentEl.querySelectorAll<HTMLElement>(
+    ".node.node--hx-slot.node--params-clickable",
+  )) {
+    if (el.classList.contains("node-empty")) continue;
+    if (el.dataset.slotCategory === cat && el.dataset.slotKemplineName === kn) {
+      el.title = tip;
+      el.setAttribute("aria-label", aria);
+    }
+  }
+}
+
+async function refreshAllSlotTooltipsInContent(): Promise<void> {
+  const nodes = [...contentEl.querySelectorAll<HTMLElement>(
+    ".node.node--hx-slot.node--params-clickable",
+  )].filter((el) => !el.classList.contains("node-empty"));
+
+  const groups = new Map<string, HTMLElement[]>();
+  for (const el of nodes) {
+    const cat = el.dataset.slotCategory ?? "";
+    const kn = el.dataset.slotKemplineName ?? "";
+    if (!kn || kn === "<empty>") continue;
+    const key = JSON.stringify([normalizeCategory(cat), kn]);
+    const arr = groups.get(key) ?? [];
+    arr.push(el);
+    groups.set(key, arr);
+  }
+
+  await Promise.all(
+    [...groups.entries()].map(async ([key, els]) => {
+      const [catNorm, kn] = JSON.parse(key) as [string, string];
+      const catRaw = els[0]?.dataset.slotCategory ?? catNorm;
+      const tip = await resolveShortModelDisplayName({ category: catRaw, name: kn });
+      const aria = tip.replace(/\n/g, " — ");
+      for (const el of els) {
+        el.title = tip;
+        el.setAttribute("aria-label", aria);
+      }
+    }),
+  );
+}
+
 function iconForCategory(category: string, name: string): string | null {
   const key = normalizeCategory(category);
   if (key === "routing" && name.toLowerCase().includes("merge")) {
@@ -156,8 +546,10 @@ function abbrevEffectType(category: string, name: string): string {
   return "???";
 }
 
-/** Infobulle : nom du modèle uniquement. */
+/** Infobulle : nom court catalogue si déjà résolu, sinon libellé Kempline/USB jusqu’à `refreshAllSlotTooltipsInContent`. */
 function slotTooltipText(slot: SlotDebug): string {
+  const hit = kemplineTooltipCache.get(tooltipCacheKey(slot));
+  if (hit !== undefined) return hit;
   return slot.name.trim() || "—";
 }
 
@@ -224,6 +616,8 @@ function makeNode(slot: SlotDebug, opts?: { showTypeAbbrev?: boolean }): HTMLEle
   item.className =
     "node node--hx-slot" + (normalizeCategory(slot.category) === "routing" ? " routing" : "");
   if (!showTypeAbbrev) item.classList.add("node--icon-only");
+  item.dataset.slotCategory = slot.category;
+  item.dataset.slotKemplineName = slot.name.trim();
 
   const tip = slotTooltipText(slot);
   item.setAttribute("aria-label", tip.replace(/\n/g, " — "));
@@ -256,6 +650,7 @@ function makeNode(slot: SlotDebug, opts?: { showTypeAbbrev?: boolean }): HTMLEle
     item.appendChild(abbr);
   }
 
+  bindSlotParamsInteraction(item, slot);
   return item;
 }
 
@@ -292,6 +687,7 @@ function makeEmptySlotNode(): HTMLElement {
   item.className = "node node-empty node--hx-slot node-empty-flat";
   item.title = "Slot vide";
   item.setAttribute("aria-label", "Slot vide");
+  bindSlotParamsInteraction(item, null);
   return item;
 }
 
@@ -678,8 +1074,10 @@ function renderGrid16(
 
   root.appendChild(grid);
 
+  clearSlotSelectionVisual();
   contentEl.innerHTML = "";
   contentEl.appendChild(root);
+  resetModelsParamsIdleHint();
 }
 
 function buildFlowSections(slots: SlotDebug[]) {
@@ -765,7 +1163,7 @@ function buildFlowSections(slots: SlotDebug[]) {
   return { pre, split, branchA, branchB, merge, post: mainPost, hasSplit: true };
 }
 
-function renderSlots(
+async function renderSlots(
   rawSlots: SlotDebug[],
   routingFromFlow: [string, string][] = [],
   stompLayout: ActivePresetStompLayout | null = null,
@@ -778,6 +1176,7 @@ function renderSlots(
   const slots: SlotDebug[] = rawSlots;
   if (isKemplineGrid16(slots)) {
     renderGrid16(slots, routingFromFlow, stompLayout);
+    await refreshAllSlotTooltipsInContent();
     return;
   }
 
@@ -812,8 +1211,11 @@ function renderSlots(
     root.appendChild(rowBranch);
   }
 
+  clearSlotSelectionVisual();
   contentEl.innerHTML = "";
   contentEl.appendChild(root);
+  resetModelsParamsIdleHint();
+  await refreshAllSlotTooltipsInContent();
 }
 
 async function requestLoadForPreset(index: number) {
@@ -899,7 +1301,7 @@ async function requestLoadForPreset(index: number) {
               console.warn("[PresetDebug][models] get_active_preset_stomp_layout error");
             }
           }
-          renderSlots(normalizedSlots, routingFlow, stompLayout);
+          await renderSlots(normalizedSlots, routingFlow, stompLayout);
           const realBlocks = countRealBlocks(normalizedSlots);
           const singleDsp = isSingleDspDevice(connectedDeviceName);
           const dspSuffix = singleDsp ? ` (${realBlocks}/8 max)` : "";
