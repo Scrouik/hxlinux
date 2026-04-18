@@ -82,7 +82,13 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
     clearSlotSelectionVisual();
     selectedParamsSlotEl = el;
     el.classList.add("node--selected");
-    void loadAndShowModelsParamsForSlot(slot);
+    const kRaw = el.dataset.kemplineSlotIndex;
+    const kemplineSlotIndex =
+      kRaw !== undefined && kRaw !== "" ? Number.parseInt(kRaw, 10) : undefined;
+    void loadAndShowModelsParamsForSlot(
+      slot,
+      Number.isFinite(kemplineSlotIndex) ? kemplineSlotIndex : undefined,
+    );
   };
   el.addEventListener("click", (ev) => {
     ev.preventDefault();
@@ -342,15 +348,29 @@ async function findModelDefinitionForSlot(
   return null;
 }
 
-function formatParamDefaultDisplay(p: ModelParamDefJson): string {
-  const v = p.default;
-  if (v === undefined || v === null) return "—";
+function formatParamBound(n: number | undefined): string {
+  if (n === undefined || !Number.isFinite(n)) return "—";
+  const s = String(n);
+  if (s.includes("e") || s.includes("E")) return n.toPrecision(4);
+  return s;
+}
+
+/** Valeurs `ChainParamValue` sérialisées (serde untagged). */
+type ChainParamValueJson = boolean | number | string;
+
+function formatChainParamValueJson(v: ChainParamValueJson): string {
+  if (typeof v === "boolean") return v ? "on" : "off";
   if (typeof v === "number" && Number.isFinite(v)) {
     const s = String(v);
     if (s.includes("e") || s.includes("E")) return v.toPrecision(4);
     return s;
   }
-  return String(v);
+  if (typeof v === "string") {
+    const t = v.trim();
+    if (t.length > 48) return `${t.slice(0, 44)}…`;
+    return t || "—";
+  }
+  return "—";
 }
 
 function showModelsParamsLoading() {
@@ -367,6 +387,7 @@ function renderModelsParamsPane(
   slot: SlotDebug,
   params: ModelParamDefJson[],
   resolvedCatalogModelName?: string,
+  chainValues?: ChainParamValueJson[] | null,
 ) {
   setModelsParamsPaneCategory(slot.category);
   const inner = getModelsParamsInner();
@@ -388,17 +409,27 @@ function renderModelsParamsPane(
 
   const list = document.createElement("ul");
   list.className = "models-params-list";
+  let i = 0;
   for (const p of params) {
     const li = document.createElement("li");
     li.className = "models-params-row";
     const label = document.createElement("span");
     label.className = "models-params-row-name";
     label.textContent = (p.name || p.symbolicID || "").trim() || "—";
-    const val = document.createElement("span");
-    val.className = "models-params-row-value";
-    val.textContent = formatParamDefaultDisplay(p);
-    li.append(label, val);
+    const minEl = document.createElement("span");
+    minEl.className = "models-params-row-min";
+    minEl.textContent = formatParamBound(p.min);
+    const chainEl = document.createElement("span");
+    chainEl.className = "models-params-row-chain";
+    const cv = chainValues?.[i];
+    chainEl.textContent =
+      cv !== undefined ? formatChainParamValueJson(cv) : "—";
+    const maxEl = document.createElement("span");
+    maxEl.className = "models-params-row-max";
+    maxEl.textContent = formatParamBound(p.max);
+    li.append(label, minEl, chainEl, maxEl);
     list.appendChild(li);
+    i += 1;
   }
   inner.append(head, list);
 }
@@ -425,7 +456,10 @@ function showModelsParamsError(message: string) {
   inner.appendChild(p);
 }
 
-async function loadAndShowModelsParamsForSlot(slot: SlotDebug) {
+async function loadAndShowModelsParamsForSlot(
+  slot: SlotDebug,
+  kemplineSlotIndex?: number,
+) {
   const seq = ++modelsParamsLoadSeq;
   setModelsParamsPaneCategory(slot.category);
   showModelsParamsLoading();
@@ -435,6 +469,17 @@ async function loadAndShowModelsParamsForSlot(slot: SlotDebug) {
     return;
   }
   try {
+    let chainValues: ChainParamValueJson[] | null = null;
+    if (kemplineSlotIndex !== undefined && Number.isInteger(kemplineSlotIndex)) {
+      try {
+        chainValues = await invoke<ChainParamValueJson[] | null>(
+          "get_active_preset_slot_chain_param_values",
+          { slotIndex: kemplineSlotIndex },
+        );
+      } catch {
+        chainValues = null;
+      }
+    }
     const found = await findModelDefinitionForSlot(slot);
     if (seq !== modelsParamsLoadSeq) return;
     if (!found) {
@@ -444,7 +489,7 @@ async function loadAndShowModelsParamsForSlot(slot: SlotDebug) {
     const short = found.entry.name.trim();
     kemplineTooltipCache.set(tooltipCacheKey(slot), short);
     applyShortNameToSlotNodes(slot, short);
-    renderModelsParamsPane(slot, found.entry.params ?? [], short);
+    renderModelsParamsPane(slot, found.entry.params ?? [], short, chainValues);
   } catch (e) {
     if (seq !== modelsParamsLoadSeq) return;
     showModelsParamsError(e instanceof Error ? e.message : String(e));
@@ -807,10 +852,16 @@ function makePathRoutingNode(kind: "split" | "merge"): HTMLElement {
   return wrap;
 }
 
-function gridSlotNode(slot: SlotDebug): HTMLElement {
-  if (!slot.category && slot.name === "<empty>") return makeEmptySlotNode();
+function gridSlotNode(slot: SlotDebug, kemplineSlotIndex: number): HTMLElement {
+  if (!slot.category && slot.name === "<empty>") {
+    const n = makeEmptySlotNode();
+    n.dataset.kemplineSlotIndex = String(kemplineSlotIndex);
+    return n;
+  }
   /* Matrice : sur « Path 1 » / « Path 2 », la catégorie est sur la ligne Description ; la cellule slot = icône + infobulle nom. */
-  return makeNode(slot, { showTypeAbbrev: false });
+  const node = makeNode(slot, { showTypeAbbrev: false });
+  node.dataset.kemplineSlotIndex = String(kemplineSlotIndex);
+  return node;
 }
 
 /** Libellé catégorie : « Description Path 1 » (L2) ou « Description Path 2 » (L4) sous un slot. */
@@ -1014,9 +1065,10 @@ function renderGrid16(
       } else if (col >= 3 && col <= 17 && (col - 3) % 2 === 0) {
         const i = (col - 3) / 2;
         if (i >= 0 && i <= 7) {
-          if (row === LINE_PATH_1) inner = gridSlotNode(slots[i]!);
+          if (row === LINE_PATH_1) inner = gridSlotNode(slots[i]!, i);
           else if (row === LINE_DESC_PATH_1) inner = makeMatrixCategoryCell(slots[i]!);
-          else if (row === LINE_PATH_2 && showRoutingUi && hasBranchB) inner = gridSlotNode(slots[8 + i]!);
+          else if (row === LINE_PATH_2 && showRoutingUi && hasBranchB)
+            inner = gridSlotNode(slots[8 + i]!, 8 + i);
           else if (row === LINE_DESC_PATH_2) inner = makeMatrixCategoryCell(slots[8 + i]!);
         }
       } else if (col >= 4 && col <= 18 && (col - 4) % 2 === 0) {

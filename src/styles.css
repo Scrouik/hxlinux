@@ -179,27 +179,37 @@ html, body {
 }
 
 .models-params-row {
-  display: flex;
-  flex-direction: row;
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1.35fr)
+    minmax(44px, 0.45fr)
+    minmax(56px, 0.85fr)
+    minmax(44px, 0.45fr);
+  column-gap: 10px;
+  row-gap: 4px;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
   font-size: 13px;
   line-height: 1.4;
 }
 
 .models-params-row-name {
-  flex: 0 1 auto;
   color: var(--text-muted);
   min-width: 0;
+  word-break: break-word;
 }
 
-.models-params-row-value {
-  flex: 0 0 auto;
+.models-params-row-min,
+.models-params-row-max {
   text-align: right;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.models-params-row-chain {
+  text-align: center;
   color: var(--text);
   font-variant-numeric: tabular-nums;
-  max-width: 55%;
   word-break: break-word;
 }
 

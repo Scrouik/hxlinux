@@ -7,6 +7,7 @@
 
 mod helix;
 mod stomp_layout;
+mod preset_chain_params;
 
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -511,6 +512,31 @@ fn get_active_preset_stomp_layout(
     ))
 }
 
+/// Valeurs de chaîne lues dans le segment preset du slot **Kempline 0..15** (`read_params` Python).
+/// `None` : pas de données preset actives, slot hors plage, segment vide `06`, ou bloc Amp+Cab (`c319`) non pris en charge.
+#[tauri::command]
+fn get_active_preset_slot_chain_param_values(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_index: u32,
+) -> Option<Vec<preset_chain_params::ChainParamValue>> {
+    if slot_index >= 16 {
+        return None;
+    }
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        (app.active_preset, app.helix_state.clone()?)
+    };
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() {
+        return None;
+    }
+    if s.preset_index != active_preset {
+        return None;
+    }
+    let seg = kempline_assignable_segment_bytes(&s.preset_data, slot_index as usize)?;
+    preset_chain_params::parse_standard_assignable_segment(seg)
+}
+
 /// Lecture d’un fichier JSON de définition de modèles (`resources/models/{file_base}.models`).
 #[tauri::command]
 fn read_models_definition_file(app: tauri::AppHandle, file_base: String) -> Result<String, String> {
@@ -770,10 +796,11 @@ fn extract_first_module_from_assignable_chunk(chunk: &[u8]) -> ParsedSlot {
     }
 }
 
-/// Grille fixe 8 + 8 emplacements (Kempline `preset_info_complete`) : None si le dump ne suit pas ce format.
-fn try_parse_preset_kempline_grid(data: &[u8]) -> Option<Vec<ParsedSlot>> {
+/// Indice de début (dans `split_preset_by_8213(data)`) de la fenêtre **20** segments grille Kempline, et nombre total de segments.
+fn kempline_grid_window_start_and_seg_count(data: &[u8]) -> Option<(usize, usize)> {
     const WIN: usize = 20;
     let segs = split_preset_by_8213(data);
+    let segs_len = segs.len();
     let slot1 = segs.iter().position(|seg| {
         seg.first()
             .map(|b| *b == 0x06 || *b == 0x08)
@@ -806,7 +833,25 @@ fn try_parse_preset_kempline_grid(data: &[u8]) -> Option<Vec<ParsedSlot>> {
             return None;
         }
     }
+    Some((start, segs_len))
+}
 
+/// Segment brut d’un slot assignable **0..16** (ordre grille : path1 puis path2), ou `None` si hors fenêtre / format.
+fn kempline_assignable_segment_bytes(data: &[u8], slot_index: usize) -> Option<&[u8]> {
+    if slot_index >= 16 {
+        return None;
+    }
+    let (start, _) = kempline_grid_window_start_and_seg_count(data)?;
+    let segs = split_preset_by_8213(data);
+    let abs = start.checked_add(KEMPLINE_ASSIG_INDICES[slot_index])?;
+    segs.get(abs).copied()
+}
+
+/// Grille fixe 8 + 8 emplacements (Kempline `preset_info_complete`) : None si le dump ne suit pas ce format.
+fn try_parse_preset_kempline_grid(data: &[u8]) -> Option<Vec<ParsedSlot>> {
+    let (start, segs_len) = kempline_grid_window_start_and_seg_count(data)?;
+    let segs = split_preset_by_8213(data);
+    let w = &segs[start..start + 20];
     let mut out: Vec<ParsedSlot> = Vec::with_capacity(16);
     for &idx in &KEMPLINE_ASSIG_INDICES {
         let seg = w[idx];
@@ -824,7 +869,7 @@ fn try_parse_preset_kempline_grid(data: &[u8]) -> Option<Vec<ParsedSlot>> {
     }
     eprintln!(
         "[PresetDebug][try_parse_preset_kempline_grid] ok: 16 assignable slots from {} segments",
-        segs.len()
+        segs_len
     );
     Some(out)
 }
@@ -901,6 +946,7 @@ pub fn run() {
             get_active_preset_slots_debug,
             get_active_preset_routing_markers,
             get_active_preset_stomp_layout,
+            get_active_preset_slot_chain_param_values,
             get_preset_data_hex,
             read_models_definition_file,
         ])
