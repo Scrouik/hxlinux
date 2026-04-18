@@ -1,0 +1,125 @@
+
+<xg>
+    <panel_widget height="500" id="svto" left="0" top="0" width="250">
+        <bg_color>0xFF393939</bg_color>
+        <border_color>0xFFB3B3B3</border_color>
+        <pushbutton_widget height="25" id="okay" left="0" name="OK" top="0" width="60">
+            <anchor_pos bottom="8" right="8"/>
+            <bg_color>0xFF595B5C</bg_color>
+            <corner_radius>3</corner_radius>
+            <icon_placement spacing="4">-1</icon_placement>
+            <text>
+                <label>OK</label>
+                <font name="Roboto" size="12"/>
+                <text_color>0xFFEDEDED</text_color>
+            </text>
+            <active_state>
+                <bg_color>0xFF595B5C</bg_color>
+            </active_state>
+            <hilite_state>
+                <bg_color>0xFF696C6E</bg_color>
+            </hilite_state>
+        </pushbutton_widget>
+        <pushbutton_widget height="25" id="canc" left="0" name="Cancel" top="0" width="60">
+            <anchor_pos bottom="8" left="8"/>
+            <bg_color>0xFF595B5C</bg_color>
+            <corner_radius>3</corner_radius>
+            <icon_placement spacing="4">-1</icon_placement>
+            <text>
+                <label>Cancel</label>
+                <font name="Roboto" size="12"/>
+                <text_color>0xFFEDEDED</text_color>
+            </text>
+            <active_state>
+                <bg_color>0xFF595B5C</bg_color>
+            </active_state>
+            <hilite_state>
+                <bg_color>0xFF696C6E</bg_color>
+            </hilite_state>
+        </pushbutton_widget>
+        <text_widget height="28" id="nmlb" left="0" name="Name Label" top="0" width="36">
+            <anchor_pos left="8" right="8" top="33"/>
+            <bg_color>0x00000000</bg_color>
+            <text>
+                <label>Name:</label>
+                <font name="Roboto" size="12"/>
+                <align vert="middle"/>
+                <text_color>0xFFD0D0D0</text_color>
+            </text>
+        </text_widget>
+        <text_edit_widget height="28" id="pnam" left="0" name="Preset Name" top="0" width="1">
+            <anchor_pos left="48" right="8" top="33"/>
+            <bg_color>0xFF070601</bg_color>
+            <corner_radius>3</corner_radius>
+            <text>
+                <label>Text</label>
+                <font name="Roboto" size="12"/>
+                <text_color>0xFFD0D0D0</text_color>
+            </text>
+        </text_edit_widget>
+        <text_menu_widget height="28" id="setl" left="0" name="Setlist Popup" top="0" width="1">
+            <anchor_pos left="8" right="8" top="65"/>
+            <bg_color>0xFF070601</bg_color>
+            <corner_radius>5</corner_radius>
+            <chevron_pos>8</chevron_pos>
+            <chevron_size>6</chevron_size>
+            <chevron_image>33</chevron_image>
+            <text>
+                <label>USER 1</label>
+                <font name="Roboto" size="12"/>
+                <text_color>0xFFB5A44E</text_color>
+            </text>
+            <menu>
+                <item_height>22</item_height>
+                <left_margin>36</left_margin>
+                <font name="Roboto" size="12"/>
+                <text_color>0xFFB5A44E</text_color>
+                <bg_color>0xFF28282A</bg_color>
+                <hilite_bg_color>0xFF474747</hilite_bg_color>
+                <icon>0</icon>
+            </menu>
+        </text_menu_widget>
+        <panel_widget height="1" id="1" left="0" top="0" width="1">
+            <anchor_pos bottom="42" left="8" right="8" top="98"/>
+            <bg_color>0xFF0C0C0C</bg_color>
+            <corner_radius>5</corner_radius>
+            <listbox_widget height="352" id="plst" left="0" name="Presets Listbox" top="4" width="234">
+                <anchor_pos bottom="4" left="0" right="0" top="4"/>
+                <bg_color>0xFF0C0C0C</bg_color>
+                <corner_radius>5</corner_radius>
+                <disabled_color>0x60000000</disabled_color>
+                <alt_bg_color>0xFF141414</alt_bg_color>
+                <text_color>0xFFC4C4C4</text_color>
+                <selected_bg_color>0xFF392F00</selected_bg_color>
+                <hilite_color>0x80383838</hilite_color>
+                <font name="Roboto" size="12"/>
+                <item_height>21</item_height>
+                <left_margin>36</left_margin>
+                <icon>0</icon>
+                <scrolling>
+                    <enabled>yes</enabled>
+                    <vscroll_step snap="element"/>
+                    <scrollbars>
+                        <visibility h="none"/>
+                        <width>8</width>
+                        <border_color>0x00000000</border_color>
+                        <bg_color>0xFF1A1A1A</bg_color>
+                        <thumb_color>0xFF808080</thumb_color>
+                        <thumb_hilite_color>0xFFCCCCCC</thumb_hilite_color>
+                        <arrow_buttons size="0"/>
+                    </scrollbars>
+                </scrolling>
+            </listbox_widget>
+        </panel_widget>
+        <text_widget height="28" id="titl" left="0" name="Title" top="0" width="36">
+            <anchor_pos left="8" right="8" top="3"/>
+            <bg_color>0x00000000</bg_color>
+            <text>
+                <label>Save To Setlist</label>
+                <font name="Roboto" size="14" weight="bold"/>
+                <align horz="center" vert="middle"/>
+                <text_color>0xFFD0D0D0</text_color>
+            </text>
+        </text_widget>
+    </panel_widget>
+</xg>

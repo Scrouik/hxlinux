@@ -1,0 +1,184 @@
+
+<xg>
+    <panel_widget height="362" id="main" left="0" top="0" width="876">
+        <bg_color>0xFF393939</bg_color>
+        <panel_widget height="346" id="view" left="8" top="8" width="860">
+            <anchor_pos bottom="8" left="8" right="8" top="8"/>
+            <bg_color>0xFF0C0C0C</bg_color>
+            <corner_radius>5</corner_radius>
+            <text_menu_widget height="29" id="sspu" left="0" name="Snapshot Popup" top="0" width="160">
+                <anchor_pos left="195" top="2"/>
+                <bg_color>0xFF393939</bg_color>
+                <corner_radius>3</corner_radius>
+                <chevron_size>0</chevron_size>
+                <text>
+                    <label>Text Menu</label>
+                    <font name="Roboto" size="12"/>
+                    <text_color>0xFFD0D0D0</text_color>
+                </text>
+                <menu>
+                    <item_height>24</item_height>
+                    <left_margin>30</left_margin>
+                    <auto_hide_margins>no</auto_hide_margins>
+                    <font name="Roboto" size="12"/>
+                    <text_color>0xFFD0D0D0</text_color>
+                    <bg_color>0xFF28282A</bg_color>
+                    <border_thickness>0</border_thickness>
+                    <hilite_bg_color>0xFF474747</hilite_bg_color>
+                    <icon>0</icon>
+                    <menu_item id="0">
+                        <label>Snapshot 1</label>
+                    </menu_item>
+                    <menu_item id="1">
+                        <label>Snapshot 2</label>
+                    </menu_item>
+                    <menu_item id="2">
+                        <label>Snapshot 3</label>
+                    </menu_item>
+                    <menu_item id="3">
+                        <label>Snapshot 4</label>
+                    </menu_item>
+                    <menu_item id="4">
+                        <label>Snapshot 5</label>
+                    </menu_item>
+                    <menu_item id="5">
+                        <label>Snapshot 6</label>
+                    </menu_item>
+                    <menu_item id="6">
+                        <label>Snapshot 7</label>
+                    </menu_item>
+                    <menu_item id="7">
+                        <label>Snapshot 8</label>
+                    </menu_item>
+                </menu>
+            </text_menu_widget>
+            <panel_widget height="1" id="1" left="0" name="Separator" top="0" width="550">
+                <anchor_pos left="2" top="35"/>
+                <bg_color>0xFF434343</bg_color>
+            </panel_widget>
+            <panel_widget height="342" id="cins" left="550" name="Command inspector" top="2" width="308">
+                <anchor_pos bottom="2" left="550" right="2" top="2"/>
+                <bg_color>0xFF0C0C0C</bg_color>
+                <panel_widget height="25" id="----" left="0" name="Header Label" top="5" width="1">
+                    <anchor_pos left="1" right="0" top="1"/>
+                    <bg_color>0xFF181818</bg_color>
+                    <disabled_color>0x00000000</disabled_color>
+                    <image_widget height="1" id="cmic" left="0" name="Control Icon" top="0" width="30">
+                        <anchor_pos bottom="2" left="5" top="2"/>
+                        <relative_pos y="50"/>
+                        <bg_color>0x00000000</bg_color>
+                        <scale_mode>keep_aspect</scale_mode>
+                    </image_widget>
+                    <text_widget height="1" id="cmsr" left="0" name="Control Source" top="0" width="0">
+                        <anchor_pos bottom="0" left="35" right="0" top="0"/>
+                        <bg_color>0x00000000</bg_color>
+                        <text>
+                            <label>Text Label</label>
+                            <font name="Roboto Medium" size="12"/>
+                            <align vert="middle"/>
+                            <text_color>0xFFD0D0D0</text_color>
+                        </text>
+                    </text_widget>
+                </panel_widget>
+                <panel_widget height="40" id="----" left="0" name="Inspector menu view" top="0" width="1">
+                    <anchor_pos left="1" right="0" top="27"/>
+                    <bg_color>0xFF181818</bg_color>
+                    <text_menu_widget height="24" id="cmnu" left="10" name="Command source menu" top="8" width="287">
+                        <anchor_pos left="10" right="10"/>
+                        <relative_pos y="50"/>
+                        <bg_color>0xFF3A3A3A</bg_color>
+                        <corner_radius>3</corner_radius>
+                        <chevron_pos>8</chevron_pos>
+                        <chevron_size>1</chevron_size>
+                        <chevron_image>34</chevron_image>
+                        <text>
+                            <label>None</label>
+                            <font name="Roboto Medium" size="12"/>
+                            <align horz="center"/>
+                            <text_color>0xFFFFFFFF</text_color>
+                        </text>
+                        <menu>
+                            <item_height>25</item_height>
+                            <auto_hide_margins>no</auto_hide_margins>
+                            <font name="Roboto" size="12"/>
+                            <text_color>0xFFD0D0D0</text_color>
+                            <bg_color>0xFF28282A</bg_color>
+                            <border_thickness>0</border_thickness>
+                            <hilite_bg_color>0xFF474747</hilite_bg_color>
+                            <hilite_type>fill_bg</hilite_type>
+                            <icon>0</icon>
+                            <scrolling>
+                                <scrollbars>
+                                    <width>8</width>
+                                    <border_color>0x00000000</border_color>
+                                    <bg_color>0xFF1A1A1A</bg_color>
+                                    <thumb_color>0xFF808080</thumb_color>
+                                    <thumb_hilite_color>0xFFCCCCCC</thumb_hilite_color>
+                                    <arrow_buttons size="0"/>
+                                </scrollbars>
+                            </scrolling>
+                        </menu>
+                        <text_widget height="24" id="stcl" left="5" name="Static 'Command' label" top="0" width="277">
+                            <anchor_pos bottom="0" left="5" right="5" top="0"/>
+                            <bg_color>0x00000000</bg_color>
+                            <text>
+                                <label>COMMAND</label>
+                                <font name="Roboto" size="10"/>
+                                <align vert="middle"/>
+                                <text_color>0xFF999999</text_color>
+                            </text>
+                        </text_widget>
+                    </text_menu_widget>
+                    <panel_widget height="1" id="----" left="0" name="Separator" top="0" width="1">
+                        <anchor_pos bottom="0" left="10" right="10" top="39"/>
+                        <bg_color>0xFF434343</bg_color>
+                    </panel_widget>
+                </panel_widget>
+                <text_widget height="1" id="cmsg" left="0" name="No Footswitch Assign Message" top="0" width="1">
+                    <anchor_pos bottom="0" left="25" right="25" top="80"/>
+                    <visible>no</visible>
+                    <bg_color>0xFF0C0C0C</bg_color>
+                    <text>
+                        <label>This footswitch cannot be assigned. (It may already be assigned to a Looper block, or the maximum number of assignments has been reached.)</label>
+                        <font name="Roboto Medium" size="14" weight="bold"/>
+                        <align horz="center"/>
+                        <multiline>yes</multiline>
+                        <text_color>0xFFFF0000</text_color>
+                    </text>
+                </text_widget>
+                <panel_widget height="275" id="cmsv" left="1" top="67" width="307">
+                    <anchor_pos bottom="0" left="1" right="0" top="67"/>
+                    <bg_color>0xFF181818</bg_color>
+                    <disabled_color>0x00808080</disabled_color>
+                    <scrolling>
+                        <enabled>yes</enabled>
+                        <vscroll_step snap="element"/>
+                        <scrollbars>
+                            <visibility h="none"/>
+                            <width>8</width>
+                            <border_color>0x00000000</border_color>
+                            <border_thickness>0</border_thickness>
+                            <bg_color>0xFF1A1A1A</bg_color>
+                            <thumb_color>0xFF808080</thumb_color>
+                            <thumb_hilite_color>0xFFCCCCCC</thumb_hilite_color>
+                            <arrow_buttons size="0"/>
+                        </scrollbars>
+                    </scrolling>
+                </panel_widget>
+            </panel_widget>
+            <grid_widget height="303" id="cmdc" left="2" top="41" width="549">
+                <anchor_pos bottom="2" left="2" top="41"/>
+                <bg_color>0xFF000000</bg_color>
+                <font name="Helvetica" size="12"/>
+                <item_size height="99" width="59"/>
+                <padding h="1" v="1"/>
+                <hilite_type>none</hilite_type>
+                <icon_placement spacing="0">-1</icon_placement>
+                <icon>0</icon>
+                <grid_item id="0">
+                    <image>2004</image>
+                </grid_item>
+            </grid_widget>
+        </panel_widget>
+    </panel_widget>
+</xg>

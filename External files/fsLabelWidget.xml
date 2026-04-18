@@ -1,0 +1,40 @@
+<xg>
+	<panel_widget height="25" id="fslb" name="FS Label Customizer" width="1">
+		<anchor_pos left="0" right="0"/>
+		<disabled_color>0x00000000</disabled_color>
+		<panel_widget height="1" id="cont" name="Box" width="1">
+			<border_color>0xFF434343</border_color>
+			<anchor_pos top="0" bottom="0" left="22" right="22"/>
+			<text_widget height="1" left="0" name="Static label" top="0">
+				<anchor_pos left="5" top="0" bottom="0" right="155"/>
+				<relative_pos y="50"/>
+				<text>
+					<label>Customize</label>
+					<font name="Roboto" size="10"/>
+					<align horz="left" vert="middle"/>
+					<text_color>0xFF999999</text_color>
+				</text>
+			</text_widget>
+			<!-- Custom label edit control -->
+			<text_edit_widget height="1" id="fsed" name="TextEdit Widget" width="125">
+				<anchor_pos top="1" bottom="1" right="30"/>
+				<bg_color>0x00181818</bg_color>
+				<text>
+					<label>Customize</label>
+					<font name="Roboto Medium" size="12"/>
+					<align horz="right" vert="middle"/>
+					<text_color>0xFFD0D0D0</text_color>
+					<offset x="-8" y="0"/>
+				</text>
+				<text_limit>16</text_limit>
+				<activate_on_focus>yes</activate_on_focus>
+				<wants_return>yes</wants_return>
+			</text_edit_widget>
+			<!-- Remove button -->
+			<pushbutton_widget height="1" id="rmov" name="Remove Button" top="0" width="30">
+				<anchor_pos top="0" bottom="0" right="0"/>
+				<image>54</image>
+			</pushbutton_widget>
+		</panel_widget>
+	</panel_widget>
+</xg>

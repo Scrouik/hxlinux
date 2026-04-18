@@ -1,0 +1,164 @@
+
+<xg>
+    <panel_widget height="575" id="svfa" left="0" top="0" width="300">
+        <bg_color>0xFF393939</bg_color>
+        <border_color>0xFFB3B3B3</border_color>
+        <text_widget height="28" id="titl" left="0" name="Title" top="0" width="36">
+            <anchor_pos left="8" right="8" top="3"/>
+            <bg_color>0x00000000</bg_color>
+            <text>
+                <label>Save As Favorite</label>
+                <font name="Roboto" size="14" weight="bold"/>
+                <align horz="center" vert="middle"/>
+                <text_color>0xFFD0D0D0</text_color>
+            </text>
+        </text_widget>
+        <radio_widget height="55" id="sfar" left="0" top="0" width="25">
+            <anchor_pos left="24" top="45"/>
+            <bg_color>0x00000000</bg_color>
+            <radio_button_widget height="0" id="1" left="0" top="3" width="0">
+                <bg_color>0xFF333333</bg_color>
+                <image>76</image>
+                <border_color>0xFFCCCCCC</border_color>
+                <corner_radius>2</corner_radius>
+                <icon_placement spacing="4">-1</icon_placement>
+                <text>
+                    <font name="Helvetica" size="12"/>
+                </text>
+                <active_state>
+                    <bg_color>0xFF666666</bg_color>
+                </active_state>
+                <hilite_state>
+                    <bg_color>0xFFCCCCCC</bg_color>
+                </hilite_state>
+            </radio_button_widget>
+            <radio_button_widget height="0" id="2" left="0" top="0" width="0">
+                <anchor_pos bottom="0"/>
+                <bg_color>0xFF333333</bg_color>
+                <image>76</image>
+                <border_color>0xFFCCCCCC</border_color>
+                <border_thickness>0</border_thickness>
+                <corner_radius>2</corner_radius>
+                <icon_placement spacing="4">-1</icon_placement>
+                <text>
+                    <font name="Helvetica" size="12"/>
+                </text>
+                <active_state>
+                    <bg_color>0xFF666666</bg_color>
+                </active_state>
+                <hilite_state>
+                    <bg_color>0xFFCCCCCC</bg_color>
+                </hilite_state>
+            </radio_button_widget>
+        </radio_widget>
+        <text_widget height="18" id="sfal" left="0" top="0" width="1">
+            <anchor_pos left="52" right="20" top="48"/>
+            <bg_color>0x00000000</bg_color>
+            <text>
+                <label>Add as new favorite</label>
+                <font name="Roboto" size="12"/>
+                <align vert="middle"/>
+                <multiline>yes</multiline>
+                <text_color>0xFFB1B1B1</text_color>
+            </text>
+        </text_widget>
+        <text_widget height="18" id="sfrl" left="0" top="0" width="1">
+            <anchor_pos left="52" right="20" top="82"/>
+            <bg_color>0x00000000</bg_color>
+            <text>
+                <label>Replace an existing favorite</label>
+                <font name="Roboto" size="12"/>
+                <align vert="middle"/>
+                <multiline>yes</multiline>
+                <text_color>0xFFB1B1B1</text_color>
+            </text>
+        </text_widget>
+        <pushbutton_widget height="25" id="sfsv" left="0" name="Save" top="0" width="60">
+            <anchor_pos bottom="12" right="80"/>
+            <bg_color>0xFF595B5C</bg_color>
+            <corner_radius>3</corner_radius>
+            <icon_placement spacing="4">-1</icon_placement>
+            <text>
+                <label>Save</label>
+                <font name="Roboto" size="12"/>
+                <text_color>0xFFEDEDED</text_color>
+            </text>
+            <active_state>
+                <bg_color>0xFF595B5C</bg_color>
+            </active_state>
+            <hilite_state>
+                <bg_color>0xFF696C6E</bg_color>
+            </hilite_state>
+        </pushbutton_widget>
+        <pushbutton_widget height="25" id="canc" left="0" name="Cancel" top="0" width="60">
+            <anchor_pos bottom="12" left="80"/>
+            <bg_color>0xFF595B5C</bg_color>
+            <corner_radius>3</corner_radius>
+            <icon_placement spacing="4">-1</icon_placement>
+            <text>
+                <label>Cancel</label>
+                <font name="Roboto" size="12"/>
+                <text_color>0xFFEDEDED</text_color>
+            </text>
+            <active_state>
+                <bg_color>0xFF595B5C</bg_color>
+            </active_state>
+            <hilite_state>
+                <bg_color>0xFF696C6E</bg_color>
+            </hilite_state>
+        </pushbutton_widget>
+        <listbox_widget height="355" id="sfls" left="24" name="Favorite Listbox" top="140" width="252">
+            <anchor_pos bottom="80" left="24" right="24" top="140"/>
+            <bg_color>0xFF0C0C0C</bg_color>
+            <disabled_color>0x60000000</disabled_color>
+            <alt_bg_color>0xFF1D1D1D</alt_bg_color>
+            <text_color>0xFFC4C4C4</text_color>
+            <selected_text_color>0xFFFFEA57</selected_text_color>
+            <selected_bg_color>0xFF760B56</selected_bg_color>
+            <hilite_color>0x80383838</hilite_color>
+            <font name="Roboto" size="12"/>
+            <item_height>21</item_height>
+            <left_margin>36</left_margin>
+            <right_margin>15</right_margin>
+            <icon>0</icon>
+            <scrolling>
+                <enabled>yes</enabled>
+                <vscroll_step snap="element"/>
+                <scrollbars>
+                    <visibility h="none"/>
+                    <width>8</width>
+                    <border_color>0x00000000</border_color>
+                    <bg_color>0xFF1A1A1A</bg_color>
+                    <thumb_color>0xFF808080</thumb_color>
+                    <thumb_hilite_color>0xFFCCCCCC</thumb_hilite_color>
+                    <arrow_buttons size="0"/>
+                </scrollbars>
+            </scrolling>
+        </listbox_widget>
+        <text_widget height="28" id="sflb" left="0" name="List Label" top="0" width="36">
+            <anchor_pos left="24" right="8" top="115"/>
+            <bg_color>0x00000000</bg_color>
+            <text>
+                <label>Choose where to add in favorites list:</label>
+                <font name="Roboto" size="12"/>
+                <align vert="middle"/>
+                <text_color>0xFFD0D0D0</text_color>
+            </text>
+        </text_widget>
+        <image_widget height="0" id="1" left="64" top="2" width="0">
+            <bg_color>0x00000000</bg_color>
+            <image>91</image>
+        </image_widget>
+        <text_widget height="36" id="sffu" left="0" name="List Label" top="0" width="36">
+            <anchor_pos bottom="40" left="24" right="8"/>
+            <visible>no</visible>
+            <bg_color>0x00000000</bg_color>
+            <text>
+                <label>The maximum number of favorites has been reached on this device.</label>
+                <font name="Roboto" size="12" weight="bold"/>
+                <multiline>yes</multiline>
+                <text_color>0xFFFF0000</text_color>
+            </text>
+        </text_widget>
+    </panel_widget>
+</xg>

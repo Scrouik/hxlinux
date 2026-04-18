@@ -1,0 +1,3335 @@
+[
+	{
+		"symbol": "HD2_AmpCali400Ch1",
+		"parameters": [ "Drive", "Bass", "Mid", "HighMid", "Treble", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpCali400Ch2",
+		"parameters": [ "Drive", "Bass", "Mid", "HighMid", "Treble", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpCaliBass",
+		"parameters": [ "Drive", "Bass", "Mid", "HighMid", "Treble", "ChVol", "Master", "Sag", "Voice" ]
+	},
+	{
+		"symbol": "HD2_AmpGCougar800",
+		"parameters": [ "Drive", "Bass", "LowMid", "HighMid", "Treble", "ChVol", "Master", "Boost", "Contour" ]
+	},
+	{
+		"symbol": "HD2_AmpSVBeastBrt",
+		"parameters": [ "Drive", "Bass", "Mid", "MidFreq", "Treble", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpSVBeastNrm",
+		"parameters": [ "Drive", "Bass", "Mid", "MidFreq", "Treble", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpTucknGo",
+		"parameters": [ "Drive", "Bass", "LowMid", "HighMid", "Treble", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpA30FawnBrt",
+		"parameters": [ "Drive", "Bass", "Cut", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpA30FawnNrm",
+		"parameters": [ "Drive", "Bass", "Cut", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpANGLMeteor",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX", "MidBoost" ]
+	},
+	{
+		"symbol": "HD2_AmpBrit2204",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpBritJ45Brt",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpBritJ45Nrm",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpBritP75Brt",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpBritP75Nrm",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpBritPlexiBrt",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpBritPlexiJump",
+		"parameters": [ "BrtDrive", "NrmDrive", "Bass", "Mid", "Treble", "ChVol", "Presence", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpBritPlexiNrm",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpCaliRectifire",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpDividedDuo",
+		"parameters": [ "Drive 1", "Drive 2", "Tone", "Cut", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpEssexA15",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Cut", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpEssexA30",
+		"parameters": [ "Drive", "Bass", "Cut", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpGermanMahadeva",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpGermanUbersonic",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpInterstateZed",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpJazzRivet120",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Bright" ]
+	},
+	{
+		"symbol": "HD2_AmpLine6Doom",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpLine6Elektrik",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpLine6Epic",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpMailOrderTwin",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpMandarin80",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX", "FAC" ]
+	},
+	{
+		"symbol": "HD2_AmpPVPanama",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX", "Resonance" ]
+	},
+	{
+		"symbol": "HD2_AmpSoloLeadClean",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpSoloLeadCrunch",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpSoloLeadOD",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpSoupPro",
+		"parameters": [ "Drive", "Bass", "Tone", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpStoneAge185",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpTweedBluesBrt",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpTweedBluesNrm",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpUSDeluxeNrm",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpUSDeluxeVib",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpUSDoubleNrm",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpUSDoubleVib",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpUSSmallTweed",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpWhoWatt100",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_Cab1x12BlueBell",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab1x12Celest12H",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab1x12FieldCoil",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab1x12Lead80",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab1x12USDeluxe",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab1x15TucknGo",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab1x6x9SoupProEllipse",
+		"parameters": [ "Distance", "LowCut", "High Cut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab1x8SmallTweed",
+		"parameters": [ "Distance", "LowCut", "HighCut", "Early Reflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab2x12BlueBell",
+		"parameters": [ "Distance", "LowCut", "High Cut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab2x12DoubleC12N",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab2x12Interstate",
+		"parameters": [ "Distance", "Low Cut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab2x12JazzRivet",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab2x12MailC12Q",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab2x12SilverBell",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab2x15Brute",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab4x10Rhino",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab4x10TweedP10R",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab4x121960T75",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab4x12Blackback30",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab4X12CaliV30",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab4x12Greenback20",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab4x12Greenback25",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab4x12MandarinEM",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab4x12SoloLeadEM",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab4x12UberT75",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab4x12UberV30",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab4x12WhoWatt100",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab4x12XXLV30",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab6x10CaliPower",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab8x10SVBeast",
+		"parameters": [ "Distance", "LowCut", "High Cut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_DelayAdriaticDelayMono",
+		"parameters": [ "Time", "Feedback", "Noise", "BBD Size", "Mix", "Level", "Rate", "Depth", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayBucketBrigadeMono",
+		"parameters": [ "Time", "Feedback", "Noise", "Mix", "Level", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayDuckedDelayMono",
+		"parameters": [ "Time", "Feedback", "LowCut", "HighCut", "Mix", "Level", "Threshold", "Ducking", "DynAttack", "DynRel", "DynType", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_DelayElephantManMono",
+		"parameters": [ "Time", "Feedback", "Mode", "Depth", "Mix", "Level", "Noise", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayModChorusEchoMono",
+		"parameters": [ "Time", "Feedback", "LowCut", "HighCut", "Mix", "Level", "Speed", "Depth", "ModulationMode", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelaySimpleDelayMono",
+		"parameters": [ "Time", "Feedback", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelaySweepEchoMono",
+		"parameters": [ "Time", "Feedback", "LowCut", "HighCut", "Mix", "Level", "FilterType", "SweepShape", "SweepSpeed", "SweepStart", "SweepDepth", "SweepResonance", "SweepSymmetry", "Headroom", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_DelayTransistorTapeMono",
+		"parameters": [ "Time", "Feedback", "WowFlutter", "Mix", "Level", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayAdriaticDelayStereo",
+		"parameters": [ "Time", "Scale", "Feedback", "Noise", "BBD Size", "Mix", "Rate", "Depth", "Spread", "Level", "Headroom", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_DelayBucketBrigadeStereo",
+		"parameters": [ "Time", "Feedback", "Scale", "Noise", "Mix", "Level", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayDuckedDelayStereo",
+		"parameters": [ "Time", "Feedback", "LowCut", "HighCut", "Mix", "Level", "Scale", "Threshold", "Ducking", "DynAttack", "DynRel", "DynType", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_DelayElephantManStereo",
+		"parameters": [ "Time", "Feedback", "Mode", "Depth", "Mix", "Level", "Scale", "Spread", "Noise", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayHarmonyDelayStereo",
+		"parameters": [ "Time", "Feedback", "Key", "Scale", "Mix", "Level", "IntervalVoice1", "LevelVoice1", "PanVoice1", "IntervalVoice2", "LevelVoice2", "PanVoice2", "DelayVoice1", "DelayVoice2", "LevelRootVoice", "PanRootVoice", "LowCut", "HighCut", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayModChorusEchoStereo",
+		"parameters": [ "Time", "Feedback", "LowCut", "HighCut", "Mix", "Level", "Scale", "ModulationMode", "Speed", "Depth", "Spread", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_DelayMultitap4Stereo",
+		"parameters": [ "Time", "Feedback", "Diffusion", "LowCut", "HighCut", "Mix", "Tap1Delay", "Tap1Pan", "Tap1Level", "Tap2Delay", "Tap2Pan", "Tap2Level", "Tap3Delay", "Tap3Pan", "Tap3Level", "Tap4Delay", "Tap4Pan", "Tap4Level", "ModulationMode", "Speed", "Depth", "Spread", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayMultitap6Stereo",
+		"parameters": [ "Time", "Feedback", "LowCut", "HighCut", "Mix", "Level", "Tap1Delay", "Tap1Pan", "Tap1Level", "Tap2Delay", "Tap2Pan", "Tap2Level", "Tap3Delay", "Tap3Pan", "Tap3Level", "Tap4Delay", "Tap4Pan", "Tap4Level", "Tap5Delay", "Tap5Pan", "Tap5Level", "Tap6Delay", "Tap6Pan", "Tap6Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayPingPongStereo",
+		"parameters": [ "Time", "Feedback", "Scale", "Spread", "Mix", "Level", "LowCut", "HighCut", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_DelaySimpleDelayStereo",
+		"parameters": [ "Time", "Feedback", "Mix", "Level", "Scale", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelaySweepEchoStereo",
+		"parameters": [ "Time", "Feedback", "LowCut", "HighCut", "Mix", "Level", "FilterType", "SweepShape", "SweepSpeed", "SweepStart", "SweepDepth", "SweepResonance", "SweepSymmetry", "Scale", "SweepSpread", "Headroom", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_DelayTransistorTapeStereo",
+		"parameters": [ "Time", "Feedback", "WowFlutter", "Scale", "Spread", "Mix", "Level", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DistArbitratorFuzzMono",
+		"parameters": [ "Fuzz", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistCompulsiveDriveMono",
+		"parameters": [ "Gain", "Tone", "LPHP", "Version", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistHedgehogD9Mono",
+		"parameters": [ "Gain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistIndustrialFuzzMono",
+		"parameters": [ "Compress", "Gate", "Drive", "Stability", "Oscillator", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistMegaphoneMono",
+		"parameters": [ "Grit", "Tone", "Focus", "Space", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistMinotaurMono",
+		"parameters": [ "Gain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistScream808Mono",
+		"parameters": [ "Gain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistTopSecretODMono",
+		"parameters": [ "Gain", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistTriangleFuzzMono",
+		"parameters": [ "Sustain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistTycoctaviaFuzzMono",
+		"parameters": [ "Fuzz", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistValveDriverMono",
+		"parameters": [ "Gain", "Bass", "Treble", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistVerminDistMono",
+		"parameters": [ "Gain", "Filter", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistArbitratorFuzzStereo",
+		"parameters": [ "Fuzz", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistCompulsiveDriveStereo",
+		"parameters": [ "Gain", "Tone", "LPHP", "Version", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistHedgehogD9Stereo",
+		"parameters": [ "Gain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistIndustrialFuzzStereo",
+		"parameters": [ "Compress", "Gate", "Drive", "Stability", "Oscillator", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistMegaphoneStereo",
+		"parameters": [ "Grit", "Tone", "Focus", "Space", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistMinotaurStereo",
+		"parameters": [ "Gain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistScream808Stereo",
+		"parameters": [ "Gain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistTopSecretODStereo",
+		"parameters": [ "Gain", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistTriangleFuzzStereo",
+		"parameters": [ "Sustain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistTycoctaviaFuzzStereo",
+		"parameters": [ "Fuzz", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistValveDriverStereo",
+		"parameters": [ "Gain", "Bass", "Treble", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistVerminDistStereo",
+		"parameters": [ "Gain", "Filter", "Level" ]
+	},
+	{
+		"symbol": "HD2_CompressorDeluxeCompMono",
+		"parameters": [ "Threshold", "Ratio", "Attack", "Release", "Mix", "Level", "Knee" ]
+	},
+	{
+		"symbol": "HD2_CompressorLAStudioCompMono",
+		"parameters": [ "PeakReduction", "Gain", "Type", "Emphasis", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_CompressorRedSqueezeMono",
+		"parameters": [ "Sensitivity", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_GateHardGateMono",
+		"parameters": [ "OpenThreshold", "CloseThreshold", "HoldTime", "Decay", "Level" ]
+	},
+	{
+		"symbol": "HD2_GateNoiseGateMono",
+		"parameters": [ "Threshold", "Decay", "Level" ]
+	},
+	{
+		"symbol": "HD2_CompressorDeluxeCompStereo",
+		"parameters": [ "Threshold", "Ratio", "Attack", "Release", "Mix", "Level", "Knee" ]
+	},
+	{
+		"symbol": "HD2_CompressorLAStudioCompStereo",
+		"parameters": [ "PeakReduction", "Gain", "Type", "Emphasis", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_CompressorRedSqueezeStereo",
+		"parameters": [ "Sensitivity", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_GateHardGateStereo",
+		"parameters": [ "OpenThreshold", "CloseThreshold", "HoldTime", "Decay", "Level" ]
+	},
+	{
+		"symbol": "HD2_GateNoiseGateStereo",
+		"parameters": [ "Threshold", "Decay", "Level" ]
+	},
+	{
+		"symbol": "HD2_EQGraphic10BandMono",
+		"parameters": [ "31p25Hz", "62p5Hz", "125Hz", "250Hz", "500Hz", "1kHz", "2kHz", "4kHz", "8kHz", "16kHz", "Level" ]
+	},
+	{
+		"symbol": "HD2_EQLowCutHighCutMono",
+		"parameters": [ "LowCut", "HighCut", "Level" ]
+	},
+	{
+		"symbol": "HD2_EQParametricMono",
+		"parameters": [ "LowFreq", "LowQ", "LowGain", "MidFreq", "MidQ", "MidGain", "HighFreq", "HighQ", "HighGain", "LowCut", "HighCut", "Level" ]
+	},
+	{
+		"symbol": "HD2_EQSimple3BandMono",
+		"parameters": [ "LowGain", "MidFreq", "MidGain", "HighGain", "Level" ]
+	},
+	{
+		"symbol": "HD2_EQGraphic10BandStereo",
+		"parameters": [ "31p25Hz", "62p5Hz", "125Hz", "250Hz", "500Hz", "1kHz", "2kHz", "4kHz", "8kHz", "16kHz", "Level" ]
+	},
+	{
+		"symbol": "HD2_EQLowCutHighCutStereo",
+		"parameters": [ "LowCut", "HighCut", "Level" ]
+	},
+	{
+		"symbol": "HD2_EQParametricStereo",
+		"parameters": [ "LowFreq", "LowQ", "LowGain", "MidFreq", "MidQ", "MidGain", "HighFreq", "HighQ", "HighGain", "LowCut", "HighCut", "Level" ]
+	},
+	{
+		"symbol": "HD2_EQSimple3BandStereo",
+		"parameters": [ "LowGain", "MidFreq", "MidGain", "HighGain", "Level" ]
+	},
+	{
+		"symbol": "HD2_FilterMutantFilterMono",
+		"parameters": [ "Mode", "Peak", "Gain", "Range", "Drive", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_FilterMysterFilterMono",
+		"parameters": [ "Sensitivity", "Frequency", "Resonance", "Attack", "Release", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_FilterMutantFilterStereo",
+		"parameters": [ "Mode", "Peak", "Gain", "Range", "Drive", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_FilterMysterFilterStereo",
+		"parameters": [ "Sensitivity", "Frequency", "Resonance", "Attack", "Release", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_FXLoopMono1",
+		"parameters": [ "Send", "Return", "Mix" ]
+	},
+	{
+		"symbol": "HD2_FXLoopMono2",
+		"parameters": [ "Send", "Return", "Mix" ]
+	},
+	{
+		"symbol": "HD2_FXLoopMono3",
+		"parameters": [ "Send", "Return", "Mix" ]
+	},
+	{
+		"symbol": "HD2_FXLoopMono4",
+		"parameters": [ "Send", "Return", "Mix" ]
+	},
+	{
+		"symbol": "HD2_FXLoopStereo1_2",
+		"parameters": [ "Send", "Return", "Mix" ]
+	},
+	{
+		"symbol": "HD2_FXLoopStereo3_4",
+		"parameters": [ "Send", "Return", "Mix" ]
+	},
+	{
+		"symbol": "HD2_AppDSPFlow1Input",
+		"parameters": [ "noiseGate", "threshold", "decay", "select", "gain", "guitarSense", "auxSense", "micLowCut" ]
+	},
+	{
+		"symbol": "HD2_AppDSPFlow2Input",
+		"parameters": [ "noiseGate", "threshold", "decay", "select", "gain", "linkLChannel", "linkRChannel" ]
+	},
+	{
+		"symbol": "HD2_ImpulseResponse1024Mono",
+		"parameters": [ "Index", "LowCut", "HighCut", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_ImpulseResponse2048Mono",
+		"parameters": [ "Index", "LowCut", "HighCut", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_AppDSPFlowJoin",
+		"parameters": [ "A Level", "A Pan", "B Level", "B Pan", "B Polarity", "Level" ]
+	},
+	{
+		"symbol": "HD2_LooperMono",
+		"parameters": [ "Playback", "Overdub", "lowCut", "highCut", "Slow", "Reverse", "OverdubEnable", "Once", "Undo", "PendingState" ]
+	},
+	{
+		"symbol": "HD2_LooperStereo",
+		"parameters": [ "Playback", "Overdub", "lowCut", "highCut", "Slow", "Reverse", "OverdubEnable", "Once", "Undo", "PendingState" ]
+	},
+	{
+		"symbol": "HD2_Chorus70sChorusMono",
+		"parameters": [ "ChorusIntensity", "Mode", "VibratoRate", "VibratoDepth", "Mix", "Level", "Headroom", "SyncSelect1", "TempoSync1", "SyncSelect2", "TempoSync2" ]
+	},
+	{
+		"symbol": "HD2_ChorusMono",
+		"parameters": [ "Speed", "Depth", "Predelay", "WaveShape", "Tone", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FlangerCourtesanFlangeMono",
+		"parameters": [ "Rate", "Range", "Color", "FilterMatrix", "Mix", "Level", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FlangerGrayFlangerMono",
+		"parameters": [ "Rate", "Width", "Manual", "Regen", "Mix", "Level", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FlangerHarmonicFlangerMono",
+		"parameters": [ "Rate", "Width", "Manual", "Enhance", "Harmonic", "Mix", "Level", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_PhaserScriptModPhaseMono",
+		"parameters": [ "Rate", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_PhaserUbiquitousVibeMono",
+		"parameters": [ "Rate", "Intensity", "Mode", "LampBias", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_RingModulatorAMRingModMono",
+		"parameters": [ "Frequency", "AM", "AMFreq", "LFO", "LFORate", "LFOShape", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_Tremolo60sBiasTremMono",
+		"parameters": [ "Speed", "Intensity", "Mode", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_TremoloOpticalTremMono",
+		"parameters": [ "Speed", "Intensity", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_VibratoBubbleVibratoMono",
+		"parameters": [ "Speed", "Depth", "RiseTime", "Mix", "Level", "Headroom", "RiseTimeSwitch", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_Chorus70sChorusStereo",
+		"parameters": [ "ChorusIntensity", "Mode", "VibratoRate", "VibratoDepth", "Spread", "Stereo", "Mix", "Level", "Headroom", "SyncSelect1", "TempoSync1", "SyncSelect2", "TempoSync2" ]
+	},
+	{
+		"symbol": "HD2_ChorusStereo",
+		"parameters": [ "Speed", "Depth", "Predelay", "WaveShape", "Tone", "Spread", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_ChorusTrinityChorusStereo",
+		"parameters": [ "Rate", "Left", "Center", "Right", "Preset", "Manual", "LeftBoost", "CenterBoost", "RightBoost", "Mode", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FlangerCourtesanFlangeStereo",
+		"parameters": [ "Rate", "Range", "Color", "FilterMatrix", "Spread", "Mix", "Level", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FlangerGrayFlangerStereo",
+		"parameters": [ "Rate", "Width", "Manual", "Regen", "Spread", "Mix", "Level", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FlangerHarmonicFlangerStereo",
+		"parameters": [ "Rate", "Width", "Manual", "Enhance", "Harmonic", "Spread", "Mix", "Level", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_PhaserScriptModPhaseStereo",
+		"parameters": [ "Rate", "Spread", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_PhaserUbiquitousVibeStereo",
+		"parameters": [ "Rate", "Intensity", "Mode", "LampBias", "Spread", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_RingModulatorAMRingModStereo",
+		"parameters": [ "Frequency", "AM", "AMFreq", "LFO", "LFORate", "LFOShape", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_RingModulatorPitchRingModStereo",
+		"parameters": [ "Shape", "DutyCycle", "Octave", "Pitch", "LowCut", "HighCut", "FMAmount", "FMShape", "FMDuty", "FMOctave", "FMPitch", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_Rotary122RotaryStereo",
+		"parameters": [ "Speed", "SlowSpeed", "FastSpeed", "RampTime", "Drive", "Blend", "Mix", "Level", "Headroom", "SyncSelect1", "TempoSync1", "SyncSelect2", "TempoSync2" ]
+	},
+	{
+		"symbol": "HD2_Rotary145RotaryStereo",
+		"parameters": [ "Speed", "SlowSpeed", "FastSpeed", "RampTime", "Drive", "Blend", "Mix", "Level", "Headroom", "SyncSelect1", "TempoSync1", "SyncSelect2", "TempoSync2" ]
+	},
+	{
+		"symbol": "HD2_RotaryVibeRotaryStereo",
+		"parameters": [ "Speed", "SlowSpeed", "FastSpeed", "RampTime", "Drive", "Blend", "Mix", "Level", "Headroom", "SyncSelect1", "TempoSync1", "SyncSelect2", "TempoSync2" ]
+	},
+	{
+		"symbol": "HD2_Tremolo60sBiasTremStereo",
+		"parameters": [ "Speed", "Intensity", "Mode", "Spread", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_TremoloOpticalTremStereo",
+		"parameters": [ "Speed", "Intensity", "Spread", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_VibratoBubbleVibratoStereo",
+		"parameters": [ "Speed", "Depth", "RiseTime", "Mix", "Level", "Spread", "Headroom", "RiseTimeSwitch", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_AppDSPFlowOutput",
+		"parameters": [ "pan", "gain", "select" ]
+	},
+	{
+		"symbol": "HD2_PitchPitchWhamMono",
+		"parameters": [ "Pedal", "Heel", "Toe", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_PitchTwinHarmonyMono",
+		"parameters": [ "KeyVoice1", "ScaleVoice1", "IntervalVoice1", "LevelVoice1", "Mix", "Level", "KeyVoice2", "ScaleVoice2", "IntervalVoice2", "LevelVoice2" ]
+	},
+	{
+		"symbol": "HD2_PitchPitchWhamStereo",
+		"parameters": [ "Pedal", "Heel", "Toe", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_PitchTwinHarmonyStereo",
+		"parameters": [ "KeyVoice1", "ScaleVoice1", "IntervalVoice1", "LevelVoice1", "PanVoice1", "Mix", "KeyVoice2", "ScaleVoice2", "IntervalVoice2", "LevelVoice2", "PanVoice2", "Level" ]
+	},
+	{
+		"symbol": "HD2_PreampCali400Ch1",
+		"parameters": [ "Drive", "Bass", "Mid", "HighMid", "Treble", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampCali400Ch2",
+		"parameters": [ "Drive", "Bass", "Mid", "HighMid", "Treble", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampCaliBass",
+		"parameters": [ "Drive", "Bass", "Mid", "HighMid", "Treble", "ChVol", "Master", "Sag", "Voice" ]
+	},
+	{
+		"symbol": "HD2_PreampGCougar800",
+		"parameters": [ "Drive", "Bass", "LowMid", "HighMid", "Treble", "ChVol", "Master", "Boost", "Contour" ]
+	},
+	{
+		"symbol": "HD2_PreampSVBeastBrt",
+		"parameters": [ "Drive", "Bass", "Mid", "MidFreq", "Treble", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampSVBeastNrm",
+		"parameters": [ "Drive", "Bass", "Mid", "MidFreq", "Treble", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampTucknGo",
+		"parameters": [ "Drive", "Bass", "LowMid", "HighMid", "Treble", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampA30FawnBrt",
+		"parameters": [ "Drive", "Bass", "Treble", "Master", "Sag", "ChVol", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampA30FawnNrm",
+		"parameters": [ "Drive", "Bass", "Treble", "Master", "Sag", "ChVol", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampANGLMeteor",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "MidBoost", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampBrit2204",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampBritJ45Brt",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampBritJ45Nrm",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampBritP75Brt",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampBritP75Nrm",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampBritPlexiBrt",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampBritPlexiJump",
+		"parameters": [ "BrtDrive", "NrmDrive", "Bass", "Mid", "Treble", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampBritPlexiNrm",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampCaliRectifire",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampDividedDuo",
+		"parameters": [ "Drive1", "Drive2", "Tone", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampEssexA15",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampEssexA30",
+		"parameters": [ "Drive", "Bass", "Treble", "Master", "Sag", "ChVol", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampGermanMahadeva",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampGermanUbersonic",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Ch Vol", "Master", "Sag" ]
+	},
+	{
+		"symbol": "HD2_PreampInterstateZed",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampJazzRivet120",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Bright", "ChVol", "Master" ]
+	},
+	{
+		"symbol": "HD2_PreampLine6Doom",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampLine6Elektrik",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag" ]
+	},
+	{
+		"symbol": "HD2_PreampLine6Epic",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampMailOrderTwin",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampMandarin80",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "FAC", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampPVPanama",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampSoloLeadClean",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampSoloLeadCrunch",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "Ch Vol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampSoloLeadOD",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampSoupPro",
+		"parameters": [ "Drive", "Bass", "Tone", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampStoneAge185",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampTweedBluesBrt",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampTweedBluesNrm",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampUSDeluxeNrm",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampUSDeluxeVib",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampUSDoubleNrm",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampUSDoubleVib",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampUSSmallTweed",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampWhoWatt100",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampVintagePre",
+		"parameters": [ "Input", "Polarity", "Hi Pass", "Low Pass", "Output", "MicLine" ]
+	},
+	{
+		"symbol": "HD2_ReturnMono1",
+		"parameters": [ "Return", "Mix" ]
+	},
+	{
+		"symbol": "HD2_ReturnMono2",
+		"parameters": [ "Return", "Mix" ]
+	},
+	{
+		"symbol": "HD2_ReturnMono3",
+		"parameters": [ "Return", "Mix" ]
+	},
+	{
+		"symbol": "HD2_ReturnMono4",
+		"parameters": [ "Return", "Mix" ]
+	},
+	{
+		"symbol": "HD2_ReturnStereo1_2",
+		"parameters": [ "Return", "Mix" ]
+	},
+	{
+		"symbol": "HD2_ReturnStereo3_4",
+		"parameters": [ "Return", "Mix" ]
+	},
+	{
+		"symbol": "HD2_Reverb63SpringStereo",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_ReverbCaveStereo",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_ReverbChamberStereo",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_ReverbDuckingStereo",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_ReverbEchoStereo",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_ReverbHallStereo",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_ReverbOctoStereo",
+		"parameters": [ "Decay", "Intensity", "LowCut", "HighCut", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_ReverbParticleStereo",
+		"parameters": [ "Dwell", "Condition", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_ReverbPlateStereo",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_ReverbRoomStereo",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_ReverbSpringStereo",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_ReverbTileStereo",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_SendMono1",
+		"parameters": [ "Send", "DryThru" ]
+	},
+	{
+		"symbol": "HD2_SendMono2",
+		"parameters": [ "Send", "DryThru" ]
+	},
+	{
+		"symbol": "HD2_SendMono3",
+		"parameters": [ "Send", "DryThru" ]
+	},
+	{
+		"symbol": "HD2_SendMono4",
+		"parameters": [ "Send", "DryThru" ]
+	},
+	{
+		"symbol": "HD2_SendStereo1_2",
+		"parameters": [ "Send", "DryThru" ]
+	},
+	{
+		"symbol": "HD2_SendStereo3_4",
+		"parameters": [ "Send", "DryThru" ]
+	},
+	{
+		"symbol": "HD2_AppDSPFlowSplitAB",
+		"parameters": [ "RouteTo", "bypass" ]
+	},
+	{
+		"symbol": "HD2_AppDSPFlowSplitY",
+		"parameters": [ "BalanceA", "BalanceB", "bypass" ]
+	},
+	{
+		"symbol": "HD2_AppDSPFlowSplitXOver",
+		"parameters": [ "Frequency", "Reverse", "bypass" ]
+	},
+	{
+		"symbol": "HD2_SynthSubtractiveStereo",
+		"parameters": [ "ShapeVoice1", "DutyVoice1", "OctaveVoice1", "PitchVoice1", "PanVoice1", "LevelVoice1", "ShapeVoice2", "DutyVoice2", "OctaveVoice2", "PitchVoice2", "PanVoice2", "LevelVoice2", "ShapeVoice3", "DutyVoice3", "OctaveVoice3", "PitchVoice3", "PanVoice3", "LevelVoice3", "SynthPreset", "FM Voice3to1", "LowCut", "HighCut", "Mix", "Level", "EnvelopeADSR_EF", "TriggerSensitivityEF", "EFAttack", "EFDecay", "EFSustain", "EFRelease", "EnvelopeADSR_EA", "TriggerSensitivityEA", "EAAttack", "EADecay", "EASustain", "EARelease", "ReleaseThresholdEF", "ReleaseThresholdEA", "Portamento", "Filter", "FrequencyEF", "ResonanceEF", "DepthEF" ]
+	},
+	{
+		"symbol": "HD2_VolPanGainMono",
+		"parameters": [ "Gain" ]
+	},
+	{
+		"symbol": "HD2_VolPanVolMono",
+		"parameters": [ "Pedal", "VolumeTaper" ]
+	},
+	{
+		"symbol": "HD2_VolPanGainStereo",
+		"parameters": [ "Gain" ]
+	},
+	{
+		"symbol": "HD2_VolPanPanStereo",
+		"parameters": [ "Pedal" ]
+	},
+	{
+		"symbol": "HD2_VolPanVolStereo",
+		"parameters": [ "Pedal", "VolumeTaper" ]
+	},
+	{
+		"symbol": "HD2_WahChromeCustomMono",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahChromeMono",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahColorfulMono",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahConductorMono",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahFasselMono",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahTeardrop310Mono",
+		"parameters": [ "Pedal", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahThroatyMono",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahUKWah846Mono",
+		"parameters": [ "Pedal", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahVettaWahMono",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahWeeperMono",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahChromeCustomStereo",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahChromeStereo",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahColorfulStereo",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahConductorStereo",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahFasselStereo",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahTeardrop310Stereo",
+		"parameters": [ "Pedal", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahThroatyStereo",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahUKWah846Stereo",
+		"parameters": [ "Pedal", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahVettaWahStereo",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahWeeperStereo",
+		"parameters": [ "Pedal", "FcLow", "FcHigh", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_DelayReverseDelayMono",
+		"parameters": [ "Time", "Feedback", "LowCut", "HighCut", "Mix", "Level", "ModulationMode", "Speed", "Depth", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayReverseDelayStereo",
+		"parameters": [ "Time", "Feedback", "LowCut", "HighCut", "Mix", "Level", "ModulationMode", "Speed", "Depth", "Spread", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_DelayDualDelayStereo",
+		"parameters": [ "Left Time", "Right Time", "LeftFeedback", "RightFeedback", "MixL", "MixR", "Level", "LowCut", "HighCut", "ModulationMode", "Speed", "Depth", "Spread", "TempoSync1", "SyncSelect1", "SyncSelect2", "TempoSync2" ]
+	},
+	{
+		"symbol": "HD2_DistKWBMono",
+		"parameters": [ "Gain", "PushDiode", "PullDiode", "Bass", "Treble", "Level", "Asym" ]
+	},
+	{
+		"symbol": "HD2_DistKWBStereo",
+		"parameters": [ "Gain", "PushDiode", "PullDiode", "Bass", "Treble", "Level", "Asym" ]
+	},
+	{
+		"symbol": "HD2_DistBitcrusherMono",
+		"parameters": [ "Gain", "BitDepth", "SampleRate", "LowCut", "HighCut", "Level", "Mix", "OpenThreshold", "CloseThreshold", "HoldTime", "Decay" ]
+	},
+	{
+		"symbol": "HD2_DistBitcrusherStereo",
+		"parameters": [ "Gain", "BitDepth", "SampleRate", "LowCut", "HighCut", "Level", "Mix", "OpenThreshold", "CloseThreshold", "HoldTime", "Decay" ]
+	},
+	{
+		"symbol": "HD2_TremoloTremoloMono",
+		"parameters": [ "Speed", "Intensity", "WaveShape", "DutyCycle", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_TremoloTremoloStereo",
+		"parameters": [ "Speed", "Intensity", "WaveShape", "DutyCycle", "Spread", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_PhaserDeluxePhaserMono",
+		"parameters": [ "Rate", "Depth", "Offset", "Feedback", "WaveShape", "Mix", "Stages", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_PhaserDeluxePhaserStereo",
+		"parameters": [ "Rate", "Depth", "Offset", "Feedback", "WaveShape", "Mix", "Stages", "Spread", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_PitchSimplePitchMono",
+		"parameters": [ "Interval1", "Cents1", "Time1", "LevelVoice1", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_PitchSimplePitchStereo",
+		"parameters": [ "Interval1", "Cents1", "Time1", "LevelVoice1", "Mix", "Level", "PanVoice1", "PanDry" ]
+	},
+	{
+		"symbol": "HD2_PitchDualPitchMono",
+		"parameters": [ "Interval1", "Cents1", "Time1", "LevelVoice1", "Interval2", "Cents2", "Time2", "LevelVoice2", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_PitchDualPitchStereo",
+		"parameters": [ "Interval1", "Cents1", "Time1", "LevelVoice1", "Interval2", "Cents2", "Time2", "LevelVoice2", "Mix", "Level", "PanVoice1", "PanVoice2", "PanDry" ]
+	},
+	{
+		"symbol": "HD2_FilterAutoFilterMono",
+		"parameters": [ "Mode", "FilterGain", "FilterQ", "Sens", "Attack", "Decay", "Frequency", "FreqDepth", "Direction", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_FilterAutoFilterStereo",
+		"parameters": [ "Mode", "FilterGain", "FilterQ", "Sens", "Attack", "Decay", "Frequency", "FreqDepth", "Direction", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistTeemahMono",
+		"parameters": [ "Gain", "Bass", "Treble", "Clipping", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistTeemahStereo",
+		"parameters": [ "Gain", "Bass", "Treble", "Clipping", "Level" ]
+	},
+	{
+		"symbol": "HD2_FlangerDynamixFlangerMono",
+		"parameters": [ "Speed", "Control Select", "Depth", "Manual", "Mix", "Phasing", "Recycle", "CV Dynamics", "Max Delay", "CV Tracking", "Env Lag", "Env Input", "CV Decay", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FlangerDynamixFlangerStereo",
+		"parameters": [ "Speed", "Control Select", "Depth", "Manual", "Mix", "Phasing", "Recycle", "CV Dynamics", "Max Delay", "CV Tracking", "Env Lag", "Env Input", "CV Decay", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_AmpMatchstickCh1",
+		"parameters": [ "Ch1Drive", "Bass", "Cut", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpMatchstickCh2",
+		"parameters": [ "Ch2Drive", "Tone", "Cut", "Presence", "Master", "ChVol", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpMatchstickJump",
+		"parameters": [ "Ch1Drive", "Bass", "Treble", "Ch2Drive", "Tone", "ChVol", "Presence", "Cut", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampMatchstickCh1",
+		"parameters": [ "Ch1Drive", "Bass", "Treble", "Master", "Sag", "ChVol", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampMatchstickCh2",
+		"parameters": [ "Ch2Drive", "Tone", "Master", "Sag", "Hum", "ChVol" ]
+	},
+	{
+		"symbol": "HD2_PreampMatchstickJump",
+		"parameters": [ "Ch1Drive", "Bass", "Treble", "Ch2Drive", "Tone", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_AmpCaliIVLead",
+		"parameters": [ "LeadGain", "LeadDrive", "Bass", "Mid", "Treble", "ChVol", "Presence", "Master", "Sag", "Ripple", "Bias", "BiasX", "80Hz", "240Hz", "750Hz", "2200Hz", "6600Hz" ]
+	},
+	{
+		"symbol": "HD2_AmpCaliIVR1",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Ripple", "Bias", "BiasX", "80Hz", "240Hz", "750Hz", "2200Hz", "6600Hz" ]
+	},
+	{
+		"symbol": "HD2_AmpCaliIVR2",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Ripple", "Bias", "BiasX", "80Hz", "240Hz", "750Hz", "2200Hz", "6600Hz" ]
+	},
+	{
+		"symbol": "HD2_PreampCaliIVLead",
+		"parameters": [ "LeadGain", "LeadDrive", "Bass", "Mid", "Treble", "ChVol", "Presence", "Master", "Sag", "80Hz", "240Hz", "750Hz", "2200Hz", "6600Hz" ]
+	},
+	{
+		"symbol": "HD2_PreampCaliIVR1",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "80Hz", "240Hz", "750Hz", "2200Hz", "6600Hz" ]
+	},
+	{
+		"symbol": "HD2_PreampCaliIVR2",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "80Hz", "240Hz", "750Hz", "2200Hz", "6600Hz" ]
+	},
+	{
+		"symbol": "HD2_TremoloHarmonicMono",
+		"parameters": [ "Speed", "Intensity", "WaveShape", "DutyCycle", "BassFreq", "TrebFreq", "Level", "Mix", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_TremoloHarmonicStereo",
+		"parameters": [ "Speed", "Intensity", "WaveShape", "DutyCycle", "BassFreq", "TrebFreq", "Level", "Mix", "Spread", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_DistWringerFuzzMono",
+		"parameters": [ "Gain", "Treble", "Bass", "Level", "FuzzType" ]
+	},
+	{
+		"symbol": "HD2_DistWringerFuzzStereo",
+		"parameters": [ "Gain", "Treble", "Bass", "Level", "FuzzType" ]
+	},
+	{
+		"symbol": "HD2_AmpLine62204Mod",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "PreMid", "PreMidFc", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_CaliQMono",
+		"parameters": [ "80Hz", "240Hz", "750Hz", "2200Hz", "6600Hz", "Level" ]
+	},
+	{
+		"symbol": "HD2_CaliQStereo",
+		"parameters": [ "80Hz", "240Hz", "750Hz", "2200Hz", "6600Hz", "Level" ]
+	},
+	{
+		"symbol": "HD2_DelayVintageDigitalMono",
+		"parameters": [ "Time", "Feedback", "BitDepth", "SampleRate", "Mix", "Level", "Rate", "Depth", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayVintageDigitalStereo",
+		"parameters": [ "Time", "Feedback", "BitDepth", "SampleRate", "Mix", "Level", "Rate", "Depth", "Scale", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_PreampLine62204Mod",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "PreMid", "PreMidFc", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpLine6Fatality",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampLine6Fatality",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampLine62204ModV2",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "PreMid", "PreMidFc" ]
+	},
+	{
+		"symbol": "HD2_DelayVintageDigitalV2Mono",
+		"parameters": [ "Time", "Feedback", "BitDepth", "SampleRate", "Mix", "Level", "Rate", "Depth", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayVintageDigitalV2Stereo",
+		"parameters": [ "Time", "Feedback", "BitDepth", "SampleRate", "Mix", "Level", "Rate", "Depth", "Scale", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayPitchMono",
+		"parameters": [ "Time", "Feedback", "Interval1", "Cents1", "Mix", "Level", "LowCut", "HighCut", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_DelayPitchStereo",
+		"parameters": [ "Time", "Feedback", "Interval1", "Cents1", "Mix", "Level", "LowCut", "HighCut", "Scale", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_AmpArchetypeClean",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX", "Depth", "BrightSW" ]
+	},
+	{
+		"symbol": "HD2_AmpArchetypeLead",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX", "Depth" ]
+	},
+	{
+		"symbol": "HD2_PreampArchetypeClean",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum", "BrightSW" ]
+	},
+	{
+		"symbol": "HD2_PreampArchetypeLead",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_AmpLine6Litigator",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_DistStuporODMono",
+		"parameters": [ "Drive", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistStuporODStereo",
+		"parameters": [ "Drive", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_PreampLine6Litigator",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_AmpDelSol300",
+		"parameters": [ "Gain", "Bright", "Contour", "Master", "ChVol", "62p5Hz", "125Hz", "250Hz", "500Hz", "1kHz", "2kHz", "4kHz" ]
+	},
+	{
+		"symbol": "HD2_PreampDelSol300",
+		"parameters": [ "Gain", "62p5Hz", "125Hz", "250Hz", "500Hz", "ChVol", "Master", "1kHz", "2kHz", "4kHz", "Brite", "Contour" ]
+	},
+	{
+		"symbol": "HD2_DelaySwellAdriaticMono",
+		"parameters": [ "Time", "Feedback", "Noise", "BBD Size", "Mix", "Level", "Rate", "Depth", "Headroom", "Threshold", "Attack", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelaySwellAdriaticStereo",
+		"parameters": [ "Time", "Scale", "Feedback", "Noise", "BBD Size", "Mix", "Rate", "Depth", "Spread", "Level", "Headroom", "Threshold", "Attack", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelaySwellVintageDigitalMono",
+		"parameters": [ "Time", "Feedback", "BitDepth", "SampleRate", "Mix", "Level", "Rate", "Depth", "Headroom", "Threshold", "Attack", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelaySwellVintageDigitalStereo",
+		"parameters": [ "Time", "Feedback", "BitDepth", "SampleRate", "Mix", "Level", "Rate", "Depth", "Scale", "Headroom", "Threshold", "Attack", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_AmpLine6Badonk",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Depth", "Sag", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpWoodyBlue",
+		"parameters": [ "Drive", "Bass", "Variamp", "Effect", "Treble", "ChVol", "Master", "Bright", "Hum", "TuningFork", "TFCoarse", "TFFine" ]
+	},
+	{
+		"symbol": "HD2_DistObsidian7000Mono",
+		"parameters": [ "Drive", "Level", "Blend", "Grunt", "Attack", "Master", "Bass", "LoMidFreq", "LoMid", "HiMidFreq", "HiMid", "Treble", "Distortion" ]
+	},
+	{
+		"symbol": "HD2_DistObsidian7000Stereo",
+		"parameters": [ "Drive", "Level", "Blend", "Grunt", "Attack", "Master", "Bass", "LoMidFreq", "LoMid", "HiMidFreq", "HiMid", "Treble", "Distortion" ]
+	},
+	{
+		"symbol": "HD2_PreampWoodyBlue",
+		"parameters": [ "Drive", "Bass", "Variamp", "Effect", "Treble", "ChVol", "Master", "Bright", "Hum", "TuningFork", "TFCoarse", "TFFine" ]
+	},
+	{
+		"symbol": "HD2_PreampLine6Badonk",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag" ]
+	},
+	{
+		"symbol": "HD2_Cab1x12CaliExt",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab1x12CaliIV",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab1x12DelSol",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab1x12MatchG25",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab1x12MatchH30",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab1x18DelSol",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_CompressorAutoSwellMono",
+		"parameters": [ "Threshold", "Rel Offset", "Attack", "Decay", "Taper", "Level" ]
+	},
+	{
+		"symbol": "HD2_CompressorAutoSwellStereo",
+		"parameters": [ "Threshold", "Rel Offset", "Attack", "Decay", "Taper", "Level" ]
+	},
+	{
+		"symbol": "HD2_AmpBusyOneCh1",
+		"parameters": [ "Ch1 Drive", "Ch1 Bass", "Ch1 Mid", "Ch1 Mid Freq", "Ch1 Treble", "Ch1 Master", "Input Pad", "Ch1 Boost", "Limiter", "Threshold", "Ch Vol" ]
+	},
+	{
+		"symbol": "HD2_AmpBusyOneCh2",
+		"parameters": [ "Ch2 Drive", "Ch2 Bass", "Ch2 Mid", "Ch2 Mid Freq", "Ch2 Treble", "Ch2 Master", "Input Pad", "Ch2 Boost", "Limiter", "Threshold", "Ch Vol" ]
+	},
+	{
+		"symbol": "HD2_AmpBusyOneJump",
+		"parameters": [ "Ch1 Drive", "Ch1 Bass", "Ch1 Mid", "Ch1 Mid Freq", "Ch1 Treble", "Ch1 Master", "Ch2 Drive", "Ch2 Bass", "Ch2 Mid", "Ch2 Mid Freq", "Ch2 Treble", "Ch2 Master", "Input Pad", "Ch1 Boost", "Ch2 Boost", "Limiter", "Threshold", "Ch Vol" ]
+	},
+	{
+		"symbol": "HD2_Cab1x18WoodyBlue",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Compressor3BandCompMono",
+		"parameters": [ "Ratio", "Attack", "Release", "Lo X Freq", "Hi X Freq", "Level", "Lo Thresh", "Lo Gain", "Mid Thresh", "Mid Gain", "Hi Thresh", "Hi Gain" ]
+	},
+	{
+		"symbol": "HD2_Compressor3BandCompStereo",
+		"parameters": [ "Ratio", "Attack", "Release", "Lo X Freq", "Hi X Freq", "Level", "Lo Thresh", "Lo Gain", "Mid Thresh", "Mid Gain", "Hi Thresh", "Hi Gain", "Detector" ]
+	},
+	{
+		"symbol": "HD2_DistClawthornDriveMono",
+		"parameters": [ "ODGain", "ODTone", "ODLevel", "ODLowBoost", "Fuzz", "FuzzOct", "FuzzGain", "FuzzTone", "FuzzLevel" ]
+	},
+	{
+		"symbol": "HD2_PreampBusyOneCh1",
+		"parameters": [ "Ch1 Drive", "Ch1 Bass", "Ch1 Mid", "Ch1 Mid Freq", "Ch1 Treble", "Ch1 Master", "Input Pad", "Ch1 Boost", "Limiter", "Threshold", "Ch Vol" ]
+	},
+	{
+		"symbol": "HD2_PreampBusyOneCh2",
+		"parameters": [ "Ch2 Drive", "Ch2 Bass", "Ch2 Mid", "Ch2 Mid Freq", "Ch2 Treble", "Ch2 Master", "Input Pad", "Ch2 Boost", "Limiter", "Threshold", "Ch Vol" ]
+	},
+	{
+		"symbol": "HD2_PreampBusyOneJump",
+		"parameters": [ "Ch1 Drive", "Ch1 Bass", "Ch1 Mid", "Ch1 Mid Freq", "Ch1 Treble", "Ch1 Master", "Ch2 Drive", "Ch2 Bass", "Ch2 Mid", "Ch2 Mid Freq", "Ch2 Treble", "Ch2 Master", "Input Pad", "Ch1 Boost", "Ch2 Boost", "Limiter", "Threshold", "Ch Vol" ]
+	},
+	{
+		"symbol": "HD2_Synth4OSCGeneratorStereo",
+		"parameters": [ "Osc1Shape", "Osc1Freq", "Osc1Pan", "Osc1Level", "Osc2Shape", "Osc2Freq", "Osc2Pan", "Osc2Level", "Osc3Shape", "Osc3Freq", "Osc3Pan", "Osc3Level", "Osc4Shape", "Osc4Freq", "Osc4Pan", "Osc4Level", "Attack", "Decay", "DryLevel", "DryPan", "Level", "RiseTimeSwitch" ]
+	},
+	{
+		"symbol": "HD2_DistClawthornDriveStereo",
+		"parameters": [ "ODGain", "ODTone", "ODLevel", "ODLowBoost", "Fuzz", "FuzzOct", "FuzzGain", "FuzzTone", "FuzzLevel" ]
+	},
+	{
+		"symbol": "HD2_ChorusPlastiChorusMono",
+		"parameters": [ "Rate", "Depth", "Mode", "Tone", "Mix", "Level", "Headroom", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_ChorusPlastiChorusStereo",
+		"parameters": [ "Rate", "Depth", "Mode", "Tone", "Mix", "Level", "Headroom", "Spread", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_Synth3NoteGeneratorMono",
+		"parameters": [ "Osc1Shape", "Osc1Octave", "Osc1Note", "Osc1Level", "Osc1Glide", "Osc2Shape", "Osc2Octave", "Osc2Note", "Osc2Level", "Osc2Glide", "Osc3Shape", "Osc3Octave", "Osc3Note", "Osc3Level", "Osc3Glide", "Attack", "Decay", "DryLevel", "Level", "RiseTimeSwitch" ]
+	},
+	{
+		"symbol": "HD2_Synth3NoteGeneratorStereo",
+		"parameters": [ "Osc1Shape", "Osc1Octave", "Osc1Note", "Osc1Level", "Osc1Pan", "Osc1Glide", "Osc2Shape", "Osc2Octave", "Osc2Note", "Osc2Level", "Osc2Pan", "Osc2Glide", "Osc3Shape", "Osc3Octave", "Osc3Note", "Osc3Level", "Osc3Pan", "Osc3Glide", "Attack", "Decay", "DryLevel", "DryPan", "Level", "RiseTimeSwitch" ]
+	},
+	{
+		"symbol": "HD2_Synth4OSCGeneratorMono",
+		"parameters": [ "Osc1Shape", "Osc1Freq", "Osc1Level", "Osc2Shape", "Osc2Freq", "Osc2Level", "Osc3Shape", "Osc3Freq", "Osc3Level", "Osc4Shape", "Osc4Freq", "Osc4Level", "Attack", "Decay", "DryLevel", "Level", "RiseTimeSwitch" ]
+	},
+	{
+		"symbol": "HelixPlugin_AppDSPFlow1Input",
+		"parameters": [ "noiseGate", "threshold", "decay", "select", "gain", "PathA", "PathB" ]
+	},
+	{
+		"symbol": "HelixPlugin_AppDSPFlowOutput",
+		"parameters": [ "pan", "gain", "select" ]
+	},
+	{
+		"symbol": "HelixFx_AppDSPFlowInput",
+		"parameters": [ "select", "gain", "guitarSenseL", "guitarSenseR" ]
+	},
+	{
+		"symbol": "HelixFx_AppDSPFlowOutput",
+		"parameters": [ "pan", "gain", "select" ]
+	},
+	{
+		"symbol": "HD2_AmpDerailedIngrid",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX", "Bright" ]
+	},
+	{
+		"symbol": "HD2_PreampDerailedIngrid",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum", "Bright" ]
+	},
+	{
+		"symbol": "HD2_DistThrifterFuzzMono",
+		"parameters": [ "Drive", "Attack", "Notch Freq", "Notch Gain", "Thick", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistThrifterFuzzStereo",
+		"parameters": [ "Drive", "Attack", "Notch Freq", "Notch Gain", "Thick", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistKinkyBoostMono",
+		"parameters": [ "Drive", "Boost", "Bright" ]
+	},
+	{
+		"symbol": "HD2_DistKinkyBoostStereo",
+		"parameters": [ "Drive", "Boost", "Bright" ]
+	},
+	{
+		"symbol": "HD2_TremoloPatternMono",
+		"parameters": [ "Speed", "WaveShape", "Step1", "Step2", "Step3", "Step4", "Depth", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_TremoloPatternStereo",
+		"parameters": [ "Speed", "WaveShape", "Step1", "Step2", "Step3", "Step4", "Spread", "Depth", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayDoubleDoubleMono",
+		"parameters": [ "Doubles", "Slop", "Sensitivity", "Dry Level", "Wet Level" ]
+	},
+	{
+		"symbol": "HD2_DelayDoubleDoubleStereo",
+		"parameters": [ "Doubles", "Slop", "Sensitivity", "Source", "Dry Level", "Wet Level" ]
+	},
+	{
+		"symbol": "HD2_DelayCosmosEchoMono",
+		"parameters": [ "Time", "Ramp", "Feedback", "WowFlutter", "Mix", "Level", "Headroom", "Mode", "Bass", "Treble", "FBTone", "Splice", "DryThru", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_DelayCosmosEchoStereo",
+		"parameters": [ "Time", "Ramp", "Feedback", "WowFlutter", "Mix", "Level", "Headroom", "Mode", "Bass", "Treble", "FBTone", "Splice", "DryThru", "Spread", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_VolPanStereoWidthStereo",
+		"parameters": [ "Width", "LR In Swap", "Balance", "Level", "R Polarity" ]
+	},
+	{
+		"symbol": "HD2_AmpVoltageQueen",
+		"parameters": [ "Drive 1", "Drive Trem", "Tone", "Bass", "Treble", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampVoltageQueen",
+		"parameters": [ "Drive 1", "Drive 2", "Tone", "Bass", "Treble", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_DL4AnalogDelayStereo",
+		"parameters": [ "Time", "Feedback", "Bass", "Treble", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DL4AnalogDelayStereoMod",
+		"parameters": [ "Time", "Feedback", "ModSpeed", "Depth", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DL4AutoVolStereo",
+		"parameters": [ "Time", "Feedback", "Depth", "Swell", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DL4DigDelay",
+		"parameters": [ "Time", "Feedback", "Bass", "Treble", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DL4DigDelayWithMod",
+		"parameters": [ "Time", "Feedback", "ModSpeed", "Depth", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DL4DynamicDelayStereo",
+		"parameters": [ "Time", "Feedback", "Threshold", "Ducking", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DL4EchoPlatterStereo",
+		"parameters": [ "Time", "Feedback", "Wow Flt", "Drive", "Mix", "Level", "DryThru", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DL4LowResDelay",
+		"parameters": [ "Time", "Feedback", "Tone", "Res", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DL4MultiheadStereo",
+		"parameters": [ "Time", "Feedback", "Heads 1-2", "Heads 3-4", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DL4PingPong",
+		"parameters": [ "Time", "Feedback", "Offset", "Spread", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DL4Reverse",
+		"parameters": [ "Time", "Feedback", "ModSpeed", "Depth", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DL4StereoDelay",
+		"parameters": [ "LTime", "LFeedback", "RTime", "RFeedback", "Mix", "Level", "TempoSync2", "SyncSelect2", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DL4SweepEchoStereo",
+		"parameters": [ "Time", "Feedback", "Speed", "Depth", "Mix", "Level", "DryThru", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DL4TapeEchoStereo",
+		"parameters": [ "Time", "Feedback", "Bass", "Treble", "Mix", "Level", "DryThru", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DL4TubeEchoStereo",
+		"parameters": [ "Time", "Feedback", "Wow Flt", "Drive", "Mix", "Level", "DryThru", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DM4BassOctaver",
+		"parameters": [ "Tone", "Normal", "Octave", "Level" ]
+	},
+	{
+		"symbol": "HD2_DM4BlueComp",
+		"parameters": [ "Sustain", "Level" ]
+	},
+	{
+		"symbol": "HD2_DM4BlueCompTreb",
+		"parameters": [ "Sustain", "Level" ]
+	},
+	{
+		"symbol": "HD2_DM4BoostComp",
+		"parameters": [ "Drive", "Bass", "Comp", "Treble", "Output", "Level" ]
+	},
+	{
+		"symbol": "HD2_DM4BuzzSaw",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Output" ]
+	},
+	{
+		"symbol": "HD2_DM4ClassicDistortion",
+		"parameters": [ "Drive", "Bass", "Filter", "Treble", "Output" ]
+	},
+	{
+		"symbol": "HD2_DM4ColorDrive",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Output" ]
+	},
+	{
+		"symbol": "HD2_DM4FacialFuzz",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Output" ]
+	},
+	{
+		"symbol": "HD2_DM4FuzzPi",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Output" ]
+	},
+	{
+		"symbol": "HD2_DM4HeavyDistortion",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Output" ]
+	},
+	{
+		"symbol": "HD2_DM4JetFuzz",
+		"parameters": [ "Drive", "Feedback", "Tone", "Rate", "Output" ]
+	},
+	{
+		"symbol": "HD2_DM4JumboFuzz",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Output" ]
+	},
+	{
+		"symbol": "HD2_DM4Line6Distortion",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Output" ]
+	},
+	{
+		"symbol": "HD2_DM4Line6Drive",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Output" ]
+	},
+	{
+		"symbol": "HD2_DM4OctaveFuzz",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Output" ]
+	},
+	{
+		"symbol": "HD2_DM4Overdrive",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Output" ]
+	},
+	{
+		"symbol": "HD2_DM4RedComp",
+		"parameters": [ "Sustain", "Level" ]
+	},
+	{
+		"symbol": "HD2_DM4Screamer",
+		"parameters": [ "Drive", "Bass", "Tone", "Treble", "Output" ]
+	},
+	{
+		"symbol": "HD2_DM4SubOctFuzz",
+		"parameters": [ "Drive", "Bass", "Sub", "Treble", "Output" ]
+	},
+	{
+		"symbol": "HD2_DM4TubeComp",
+		"parameters": [ "Thresh", "Level" ]
+	},
+	{
+		"symbol": "HD2_DM4TubeDrive",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Output" ]
+	},
+	{
+		"symbol": "HD2_DM4VettaComp",
+		"parameters": [ "Sens", "Level" ]
+	},
+	{
+		"symbol": "HD2_DM4VettaJuice",
+		"parameters": [ "Amount", "Level" ]
+	},
+	{
+		"symbol": "HD2_FM4AttackSynth",
+		"parameters": [ "Freq", "Wave", "Attack", "Pitch", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_FM4CometTrails",
+		"parameters": [ "Speed", "Freq", "Q", "Gain", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FM4Growler",
+		"parameters": [ "Speed", "Freq", "Q", "Pitch", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FM4ObiWah",
+		"parameters": [ "Speed", "Freq", "Q", "Type", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FM4OctiSynth",
+		"parameters": [ "Speed", "Freq", "Q", "Depth", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FM4QFilter",
+		"parameters": [ "Freq", "Q", "Gain", "Type", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_FM4Seeker",
+		"parameters": [ "Speed", "Freq", "Q", "Steps", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FM4SlowFilter",
+		"parameters": [ "Freq", "Q", "Speed", "Mode", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_FM4SpinCycle",
+		"parameters": [ "Speed", "Freq", "Q", "Vol Sens", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FM4SynthOMatic",
+		"parameters": [ "Frequency", "Q", "Wave", "Pitch", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_FM4SynthString",
+		"parameters": [ "Speed", "Freq", "Attack", "Pitch", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FM4Throbber",
+		"parameters": [ "Speed", "Freq", "Q", "Wave", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FM4TronDown",
+		"parameters": [ "Freq", "Q", "Range", "Type", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_FM4TronUp",
+		"parameters": [ "Freq", "Q", "Range", "Type", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_FM4VoiceBox",
+		"parameters": [ "Speed", "Start", "End", "Auto", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_FM4VTron",
+		"parameters": [ "Speed", "Start", "End", "Mode", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_M1380AFlanger",
+		"parameters": [ "Speed", "Range", "Enhance", "Manual", "Harmonic", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_M13ACFlanger",
+		"parameters": [ "Speed", "Width", "Regen", "Manual", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4AnalogChorus",
+		"parameters": [ "Speed", "Depth", "CH Vib", "Tone", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4AnalogFlanger",
+		"parameters": [ "Speed", "Depth", "Feedback", "Manual", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4BarberpolePhaser",
+		"parameters": [ "Speed", "Feedback", "Mode", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4BiasTremolo",
+		"parameters": [ "Speed", "Depth", "Shape", "Volsens", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4Dimension",
+		"parameters": [ "SW1", "SW2", "SW3", "SW4", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_MM4DualPhaser",
+		"parameters": [ "Speed", "Depth", "Feedback", "LFOShape", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4FrequencyShifter",
+		"parameters": [ "Speed", "Mode", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_MM4JetFlanger",
+		"parameters": [ "Speed", "Depth", "Feedback", "Manual", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4OptoTremolo",
+		"parameters": [ "Speed", "Depth", "Shape", "VolSens", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4PannedPhaser",
+		"parameters": [ "Speed", "Depth", "Pan", "Pan Speed", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4Panner",
+		"parameters": [ "Speed", "Depth", "Shape", "VolSen", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4PatternTrem",
+		"parameters": [ "Speed", "Step1", "Step2", "Step3", "Step4", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4Phaser",
+		"parameters": [ "Speed", "Depth", "Feedback", "Stage", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4PitchVibrato",
+		"parameters": [ "Speed", "Depth", "Rise", "Volsens", "Mix", "Level", "RiseTimeSwitch", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4RingModulator",
+		"parameters": [ "Speed", "Depth", "Shape", "AM/FM", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4RotaryDrum",
+		"parameters": [ "Speed", "Depth", "Tone", "Drive", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_MM4RotaryDrumHorn",
+		"parameters": [ "Speed", "Depth", "Horn Depth", "Drive", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_MM4ScriptPhase",
+		"parameters": [ "Speed", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4TriChorus",
+		"parameters": [ "Speed", "Depth1", "Depth2", "Depth3", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_MM4UVibe",
+		"parameters": [ "Speed", "Depth", "Feedback", "VolSens", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_M13TwoVoiceHarmony",
+		"parameters": [ "Key", "Shift", "Scale", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_CompressorKinkyCompMono",
+		"parameters": [ "Sensitivity", "Mix", "Attack", "Release", "Level" ]
+	},
+	{
+		"symbol": "HD2_CompressorKinkyCompStereo",
+		"parameters": [ "Sensitivity", "Mix", "Attack", "Release", "Level" ]
+	},
+	{
+		"symbol": "HD2_AmpBritTremNrm",
+		"parameters": [ "NrmDrive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpBritTremBrt",
+		"parameters": [ "BrtDrive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpBritTremJump",
+		"parameters": [ "BrtDrive", "NrmDrive", "Bass", "Mid", "Treble", "ChVol", "Presence", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampBritTremNrm",
+		"parameters": [ "NrmDrive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampBritTremBrt",
+		"parameters": [ "BrtDrive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampBritTremJump",
+		"parameters": [ "BrtDrive", "NrmDrive", "Bass", "Mid", "Treble", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_AmpCartographer",
+		"parameters": [ "Drive", "Drive2", "Bass", "Mid", "Treble", "ChVol", "Master", "Presence", "Depth", "Bright1", "Bright2", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampCartographer",
+		"parameters": [ "Drive", "Drive2", "Bass", "Mid", "Treble", "ChVol", "Master", "Bright1", "Bright2", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_AmpAgua51",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "Ch Vol", "Deep", "Bright" ]
+	},
+	{
+		"symbol": "HD2_PreampAgua51",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "Ch Vol", "Deep", "Bright" ]
+	},
+	{
+		"symbol": "HD2_DelayMultiPassMono",
+		"parameters": [ "Time", "Feedback", "Pattern", "Mode", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayMultiPassStereo",
+		"parameters": [ "Time", "Feedback", "Pattern", "Mode", "Mix", "Level", "Tap1Pan", "Tap2Pan", "Tap3Pan", "Tap4Pan", "Tap5Pan", "Tap6Pan", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_ReverbGlitzMono",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level", "Delay", "Rate", "Depth", "Xover", "Mod Mix", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_ReverbGlitzStereo",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level", "Delay", "Rate", "Depth", "Xover", "Mod Mix", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_ReverbGanymedeStereo",
+		"parameters": [ "Decay", "Predelay", "Tone", "Modulation", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_ReverbSearchlightsStereo",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level", "Modulation", "Speed", "Intensity", "Spread" ]
+	},
+	{
+		"symbol": "HD2_ReverbDoubleTankMono",
+		"parameters": [ "Decay", "Predelay", "Rate", "Modulation", "Mix", "Level", "LowCut", "HighCut" ]
+	},
+	{
+		"symbol": "HD2_ReverbDoubleTankStereo",
+		"parameters": [ "Decay", "Predelay", "Rate", "Modulation", "Mix", "Level", "LowCut", "HighCut" ]
+	},
+	{
+		"symbol": "HD2_ReverbGanymedeMono",
+		"parameters": [ "Decay", "Predelay", "Tone", "Modulation", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_ReverbPlateauxMono",
+		"parameters": [ "Decay", "Predelay", "Tone", "Modulation", "Mix", "Level", "Pitch1", "Cents1", "Pitch2", "Cents2", "PitchMix" ]
+	},
+	{
+		"symbol": "HD2_ReverbPlateauxStereo",
+		"parameters": [ "Decay", "Predelay", "Tone", "Modulation", "Mix", "Level", "Pitch1", "Cents1", "Pitch2", "Cents2", "PitchMix" ]
+	},
+	{
+		"symbol": "HD2_ReverbSearchlightsMono",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level", "Modulation", "Speed", "Intensity" ]
+	},
+	{
+		"symbol": "HD2_AmpPlacaterDirty",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "HBE", "Fat", "C45", "Saturation", "Ripple", "Bias", "BiasX", "SSwitch", "Voice" ]
+	},
+	{
+		"symbol": "HD2_PreampPlacaterDirty",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "HBE", "Fat", "C45", "Saturation", "SSwitch", "Voice" ]
+	},
+	{
+		"symbol": "HD2_AmpCaliTexasCh2",
+		"parameters": [ "Drive 1", "Drive 2", "Bass", "Mid", "Treble", "ChVol", "TS Shape", "Presence", "Master", "Sag", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampCaliTexasCh2",
+		"parameters": [ "Drive 1", "Drive 2", "Bass", "Mid", "Treble", "ChVol", "TS Shape", "Presence", "Master" ]
+	},
+	{
+		"symbol": "HD2_LooperOneSwitchMono",
+		"parameters": [ "Playback", "Overdub", "lowCut", "highCut", "Slow", "Reverse", "OverdubEnable", "Once", "Undo", "PendingState" ]
+	},
+	{
+		"symbol": "HD2_LooperOneSwitchStereo",
+		"parameters": [ "Playback", "Overdub", "lowCut", "highCut", "Slow", "Reverse", "OverdubEnable", "Once", "Undo", "PendingState" ]
+	},
+	{
+		"symbol": "HD2_DistDeezOneModMono",
+		"parameters": [ "Drive", "Tone", "Level", "Clipping" ]
+	},
+	{
+		"symbol": "HD2_DistDeezOneModStereo",
+		"parameters": [ "Drive", "Tone", "Level", "Clipping" ]
+	},
+	{
+		"symbol": "HD2_DistDeezOneVintageMono",
+		"parameters": [ "Drive", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistDeezOneVintageStereo",
+		"parameters": [ "Drive", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistDerangedMasterMono",
+		"parameters": [ "Drive", "Bass", "Treble", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistDerangedMasterStereo",
+		"parameters": [ "Drive", "Bass", "Treble", "Level" ]
+	},
+	{
+		"symbol": "HD2_AmpPlacaterClean",
+		"parameters": [ "Drive", "Bass", "Treble", "Presence", "Master", "ChVol", "Bright", "Sag", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampPlacaterClean",
+		"parameters": [ "Drive", "Bass", "Treble", "Bright", "Master", "ChVol", "Sag" ]
+	},
+	{
+		"symbol": "HD2_AmpCaliTexasCh1",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampCaliTexasCh1",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master" ]
+	},
+	{
+		"symbol": "HelixStomp_AppDSPFlowInput",
+		"parameters": [ "noiseGate", "threshold", "decay", "select", "gain", "guitarSenseL", "guitarSenseR" ]
+	},
+	{
+		"symbol": "HelixStomp_AppDSPFlowOutputMain",
+		"parameters": [ "pan", "gain", "select" ]
+	},
+	{
+		"symbol": "HelixStomp_AppDSPFlowOutputSend",
+		"parameters": [ "pan", "gain", "Type", "select" ]
+	},
+	{
+		"symbol": "HD2_AmpSVT4Pro",
+		"parameters": [ "Drive", "Bass", "Mid", "MidFreq", "Treble", "ChVol", "Master", "UltraLo", "UltraHi", "Bright", "EQ", "33Hz", "80Hz", "150Hz", "300Hz", "600Hz", "900Hz", "2kHz", "5kHz", "8kHz", "EQLevel" ]
+	},
+	{
+		"symbol": "HD2_PreampSVT4Pro",
+		"parameters": [ "Drive", "Bass", "Mid", "MidFreq", "Treble", "ChVol", "Master", "UltraLo", "UltraHi", "Bright", "EQ", "33Hz", "80Hz", "150Hz", "300Hz", "600Hz", "900Hz", "2kHz", "5kHz", "8kHz", "EQLevel" ]
+	},
+	{
+		"symbol": "HD2_DistAmpegScramblerODMono",
+		"parameters": [ "Drive", "Blend", "Treble", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistAmpegScramblerODStereo",
+		"parameters": [ "Drive", "Blend", "Treble", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistZeroAmpBassDIMono",
+		"parameters": [ "Drive", "Bass", "Treble", "Presence", "Blend", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistZeroAmpBassDIStereo",
+		"parameters": [ "Drive", "Bass", "Treble", "Presence", "Blend", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistDhyanaDriveMono",
+		"parameters": [ "Gain", "Voice", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistDhyanaDriveStereo",
+		"parameters": [ "Gain", "Voice", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_EQLowShelfHighShelfMono",
+		"parameters": [ "LowGain", "LowFreq", "HighGain", "HighFreq", "Level" ]
+	},
+	{
+		"symbol": "HD2_EQLowShelfHighShelfStereo",
+		"parameters": [ "LowGain", "LowFreq", "HighGain", "HighFreq", "Level" ]
+	},
+	{
+		"symbol": "HD2_EQSimpleTiltMono",
+		"parameters": [ "Tilt", "CenterFreq", "Level" ]
+	},
+	{
+		"symbol": "HD2_EQSimpleTiltStereo",
+		"parameters": [ "Tilt", "CenterFreq", "Level" ]
+	},
+	{
+		"symbol": "HD2_FilterAshevillePattrnMono",
+		"parameters": [ "Rate", "Pattern", "Envelope", "Voice", "Mix", "Output", "Drive", "Direction", "LFO", "Level1", "Level2", "Level3", "Level4", "Level5", "Level6", "Level7", "Level8", "SyncSelect1", "TempoSync1", "SyncSelect2", "TempoSync2" ]
+	},
+	{
+		"symbol": "HD2_FilterAshevillePattrnStereo",
+		"parameters": [ "Rate", "Pattern", "Envelope", "Voice", "Mix", "Output", "Drive", "Direction", "LFO", "Spread", "Level1", "Level2", "Level3", "Level4", "Level5", "Level6", "Level7", "Level8", "SyncSelect1", "TempoSync1", "SyncSelect2", "TempoSync2" ]
+	},
+	{
+		"symbol": "HD2_AmpGrammaticoBrt",
+		"parameters": [ "DriveNorm", "DriveBright", "Bass", "Tone", "Treble", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpGrammaticoJump",
+		"parameters": [ "DriveNorm", "DriveBright", "Bass", "Tone", "Treble", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpGrammaticoNrm",
+		"parameters": [ "DriveNorm", "DriveBright", "Bass", "Tone", "Treble", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampGrammaticoBrt",
+		"parameters": [ "DriveNorm", "DriveBright", "Bass", "Tone", "Treble", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampGrammaticoJump",
+		"parameters": [ "DriveNorm", "DriveBright", "Bass", "Tone", "Treble", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampGrammaticoNrm",
+		"parameters": [ "DriveNorm", "DriveBright", "Bass", "Tone", "Treble", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_AmpFullertonBrt",
+		"parameters": [ "DriveNorm", "DriveBright", "Bass", "Tone", "Treble", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpFullertonJump",
+		"parameters": [ "DriveNorm", "DriveBright", "Bass", "Tone", "Treble", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpFullertonNrm",
+		"parameters": [ "DriveNorm", "DriveBright", "Bass", "Tone", "Treble", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampFullertonBrt",
+		"parameters": [ "DriveNorm", "DriveBright", "Bass", "Tone", "Treble", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampFullertonJump",
+		"parameters": [ "DriveNorm", "DriveBright", "Bass", "Tone", "Treble", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampFullertonNrm",
+		"parameters": [ "DriveNorm", "DriveBright", "Bass", "Tone", "Treble", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_AmpRevvGenRed",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Resonance", "Aggression", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampRevvGenRed",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Aggression", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_DistHeirApparentMono",
+		"parameters": [ "Gain", "Tone", "Presence", "Clipping", "GainMod", "Level", "Voltage" ]
+	},
+	{
+		"symbol": "HD2_DistHeirApparentStereo",
+		"parameters": [ "Gain", "Tone", "Presence", "Clipping", "GainMod", "Level", "Voltage" ]
+	},
+	{
+		"symbol": "HD2_DistToneSovereignMono",
+		"parameters": [ "Gain 1", "Tone 1", "Presence 1", "Clipping 1", "GainMod 1", "Level 1", "Gain 2", "Tone 2", "Presence 2", "Clipping 2", "GainMod 2", "Level 2", "Voltage" ]
+	},
+	{
+		"symbol": "HD2_DistToneSovereignStereo",
+		"parameters": [ "Gain 1", "Tone 1", "Presence 1", "Clipping 1", "GainMod 1", "Level 1", "Gain 2", "Tone 2", "Presence 2", "Clipping 2", "GainMod 2", "Level 2", "Voltage" ]
+	},
+	{
+		"symbol": "HD2_Cab1x12Fullerton5C3",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab1x12Grammatico5E3",
+		"parameters": [ "Distance", "LowCut", "HighCut", "EarlyReflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistAlpacaRougeMono",
+		"parameters": [ "Drive", "HiCut", "Volume" ]
+	},
+	{
+		"symbol": "HD2_DistAlpacaRougeStereo",
+		"parameters": [ "Drive", "HiCut", "Volume" ]
+	},
+	{
+		"symbol": "HD2_DistXenomorphFuzzMono",
+		"parameters": [ "Gain", "Tone", "Level", "Clipping", "OscLevel", "OscTone", "MinFreq", "MaxFreq", "WaveShape", "Sensitivity" ]
+	},
+	{
+		"symbol": "HD2_DistXenomorphFuzzStereo",
+		"parameters": [ "Gain", "Tone", "Level", "Clipping", "OscLevel", "OscTone", "MinFreq", "MaxFreq", "WaveShape", "Sensitivity" ]
+	},
+	{
+		"symbol": "HD2_CompressorRochesterCompMono",
+		"parameters": [ "Gain", "Threshold", "Ratio", "Attack", "Release", "Level", "Knee", "Mix" ]
+	},
+	{
+		"symbol": "HD2_CompressorRochesterCompStereo",
+		"parameters": [ "Gain", "Threshold", "Ratio", "Attack", "Release", "Level", "Knee", "Mix" ]
+	},
+	{
+		"symbol": "HD2_PhaserPebblePhaserMono",
+		"parameters": [ "Rate", "Color", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_PhaserPebblePhaserStereo",
+		"parameters": [ "Rate", "Color", "Spread", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_AmpRevvGenPurple",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Resonance", "Aggression", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampRevvGenPurple",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Aggression", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_AppDSPFlowSplitDyn",
+		"parameters": [ "Threshold", "Attack", "Decay", "Reverse", "bypass" ]
+	},
+	{
+		"symbol": "HD2_DistLegendaryDriveMono",
+		"parameters": [ "Drive", "Bass", "Middle", "Treble", "Presence", "Volume" ]
+	},
+	{
+		"symbol": "HD2_DistLegendaryDriveStereo",
+		"parameters": [ "Drive", "Bass", "Middle", "Treble", "Presence", "Volume" ]
+	},
+	{
+		"symbol": "HD2_DistRamsHeadMono",
+		"parameters": [ "Sustain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistRamsHeadStereo",
+		"parameters": [ "Sustain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "Victoria_ShufflingDelayMono",
+		"parameters": [ "Time", "Delay Div", "Mix", "Feedback", "SliceFdbk", "Shuffle", "Octaves", "Reverse", "Seq Drift", "Smoothing", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "Victoria_ShufflingDelayStereo",
+		"parameters": [ "Time", "Delay Div", "Mix", "Feedback", "SliceFdbk", "Shuffle", "Octaves", "Reverse", "Seq Drift", "Smoothing", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "ShufflingLooperMono",
+		"parameters": [ "Slices", "SeqLength", "Shuffle", "Octaves", "Reverse", "Repeat", "Smoothing", "Seq Drift", "Playback", "Low Cut", "High Cut", "Transport", "DirectStop" ]
+	},
+	{
+		"symbol": "ShufflingLooperStereo",
+		"parameters": [ "Slices", "SeqLength", "Shuffle", "Octaves", "Reverse", "Repeat", "Smoothing", "Seq Drift", "Playback", "Low Cut", "High Cut", "Transport", "DirectStop" ]
+	},
+	{
+		"symbol": "HD2_MikeFiller1",
+		"parameters": [ "Systain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "L6SPB_PolyPitchMono",
+		"parameters": [ "Interval", "Cents", "ShiftTime", "ShiftCurve", "ReturnTime", "ReturnCurve", "Tracking", "AutoEQ", "Mix", "Level", "RiseFallSwitch", "TempoSync1", "SyncSelect1", "TempoSync2", "SyncSelect2" ]
+	},
+	{
+		"symbol": "L6SPB_PolyDowntuneMono",
+		"parameters": [ "Interval", "Tracking", "AutoEQ", "Mix", "Level" ]
+	},
+	{
+		"symbol": "L6SPB_PolyWhamMono",
+		"parameters": [ "Position", "HeelShift", "ToeShift", "Tracking", "AutoEQ", "Mix", "Level" ]
+	},
+	{
+		"symbol": "L6SPB_PolyChorusMono",
+		"parameters": [ "Blend", "Detune", "LowCut", "HighCut", "Level" ]
+	},
+	{
+		"symbol": "L6SPB_PolyBassWhamMono",
+		"parameters": [ "Position", "HeelShift", "ToeShift", "Mix", "Level" ]
+	},
+	{
+		"symbol": "L6SPB_12StringMono",
+		"parameters": [ "Blend", "Bass", "Treble", "Level" ]
+	},
+	{
+		"symbol": "L6SPB_InfSustainMono",
+		"parameters": [ "Interval", "Attack", "Decay", "ModFreq", "ModDepth", "FX Level", "RandDepth", "RandSpeed", "Level", "FreezeSwitch", "SyncSelect2", "TempoSync2", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "L6SPB_AcousGtrSimMono",
+		"parameters": [ "Mode", "Body", "Top", "Shimmer", "Level" ]
+	},
+	{
+		"symbol": "L6SPB_AcousGtrSimStereo",
+		"parameters": [ "Mode", "Body", "Top", "Shimmer", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistHorizonDriveMono",
+		"parameters": [ "Drive", "Attack", "Bright", "Gate", "Gate_Range", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistHorizonDriveStereo",
+		"parameters": [ "Drive", "Attack", "Bright", "Gate", "Gate_Range", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistSwedishChainsawMono",
+		"parameters": [ "Drive", "Bass", "Treble", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistSwedishChainsawStereo",
+		"parameters": [ "Drive", "Bass", "Treble", "Level" ]
+	},
+	{
+		"symbol": "HD2_CompressorTransientShaperMono",
+		"parameters": [ "Attack", "Sustain", "Gain", "Sensitivity", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_CompressorTransientShaperStereo",
+		"parameters": [ "Attack", "Sustain", "Gain", "Sensitivity", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_VolPanStereoImagerStereo",
+		"parameters": [ "Mode", "Width", "Rotation", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab1x10PrincessCopperhead",
+		"parameters": [ "Distance", "LowCut", "HighCut", "Early Reflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_Cab1x12PrincessBlue",
+		"parameters": [ "Distance", "LowCut", "HighCut", "Early Reflections", "Level" ]
+	},
+	{
+		"symbol": "HD2_AmpUSPrincess",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampUSPrincess",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_DistBallisticFuzzMono",
+		"parameters": [ "Sustain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistBallisticFuzzStereo",
+		"parameters": [ "Sustain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistPocketFuzzMono",
+		"parameters": [ "Drive", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistPocketFuzzStereo",
+		"parameters": [ "Drive", "Level" ]
+	},
+	{
+		"symbol": "HD2_GateHorizonGateMono",
+		"parameters": [ "Mode", "Sensitivity", "Gate Range", "Level" ]
+	},
+	{
+		"symbol": "HD2_GateHorizonGateStereo",
+		"parameters": [ "Mode", "Sensitivity", "Gate Range", "Level" ]
+	},
+	{
+		"symbol": "HD2_AmpDasBenzinLead",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Deep", "Sag", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampDasBenzinLead",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag" ]
+	},
+	{
+		"symbol": "HD2_AmpDasBenzinMega",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Deep", "Sag", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampDasBenzinMega",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag" ]
+	},
+	{
+		"symbol": "HD2_RetroReelMono",
+		"parameters": [ "WowFluttr", "Saturation", "LowCut", "HighCut", "TapeSpeed", "Level", "Texture" ]
+	},
+	{
+		"symbol": "HD2_RetroReelStereo",
+		"parameters": [ "WowFluttr", "Saturation", "LowCut", "HighCut", "TapeSpeed", "Level", "Texture" ]
+	},
+	{
+		"symbol": "HD2_ReverbDlxRoomStereo",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level", "Diffusion", "Size", "RT Low", "RT High", "Mod Speed", "Mod Depth", "Spread", "dly samps", "FS", "dly samps.1", "dly samps.2", "dly samps.3", "dly samps.4" ]
+	},
+	{
+		"symbol": "HD2_ReverbDlxRoomMono",
+		"parameters": [ "Decay", "Predelay", "LowCut", "HighCut", "Mix", "Level", "Diffusion", "Size", "RT Low", "RT High", "Mod Speed", "Mod Depth", "Spread", "dly samps", "FS", "dly samps.1", "dly samps.2", "dly samps.3", "dly samps.4" ]
+	},
+	{
+		"symbol": "HD2_ReverbHxSpringMono",
+		"parameters": [ "Dwell", "Spring Count", "Drip", "LowCut", "HighCut", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_ReverbHxSpringStereo",
+		"parameters": [ "Dwell", "Spring Count", "Drip", "LowCut", "HighCut", "Mix", "Level" ]
+	},
+	{
+		"symbol": "Victoria_EuclideanDelayStereo",
+		"parameters": [ "Step Time", "Feedback", "Steps", "Fill", "Rotate", "Mix", "LowCut", "HighCut", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "VIC_ReverbRotatingStereo",
+		"parameters": [ "Decay", "Predelay", "RoomSize", "Diffusion", "Damping", "Mix", "Motion", "BassFreq", "BassBoost", "LowCut", "HighCut", "Level" ]
+	},
+	{
+		"symbol": "VIC_ReverbRotatingMono",
+		"parameters": [ "Decay", "Predelay", "RoomSize", "Diffusion", "Damping", "Mix", "Motion", "BassFreq", "BassBoost", "LowCut", "HighCut", "Level" ]
+	},
+	{
+		"symbol": "Victoria_EuclideanDelayMono",
+		"parameters": [ "Step Time", "Feedback", "Steps", "Fill", "Rotate", "Mix", "LowCut", "HighCut", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "VIC_DelayPolySustainMono",
+		"parameters": [ "Interval", "Attack", "Decay", "ModFreq", "ModDepth", "FX Level", "RandDepth", "RandSpeed", "Level", "AutoEQ", "Operation", "FreezeSwitch", "SyncSelect2", "TempoSync2", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "VIC_DelayGlitchMono",
+		"parameters": [ "Time", "Delay Div", "Mix", "Feedback", "SliceFdbk", "Shuffle", "Pitch", "Reverse", "Seq Drift", "Smoothing", "Interval 1", "Interval 2", "Low Cut", "High Cut", "Level", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "VIC_DelayGlitchStereo",
+		"parameters": [ "Time", "Delay Div", "Mix", "Feedback", "SliceFdbk", "Shuffle", "Pitch", "Reverse", "Seq Drift", "Smoothing", "Interval 1", "Interval 2", "Low Cut", "High Cut", "Level", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "VIC_LooperShufflingMono",
+		"parameters": [ "Slices", "SeqLength", "Shuffle", "Pitch", "Reverse", "Repeat", "Smoothing", "Seq Drift", "Playback", "Low Cut", "High Cut", "Interval 1", "Interval 2", "Midi Command", "Transport", "DirectStop" ]
+	},
+	{
+		"symbol": "VIC_LooperShufflingStereo",
+		"parameters": [ "Slices", "SeqLength", "Shuffle", "Pitch", "Reverse", "Repeat", "Smoothing", "Seq Drift", "Playback", "Low Cut", "High Cut", "Interval 1", "Interval 2", "Midi Command", "Transport", "DirectStop" ]
+	},
+	{
+		"symbol": "HD2_AmpMandarinRocker",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampMandarinRocker",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "VIC_PitchTwelveStringMono",
+		"parameters": [ "Blend", "Bass", "Treble", "Level", "OnsetThresh" ]
+	},
+	{
+		"symbol": "HD2_DistRatatouilleDistMono",
+		"parameters": [ "Gain", "Filter", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistRatatouilleDistStereo",
+		"parameters": [ "Gain", "Filter", "Level" ]
+	},
+
+	{
+		"symbol": "L6BubbleEcho",
+		"parameters": [ "Time", "Feedback", "Speed", "Depth", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "TapeEater",
+		"parameters": [ "Feedback", "Flutter", "Dist", "Mix", "Level" ]
+	},
+	{
+		"symbol": "Line6BronzeMaster",
+		"parameters": [ "Drive", "tonality", "mixture", "Level", "Smart" ]
+	},
+	{
+		"symbol": "KillerZ",
+		"parameters": [ "Dist", "Contour", "Gain", "Mid Amt", "Mid Freq", "Smart" ]
+	},
+	{
+		"symbol": "HD2_DelayHeliosphereMono",
+		"parameters": [ "Time", "Feedback", "Rate", "Depth", "Mix", "Level", "VerbMix", "VerbDecay", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayHeliosphereStereo",
+		"parameters": [ "Time", "Feedback", "Rate", "Depth", "Mix", "Level", "Scale", "VerbMix", "VerbDecay", "Headroom", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_DelayADTMono",
+		"parameters": [ "DelayDeck1", "DelayDeck2", "WowFlutter1", "WowFlutter2", "DistDeck1", "DistDeck2", "Deck1Vol", "Deck2Vol", "Deck2Pol", "ModRate", "ModDepth", "Level", "TapeSpeed", "Texture", "LowCut", "HighCut", "Threshold" ]
+	},
+	{
+		"symbol": "HD2_DelayADTStereo",
+		"parameters": [ "DelayDeck1", "DelayDeck2", "WowFlutter1", "WowFlutter2", "DistDeck1", "DistDeck2", "Deck1Vol", "Deck2Vol", "Deck2Pol", "ModRate", "ModDepth", "Level", "TapeSpeed", "Texture", "LowCut", "HighCut", "Deck1Pan", "Deck2Pan", "Threshold" ]
+	},
+	{
+		"symbol": "HD2_DelayCrissCrossMono",
+		"parameters": [ "TimeA", "TimeB", "FeedbackA", "FeedbackB", "Mix", "Level", "Crossfeed", "Headroom", "ModRate", "ModDepth", "Shape", "Phase", "BitDepth", "SampleRate", "LowCut", "HighCut", "TempoSync1", "SyncSelect1", "TempoSync2", "SyncSelect2" ]
+	},
+	{
+		"symbol": "HD2_DelayCrissCrossStereo",
+		"parameters": [ "TimeA", "TimeB", "FeedbackA", "FeedbackB", "PanA", "PanB", "Mix", "Level", "Crossfeed", "Headroom", "ModRate", "ModDepth", "Shape", "Phase", "BitDepth", "SampleRate", "LowCut", "HighCut", "TempoSync1", "SyncSelect1", "TempoSync2", "SyncSelect2" ]
+	},
+	{
+		"symbol": "VIC_DelayStutterEditMono",
+		"parameters": [ "First", "Last", "Steps", "Direction", "Boomerang", "Operation", "Ramp", "Speed", "Pitch", "HP Filter", "LP Filter", "FX Level", "Level", "SyncSelect2", "TempoSync2", "Transport", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "VIC_DelayStutterEditStereo",
+		"parameters": [ "First", "Last", "Steps", "Direction", "Boomerang", "Operation", "Ramp", "Speed", "Pitch", "HP Filter", "LP Filter", "FX Level", "Level", "SyncSelect2", "TempoSync2", "Transport", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "VIC_DynPlateMono",
+		"parameters": [ "Decay", "PreDelay", "Damping", "MatrFreq", "VarDelayAmpl", "Mix", "BassFreq", "BassBoost", "LowCut", "HighCut", "Level" ]
+	},
+	{
+		"symbol": "VIC_DynPlateStereo",
+		"parameters": [ "Decay", "PreDelay", "Damping", "MatrFreq", "VarDelayAmpl", "Mix", "BassFreq", "BassBoost", "LowCut", "HighCut", "Level" ]
+	},
+	{
+		"symbol": "VIC_ReverbShimmerMono",
+		"parameters": [ "Mode", "Shift1", "Shift2", "Intensity", "Feedback", "Mix", "Balance", "Decay", "Predelay", "RoomSize", "Damping", "Diffusion", "Motion", "LowCut", "HighCut", "Level" ]
+	},
+	{
+		"symbol": "VIC_ReverbShimmerStereo",
+		"parameters": [ "Mode", "Shift1", "Shift2", "Intensity", "Feedback", "Mix", "Balance", "Decay", "Predelay", "RoomSize", "Damping", "Diffusion", "Motion", "LowCut", "HighCut", "Level" ]
+	},
+	{
+		"symbol": "VIC_DelayRatchetMono",
+		"parameters": [ "Time", "FX Level", "Level", "Operation", "Transport", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "VIC_DelayRatchetStereo",
+		"parameters": [ "Time", "FX Level", "Level", "Operation", "Transport", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "BuzzWave",
+		"parameters": [ "Wave", "Filter", "Decay", "Mix", "Level" ]
+	},
+	{
+		"symbol": "DoubleBass",
+		"parameters": [ "-1oct G", "-2oct G", "Mix", "Level" ]
+	},
+	{
+		"symbol": "RezSynth",
+		"parameters": [ "Wave", "Filter", "Decay", "Mix", "Level" ]
+	},
+	{
+		"symbol": "Saturn5RingMod",
+		"parameters": [ "Wave", "Mix", "Level" ]
+	},
+	{
+		"symbol": "SeismicSynth",
+		"parameters": [ "Wave", "Mix", "Level" ]
+	},
+	{
+		"symbol": "SynthAnalog",
+		"parameters": [ "Wave", "Filter", "Decay", "Mix", "Level" ]
+	},
+	{
+		"symbol": "SynthFX",
+		"parameters": [ "Wave", "Filter", "Decay", "Mix", "Level" ]
+	},
+	{
+		"symbol": "SynthHarmony",
+		"parameters": [ "Wave", "Interval1", "Interval2", "Mix", "Level" ]
+	},
+	{
+		"symbol": "SynthLead",
+		"parameters": [ "Wave", "Filter", "Decay", "Mix", "Level" ]
+	},
+	{
+		"symbol": "SynthString",
+		"parameters": [ "Wave", "Filter", "Attack", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_CompressorOptoCompMono",
+		"parameters": [ "Compression", "Release", "Blend", "Level" ]
+	},
+	{
+		"symbol": "HD2_CompressorOptoCompStereo",
+		"parameters": [ "Compression", "Release", "Blend", "Level" ]
+	},
+	{
+		"symbol": "HD2_ChorusAmpegLiquifierMono",
+		"parameters": [ "Rate", "Depth", "Mix", "Level", "Headroom", "Mode", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_ChorusAmpegLiquifierStereo",
+		"parameters": [ "Rate", "Depth", "Mix", "Level", "Headroom", "Mode", "Spread", "TempoSync1", "SyncSelect1" ]
+	},
+	{
+		"symbol": "HD2_AmpLine6Ventoux",
+		"parameters": [ "Drive", "HPF", "Mid", "Presence", "Depth", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "VIC_ReverbDynRoomMono",
+		"parameters": [ "Decay", "PreDelay", "Damping", "Diffusion", "MatrFreq", "Mix", "BassFreq", "BassBoost", "LowCut", "HighCut", "ERLevel", "Level" ]
+	},
+	{
+		"symbol": "VIC_ReverbDynRoomStereo",
+		"parameters": [ "Decay", "PreDelay", "Damping", "Diffusion", "MatrFreq", "Mix", "BassFreq", "BassBoost", "LowCut", "HighCut", "ERLevel", "Level" ]
+	},
+	{
+		"symbol": "Warble_Matic",
+		"parameters": [ "Speed", "Range", "Q", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "SampleAndHold",
+		"parameters": [ "Speed", "Range", "Q", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "Sweeper",
+		"parameters": [ "Speed", "Depth", "Q", "Range", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "L6PhazeEko",
+		"parameters": [ "Time", "Feedback", "Speed", "Depth", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_PreampLine6Ventoux",
+		"parameters": [ "Drive", "HPF", "Mid", "Presence", "Depth", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_AmpMoonNrm",
+		"parameters": [ "BrtDrive", "NrmDrive", "Bass", "Mid", "Treble", "ChVol", "Presence", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampMoonNrm",
+		"parameters": [ "BrtDrive", "NrmDrive", "Bass", "Mid", "Treble", "ChVol", "Presence", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_AmpMoonBrt",
+		"parameters": [ "BrtDrive", "NrmDrive", "Bass", "Mid", "Treble", "ChVol", "Presence", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampMoonBrt",
+		"parameters": [ "BrtDrive", "NrmDrive", "Bass", "Mid", "Treble", "ChVol", "Presence", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_AmpMoonJump",
+		"parameters": [ "BrtDrive", "NrmDrive", "Bass", "Mid", "Treble", "ChVol", "Presence", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampMoonJump",
+		"parameters": [ "BrtDrive", "NrmDrive", "Bass", "Mid", "Treble", "ChVol", "Presence", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_AmpLine6Oblivion",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Boost", "Sag", "HumSwitch", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpLine6Kinetic",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Boost", "Sag", "HumSwitch", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpLine6Voltage",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Boost", "Sag", "HumSwitch", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpLine6Clarity",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Boost", "Sag", "HumSwitch" ]
+	},
+	{
+		"symbol": "HD2_AmpLine6Aristocrat",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Boost", "Sag", "HumSwitch", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_AmpLine6Carillon",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Boost", "Sag", "HumSwitch", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_DistVitalDistMono",
+		"parameters": [ "Gain", "Filter", "Level", "Clipping", "Octave" ]
+	},
+	{
+		"symbol": "HD2_DistVitalDistStereo",
+		"parameters": [ "Gain", "Filter", "Level", "Clipping", "Octave" ]
+	},
+	{
+		"symbol": "HD2_DistVitalBoostMono",
+		"parameters": [ "Boost" ]
+	},
+	{
+		"symbol": "HD2_DistVitalBoostStereo",
+		"parameters": [ "Boost" ]
+	},
+	{
+		"symbol": "HD2_DistPillarsMono",
+		"parameters": [ "Gain", "Tone", "Level", "Mode" ]
+	},
+	{
+		"symbol": "HD2_DistPillarsStereo",
+		"parameters": [ "Gain", "Tone", "Level", "Mode" ]
+	},
+	{
+		"symbol": "HD2_AmpPVVitriolCrunch",
+		"parameters": [ "PreGain", "Bass", "Mid", "Treble", "PostGain", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX", "Presence", "Depth" ]
+	},
+	{
+		"symbol": "HD2_AmpPVVitriolLead",
+		"parameters": [ "PreGain", "Bass", "Mid", "Treble", "PostGain", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX", "Presence", "Depth" ]
+	},
+	{
+		"symbol": "VIC_FlexoVibeMono",
+		"parameters": [ "Speed", "Intensity", "Warp", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "VIC_FlexoVibeStereo",
+		"parameters": [ "Speed", "Intensity", "Warp", "PhaseOffset", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_Chorus4VoiceMono",
+		"parameters": [ "Speed", "Depth", "NumVoices", "HPFFrq", "HighShelf", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_Chorus4VoiceStereo",
+		"parameters": [ "Speed", "Depth", "NumVoices", "HPFFrq", "HighShelf", "Mix", "Level", "SyncSelect1", "TempoSync1" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12JazzRivet",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12MailC12Q",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12Mandarin",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x121960AT75",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12BlackbackH30",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12BritV30",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12CaliV30",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12Mandarin",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12MOONT75",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12UberT75",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12UberV30",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12XXLV30",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12Grammatico",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "VIC_PitchBoctaverMono",
+		"parameters": [ "Oct1Level", "Oct2Level", "DryLevel" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12BlueBell",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_PreampLine6Oblivion",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "ChVol", "Boost", "Sag", "HumSwitch" ]
+	},
+	{
+		"symbol": "HD2_PreampLine6Kinetic",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "ChVol", "Boost", "Sag", "HumSwitch" ]
+	},
+	{
+		"symbol": "HD2_PreampLine6Voltage",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "ChVol", "Boost", "Sag", "HumSwitch" ]
+	},
+	{
+		"symbol": "HD2_PreampLine6Clarity",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Boost", "Sag", "HumSwitch" ]
+	},
+	{
+		"symbol": "HD2_PreampLine6Aristocrat",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "ChVol", "Boost", "Sag", "HumSwitch" ]
+	},
+	{
+		"symbol": "HD2_PreampLine6Carillon",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "ChVol", "Boost", "Sag", "HumSwitch" ]
+	},
+	{
+		"symbol": "HD2_ImpulseResponse1024DualStereo",
+		"parameters": [ "Index", "LowCut", "HighCut", "A Level", "A Pan", "A Polarity", "Index_1", "LowCut_1", "HighCut_1", "Level_1", "B Pan", "B Polarity", "Delay", "Mix" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12USDeluxe",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12DoubleC12N",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x10TweedP10R",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "VIC_ReverbDynAmbienceMono",
+		"parameters": [ "RoomSize", "PreDelay", "Damping", "Diffusion", "EarlyLateBlend", "Mix", "LowCut", "HighCut", "Level" ]
+	},
+	{
+		"symbol": "VIC_ReverbDynAmbienceStereo",
+		"parameters": [ "RoomSize", "PreDelay", "Damping", "Diffusion", "EarlyLateBlend", "Mix", "LowCut", "HighCut", "Level" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12Greenback25",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x15Brute",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_8x10SVTAV",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x10USPrincess",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "VIC_PitchBoctaverStereo",
+		"parameters": [ "Oct1Level", "Oct2Level", "DryLevel" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x15AmpegB15",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x10Garden",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x10USPrincessWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12GrammaticoWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12USDeluxeWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12BlueBellWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12DoubleC12NWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12JazzRivetWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12MailC12QWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12MandarinWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x10TweedP10RWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x121960AT75WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12BlackbackH30WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12BritV30WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12CaliV30WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12Greenback25WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12MandarinWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12MOONT75WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12UberT75WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12UberV30WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12XXLV30WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x15AmpegB15WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x15BruteWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x10GardenWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_8x10SVTAVWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12CaliEXT",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12CaliEXTWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_PreampPVVitriolCrunch",
+		"parameters": [ "PreGain", "Bass", "Mid", "Treble", "PostGain", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_PreampPVVitriolLead",
+		"parameters": [ "PreGain", "Bass", "Mid", "Treble", "PostGain", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_DistDarkDoveFuzzMono",
+		"parameters": [ "Sustain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistDarkDoveFuzzStereo",
+		"parameters": [ "Sustain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12BlueBell",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12BlueBellWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x10AmpegPro",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x10AmpegProWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12Greenback20",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12Greenback20WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12Epicenter",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12EpicenterWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12SilverBell",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12SilverBellWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_AmpAguaSledge",
+		"parameters": [ "Gain", "Drive", "Bass", "Mid", "Treble", "Ch Vol", "Master", "Mid Freq" ]
+	},
+	{
+		"symbol": "HD2_PreampAguaSledge",
+		"parameters": [ "Gain", "Drive", "Bass", "Mid", "Treble", "Ch Vol", "Master", "Mid Freq" ]
+	},
+	{
+		"symbol": "HD2_AmpLine6Elmsley",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Presence", "Depth", "NFB", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampLine6Elmsley",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_AmpPVVitriolClean",
+		"parameters": [ "PreGain", "Bass", "Mid", "Treble", "PostGain", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX", "Presence", "Depth" ]
+	},
+	{
+		"symbol": "HD2_PreampPVVitriolClean",
+		"parameters": [ "PreGain", "Bass", "Mid", "Treble", "PostGain", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_ReverbNonLinearMono",
+		"parameters": [ "Decay", "Predelay", "Shape", "Late Dry", "Mix", "Level", "Diffusion", "LowCut", "HighCut", "Mod", "Rate", "TempoSync1", "SyncSelect1", "RoomSize", "Width", "Manual" ]
+	},
+	{
+		"symbol": "HD2_ReverbNonLinearStereo",
+		"parameters": [ "Decay", "Predelay", "Shape", "Late Dry", "Mix", "Level", "Diffusion", "LowCut", "HighCut", "Mod", "Rate", "Spread", "TempoSync1", "SyncSelect1", "RoomSize", "Width", "Manual" ]
+	},
+	{
+		"symbol": "HD2_MikeFiller6",
+		"parameters": [ "Systain", "Tone", "Level" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12MatchH30",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12MatchH30WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12MatchG25",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12MatchG25WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_Rotary3RotorStereo",
+		"parameters": [ "Speed", "SlowSpeed", "FastSpeed", "RampTime", "Mix", "Level", "Drive", "Headroom", "LowCut", "HighCut", "Wobble", "Separation", "RotorFcDrift", "Rotor2Level", "Rotor3Level", "TempoSync1", "SyncSelect1", "TempoSync2", "SyncSelect2" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12OpenCast",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12OpenCastWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12OpenCream",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12OpenCreamWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_AmpGSG100",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "MidSwitch", "JazzRock", "ODSwitch", "ODDrive", "ODLevel", "Bright", "FETBoost", "PAB", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampGSG100",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "MidSwitch", "JazzRock", "ODSwitch", "ODDrive", "ODLevel", "Bright", "FETBoost", "PAB", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "VIC_ReverbDynBloomMono",
+		"parameters": [ "Decay", "Damping", "MatrFreq", "RiseTime", "Mix", "BassFreq", "BassBoost", "LowCut", "HighCut", "DuckingAmount", "Level" ]
+	},
+	{
+		"symbol": "VIC_ReverbDynBloomStereo",
+		"parameters": [ "Decay", "Damping", "MatrFreq", "RiseTime", "Mix", "BassFreq", "BassBoost", "LowCut", "HighCut", "DuckingAmount", "Level" ]
+	},
+	{
+		"symbol": "HD2_DistPrizeDriveMono",
+		"parameters": [ "Drive", "Spectrum", "Level", "Bass Cut", "Voltage" ]
+	},
+	{
+		"symbol": "HD2_DistPrizeDriveStereo",
+		"parameters": [ "Drive", "Spectrum", "Level", "Bass Cut", "Voltage" ]
+	},
+	{
+		"symbol": "HD2_AmpUSDripmanNorm",
+		"parameters": [ "Norm Drive", "Bass", "Mid", "Treble", "Bright", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampUSDripmanNorm",
+		"parameters": [ "Norm Drive", "Bass", "Mid", "Treble", "Bright", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "VIC_FeedbackSimMono",
+		"parameters": [ "Gain", "FeedbackType", "Attack", "ReleaseTime", "DryCtrl", "DryLevel", "Reference", "SilenceThresh", "OnsetThresh", "OffsetThresh", "Retrigger", "Trails", "Enable" ]
+	},
+	{
+		"symbol": "HD2_AmpBrit2203",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX", "InputType" ]
+	},
+	{
+		"symbol": "HD2_PreampBrit2203",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum", "InputType" ]
+	},
+	{
+		"symbol": "HD2_AmpMandarinBass200",
+		"parameters": [ "Gain", "Bass", "Middle", "Treble", "Master", "ChVol", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampMandarinBass200",
+		"parameters": [ "Gain", "Bass", "Middle", "Treble", "Master", "ChVol", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12Greenback30",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12Greenback30WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12Interstate",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x12InterstateWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_SoupProEllipse",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_SoupProEllipseWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12Fullerton",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12FullertonWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_DistRegalBassDIMono",
+		"parameters": [ "Bass", "Treble", "Low Cut", "Volume" ]
+	},
+	{
+		"symbol": "HD2_DistRegalBassDIStereo",
+		"parameters": [ "Bass", "Treble", "Low Cut", "Volume" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x8SmallTweed",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x8SmallTweedWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12CaliIV",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_1x12CaliIVWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x15USDripman",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_2x15USDripmanWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_6x10CaliPower",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_6x10CaliPowerWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12WhoWatt100",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12WhoWatt100WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x10USSuper",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x10USSuperWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_WahTeardropBassQMono",
+		"parameters": [ "Pedal", "Q Trim", "Volume Trim", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_WahTeardropBassQStereo",
+		"parameters": [ "Pedal", "Q Trim", "Volume Trim", "Mix", "Level" ]
+	},
+	{
+		"symbol": "HD2_AmpUSSuperNorm",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX", "Bright" ]
+	},
+	{
+		"symbol": "HD2_PreampUSSuperNorm",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum", "Bright" ]
+	},
+	{
+		"symbol": "HD2_AmpUSSuperVib",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX", "Bright" ]
+	},
+	{
+		"symbol": "HD2_PreampUSSuperVib",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "Master", "ChVol", "Sag", "Hum", "Bright" ]
+	},
+	{
+		"symbol": "HD2_AmpGermanXtraBlue",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "PreEQ_Brt", "ChVol", "Boost", "Structure", "Master", "Presence", "Excursion_Depth", "Old_New", "Class_AB_A", "Sag", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampGermanXtraBlue",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "PreEQ_Brt", "ChVol", "Boost", "Structure", "Master" ]
+	},
+	{
+		"symbol": "HD2_AmpGermanXtraRed",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "PreEQ_Brt", "ChVol", "Boost", "Structure", "Master", "Presence", "Excursion_Depth", "Old_New", "Class_AB_A", "Sag", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampGermanXtraRed",
+		"parameters": [ "Drive", "Bass", "Mid", "Treble", "PreEQ_Brt", "ChVol", "Boost", "Structure", "Master" ]
+	},
+	{
+		"symbol": "HD2_AmpEVPanamaRed",
+		"parameters": [ "Gain", "Low", "Mid", "High", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampEVPanamaRed",
+		"parameters": [ "Gain", "Low", "Mid", "High", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_AmpEVPanamaBlue",
+		"parameters": [ "Gain", "Low", "Mid", "High", "Presence", "ChVol", "Master", "Sag", "Hum", "Ripple", "Bias", "BiasX" ]
+	},
+	{
+		"symbol": "HD2_PreampEVPanamaBlue",
+		"parameters": [ "Gain", "Low", "Mid", "High", "ChVol", "Master", "Sag", "Hum" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12SoloLeadEM",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12SoloLeadEMWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12CartogGuv",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12CartogGuvWithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12CartogC90",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "IrData" ]
+	},
+	{
+		"symbol": "HD2_CabMicIr_4x12CartogC90WithPan",
+		"parameters": [ "Mic", "Position", "Distance", "Angle", "LowCut", "HighCut", "Level", "Pan", "Delay", "IrData" ]
+	}
+]

@@ -1,0 +1,200 @@
+<xg>
+	<panel_widget height="1" id="1" left="0" top="0" width="1">
+		<anchor_pos bottom="8" left="8" right="8" top="8"></anchor_pos>
+		<corner_radius>5</corner_radius>
+		<bg_color>0xFF0C0C0C</bg_color>
+
+		<image_widget height="0" id="poly" left="0" name="Polygon Left" top="0" width="0">
+			<anchor_pos bottom="0" right="0" left="0" top="0"></anchor_pos>
+			<scale_mode>stretch</scale_mode>
+			<image>24</image>
+			<corner_radius>5</corner_radius>
+		</image_widget>
+
+		<!-- Standard view -->
+		<panel_widget height="0" id="stnd" left="0" name="Standard view" top="0" width="0">
+			<corner_radius>5</corner_radius>
+			<anchor_pos bottom="0" right="0" left="0" top="0"></anchor_pos>
+			<!-- Status message -->
+			<text_widget height="100" id="msg-" name="Status Message">
+				<anchor_pos left="10" right="0" top="10"></anchor_pos>
+				<text>
+					<label></label>
+					<font name="Roboto" size="18"></font>
+					<align horz="center" vert="top"></align>
+					<text_color>0xFFB3B3B3</text_color>
+					<multiline>yes</multiline>
+				</text>
+			</text_widget>
+
+			<!-- Activity spinner -->
+			<image_widget height="25" id="rnax" left="0" name="DNA Animation" top="0" width="103">
+				<visible>no</visible>
+				<anchor_pos top="85"></anchor_pos>
+				<relative_pos x="50"></relative_pos>
+				<image>8</image>
+			</image_widget>
+
+			<!-- Trial btn -->
+			<pushbutton_widget height="29" id="try!" left="0" top="90" width="250">
+				<visible>no</visible>
+				<relative_pos x="50"></relative_pos>
+				<bg_color>0xFF000000</bg_color>
+				<focus_color>0x00FF0000</focus_color>
+				<border_color>0xFF336D87</border_color>
+				<corner_radius>0</corner_radius>
+				<text>
+					<label>Start Free Trial</label>
+					<font name="Roboto" size="14"></font>
+					<align horz="center" vert="middle"></align>
+					<text_color>0xFFB3B3B3</text_color>
+				</text>
+				<button_repeat>no</button_repeat>
+				<active_state>
+					<bg_color>0xFF081D24</bg_color>
+					<offset x="0" y="0"></offset>
+					<fg_color>0xFF3E84A3</fg_color>
+				</active_state>
+				<hilite_state>
+					<bg_color>0xFF122f3A>/bg_color>
+					<offset x="0" y="0"></offset>
+				</hilite_state>
+			</pushbutton_widget>
+
+			<!-- Authorize btn -->
+			<pushbutton_widget height="29" id="aut-" left="0" top="130" width="250">
+				<relative_pos x="50"></relative_pos>
+				<bg_color>0xFF000000</bg_color>
+				<focus_color>0x00FF0000</focus_color>
+				<border_color>0xFF336D87</border_color>
+				<corner_radius>0</corner_radius>
+				<visible>yes</visible>
+				<text>
+					<label>Authorize This Computer</label>
+					<font name="Roboto" size="14"></font>
+					<align horz="center" vert="middle"></align>
+					<text_color>0xFFB3B3B3</text_color>
+				</text>
+				<button_repeat>no</button_repeat>
+				<active_state>
+					<bg_color>0xFF081D24</bg_color>
+					<offset x="0" y="0"></offset>
+					<fg_color>0xFF3E84A3</fg_color>
+				</active_state>
+				<hilite_state>
+					<bg_color>0xFF122f3A</bg_color>
+					<offset x="0" y="0"></offset>
+				</hilite_state>
+			</pushbutton_widget>
+
+			<!-- Deuthorize btn -->
+			<pushbutton_widget height="29" id="daut" left="0" top="170" width="250">
+				<relative_pos x="50"></relative_pos>
+				<bg_color>0xFF000000</bg_color>
+				<focus_color>0x00FF0000</focus_color>
+				<border_color>0xFF336D87</border_color>
+				<corner_radius>0</corner_radius>
+				<visible>yes</visible>
+				<text>
+					<label>Deauthorize This Computer</label>
+					<font name="Roboto" size="14"></font>
+					<align horz="center" vert="middle"></align>
+					<text_color>0xFFB3B3B3</text_color>
+				</text>
+				<button_repeat>no</button_repeat>
+				<active_state>
+					<bg_color>0xFF081D24</bg_color>
+					<offset x="0" y="0"></offset>
+					<fg_color>0xFF3e84A3</fg_color>
+				</active_state>
+				<hilite_state>
+					<bg_color>0xFF122f3A</bg_color>
+					<offset x="0" y="0"></offset>
+				</hilite_state>
+			</pushbutton_widget>
+
+			<!-- Buy btn -->
+			<pushbutton_widget height="29" id="buy-" left="0" top="210" width="250">
+				<relative_pos x="50"></relative_pos>
+				<bg_color>0xFF000000</bg_color>
+				<focus_color>0x00FF0000</focus_color>
+				<border_color>0xFF336D87</border_color>
+				<corner_radius>0</corner_radius>
+				<text>
+					<label>Buy Helix Native</label>
+					<font name="Roboto" size="14"></font>
+					<align horz="center" vert="middle"></align>
+					<text_color>0xFFB3B3B3</text_color>
+				</text>
+				<button_repeat>no</button_repeat>
+				<active_state>
+					<bg_color>0xFF081D24</bg_color>
+					<offset x="0" y="0"></offset>
+					<fg_color>0xFF3e84A3</fg_color>
+				</active_state>
+				<hilite_state>
+					<bg_color>0xFF122f3A>/bg_color>
+					<offset x="0" y="0"></offset>
+				</hilite_state>
+			</pushbutton_widget>
+
+			<!-- Buy message -->
+			<text_widget height="55" id="bmsg" name="Buy Message" top="240" width="300">
+				<relative_pos x="50"></relative_pos>
+				<text>
+					<label>Please note that you can buy Helix Native now, or at any time during or after the trial</label>
+					<font name="Roboto" size="14"></font>
+					<align horz="center" vert="middle"></align>
+					<text_color>0xFF336D87</text_color>
+					<multiline>yes</multiline>
+				</text>
+			</text_widget>
+		</panel_widget>
+
+		<!-- Sign-in view -->
+		<panel_widget height="0" id="sign" left="0" name="Sign-in view" top="0" width="0">
+			<corner_radius>5</corner_radius>
+			<anchor_pos bottom="0" right="0" left="0" top="0"></anchor_pos>
+			<visible>no</visible>
+		</panel_widget>
+
+		<!-- Account Login -->
+		<text_widget height="20" id="vlog">
+			<anchor_pos bottom="30" left="0" right="0"></anchor_pos>
+			<relative_pos x="50"></relative_pos>
+			<text>
+				<label></label>
+				<font name="Roboto" size="15"></font>
+				<align horz="center" vert="middle"></align>
+				<text_color>0xFFA1A1A1</text_color>
+			</text>
+		</text_widget>
+
+		<!-- Logout button -->
+		<pushbutton_widget height="20" id="lgot" width="70">
+			<anchor_pos bottom="10"></anchor_pos>
+			<relative_pos x="50"></relative_pos>
+			<bg_color>0x00000000</bg_color>
+			<focus_color>0x00000000</focus_color>
+			<border_color>0x00000000</border_color>
+			<corner_radius>0</corner_radius>
+			<visible>no</visible>
+			<text>
+				<label>Sign Out</label>
+				<font name="Roboto" size="14"></font>
+				<align horz="center" vert="top"></align>
+				<text_color>0xFF336d87</text_color>
+			</text>
+			<button_repeat>no</button_repeat>
+			<active_state>
+				<bg_color>0x00000000</bg_color>
+				<offset x="0" y="0"></offset>
+				<fg_color>0x88336D87</fg_color>
+			</active_state>
+			<hilite_state>
+				<fg_color>0xFF3E84A3</fg_color>
+			</hilite_state>
+		</pushbutton_widget>
+
+	</panel_widget>
+</xg>

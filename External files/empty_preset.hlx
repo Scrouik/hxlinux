@@ -1,0 +1,154 @@
+{
+  "data" : {
+    "device" : 2162689,
+    "device_version" : 0,
+    "meta" : {
+      "name" : "New Preset"
+    },
+    "tone" : {
+      "dsp0" : {
+        "inputA" : {
+          "@input" : 1,
+          "@model" : "HD2_AppDSPFlow1Input",
+          "decay" : 0.50,
+          "noiseGate" : false,
+          "threshold" : -48.0
+        },
+        "inputB" : {
+          "@input" : 0,
+          "@model" : "HD2_AppDSPFlow2Input",
+          "decay" : 0.50,
+          "noiseGate" : false,
+          "threshold" : -48.0
+        },
+        "join" : {
+          "@enabled" : true,
+          "@model" : "HD2_AppDSPFlowJoin",
+          "@position" : 8,
+          "A Level" : 0.0,
+          "A Pan" : 0.50,
+          "B Level" : 0.0,
+          "B Pan" : 0.50,
+          "B Polarity" : false,
+          "Level" : 0.0
+        },
+        "outputA" : {
+          "@model" : "HD2_AppDSPFlowOutput",
+          "@output" : 1,
+          "gain" : 0.0,
+          "pan" : 0.50
+        },
+        "outputB" : {
+          "@model" : "HD2_AppDSPFlowOutput",
+          "@output" : 1,
+          "gain" : 0.0,
+          "pan" : 0.50
+        },
+        "split" : {
+          "@enabled" : true,
+          "@model" : "HD2_AppDSPFlowSplitY",
+          "@position" : 0
+        }
+      },
+      "dsp1" : {
+        "inputA" : {
+          "@input" : 0,
+          "@model" : "HD2_AppDSPFlow1Input",
+          "decay" : 0.50,
+          "noiseGate" : false,
+          "threshold" : -48.0
+        },
+        "inputB" : {
+          "@input" : 0,
+          "@model" : "HD2_AppDSPFlow2Input",
+          "decay" : 0.50,
+          "noiseGate" : false,
+          "threshold" : -48.0
+        },
+        "join" : {
+          "@enabled" : true,
+          "@model" : "HD2_AppDSPFlowJoin",
+          "@position" : 8,
+          "A Level" : 0.0,
+          "A Pan" : 0.50,
+          "B Level" : 0.0,
+          "B Pan" : 0.50,
+          "B Polarity" : false,
+          "Level" : 0.0
+        },
+        "outputA" : {
+          "@model" : "HD2_AppDSPFlowOutput",
+          "@output" : 1,
+          "gain" : 0.0,
+          "pan" : 0.50
+        },
+        "outputB" : {
+          "@model" : "HD2_AppDSPFlowOutput",
+          "@output" : 1,
+          "gain" : 0.0,
+          "pan" : 0.50
+        },
+        "split" : {
+          "@enabled" : true,
+          "@model" : "HD2_AppDSPFlowSplitY",
+          "@position" : 0
+        }
+      },
+      "global" : {
+        "@model" : "@global_params",
+        "@pedalstate" : 2,
+        "@tempo" : 120.0,
+        "@topology0" : "A",
+        "@topology1" : "A",
+        "@variax_customtuning" : false,
+        "@variax_lockctrls" : 0,
+        "@variax_magmode" : false,
+        "@variax_model" : 0,
+        "@variax_str1tuning" : 0,
+        "@variax_str2tuning" : 0,
+        "@variax_str3tuning" : 0,
+        "@variax_str4tuning" : 0,
+        "@variax_str5tuning" : 0,
+        "@variax_str6tuning" : 0,
+        "@variax_toneknob" : 10.0,
+        "@variax_volumeknob" : 10.0,
+        "@current_snapshot" : 0,
+        "@guitarinputZ" : 0
+      },
+      "snapshot0" : {
+        "@name" : "SNAPSHOT 1",
+        "@tempo" : 120
+      },
+      "snapshot1" : {
+        "@name" : "SNAPSHOT 2",
+        "@tempo" : 120
+      },
+      "snapshot2" : {
+        "@name" : "SNAPSHOT 3",
+        "@tempo" : 120
+      },
+      "snapshot3" : {
+        "@name" : "SNAPSHOT 4",
+        "@tempo" : 120
+      },
+      "snapshot4" : {
+        "@name" : "SNAPSHOT 5",
+        "@tempo" : 120
+      },
+      "snapshot5" : {
+        "@name" : "SNAPSHOT 6",
+        "@tempo" : 120
+      },
+      "snapshot6" : {
+        "@name" : "SNAPSHOT 7",
+        "@tempo" : 120
+      },
+      "snapshot7" : {
+        "@name" : "SNAPSHOT 8",
+        "@tempo" : 120
+      }
+    }
+  },
+  "schema" : "L6Preset",
+  "version" : 6
+}

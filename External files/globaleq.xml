@@ -1,0 +1,113 @@
+
+<xg>
+	<panel_widget height="500" id="main" left="0" top="0" width="876">
+		<bg_color>0xFF393939</bg_color>
+
+		<pushbutton_widget height="25" id="rest" name="Reset Button" left="0" top="0" width="80">
+			<anchor_pos top="8" left="8"/>
+			<bg_color>0xFF595B5C</bg_color>
+			<corner_radius>3</corner_radius>
+			<text>
+				<label>RESET</label>
+				<font name="Roboto" size="12"/>
+				<align horz="center" vert="middle"/>
+				<text_color>0xFFEDEDED</text_color>
+			</text>
+			<button_repeat>no</button_repeat>
+			<active_state>
+				<bg_color>0xFF595B5C</bg_color>
+			</active_state>
+			<hilite_state>
+				<bg_color>0xFF696C6E</bg_color>
+			</hilite_state>
+		</pushbutton_widget>
+
+		<text_menu_widget height="25" id="appl" name="Apply Menu" left="0" top="0" width="200">
+			<anchor_pos top="8"/>
+			<relative_pos x="50"/>
+			<bg_color>0xFF1A1A1A</bg_color>
+			<corner_radius>3</corner_radius>
+			<chevron_pos>12</chevron_pos>
+			<chevron_image>34</chevron_image>
+			<text_widget height="1" id="aplb" left="0" name="Apply EQ Label" top="0" width="100">
+				<anchor_pos left="5" top="0" bottom="0" right="5"/>
+				<relative_pos y="50"/>
+				<text>
+					<label>APPLY EQ:</label>
+					<font name="Roboto" size="10"/>
+					<align horz="left" vert="middle"/>
+					<text_color>0xFF999999</text_color>
+				</text>
+			</text_widget>
+			<text>
+				<font name="Roboto" size="12"/>
+				<align horz="center" vert="middle"/>
+				<offset x="5" y="0"/>>
+				<text_color>0xFFD0D0D0</text_color>
+			</text>
+			<menu>
+				<font name="Roboto" size="12"/>
+				<text_color>0xFFD0D0D0</text_color>
+				<bg_color>0xFF28282A</bg_color>
+				<hilite_text_color>0xFFFFFFFF</hilite_text_color>
+				<hilite_bg_color>0xFF474747</hilite_bg_color>
+				<border_thickness>0</border_thickness>
+				<menu_item id="1">
+					<label>1/4"</label>
+				</menu_item>
+				<menu_item id="2">
+					<label>XLR</label>
+				</menu_item>
+				<menu_item id="3">
+					<label>1/4"+XLR</label>
+				</menu_item>
+			</menu>
+		</text_menu_widget>
+
+		<toggle_widget height="25" id="bypa" left="0" name="EQ Bypass" top="0" width="50">
+			<anchor_pos right="8" top="8"/>
+			<bg_color>0xFF595B5C</bg_color>
+			<image>1006</image>
+		</toggle_widget>
+
+		<!-- Plot Container -->
+		<panel_widget height="1" id="1" left="0" top="0" width="1">
+			<anchor_pos bottom="41" left="8" right="8" top="40"/>
+			<bg_color>0xFF0C0C0C</bg_color>
+			<corner_radius>5</corner_radius>
+
+			<panel_widget height="1" id="eqxx" left="0" top="0" width="1">
+				<anchor_pos bottom="121" left="8" right="8" top="8"/>
+				<bg_color>0xFF0C0C0C</bg_color>
+			</panel_widget>
+
+			<panel_widget height="0" id="bysh" name="Bypass Shield" left="0" top="0" width="0">
+				<bg_color>0x66000000</bg_color>
+				<anchor_pos bottom="121" left="8" right="8" top="8"/>
+				<visible>no</visible>
+				<text_widget height="1" id="bylb" left="0" name="Bypass Label" top="0" width="1">
+					<anchor_pos bottom="0" left="0" right="0" top="0"/>
+					<text>
+						<label>GLOBAL EQ BYPASSED</label>
+						<font name="Roboto" size="16"/>
+						<align horz="center" vert="middle"/>
+						<text_color>0xFFFF0000</text_color>
+					</text>
+				</text_widget>
+			</panel_widget>
+
+			<!-- Slider grid -->
+			<panel_widget height="1" id="sbay" left="0" name="Slider Bay Container" top="0" width="1">
+				<anchor_pos bottom="0" top="298" left="8" right="8"/>
+				<bg_color>0xFF0C0C0C</bg_color>
+				<disabled_color>0x00000000</disabled_color>
+			</panel_widget>
+		</panel_widget>
+
+		<panel_widget height="30" id="lvlw" name="Level Slider" left="0" top="0" width="250">
+			<anchor_pos bottom="8"/>
+			<relative_pos x="50"/>
+		</panel_widget>
+
+	</panel_widget>
+</xg>

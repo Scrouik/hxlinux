@@ -1,0 +1,632 @@
+
+<xg>
+    <panel_widget height="1" id="livw" left="0" name="Librarian View" top="0" width="220">
+        <anchor_pos bottom="0" top="0"/>
+        <bg_color>0xFF1D1D1D</bg_color>
+        <disabled_color>0xB0000000</disabled_color>
+        <radio_widget height="25" id="lbtb" left="0" name="Presets-IR Tab" top="0" width="1">
+            <anchor_pos left="0" right="0" top="0"/>
+            <bg_color>0x00000000</bg_color>
+            <radio_button_widget height="25" id="1" left="0" name="Presets Button" top="0" width="1">
+                <bg_color>0xFF2C2C2A</bg_color>
+                <corner_radius bl="no" br="no" tl="yes" tr="no">5</corner_radius>
+                <icon_placement spacing="4">-1</icon_placement>
+                <text>
+                    <label>PRESETS</label>
+                    <font name="Avenir Next Condensed Demi Bold" size="13"/>
+                    <text_color>0xFFB3B3B3</text_color>
+                </text>
+                <active_state>
+                    <bg_color>0xFF393939</bg_color>
+                    <fg_color>0xFFD0D0D0</fg_color>
+                </active_state>
+            </radio_button_widget>
+            <radio_button_widget height="25" id="2" left="0" name="Impulses Button" top="0" width="1">
+                <bg_color>0xFF2C2C2A</bg_color>
+                <corner_radius bl="no" br="no" tl="no" tr="no">5</corner_radius>
+                <icon_placement spacing="4">-1</icon_placement>
+                <text>
+                    <label>IRs</label>
+                    <font name="Avenir Next Condensed Demi Bold" size="13"/>
+                    <text_color>0xFFB3B3B3</text_color>
+                </text>
+                <active_state>
+                    <bg_color>0xFF393939</bg_color>
+                    <fg_color>0xFFD0D0D0</fg_color>
+                </active_state>
+            </radio_button_widget>
+            <radio_button_widget height="25" id="3" left="0" name="Favorites Button" top="0" width="1">
+                <bg_color>0xFF2C2C2A</bg_color>
+                <corner_radius bl="no" br="no" tl="no" tr="yes">5</corner_radius>
+                <icon_placement spacing="4">-1</icon_placement>
+                <text>
+                    <label>FAVORITES</label>
+                    <font name="Avenir Next Condensed Demi Bold" size="13"/>
+                    <text_color>0xFFB3B3B3</text_color>
+                </text>
+                <active_state>
+                    <bg_color>0xFF393939</bg_color>
+                    <fg_color>0xFFD0D0D0</fg_color>
+                </active_state>
+            </radio_button_widget>
+        </radio_widget>
+        <panel_widget height="1" id="prvw" left="0" name="Preset View" top="0" width="1">
+            <anchor_pos bottom="0" left="0" right="0" top="25"/>
+            <bg_color>0x00000000</bg_color>
+            <panel_widget height="1" id="^pls" left="0" name="Preset list Container" top="0" width="1">
+                <anchor_pos bottom="0" left="0" right="0" top="0"/>
+                <bg_color>0xFF393939</bg_color>
+                <corner_radius bl="yes" br="yes" tl="no" tr="no">5</corner_radius>
+                <panel_widget height="59" id="edsc" left="0" top="4" width="1">
+                    <anchor_pos left="3" right="3"/>
+                    <bg_color>0xFF070601</bg_color>
+                    <corner_radius>3</corner_radius>
+                    <text_widget height="16" id="sllb" left="0" top="0" width="60">
+                        <anchor_pos left="8" top="7"/>
+                        <bg_color>0x00000000</bg_color>
+                        <text>
+                            <label>SETLISTS</label>
+                            <font name="Avenir Next Condensed Demi Bold" size="12"/>
+                            <text_color>0xFFB5A44E</text_color>
+                        </text>
+                    </text_widget>
+                    <panel_widget height="26" id="sbar" left="0" name="Button bar" top="0" width="90">
+                        <anchor_pos right="0" top="2"/>
+                        <bg_color>0x00000000</bg_color>
+                        <pushbutton_widget height="26" id="imsl" left="80" name="Import Setlist Button" top="0" width="40">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>IMPORT</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFB5A44E</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFF695E27</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFF0D651</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                        <pushbutton_widget height="26" id="exsl" left="120" name="Export Setlist Button" top="0" width="40">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>EXPORT</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFB5A44E</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFF695E27</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFF0D651</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                    </panel_widget>
+                    <panel_widget height="1" id="1" left="0" name="separator" top="28" width="1">
+                        <anchor_pos left="0" right="0"/>
+                        <bg_color>0xFF393939</bg_color>
+                    </panel_widget>
+                    <text_menu_widget height="30" id="setl" left="0" name="Setlist Popup" top="29" width="1">
+                        <anchor_pos left="0" right="5"/>
+                        <bg_color>0x00000000</bg_color>
+                        <chevron_pos>8</chevron_pos>
+                        <chevron_size>6</chevron_size>
+                        <chevron_image>33</chevron_image>
+                        <text>
+                            <label>USER 1</label>
+                            <font name="Roboto" size="12"/>
+                            <text_color>0xFFB5A44E</text_color>
+                        </text>
+                        <menu>
+                            <item_height>22</item_height>
+                            <left_margin>36</left_margin>
+                            <font name="Roboto" size="12"/>
+                            <text_color>0xFFB5A44E</text_color>
+                            <bg_color>0xFF28282A</bg_color>
+                            <border_thickness>0</border_thickness>
+                            <hilite_bg_color>0xFF474747</hilite_bg_color>
+                            <icon>0</icon>
+                        </menu>
+                    </text_menu_widget>
+                </panel_widget>
+                <panel_widget height="1" id="edpc" left="0" top="0" width="1">
+                    <anchor_pos bottom="3" left="3" right="3" top="67"/>
+                    <bg_color>0xFF0C0C0C</bg_color>
+                    <corner_radius>3</corner_radius>
+                    <text_widget height="16" id="1" left="0" top="0" width="45">
+                        <anchor_pos left="8" top="7"/>
+                        <bg_color>0x00000000</bg_color>
+                        <text>
+                            <label>PRESETS</label>
+                            <font name="Avenir Next Condensed Demi Bold" size="12"/>
+                            <text_color>0xFFAAAAAA</text_color>
+                        </text>
+                    </text_widget>
+                    <panel_widget height="24" id="pbar" left="0" name="Button bar" top="0" width="155">
+                        <anchor_pos right="0" top="3"/>
+                        <bg_color>0x00000000</bg_color>
+                        <pushbutton_widget height="26" id="pcop" left="0" name="Copy Button" top="0" width="34">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>COPY</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFBBBBBB</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                        <pushbutton_widget height="26" id="ppas" left="40" name="Paste Button" top="0" width="37">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>PASTE</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFBBBBBB</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                        <pushbutton_widget height="26" id="pimp" left="80" name="Import Button" top="0" width="42">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>IMPORT</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFBBBBBB</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                        <pushbutton_widget height="26" id="pexp" left="120" name="Export Button" top="0" width="41">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>EXPORT</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFBBBBBB</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                    </panel_widget>
+                    <panel_widget height="1" id="1" left="0" name="separator" top="29" width="1">
+                        <anchor_pos left="0" right="0"/>
+                        <bg_color>0xFF393939</bg_color>
+                    </panel_widget>
+                    <listbox_widget height="233" id="plst" left="0" name="Presets Listbox" top="30" width="214">
+                        <anchor_pos bottom="4" left="0" right="0" top="30"/>
+                        <bg_color>0xFF0C0C0C</bg_color>
+                        <disabled_color>0x60000000</disabled_color>
+                        <alt_bg_color>0xFF141414</alt_bg_color>
+                        <text_color>0xFFC4C4C4</text_color>
+                        <selected_text_color>0xFFF0D651</selected_text_color>
+                        <selected_bg_color>0xFF392F00</selected_bg_color>
+                        <hilite_color>0x80383838</hilite_color>
+                        <font name="Roboto" size="12"/>
+                        <item_height>21</item_height>
+                        <left_margin>36</left_margin>
+                        <right_margin>20</right_margin>
+                        <icon>0</icon>
+                        <scrolling>
+                            <enabled>yes</enabled>
+                            <vscroll_step snap="element"/>
+                            <scrollbars>
+                                <visibility h="none"/>
+                                <width>8</width>
+                                <border_color>0x00000000</border_color>
+                                <bg_color>0xFF1A1A1A</bg_color>
+                                <thumb_color>0xFF808080</thumb_color>
+                                <thumb_hilite_color>0xFFCCCCCC</thumb_hilite_color>
+                                <arrow_buttons size="0"/>
+                            </scrollbars>
+                        </scrolling>
+                    </listbox_widget>
+                </panel_widget>
+            </panel_widget>
+            <panel_widget height="50" id="^ppr" left="6" name="Preset Progress Bar" top="619" width="200">
+                <anchor_pos bottom="6" left="6" right="14"/>
+                <visible>no</visible>
+                <bg_color>0xFF141414</bg_color>
+                <text_widget height="16" id="pptx" left="0" name="Progress Text" top="0" width="1">
+                    <anchor_pos left="0" right="0" top="7"/>
+                    <bg_color>0x00000000</bg_color>
+                    <text>
+                        <label>Text Label</label>
+                        <font name="Roboto" size="12"/>
+                        <align horz="center"/>
+                        <text_color>0xFFDD9921</text_color>
+                        <disabled_opacity>255</disabled_opacity>
+                    </text>
+                </text_widget>
+                <statusbar_widget height="8" id="ppba" left="0" name="Progress Bar" top="0" width="1">
+                    <anchor_pos left="20" right="20" top="25"/>
+                    <bg_color>0x00000000</bg_color>
+                    <fill_area height="0" left="0" top="0" width="0"/>
+                    <fill_image tile="yes"/>
+                    <fill_color>0xFFDD9921</fill_color>
+                </statusbar_widget>
+            </panel_widget>
+        </panel_widget>
+        <panel_widget height="1" id="irvw" left="0" name="IR View" top="0" width="1">
+            <anchor_pos bottom="0" left="0" right="0" top="25"/>
+            <visible>no</visible>
+            <bg_color>0xFF393939</bg_color>
+            <corner_radius bl="yes" br="yes" tl="no" tr="no">5</corner_radius>
+            <panel_widget height="1" id="irgp" left="0" name="IR Group" top="0" width="1">
+                <anchor_pos bottom="0" left="0" right="0" top="1"/>
+                <bg_color>0x00000000</bg_color>
+                <panel_widget height="1" id="1" left="0" top="0" width="1">
+                    <anchor_pos bottom="3" left="3" right="3" top="3"/>
+                    <bg_color>0xFF0C0C0C</bg_color>
+                    <corner_radius>3</corner_radius>
+                    <panel_widget height="27" id="ibar" left="0" name="Button bar" top="0" width="1">
+                        <anchor_pos left="1" right="1" top="2"/>
+                        <bg_color>0x00000000</bg_color>
+                        <pushbutton_widget height="15" id="icop" left="0" name="Copy Button" top="0" width="34">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>COPY</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFBBBBBB</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                        <pushbutton_widget height="15" id="ipas" left="40" name="Paste Button" top="0" width="37">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>PASTE</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFBBBBBB</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                        <pushbutton_widget height="15" id="iimp" left="80" name="Import Button" top="0" width="42">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>IMPORT</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFBBBBBB</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                        <pushbutton_widget height="15" id="iexp" left="120" name="Export Button" top="0" width="41">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>EXPORT</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFBBBBBB</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                        <pushbutton_widget height="15" id="iclr" left="200" name="Clear Button" top="0" width="30">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>CLEAR</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFBBBBBB</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                    </panel_widget>
+                    <panel_widget height="1" id="1" left="0" name="separator" top="29" width="1">
+                        <anchor_pos left="0" right="0"/>
+                        <bg_color>0xFF393939</bg_color>
+                    </panel_widget>
+                    <listbox_widget height="296" id="ilst" left="0" name="IR Listbox" top="30" width="214">
+                        <anchor_pos bottom="4" left="0" right="0" top="30"/>
+                        <bg_color>0xFF0C0C0C</bg_color>
+                        <disabled_color>0x60000000</disabled_color>
+                        <alt_bg_color>0xFF1D1D1D</alt_bg_color>
+                        <text_color>0xFFC4C4C4</text_color>
+                        <selected_text_color>0xFFFFA6E6</selected_text_color>
+                        <selected_bg_color>0xFF760B56</selected_bg_color>
+                        <hilite_color>0x7F7A0054</hilite_color>
+                        <font name="Roboto" size="12"/>
+                        <item_height>21</item_height>
+                        <left_margin>36</left_margin>
+                        <right_margin>20</right_margin>
+                        <icon>0</icon>
+                        <scrolling>
+                            <enabled>yes</enabled>
+                            <vscroll_step snap="element"/>
+                            <scrollbars>
+                                <visibility h="none"/>
+                                <width>8</width>
+                                <border_color>0x00000000</border_color>
+                                <bg_color>0xFF1A1A1A</bg_color>
+                                <thumb_color>0xFF808080</thumb_color>
+                                <thumb_hilite_color>0xFFCCCCCC</thumb_hilite_color>
+                                <arrow_buttons size="0"/>
+                            </scrollbars>
+                        </scrolling>
+                    </listbox_widget>
+                </panel_widget>
+            </panel_widget>
+			<panel_widget height="50" id="^ipr" left="0" name="IR Progress Bar" top="0" width="1">
+				<anchor_pos bottom="6" left="6" right="14"/>
+				<visible>no</visible>
+				<bg_color>0xFF141414</bg_color>
+				<text_widget height="16" id="iptx" left="0" name="Progress Text" top="0" width="1">
+					<anchor_pos left="0" right="0" top="7"/>
+					<bg_color>0x00000000</bg_color>
+					<text>
+						<label>Text Label</label>
+						<font name="Roboto" size="12"/>
+						<align horz="center"/>
+						<text_color>0xFFD22683</text_color>
+						<disabled_opacity>255</disabled_opacity>
+					</text>
+				</text_widget>
+				<statusbar_widget height="8" id="ipba" left="0" name="Progress Bar" top="0" width="1">
+					<anchor_pos left="20" right="20" top="25"/>
+					<bg_color>0x00000000</bg_color>
+					<fill_area height="0" left="0" top="0" width="0"/>
+					<fill_image tile="yes"/>
+					<fill_color>0xFFD22683</fill_color>
+				</statusbar_widget>
+			</panel_widget>
+        </panel_widget>
+        <panel_widget height="1" id="fvvw" left="0" name="Favorite View" top="0" width="1">
+            <anchor_pos bottom="0" left="0" right="0" top="25"/>
+            <visible>no</visible>
+            <bg_color>0xFF393939</bg_color>
+            <corner_radius bl="yes" br="yes" tl="no" tr="no">5</corner_radius>
+            <panel_widget height="1" id="fvgp" left="0" name="Favorite Group" top="0" width="1">
+                <anchor_pos bottom="0" left="0" right="0" top="1"/>
+                <bg_color>0x00000000</bg_color>
+                <panel_widget height="1" id="1" left="0" top="0" width="1">
+                    <anchor_pos bottom="3" left="3" right="3" top="3"/>
+                    <bg_color>0xFF0C0C0C</bg_color>
+                    <corner_radius>3</corner_radius>
+                    <panel_widget height="27" id="fbar" left="0" name="Button bar" top="0" width="1">
+                        <anchor_pos left="1" right="1" top="2"/>
+                        <bg_color>0x00000000</bg_color>
+                        <pushbutton_widget height="15" id="fcop" left="0" name="Copy Button" top="0" width="34">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>COPY</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFBBBBBB</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                        <pushbutton_widget height="15" id="fpas" left="40" name="Paste Button" top="0" width="37">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>PASTE</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFBBBBBB</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                        <pushbutton_widget height="15" id="fimp" left="80" name="Import Button" top="0" width="42">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>IMPORT</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFBBBBBB</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                        <pushbutton_widget height="15" id="fexp" left="120" name="Export Button" top="0" width="41">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>EXPORT</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFBBBBBB</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                        <pushbutton_widget height="15" id="fclr" left="200" name="Clear Button" top="0" width="30">
+                            <relative_pos x_align="right" y="50"/>
+                            <bg_color>0x00000000</bg_color>
+                            <icon_placement spacing="4">-1</icon_placement>
+                            <text>
+                                <label>CLEAR</label>
+                                <font name="Avenir Next Condensed Medium" size="10"/>
+                                <text_color>0xFFBBBBBB</text_color>
+                            </text>
+                            <active_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </active_state>
+                            <hilite_state>
+                                <fg_color>0xFFD0D0D0</fg_color>
+                            </hilite_state>
+                        </pushbutton_widget>
+                    </panel_widget>
+                    <panel_widget height="1" id="1" left="0" name="separator" top="29" width="1">
+                        <anchor_pos left="0" right="0"/>
+                        <bg_color>0xFF393939</bg_color>
+                    </panel_widget>
+                    <panel_widget height="25" id="1" left="0" top="30" width="1">
+                        <anchor_pos left="0" right="0"/>
+                        <bg_color>0xFF000000</bg_color>
+                        <text_widget height="20" id="slab" left="1" top="1" width="50">
+                            <anchor_pos left="2" top="2"/>
+                            <bg_color>0x00000000</bg_color>
+                            <text>
+                                <label>View By :</label>
+                                <font name="Roboto" size="11"/>
+                                <align vert="middle"/>
+                                <text_color>0xFFCCCCCC</text_color>
+                            </text>
+                        </text_widget>
+                        <text_menu_widget height="20" id="sort" left="1" top="1" width="1">
+                            <anchor_pos left="50" right="2" top="2"/>
+                            <bg_color>0xFF2A2A2A</bg_color>
+                            <corner_radius>3</corner_radius>
+                            <chevron_pos>8</chevron_pos>
+                            <chevron_image>34</chevron_image>
+                            <text>
+                                <label>Text Menu</label>
+                                <font name="Roboto" size="11"/>
+                                <offset x="4"/>
+                                <text_color>0xFFCCCCCC</text_color>
+                            </text>
+                            <menu>
+                                <font name="Roboto" size="11"/>
+                                <text_color>0xFFD0D0D0</text_color>
+                                <bg_color>0xFF28282A</bg_color>
+                                <border_thickness>0</border_thickness>
+                                <hilite_bg_color>0xFF474747</hilite_bg_color>
+                                <icon>0</icon>
+                                <menu_item id="0">
+                                    <label>Device List</label>
+                                </menu_item>
+                                <menu_item id="1">
+                                    <label>Category</label>
+                                </menu_item>
+                                <menu_item id="2">
+                                    <label>Name (A-Z)</label>
+                                </menu_item>
+                            </menu>
+                        </text_menu_widget>
+                    </panel_widget>
+                    <panel_widget height="1" id="1" left="0" name="separator" top="55" width="1">
+                        <anchor_pos left="0" right="0"/>
+                        <bg_color>0xFF393939</bg_color>
+                    </panel_widget>
+                    <listbox_widget height="270" id="flst" left="0" name="Favorite Listbox" top="56" width="214">
+                        <anchor_pos bottom="4" left="0" right="0" top="56"/>
+                        <bg_color>0xFF0C0C0C</bg_color>
+                        <disabled_color>0x60000000</disabled_color>
+                        <alt_bg_color>0xFF1D1D1D</alt_bg_color>
+                        <text_color>0xFFC4C4C4</text_color>
+                        <selected_text_color>0xFFFFA6E6</selected_text_color>
+                        <selected_bg_color>0xFF760B56</selected_bg_color>
+                        <hilite_color>0x80383838</hilite_color>
+                        <font name="Roboto" size="12"/>
+                        <item_height>21</item_height>
+                        <left_margin>36</left_margin>
+                        <right_margin>15</right_margin>
+                        <icon>0</icon>
+                        <scrolling>
+                            <enabled>yes</enabled>
+                            <vscroll_step snap="element"/>
+                            <scrollbars>
+                                <visibility h="none"/>
+                                <width>8</width>
+                                <border_color>0x00000000</border_color>
+                                <bg_color>0xFF1A1A1A</bg_color>
+                                <thumb_color>0xFF808080</thumb_color>
+                                <thumb_hilite_color>0xFFCCCCCC</thumb_hilite_color>
+                                <arrow_buttons size="0"/>
+                            </scrollbars>
+                        </scrolling>
+                    </listbox_widget>
+                </panel_widget>
+            </panel_widget>
+			<panel_widget height="50" id="^fpr" left="0" name="Favorite Progress Bar" top="0" width="1">
+				<anchor_pos bottom="6" left="6" right="14"/>
+				<visible>no</visible>
+				<bg_color>0xFF141414</bg_color>
+				<text_widget height="16" id="fptx" left="0" name="Progress Text" top="0" width="1">
+					<anchor_pos left="0" right="0" top="7"/>
+					<bg_color>0x00000000</bg_color>
+					<text>
+						<label>Text Label</label>
+						<font name="Roboto" size="12"/>
+						<align horz="center"/>
+						<text_color>0xFFE0E0E0</text_color>
+						<disabled_opacity>255</disabled_opacity>
+					</text>
+				</text_widget>
+				<statusbar_widget height="8" id="fpba" left="0" name="Progress Bar" top="0" width="1">
+					<anchor_pos left="20" right="20" top="25"/>
+					<bg_color>0x00000000</bg_color>
+					<fill_area height="0" left="0" top="0" width="0"/>
+					<fill_image tile="yes"/>
+					<fill_color>0xFFE0E0E0</fill_color>
+				</statusbar_widget>
+			</panel_widget>
+        </panel_widget>
+    </panel_widget>
+</xg>

@@ -1,0 +1,13 @@
+<xg>
+    <panel_widget height="128" id="pchd" left="0" top="0" width="1">
+        <anchor_pos left="8" right="0" top="30"/>
+
+        <!-- HXParamViews will be added dynamically in code... -->
+
+        <!-- separator -->
+        <panel_widget height="1" id="sepr" left="0" top="0" width="1">
+            <anchor_pos bottom="1" left="0" right="0"/>
+            <bg_color>0xFF666666</bg_color>
+        </panel_widget>
+    </panel_widget>
+</xg>

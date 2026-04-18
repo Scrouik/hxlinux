@@ -1,0 +1,66 @@
+<xg>
+	<panel_widget height="220" id="1" left="0" top="0" width="420">
+		<anchor_pos bottom="0" top="0"/>
+		<relative_pos x="50"/>
+
+		<!-- Message -->
+		<text_widget height="100" id="msg-">
+			<anchor_pos left="0" right="0" top="10"/>
+			<text>
+				<font name="Roboto" size="16"/>
+				<align horz="center" vert="middle"/>
+				<text_color>0xFFB3B3B3</text_color>
+				<multiline>yes</multiline>
+			</text>
+		</text_widget>
+
+		<!-- Authorize btn -->
+		<pushbutton_widget height="29" id="auth" left="0" top="120" width="250">
+			<relative_pos x="50"/>
+			<bg_color>0xFF000000</bg_color>
+			<focus_color>0x00FF0000</focus_color>
+			<border_color>0xFF336D87</border_color>
+			<corner_radius>0</corner_radius>
+			<visible>yes</visible>
+			<text>
+				<label>Authorize This Computer</label>
+				<font name="Roboto" size="14"/>
+				<align horz="center" vert="middle"/>
+				<text_color>0xFFB3B3B3</text_color>
+			</text>
+			<button_repeat>no</button_repeat>
+			<active_state>
+				<bg_color>0xFF081D24</bg_color>
+				<fg_color>0xFF3E84A3</fg_color>
+			</active_state>
+			<hilite_state>
+				<bg_color>0xFF122F3A</bg_color>
+			</hilite_state>
+		</pushbutton_widget>
+
+		<!-- Deuthorize btn -->
+		<pushbutton_widget height="29" id="daut" left="0" top="160" width="250">
+			<relative_pos x="50"/>
+			<bg_color>0xFF000000</bg_color>
+			<focus_color>0x00FF0000</focus_color>
+			<border_color>0xFF336D87</border_color>
+			<corner_radius>0</corner_radius>
+			<visible>no</visible>
+			<text>
+				<label>Deauthorize This Computer</label>
+				<font name="Roboto" size="14"/>
+				<align horz="center" vert="middle"/>
+				<text_color>0xFFB3B3B3</text_color>
+			</text>
+			<button_repeat>no</button_repeat>
+			<active_state>
+				<bg_color>0xFF081D24</bg_color>
+				<fg_color>0xFF3E84A3</fg_color>
+			</active_state>
+			<hilite_state>
+				<bg_color>0xFF122F3A</bg_color>
+			</hilite_state>
+		</pushbutton_widget>
+
+	</panel_widget>
+</xg>

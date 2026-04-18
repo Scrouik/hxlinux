@@ -1,0 +1,237 @@
+
+<xg>
+    <panel_widget height="240" id="tune" left="0" top="0" width="702">
+        <bg_color>0xFF0C0C0C</bg_color>
+        <corner_radius>5</corner_radius>
+        <panel_widget height="102" id="1" left="0" name="Deviation" top="0" width="594">
+            <anchor_pos bottom="38"/>
+            <relative_pos x="50"/>
+            <slider_widget height="1" id="cour" left="0" name="Course" top="0" width="100">
+                <anchor_pos bottom="0" left="0" right="0" top="26"/>
+                <thumb_color>0xFFD6D6D6</thumb_color>
+                <thumb_center x="12"/>
+                <thumb_size height="116" width="24"/>
+                <pixel_range x="12" y="0">570</pixel_range>
+                <range max="500" min="-500"/>
+            </slider_widget>
+            <slider_widget height="16" id="fine" left="0" name="Fine" top="0" width="100">
+                <anchor_pos left="120" right="120" top="0"/>
+                <thumb_color>0xFFD6D6D6</thumb_color>
+                <thumb_center x="12"/>
+                <thumb_size height="22" width="24"/>
+                <pixel_range x="12" y="0">330</pixel_range>
+                <range max="30" min="-30"/>
+            </slider_widget>
+        </panel_widget>
+        <panel_widget height="72" id="1" left="0" name="Note" top="0" width="300">
+            <anchor_pos top="10"/>
+            <relative_pos x="50"/>
+            <image_widget height="1" id="flat" left="0" name="Flat Arrow" top="0" width="40">
+                <anchor_pos bottom="0" left="20" top="0"/>
+                <image>94</image>
+                <scale_mode>keep_aspect</scale_mode>
+            </image_widget>
+            <image_widget height="1" id="shrp" left="0" name="Sharp Arrow" top="0" width="40">
+                <anchor_pos bottom="0" right="20" top="0"/>
+                <image>95</image>
+                <scale_mode>keep_aspect</scale_mode>
+            </image_widget>
+            <image_widget height="1" id="note" left="0" name="Note" top="0" width="120">
+                <anchor_pos bottom="0" top="0"/>
+                <relative_pos x="50"/>
+                <image>93</image>
+                <scale_mode>keep_aspect</scale_mode>
+                <index>1</index>
+            </image_widget>
+        </panel_widget>
+        <panel_widget height="24" id="1" left="0" top="0" width="550">
+            <anchor_pos bottom="5"/>
+            <relative_pos x="50"/>
+            <text_widget height="1" id="1" left="0" top="0" width="80">
+                <anchor_pos bottom="0" top="0"/>
+                <text>
+                    <label>Reference:</label>
+                    <font name="Roboto" size="12"/>
+                    <align horz="right" vert="middle"/>
+                    <offset x="-1"/>
+                    <text_color>0xFFD0D0D0</text_color>
+                </text>
+            </text_widget>
+            <number_text_edit_widget height="1" id="freq" left="80" top="0" width="60">
+                <anchor_pos bottom="0" top="0"/>
+                <bg_color>0xFF2A2A2A</bg_color>
+                <border_thickness>0</border_thickness>
+                <corner_radius>3</corner_radius>
+                <text>
+                    <label>0</label>
+                    <font name="Roboto" size="12"/>
+                    <align horz="right"/>
+                    <text_color>0xFFCCCCCC</text_color>
+                </text>
+                <range max="455" min="425" param_max="455.000000" param_min="425.000000"/>
+                <arrow_buttons size="14">
+                    <fg_color>0xFFCCCCCC</fg_color>
+                    <bg_color>0x00FFFFFF</bg_color>
+                    <border_thickness>0</border_thickness>
+                    <active_state>
+                        <fg_color>0xFFFFFFFF</fg_color>
+                    </active_state>
+                </arrow_buttons>
+            </number_text_edit_widget>
+            <text_widget height="1" id="1" left="0" top="0" width="50">
+                <anchor_pos bottom="0" left="150" top="0"/>
+                <text>
+                    <label>Type:</label>
+                    <font name="Roboto" size="12"/>
+                    <align horz="right" vert="middle"/>
+                    <offset x="-1"/>
+                    <text_color>0xFFD0D0D0</text_color>
+                </text>
+            </text_widget>
+            <text_menu_widget height="1" id="type" left="0" top="0" width="75">
+                <anchor_pos bottom="0" left="200" top="0"/>
+                <bg_color>0xFF2A2A2A</bg_color>
+                <corner_radius>3</corner_radius>
+                <chevron_pos>8</chevron_pos>
+                <chevron_size>6</chevron_size>
+                <chevron_image>34</chevron_image>
+                <text>
+                    <label>Text</label>
+                    <font name="Roboto" size="12"/>
+                    <offset x="4"/>
+                    <text_color>0xFFCCCCCC</text_color>
+                </text>
+                <menu>
+                    <font name="Roboto" size="12"/>
+                    <text_color>0xFFD0D0D0</text_color>
+                    <bg_color>0xFF28282A</bg_color>
+                    <border_color>0xFF000000</border_color>
+                    <hilite_bg_color>0xFF474747</hilite_bg_color>
+                    <menu_item id="0">
+                        <label>Coarse</label>
+                    </menu_item>
+                    <menu_item id="1">
+                        <label>Fine</label>
+                    </menu_item>
+                    <menu_item id="2">
+                        <label>Strobe</label>
+                    </menu_item>
+                </menu>
+            </text_menu_widget>
+            <text_menu_widget height="1" id="stri" left="0" top="0" width="75">
+                <anchor_pos bottom="0" right="55" top="0"/>
+                <bg_color>0xFF2A2A2A</bg_color>
+                <corner_radius>3</corner_radius>
+                <chevron_pos>8</chevron_pos>
+                <chevron_size>6</chevron_size>
+                <chevron_image>34</chevron_image>
+                <text>
+                    <label>Text</label>
+                    <font name="Roboto" size="12"/>
+                    <offset x="4"/>
+                    <text_color>0xFFCCCCCC</text_color>
+                </text>
+                <menu>
+                    <font name="Roboto" size="12"/>
+                    <text_color>0xFFD0D0D0</text_color>
+                    <bg_color>0xFF28282A</bg_color>
+                    <border_color>0xFF000000</border_color>
+                    <hilite_bg_color>0xFF474747</hilite_bg_color>
+                    <menu_item id="5">
+                        <label>String 6</label>
+                    </menu_item>
+                    <menu_item id="4">
+                        <label>String 5</label>
+                    </menu_item>
+                    <menu_item id="3">
+                        <label>String 4</label>
+                    </menu_item>
+                    <menu_item id="2">
+                        <label>String 3</label>
+                    </menu_item>
+                    <menu_item id="1">
+                        <label>String 2</label>
+                    </menu_item>
+                    <menu_item id="0">
+                        <label>String 1</label>
+                    </menu_item>
+                </menu>
+            </text_menu_widget>
+            <number_text_edit_widget height="1" id="stro" left="85" top="0" width="50">
+                <anchor_pos bottom="0" right="0" top="0"/>
+                <bg_color>0xFF2A2A2A</bg_color>
+                <border_thickness>0</border_thickness>
+                <corner_radius>3</corner_radius>
+                <text>
+                    <label>0</label>
+                    <font name="Roboto" size="12"/>
+                    <align horz="right"/>
+                    <text_color>0xFFCCCCCC</text_color>
+                </text>
+                <range max="25" min="-25" param_max="25.000000" param_min="-25.000000"/>
+                <arrow_buttons size="14">
+                    <fg_color>0xFFCCCCCC</fg_color>
+                    <bg_color>0x00FFFFFF</bg_color>
+                    <border_thickness>0</border_thickness>
+                    <active_state>
+                        <fg_color>0xFFFFFFFF</fg_color>
+                    </active_state>
+                </arrow_buttons>
+            </number_text_edit_widget>
+            <toggle_widget height="1" id="offt" left="0" top="0" width="75">
+                <anchor_pos bottom="0" right="135" top="0"/>
+                <bg_color>0xFF2A2A2A</bg_color>
+                <corner_radius>3</corner_radius>
+                <text>
+                    <label>Offsets</label>
+                    <font name="Roboto" size="12"/>
+                    <text_color>0xFFCCCCCC</text_color>
+                </text>
+                <active_state>
+                    <bg_color>0xFF5E5E5E</bg_color>
+                    <fg_color>0xFFFFFFFF</fg_color>
+                </active_state>
+            </toggle_widget>
+        </panel_widget>
+        <panel_widget height="1" id="1" left="0" top="0" width="1">
+            <anchor_pos bottom="33" left="0" right="0"/>
+            <bg_color>0xFF5E5E5E</bg_color>
+        </panel_widget>
+        <toggle_widget height="26" id="mute" left="10" top="10" width="75">
+            <bg_color>0xFF2A2A2A</bg_color>
+            <corner_radius>3</corner_radius>
+            <icon height="18" left="6" scale_mode="keep_aspect" top="4" width="18">97</icon>
+            <text>
+                <label>Mute</label>
+                <font name="Roboto" size="12"/>
+                <offset x="5"/>
+                <text_color>0xFFCCCCCC</text_color>
+            </text>
+            <active_state>
+                <bg_color>0xFF5E5E5E</bg_color>
+                <fg_color>0xFFFFFFFF</fg_color>
+            </active_state>
+        </toggle_widget>
+        <panel_widget height="26" id="1" left="0" name="" top="56" width="594">
+            <relative_pos x="50"/>
+            <text_widget height="1" id="cenl" left="0" top="0" width="60">
+                <anchor_pos bottom="0" top="0"/>
+                <text>
+                    <label>Cents:</label>
+                    <font name="Roboto" size="16"/>
+                    <align vert="middle"/>
+                    <text_color>0xFFC0C0C0</text_color>
+                </text>
+            </text_widget>
+            <text_widget height="1" id="cenv" left="0" top="0" width="60">
+                <anchor_pos bottom="0" left="61" top="0"/>
+                <text>
+                    <label>+0.0</label>
+                    <font name="Roboto" size="16"/>
+                    <align vert="middle"/>
+                    <text_color>0xFF919191</text_color>
+                </text>
+            </text_widget>
+        </panel_widget>
+    </panel_widget>
+</xg>

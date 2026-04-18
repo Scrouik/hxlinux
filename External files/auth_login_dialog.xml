@@ -1,0 +1,45 @@
+<xg>
+	<panel_widget height="350" id="1" left="0" top="0" width="350">
+		<bg_color>0xFF1D1D1D</bg_color>
+        <border_thickness>1</border_thickness>
+        <border_color>0xFFB3B3B3</border_color>
+
+		<!-- Title -->
+		<text_widget height="30" id="titl">
+			<anchor_pos left="10" right="10" top="5"/>
+			<text>
+				<label>Sign In</label>
+				<font name="Roboto" size="18"/>
+				<align horz="center" vert="center"/>
+				<text_color>0xFFB3B3B3</text_color>
+				<multiline>no</multiline>
+			</text>
+		</text_widget>
+
+
+		<!-- auth_login.xml view be added programmatically as a child view/controller -->
+
+
+		<!-- Cancel Button -->
+		<pushbutton_widget height="25" id="canc" left="0" top="0" width="80">
+			<anchor_pos bottom="8"/>
+			<relative_pos x="50"/>
+			<bg_color>0xFF595B5C</bg_color>
+			<corner_radius>3</corner_radius>
+			<text>
+				<label>DONE</label>
+				<font name="Roboto" size="12"/>
+				<align horz="center" vert="middle"/>
+				<text_color>0xFFEDEDED</text_color>
+			</text>
+			<button_repeat>no</button_repeat>
+			<active_state>
+				<bg_color>0xFF595B5C</bg_color>
+			</active_state>
+			<hilite_state>
+				<bg_color>0xFF696C6E</bg_color>
+			</hilite_state>
+		</pushbutton_widget>
+
+	</panel_widget>
+</xg>

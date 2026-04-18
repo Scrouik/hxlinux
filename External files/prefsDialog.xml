@@ -1,0 +1,1143 @@
+<xg>
+	<panel_widget height="376" id="main" left="0" top="0" width="616">
+		<bg_color>0xFF1D1D1D</bg_color>
+        <border_thickness>1</border_thickness>
+        <border_color>0xFFB3B3B3</border_color>
+
+		<!-- CLOSE button -->
+		<pushbutton_widget height="25" id="okay" left="0" top="0" width="80">
+			<anchor_pos bottom="16" right="16"/>
+			<bg_color>0xFF393939</bg_color>
+			<corner_radius>3</corner_radius>
+			<text>
+				<label>CLOSE</label>
+				<font name="Roboto" size="12"/>
+				<align horz="center" vert="middle"/>
+				<text_color>0xFFEDEDED</text_color>
+			</text>
+			<button_repeat>no</button_repeat>
+			<active_state>
+				<bg_color>0xFF595B5C</bg_color>
+			</active_state>
+			<hilite_state>
+				<bg_color>0xFF696C6E</bg_color>
+			</hilite_state>
+		</pushbutton_widget>
+
+		<!-- Restore Factory Settings button -->
+		<pushbutton_widget height="24" id="fact" width="150">
+			<bg_color>0xFF393939</bg_color>
+			<anchor_pos bottom="16" left="16"/>
+			<corner_radius>3</corner_radius>
+			<text>
+				<label>Restore Factory Settings</label>
+				<font name="Roboto" size="12"/>
+				<align horz="center" vert="middle"/>
+				<text_color>0xFFEDEDED</text_color>
+			</text>
+			<button_repeat>no</button_repeat>
+			<active_state>
+				<bg_color>0xFF595B5C</bg_color>
+			</active_state>
+			<hilite_state>
+				<bg_color>0xFF696C6E</bg_color>
+			</hilite_state>
+		</pushbutton_widget>
+        
+        <!-- Check for updates button -->
+        <pushbutton_widget height="24" id="chud" left="280" width="150">
+            <anchor_pos bottom="16"/>
+            <relative_pos x="50"/>
+            <bg_color>0xFF393939</bg_color>
+            <corner_radius>3</corner_radius>
+            <text>
+                <label>Check for Updates</label>
+                <font name="Roboto" size="12"/>
+                <align horz="center" vert="middle"/>
+                <text_color>0xFFEDEDED</text_color>
+            </text>
+            <button_repeat>no</button_repeat>
+            <active_state>
+                <bg_color>0xFF595B5C</bg_color>
+            </active_state>
+            <hilite_state>
+                <bg_color>0xFF696C6E</bg_color>
+            </hilite_state>
+        </pushbutton_widget>
+
+    <!-- Tab container view -->
+		<panel_widget height="1" id="pftb" left="0" top="0" width="1">
+			<anchor_pos left="16" top="16" bottom="50" right="16"/>
+
+			<!-- top tab control -->
+			<radio_widget height="25" id="tabs" width="1" left="0" top="0">
+				<anchor_pos left="0" top="0" right="0"/>
+				<bg_color>0xFF1D1D1D</bg_color>
+				<radio_button_widget id="1" left="0" height="1" width="150">
+					<anchor_pos top="0" bottom="0"/>
+					<bg_color>0xFF292929</bg_color>
+					<corner_radius bl="no" br="no" tl="yes" tr="no">3</corner_radius>
+					<text>
+						<label>View</label>
+						<font name="Roboto" size="12"/>
+						<align horz="center" vert="middle"/>
+						<text_color>0xFFD0D0D0</text_color>
+					</text>
+					<active_state>
+						<bg_color>0xFF393939</bg_color>
+						<fg_color>0xFFFFFFFF</fg_color>
+					</active_state>
+					<hilite_state>
+						<bg_color>0xFF313131</bg_color>
+						<fg_color>0xFFFFFFFF</fg_color>
+					</hilite_state>
+				</radio_button_widget>
+				<radio_button_widget id="2" left="151" height="1" width="150">
+					<anchor_pos top="0" bottom="0"/>
+					<bg_color>0xFF292929</bg_color>
+					<text>
+						<label>Presets/IRs</label>
+						<font name="Roboto" size="12"/>
+						<align horz="center" vert="middle"/>
+						<text_color>0xFFD0D0D0</text_color>
+					</text>
+					<active_state>
+						<bg_color>0xFF393939</bg_color>
+						<fg_color>0xFFFFFFFF</fg_color>
+					</active_state>
+					<hilite_state>
+						<bg_color>0xFF313131</bg_color>
+						<fg_color>0xFFFFFFFF</fg_color>
+					</hilite_state>
+				</radio_button_widget>
+				<!-- third tab used for both HCM in Native and Device setting in HX Edit-->
+				<radio_button_widget id="3" left="302" height="1" width="150">
+					<anchor_pos top="0" bottom="0"/>
+					<bg_color>0xFF292929</bg_color>
+					<corner_radius bl="no" br="no" tl="no" tr="yes">3</corner_radius>
+					<text>
+						<label>Hardware Compatibility</label>
+						<font name="Roboto" size="12"/>
+						<align horz="center" vert="middle"/>
+						<text_color>0xFFD0D0D0</text_color>
+					</text>
+					<active_state>
+						<bg_color>0xFF393939</bg_color>
+						<fg_color>0xFFFFFFFF</fg_color>
+					</active_state>
+					<hilite_state>
+						<bg_color>0xFF313131</bg_color>
+						<fg_color>0xFFFFFFFF</fg_color>
+					</hilite_state>
+				</radio_button_widget>
+			</radio_widget>
+
+			<!-- VIEW prefs -->
+			<panel_widget height="1" id="ptbV" left="0" top="0" width="1">
+				<anchor_pos left="0" top="25" bottom="0" right="0"/>
+				<bg_color>0xFF393939</bg_color>
+				<corner_radius bl="yes" br="yes" tl="no" tr="yes">3</corner_radius>
+
+				<!-- show/hide block labels pref -->
+				<text_widget height="24" top="25" left="25" name="Show/Hide model names in SFV" width="285">
+					<text>
+						<label>Show/hide name labels for signal flow view items:</label>
+						<align horz="right" vert="middle"/>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" top="25" id="shbl" name="Show/Hide Block Labels" left="315" width="150">
+					<chevron_image>34</chevron_image>
+					<chevron_pos>8</chevron_pos>
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius>3</corner_radius>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<border_thickness>0</border_thickness>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<hilite_text_color>0xFFFFFFFF</hilite_text_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<menu_item id="0">
+							<label>Show Names</label>
+						</menu_item>
+						<menu_item id="1">
+							<label>Hide Names</label>
+						</menu_item>
+					</menu>
+				</text_menu_widget>
+
+                <!-- sort favorites labels pref -->
+                <text_widget height="24" top="60" id="sflb" left="25" name="Sort favorites label" width="285">
+                    <text>
+                        <label>Manage Favorites By:</label>
+                        <align horz="right" vert="middle"/>
+                        <font name="Roboto" size="12"/>
+                        <text_color>0xFFD0D0D0</text_color>
+                        <offset x="-1" y="0"/>
+                    </text>
+                </text_widget>
+                <text_menu_widget height="24" top="60" id="sfmn" name="Sort Favorites menu" left="315" width="150">
+                    <chevron_image>34</chevron_image>
+                    <chevron_pos>8</chevron_pos>
+                    <bg_color>0xFF2A2A2A</bg_color>
+                    <corner_radius>3</corner_radius>
+                    <text>
+                        <font name="Roboto" size="12"/>
+                        <align horz="left" vert="middle"/>
+                        <offset x="4" y="0"/>
+                        <text_color>0xFFCCCCCC</text_color>
+                    </text>
+                    <menu>
+                        <border_thickness>0</border_thickness>
+                        <font name="Roboto" size="12"/>
+                        <text_color>0xFFD0D0D0</text_color>
+                        <bg_color>0xFF28282A</bg_color>
+                        <hilite_text_color>0xFFFFFFFF</hilite_text_color>
+                        <hilite_bg_color>0xFF474747</hilite_bg_color>
+                        <menu_item id="0">
+                            <label>Device List</label>
+                        </menu_item>
+                        <menu_item id="1">
+                            <label>Category</label>
+                        </menu_item>
+                        <menu_item id="2">
+                            <label>Name (A-Z)</label>
+                        </menu_item>
+                    </menu>
+                </text_menu_widget>
+			</panel_widget>
+
+			<!-- PRESET/IR prefs -->
+			<panel_widget height="1" id="ptbP" left="0" top="0" width="1">
+				<anchor_pos left="0" top="25" bottom="0" right="0"/>
+				<bg_color>0xFF393939</bg_color>
+				<corner_radius bl="yes" br="yes" tl="no" tr="yes">3</corner_radius>
+
+				<!-- Preset numbering pref -->
+				<text_widget height="24" id="pnlb" left="65" name="Preset Numbering Label" top="25" width="200">
+					<text>
+						<label>Preset Numbering Format:</label>
+						<font name="Roboto" size="12"/>
+						<align horz="right" vert="middle"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="pnmn" left="280" top="25" width="150">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius bl="yes" br="yes" tl="yes" tr="yes">3</corner_radius>
+					<chevron_pos>8</chevron_pos>
+					<chevron_image>34</chevron_image>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<border_thickness>0</border_thickness>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<border_color>0xFF000000</border_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<menu_item id="0">
+							<label>01A-32D</label>
+						</menu_item>
+						<menu_item id="1">
+							<label>000-127</label>
+						</menu_item>
+					</menu>
+				</text_menu_widget>
+
+				<!-- Stereo IR import pref -->
+				<text_widget height="24" id="silb" left="65" name="Stereo IR Import Label" top="65" width="200">
+					<text>
+						<label>Stereo IR Import:</label>
+						<font name="Roboto" size="12"/>
+						<align horz="right" vert="middle"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="simn" left="280" top="65" width="150">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius bl="yes" br="yes" tl="yes" tr="yes">3</corner_radius>
+					<chevron_pos>8</chevron_pos>
+					<chevron_image>34</chevron_image>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<border_thickness>0</border_thickness>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<border_color>0xFF000000</border_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<menu_item id="0">
+							<label>Use Left Channel</label>
+						</menu_item>
+						<menu_item id="1">
+							<label>Use Right Channel</label>
+						</menu_item>
+						<menu_item id="2">
+							<label>Mix Both Channels</label>
+						</menu_item>
+					</menu>
+				</text_menu_widget>
+
+				<!-- seperator -->
+				<panel_widget height="1" id="sep1" left="0" top="110" width="1">
+					<anchor_pos left="50" right="50"/>
+					<bg_color>0xFF595B5C</bg_color>
+				</panel_widget>
+
+				<!-- Native preset/ir clear buttons -->
+				<pushbutton_widget height="25" id="clps" left="125" top="135" width="150">
+					<bg_color>0xFF595B5C</bg_color>
+					<corner_radius bl="yes" br="yes" tl="yes" tr="yes">3</corner_radius>
+					<text>
+						<label>Clear Preset Library</label>
+						<font name="Roboto" size="12"/>
+						<align horz="center" vert="middle"/>
+						<text_color>0xFFEDEDED</text_color>
+					</text>
+					<button_repeat>no</button_repeat>
+					<active_state>
+						<bg_color>0xFF595B5C</bg_color>
+					</active_state>
+					<hilite_state>
+						<bg_color>0xFF696C6E</bg_color>
+					</hilite_state>
+				</pushbutton_widget>
+				<pushbutton_widget height="25" id="rfps" left="325" top="135" width="150">
+					<bg_color>0xFF595B5C</bg_color>
+					<corner_radius bl="yes" br="yes" tl="yes" tr="yes">3</corner_radius>
+					<text>
+						<label>Restore Factory Setlists</label>
+						<font name="Roboto" size="12"/>
+						<align horz="center" vert="middle"/>
+						<text_color>0xFFEDEDED</text_color>
+					</text>
+					<button_repeat>no</button_repeat>
+					<active_state>
+						<bg_color>0xFF595B5C</bg_color>
+					</active_state>
+					<hilite_state>
+						<bg_color>0xFF696C6E</bg_color>
+					</hilite_state>
+				</pushbutton_widget>
+				<pushbutton_widget height="25" id="clir" left="125" top="170" width="150">
+					<bg_color>0xFF595B5C</bg_color>
+					<corner_radius bl="yes" br="yes" tl="yes" tr="yes">3</corner_radius>
+					<text>
+						<label>Clear IR Library</label>
+						<font name="Roboto" size="12"/>
+						<align horz="center" vert="middle"/>
+						<text_color>0xFFEDEDED</text_color>
+					</text>
+					<button_repeat>no</button_repeat>
+					<active_state>
+						<bg_color>0xFF595B5C</bg_color>
+					</active_state>
+					<hilite_state>
+						<bg_color>0xFF696C6E</bg_color>
+					</hilite_state>
+				</pushbutton_widget>
+
+				<!-- seperator -->
+				<panel_widget height="1" id="sep2" left="0" top="220" width="1">
+					<anchor_pos left="50" right="50"/>
+					<bg_color>0xFF595B5C</bg_color>
+				</panel_widget>
+
+				<!-- bundle import/export buttons -->
+				<pushbutton_widget height="25" id="imbn" left="125" top="245" width="150">
+					<bg_color>0xFF595B5C</bg_color>
+					<corner_radius bl="yes" br="yes" tl="yes" tr="yes">3</corner_radius>
+					<text>
+						<label>Import Bundle</label>
+						<font name="Roboto" size="12"/>
+						<align horz="center" vert="middle"/>
+						<text_color>0xFFEDEDED</text_color>
+					</text>
+					<button_repeat>no</button_repeat>
+					<active_state>
+						<bg_color>0xFF595B5C</bg_color>
+					</active_state>
+					<hilite_state>
+						<bg_color>0xFF696C6E</bg_color>
+					</hilite_state>
+				</pushbutton_widget>
+				<pushbutton_widget height="25" id="exbn" left="325" top="245" width="150">
+					<bg_color>0xFF595B5C</bg_color>
+					<corner_radius bl="yes" br="yes" tl="yes" tr="yes">3</corner_radius>
+					<text>
+						<label>Export Bundle</label>
+						<font name="Roboto" size="12"/>
+						<align horz="center" vert="middle"/>
+						<text_color>0xFFEDEDED</text_color>
+					</text>
+					<button_repeat>no</button_repeat>
+					<active_state>
+						<bg_color>0xFF595B5C</bg_color>
+					</active_state>
+					<hilite_state>
+						<bg_color>0xFF696C6E</bg_color>
+					</hilite_state>
+				</pushbutton_widget>
+			</panel_widget>
+
+			<!-- HCM prefs -->
+			<panel_widget height="1" id="ptbH" left="0" top="0" width="1">
+				<visible>no</visible>
+				<anchor_pos left="0" top="25" bottom="0" right="0"/>
+				<bg_color>0xFF393939</bg_color>
+				<corner_radius bl="yes" br="yes" tl="no" tr="yes">3</corner_radius>
+
+				<!-- hardware compatibility mode menu/default button -->
+				<text_widget height="24" id="hcml" left="20" name="Hardware Compatibility Mode Label" top="25" width="235">
+					<text>
+						<label>Current Hardware Compatibility Mode:</label>
+						<font name="Roboto" size="12"/>
+						<align horz="right" vert="middle"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="hcmm" left="260" name="Hardware Compatibility Mode Menu" top="25" width="200">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius bl="yes" br="yes" tl="yes" tr="yes">3</corner_radius>
+					<chevron_pos>8</chevron_pos>
+					<chevron_image>34</chevron_image>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<border_thickness>0</border_thickness>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<border_color>0xFF000000</border_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<menu_item id="2162945">
+							<label>Off</label>
+						</menu_item>
+						<menu_item id="2162944">
+							<label>Helix Floor/Rack/LT</label>
+						</menu_item>
+						<menu_item id="2162693">
+							<label>HX Effects</label>
+						</menu_item>
+						<menu_item id="2162694">
+							<label>HX Stomp</label>
+						</menu_item>
+					</menu>
+				</text_menu_widget>
+				<pushbutton_widget height="24" id="hcsd" left="465" top="25" width="100">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius bl="yes" br="yes" tl="yes" tr="yes">3</corner_radius>
+					<text>
+						<label>Set As Default</label>
+						<font name="Roboto" size="12"/>
+						<align horz="center" vert="middle"/>
+						<text_color>0xFFEDEDED</text_color>
+					</text>
+					<button_repeat>no</button_repeat>
+					<active_state>
+						<bg_color>0xFF595B5C</bg_color>
+					</active_state>
+					<hilite_state>
+						<bg_color>0xFF696C6E</bg_color>
+					</hilite_state>
+				</pushbutton_widget>
+
+				<!-- hardware compatibility file import option -->
+				<text_widget height="36" id="hcfl" left="20" name="HCM File Option Label" top="70" width="235">
+					<text>
+						<label>When loading presets that don't match current hardware mode:</label>
+						<font name="Roboto" size="12"/>
+						<align horz="right" vert="middle"/>
+						<multiline>yes</multiline>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="hcfo" left="260" name="HCM File Option Menu" top="75" width="200">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius bl="yes" br="yes" tl="yes" tr="yes">3</corner_radius>
+					<chevron_pos>8</chevron_pos>
+					<chevron_image>34</chevron_image>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<border_thickness>0</border_thickness>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<border_color>0xFF000000</border_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<menu_item id="2">
+							<label>Prompt</label>
+						</menu_item>
+						<menu_item id="1">
+							<label>Change mode to match file</label>
+						</menu_item>
+						<menu_item id="0">
+							<label>Translate file to current mode</label>
+						</menu_item>
+					</menu>
+				</text_menu_widget>
+
+				<!-- remove models option -->
+				<text_widget height="36" id="rmlb" left="20" name="Remove Models Label" top="120" width="235">
+					<text>
+						<label>Remove non-functioning hardware blocks (e.g. Looper) when importing presets:</label>
+						<font name="Roboto" size="12"/>
+						<align horz="right" vert="middle"/>
+						<multiline>yes</multiline>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="rmmn" left="260" name="Remove Models Menu" top="125" width="200">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius bl="yes" br="yes" tl="yes" tr="yes">3</corner_radius>
+					<chevron_pos>8</chevron_pos>
+					<chevron_image>34</chevron_image>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<border_thickness>0</border_thickness>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<border_color>0xFF000000</border_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<menu_item id="0">
+							<label>Disabled</label>
+						</menu_item>
+						<menu_item id="1">
+							<label>Enabled</label>
+						</menu_item>
+					</menu>
+				</text_menu_widget>
+
+				<!-- show hardware controllers option -->
+				<text_widget height="36" id="shlb" left="20" name="Show Controller Label" top="170" width="235">
+					<text>
+						<label>Show hardware bypass/controller assignments:</label>
+						<font name="Roboto" size="12"/>
+						<align horz="right" vert="middle"/>
+						<multiline>yes</multiline>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="shmn" left="260" name="Show Controller Menu" top="175" width="200">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius bl="yes" br="yes" tl="yes" tr="yes">3</corner_radius>
+					<chevron_pos>8</chevron_pos>
+					<chevron_image>34</chevron_image>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<border_thickness>0</border_thickness>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<border_color>0xFF000000</border_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<menu_item id="0">
+							<label>Hide assignments</label>
+						</menu_item>
+						<menu_item id="1">
+							<label>Show assignments</label>
+						</menu_item>
+					</menu>
+				</text_menu_widget>
+
+				<!-- auto assign pedal hardware controllers option -->
+				<text_widget height="36" id="aalb" left="20" name="Auto HW Assign Label" top="220" width="235">
+					<text>
+						<label>Auto assign hardware bypass/ controllers to pedal based models:</label>
+						<font name="Roboto" size="12"/>
+						<align horz="right" vert="middle"/>
+						<multiline>yes</multiline>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="aamn" left="260" name="Auto HW Assign Menu" top="225" width="200">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius bl="yes" br="yes" tl="yes" tr="yes">3</corner_radius>
+					<chevron_pos>8</chevron_pos>
+					<chevron_image>34</chevron_image>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<border_thickness>0</border_thickness>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<border_color>0xFF000000</border_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<menu_item id="0">
+							<label>Disabled</label>
+						</menu_item>
+						<menu_item id="1">
+							<label>Enabled</label>
+						</menu_item>
+					</menu>
+				</text_menu_widget>
+
+			</panel_widget>
+
+			<!-- Device prefs -->
+			<panel_widget height="1" id="ptbD" left="0" top="0" width="1">
+				<anchor_pos left="0" top="25" bottom="0" right="0"/>
+				<visible>no</visible>
+				<bg_color>0xFF393939</bg_color>
+
+				<!-- Label if we have no settings (Floor/Rack) -->
+				<text_widget height="1" id="nodv" left="0" name="No Settings." top="0" width="1">
+					<anchor_pos left="0" top="0" right="0" bottom="0"/>
+					<text>
+						<label>There are no settings for your connected device.</label>
+						<align horz="center" vert="middle"/>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+					</text>
+				</text_widget>
+
+				<!-- LT	 EXP2/ExtAmp setting -->
+				<text_widget height="24" id="ltel" left="65" name="LT EXP 2/Ext Amp Label" top="25" width="200">
+					<text>
+						<label>EXP 2/EXT AMP :</label>
+						<align horz="right" vert="middle"/>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="ltem" name="LT EXP 2/Ext Amp Menu" left="280" top="25" width="150">
+					<chevron_image>34</chevron_image>
+					<chevron_pos>8</chevron_pos>
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius>3</corner_radius>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<border_thickness>0</border_thickness>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<hilite_text_color>0xFFFFFFFF</hilite_text_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<menu_item id="0">
+							<label>EXP 2 In</label>
+						</menu_item>
+						<menu_item id="1">
+							<label>EXT AMP Out</label>
+						</menu_item>
+					</menu>
+				</text_menu_widget>
+
+
+				<!-- HelixFX Pedal 1 Jack setting -->
+				<text_widget height="24" id="fx1l" left="65" name="FX Pedal 1 Jack Label" top="25" width="200">
+					<text>
+						<label>Pedal 1 Jack:</label>
+						<align horz="right" vert="middle"/>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="fx1m" left="280" name="FX Pedal 1 Jack Menu" top="25" width="150">
+					<chevron_image>34</chevron_image>
+					<chevron_pos>8</chevron_pos>
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius>3</corner_radius>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<border_thickness>0</border_thickness>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<hilite_text_color>0xFFFFFFFF</hilite_text_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<menu_item id="0">
+							<label>EXP 1</label>
+						</menu_item>
+						<menu_item id="1">
+							<label>Amp 1</label>
+						</menu_item>
+					</menu>
+				</text_menu_widget>
+				<!-- HelixFX Pedal 2 Jack setting -->
+				<text_widget height="24" id="fx2l" left="65" name="FX Pedal 2 Jack Label" top="65" width="200">
+					<text>
+						<label>Pedal 2 Jack:</label>
+						<align horz="right" vert="middle"/>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="fx2m" left="280" name="FX Pedal 2 Jack Menu" top="65" width="150">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius>3</corner_radius>
+					<chevron_pos>8</chevron_pos>
+					<chevron_image>34</chevron_image>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<border_thickness>0</border_thickness>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<hilite_text_color>0xFFFFFFFF</hilite_text_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<menu_item id="0">
+							<label>EXP 2</label>
+						</menu_item>
+						<menu_item id="1">
+							<label>Amp 2</label>
+						</menu_item>
+					</menu>
+				</text_menu_widget>
+
+
+				<!-- Helix Stomp/XL Exp FS/Tip setting -->
+				<text_widget height="24" id="fstl" left="65" name="P33/P36 ExpFS Tip Label" top="25" width="200">
+					<text>
+						<label>EXP/FS Tip:</label>
+						<align horz="right" vert="middle"/>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="fstm" left="280" name="P33/P36 ExpFS Tip Menu" top="25" width="150">
+					<chevron_image>34</chevron_image>
+					<chevron_pos>8</chevron_pos>
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius>3</corner_radius>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<border_thickness>0</border_thickness>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<hilite_text_color>0xFFFFFFFF</hilite_text_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<menu_item id="0">
+							<label>EXP 1</label>
+						</menu_item>
+						<menu_item id="1">
+							<label>FS4</label>
+						</menu_item>
+					</menu>
+				</text_menu_widget>
+				<!-- Helix Stomp/XL Exp FS/Ring setting -->
+				<text_widget height="24" id="fsrl" left="65" name="P33/P36 ExpFS Ring Label" top="55" width="200">
+					<text>
+						<label>EXP/FS Ring:</label>
+						<align horz="right" vert="middle"/>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="fsrm" left="280" name="P33/P36 ExpFS Ring Menu" top="55" width="150">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius>3</corner_radius>
+					<chevron_pos>8</chevron_pos>
+					<chevron_image>34</chevron_image>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<border_thickness>0</border_thickness>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<hilite_text_color>0xFFFFFFFF</hilite_text_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<menu_item id="0">
+							<label>EXP 2</label>
+						</menu_item>
+						<menu_item id="1">
+							<label>FS5</label>
+						</menu_item>
+					</menu>
+				</text_menu_widget>
+
+				<!-- Helix Stomp FS3 Function setting -->
+				<text_widget height="24" id="fs3l" left="65" name="P33 FS3 Function Label" top="105" width="200">
+					<text>
+						<label>FS3 Function:</label>
+						<align horz="right" vert="middle"/>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="fs3m" left="280" name="P33 FS3 Function Menu" top="105" width="150">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius>3</corner_radius>
+					<chevron_pos>8</chevron_pos>
+					<chevron_image>34</chevron_image>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<item_height>24</item_height>
+						<right_margin>10</right_margin>
+						<auto_hide_margins>no</auto_hide_margins>
+						<font name="Roboto" size="12"/>
+						<align horz="left"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<hilite_text_color>0xFFFFFFFF</hilite_text_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<border_thickness>0</border_thickness>
+						<vscroll>
+							<width>8</width>
+							<border_thickness>0</border_thickness>
+							<bg_color>0xFF28282A</bg_color>
+							<arrow_buttons size="0"/>
+							<thumb_color>0xFF808080</thumb_color>
+							<thumb_hilite_color>0xFFCCCCCC</thumb_hilite_color>
+						</vscroll>
+						<menu_item id="0"><label>Tap/Tuner</label></menu_item>
+						<menu_item id="1"><label>Stomp 3</label></menu_item>
+						<menu_item id="4"><label>Preset Up</label></menu_item>
+						<menu_item id="5"><label>Preset Down</label></menu_item>
+						<menu_item id="6"><label>Snapshot Up</label></menu_item>
+						<menu_item id="7"><label>Snapshot Down</label></menu_item>
+						<menu_item id="10"><label>All Bypass</label></menu_item>
+						<menu_item id="11"><label>Toggle EXP</label></menu_item>
+					</menu>
+				</text_menu_widget>
+				<!-- Helix Stomp FS4 Function setting -->
+				<text_widget height="24" id="fs4l" left="65" name="P33 FS4 Function Label" top="135" width="200">
+					<text>
+						<label>FS4 Function:</label>
+						<align horz="right" vert="middle"/>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="fs4m" left="280" name="P33 FS4 Function Menu" top="135" width="150">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius>3</corner_radius>
+					<chevron_pos>8</chevron_pos>
+					<chevron_image>34</chevron_image>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<item_height>24</item_height>
+						<right_margin>10</right_margin>
+						<auto_hide_margins>no</auto_hide_margins>
+						<font name="Roboto" size="12"/>
+						<align horz="left"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<hilite_text_color>0xFFFFFFFF</hilite_text_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<border_thickness>0</border_thickness>
+						<vscroll>
+							<width>8</width>
+							<border_thickness>0</border_thickness>
+							<bg_color>0xFF28282A</bg_color>
+							<arrow_buttons size="0"/>
+							<thumb_color>0xFF808080</thumb_color>
+							<thumb_hilite_color>0xFFCCCCCC</thumb_hilite_color>
+						</vscroll>
+						<menu_item id="0"><label>Tap/Tuner</label></menu_item>
+						<menu_item id="1"><label>Stomp 4</label></menu_item>
+						<menu_item id="2"><label>Bank Up</label></menu_item>
+						<menu_item id="3"><label>Bank Down</label></menu_item>
+						<menu_item id="4"><label>Preset Up</label></menu_item>
+						<menu_item id="5"><label>Preset Down</label></menu_item>
+						<menu_item id="6"><label>Snapshot Up</label></menu_item>
+						<menu_item id="7"><label>Snapshot Down</label></menu_item>
+						<menu_item id="8"><label>FS Mode &gt;</label></menu_item>
+						<menu_item id="9"><label>&lt; FS Mode</label></menu_item>
+						<menu_item id="10"><label>All Bypass</label></menu_item>
+						<menu_item id="11"><label>Toggle EXP</label></menu_item>
+					</menu>
+				</text_menu_widget>
+				<!-- Helix Stomp FS5 Function setting -->
+			    <text_widget height="24" id="fs5l" left="65" name="P33 FS5 Function Label" top="165" width="200">
+					<text>
+						<label>FS5 Function:</label>
+						<align horz="right" vert="middle"/>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="fs5m" left="280" name="P33 FS5 Function Menu" top="165" width="150">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius>3</corner_radius>
+					<chevron_pos>8</chevron_pos>
+					<chevron_image>34</chevron_image>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<item_height>24</item_height>
+						<right_margin>10</right_margin>
+						<auto_hide_margins>no</auto_hide_margins>
+						<font name="Roboto" size="12"/>
+						<align horz="left"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<hilite_text_color>0xFFFFFFFF</hilite_text_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<border_thickness>0</border_thickness>
+						<vscroll>
+							<width>8</width>
+							<border_thickness>0</border_thickness>
+							<bg_color>0xFF28282A</bg_color>
+							<arrow_buttons size="0"/>
+							<thumb_color>0xFF808080</thumb_color>
+							<thumb_hilite_color>0xFFCCCCCC</thumb_hilite_color>
+						</vscroll>
+						<menu_item id="0"><label>Tap/Tuner</label></menu_item>
+						<menu_item id="1"><label>Stomp 5</label></menu_item>
+						<menu_item id="2"><label>Bank Up</label></menu_item>
+						<menu_item id="3"><label>Bank Down</label></menu_item>
+						<menu_item id="4"><label>Preset Up</label></menu_item>
+						<menu_item id="5"><label>Preset Down</label></menu_item>
+						<menu_item id="6"><label>Snapshot Up</label></menu_item>
+						<menu_item id="7"><label>Snapshot Down</label></menu_item>
+						<menu_item id="8"><label>FS Mode &gt;</label></menu_item>
+						<menu_item id="9"><label>&lt; FS Mode</label></menu_item>
+						<menu_item id="10"><label>All Bypass</label></menu_item>
+						<menu_item id="11"><label>Toggle EXP</label></menu_item>
+					</menu>
+				</text_menu_widget>
+
+				<!-- Helix Stomp XL Tap Function setting -->
+				<text_widget height="24" id="tapl" left="65" name="P36 Tap Function Label" top="105" width="200">
+					<text>
+						<label>Tap Function:</label>
+						<align horz="right" vert="middle"/>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="tapm" left="280" name="P36 Tap Function Menu" top="105" width="150">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius>3</corner_radius>
+					<chevron_pos>8</chevron_pos>
+					<chevron_image>34</chevron_image>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<item_height>24</item_height>
+						<right_margin>10</right_margin>
+						<auto_hide_margins>no</auto_hide_margins>
+						<font name="Roboto" size="12"/>
+						<align horz="left"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<hilite_text_color>0xFFFFFFFF</hilite_text_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<border_thickness>0</border_thickness>
+						<vscroll>
+							<width>8</width>
+							<border_thickness>0</border_thickness>
+							<bg_color>0xFF28282A</bg_color>
+							<arrow_buttons size="0"/>
+							<thumb_color>0xFF808080</thumb_color>
+							<thumb_hilite_color>0xFFCCCCCC</thumb_hilite_color>
+						</vscroll>
+						<menu_item id="0"><label>Tap/Tuner</label></menu_item>
+						<menu_item id="1"><label>All Bypass</label></menu_item>
+					</menu>
+				</text_menu_widget>
+				<!-- Helix Stomp XL FS7 Function setting -->
+				<text_widget height="24" id="fs7l" left="65" name="P36 FS7 Function Label" top="135" width="200">
+					<text>
+						<label>FS7 Function:</label>
+						<align horz="right" vert="middle"/>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="fs7m" left="280" name="P36 FS7 Function Menu" top="135" width="150">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius>3</corner_radius>
+					<chevron_pos>8</chevron_pos>
+					<chevron_image>34</chevron_image>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<item_height>24</item_height>
+						<right_margin>10</right_margin>
+						<auto_hide_margins>no</auto_hide_margins>
+						<font name="Roboto" size="12"/>
+						<align horz="left"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<hilite_text_color>0xFFFFFFFF</hilite_text_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<border_thickness>0</border_thickness>
+						<vscroll>
+							<width>8</width>
+							<border_thickness>0</border_thickness>
+							<bg_color>0xFF28282A</bg_color>
+							<arrow_buttons size="0"/>
+							<thumb_color>0xFF808080</thumb_color>
+							<thumb_hilite_color>0xFFCCCCCC</thumb_hilite_color>
+						</vscroll>
+						<menu_item id="0"><label>Tap/Tuner</label></menu_item>
+						<menu_item id="1"><label>Stomp 7</label></menu_item>
+						<menu_item id="2"><label>Bank Up</label></menu_item>
+						<menu_item id="3"><label>Bank Down</label></menu_item>
+						<menu_item id="4"><label>Preset Up</label></menu_item>
+						<menu_item id="5"><label>Preset Down</label></menu_item>
+						<menu_item id="6"><label>Snapshot Up</label></menu_item>
+						<menu_item id="7"><label>Snapshot Down</label></menu_item>
+						<menu_item id="8"><label>All Bypass</label></menu_item>
+						<menu_item id="9"><label>Toggle EXP</label></menu_item>
+					</menu>
+				</text_menu_widget>
+				<!-- Helix Stomp XL FS8 Function setting -->
+			    <text_widget height="24" id="fs8l" left="65" name="P36 FS8 Function Label" top="165" width="200">
+					<text>
+						<label>FS8 Function:</label>
+						<align horz="right" vert="middle"/>
+						<font name="Roboto" size="12"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<offset x="-1" y="0"/>
+					</text>
+				</text_widget>
+				<text_menu_widget height="24" id="fs8m" left="280" name="P36 FS8 Function Menu" top="165" width="150">
+					<bg_color>0xFF2A2A2A</bg_color>
+					<corner_radius>3</corner_radius>
+					<chevron_pos>8</chevron_pos>
+					<chevron_image>34</chevron_image>
+					<text>
+						<font name="Roboto" size="12"/>
+						<align horz="left" vert="middle"/>
+						<offset x="4" y="0"/>
+						<text_color>0xFFCCCCCC</text_color>
+					</text>
+					<menu>
+						<item_height>24</item_height>
+						<right_margin>10</right_margin>
+						<auto_hide_margins>no</auto_hide_margins>
+						<font name="Roboto" size="12"/>
+						<align horz="left"/>
+						<text_color>0xFFD0D0D0</text_color>
+						<bg_color>0xFF28282A</bg_color>
+						<hilite_text_color>0xFFFFFFFF</hilite_text_color>
+						<hilite_bg_color>0xFF474747</hilite_bg_color>
+						<border_thickness>0</border_thickness>
+						<vscroll>
+							<width>8</width>
+							<border_thickness>0</border_thickness>
+							<bg_color>0xFF28282A</bg_color>
+							<arrow_buttons size="0"/>
+							<thumb_color>0xFF808080</thumb_color>
+							<thumb_hilite_color>0xFFCCCCCC</thumb_hilite_color>
+						</vscroll>
+						<menu_item id="0"><label>Tap/Tuner</label></menu_item>
+						<menu_item id="1"><label>Stomp 8</label></menu_item>
+						<menu_item id="2"><label>Bank Up</label></menu_item>
+						<menu_item id="3"><label>Bank Down</label></menu_item>
+						<menu_item id="4"><label>Preset Up</label></menu_item>
+						<menu_item id="5"><label>Preset Down</label></menu_item>
+						<menu_item id="6"><label>Snapshot Up</label></menu_item>
+						<menu_item id="7"><label>Snapshot Down</label></menu_item>
+						<menu_item id="8"><label>All Bypass</label></menu_item>
+						<menu_item id="9"><label>Toggle EXP</label></menu_item>
+					</menu>
+				</text_menu_widget>
+
+			</panel_widget>
+
+		</panel_widget>
+
+	</panel_widget>
+</xg>

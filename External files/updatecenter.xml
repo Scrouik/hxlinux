@@ -1,0 +1,33 @@
+
+<xg>
+    <panel_widget height="800" id="1" left="0" top="0" width="740">
+        <bg_color>0xFF000000</bg_color>
+        <text_widget height="51" id="titl" left="180" top="35" width="324">
+            <anchor_pos left="180"/>
+            <text>
+                <label>HX Stomp XL Updates</label>
+                <font name="Verdana" size="24"/>
+                <align vert="middle"/>
+                <text_color>0xFFEBEBEB</text_color>
+            </text>
+        </text_widget>
+        <image_widget height="88" id="icon" left="16" top="16" width="154">
+            <anchor_pos left="16" top="16"/>
+            <image>63</image>
+            <scale_mode>keep_aspect</scale_mode>
+        </image_widget>
+        <panel_widget height="1" id="1" left="16" top="115" width="608">
+            <anchor_pos left="16" right="16"/>
+            <bg_color>0xFF5E5E5E</bg_color>
+        </panel_widget>
+        <text_widget height="33" id="mesg" left="16" top="141" width="708">
+            <anchor_pos left="16" right="16"/>
+            <text>
+                <label>The following updates are available:</label>
+                <font name="Verdana" size="16"/>
+                <align vert="middle"/>
+                <text_color>0xFFD6D6D6</text_color>
+            </text>
+        </text_widget>
+    </panel_widget>
+</xg>

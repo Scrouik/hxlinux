@@ -1,0 +1,56 @@
+<xg>
+    <panel_widget height="30" id="sgvw" name="segmented view" left="0" top="0" width="1">
+		<anchor_pos left="0" right="0"/>
+		<bg_color>0xFF0C0C0C</bg_color>
+		<disabled_color>0x00000000</disabled_color>
+		<image_widget height="9" id="auto" left="0" name="Auto Assign" top="0" width="21">
+			<anchor_pos left="0" top="5"/>
+			<image>27</image>
+		</image_widget>
+		<image_widget height="9" id="ctrl" left="0" name="Ctrl Assign" top="0" width="19">
+			<anchor_pos left="2" top="5"/>
+			<image>70</image>
+		</image_widget>
+		<image_widget height="20" id="mlrn" left="0" name="MIDI Learn" top="0" width="16">
+			<anchor_pos left="2" top="5"/>
+            <visible>no</visible>
+            <scale_mode>keep_aspect</scale_mode>
+			<image>82</image>
+		</image_widget>
+
+        <text_widget height="20" id="name" left="0" name="Label" top="0" width="90">
+			<anchor_pos left="23" top="8" bottom="0"/>
+            <bg_color>0x00000000</bg_color>
+            <text>
+                <label>test</label>
+                <font name="Roboto" size="12"/>
+                <align horz="left" vert="top"/>
+                <multiline>yes</multiline>
+                <text_color>0xFFD0D0D0</text_color>
+            </text>
+        </text_widget>
+
+        <radio_widget height="20" id="radi" left="0" name="Value" top="0" width="1">
+            <anchor_pos top="7" left="120" right="23"/>
+            <bg_color>0x00000000</bg_color>
+            <!-- template radio button; code will determine number, size, and labels of buttons -->
+            <radio_button_widget height="1" id="1" left="0" top="0" width="60">
+                <corner_radius>6</corner_radius>
+                <anchor_pos bottom="0" top="0"/>
+                <border_color>0xFF000000</border_color>
+                <bg_color>0xFF1F1F1F</bg_color>
+                <text>
+                    <label>test</label>
+                    <font name="Roboto" size="11"/>
+                    <text_color>0xFFFF0000</text_color>
+                </text>
+                <active_state>
+                    <bg_color>0xFF7F0000</bg_color>
+                    <fg_color>0xFF000000</fg_color>
+                </active_state>
+            </radio_button_widget>
+        </radio_widget>
+        
+	</panel_widget>
+</xg>
+

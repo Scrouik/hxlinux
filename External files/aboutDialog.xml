@@ -1,0 +1,214 @@
+
+<xg>
+    <panel_widget height="390" id="main" left="0" top="0" width="570">
+        <bg_color>0xFF1D1D1D</bg_color>
+        <border_color>0xFFB3B3B3</border_color>
+        <panel_widget height="40" id="devw" left="0" top="0" width="570">
+            <anchor_pos left="0" right="0" top="0"/>
+            <bg_color>0x00000000</bg_color>
+            <image_widget height="36" id="dvim" left="0" name="Device Image" top="2" width="70">
+                <anchor_pos bottom="2" top="2"/>
+                <bg_color>0x00000000</bg_color>
+                <image>9</image>
+                <scale_mode>keep_aspect</scale_mode>
+            </image_widget>
+            <image_widget height="1" id="anim" left="1" top="1" width="70">
+                <anchor_pos bottom="2" left="8" top="2"/>
+                <visible>no</visible>
+                <bg_color>0x00000000</bg_color>
+                <image>7</image>
+                <scale_mode>keep_aspect</scale_mode>
+            </image_widget>
+            <text_widget height="40" id="fwvr" left="1" top="0" width="1">
+                <anchor_pos bottom="0" top="0"/>
+                <bg_color>0x00000000</bg_color>
+                <text>
+                    <label>Text Label</label>
+                    <font name="Roboto" size="20" weight="bold"/>
+                    <align vert="middle"/>
+                    <text_color>0xAAFFFFFF</text_color>
+                </text>
+            </text_widget>
+            <pushbutton_widget height="24" id="chud" left="440" top="8" width="120">
+                <anchor_pos right="10"/>
+                <relative_pos y="50"/>
+                <bg_color>0xFF393939</bg_color>
+                <corner_radius>3</corner_radius>
+                <icon_placement spacing="4">-1</icon_placement>
+                <text>
+                    <label>Check for Updates</label>
+                    <font name="Roboto" size="12"/>
+                    <text_color>0xFFEDEDED</text_color>
+                </text>
+                <active_state>
+                    <bg_color>0xFF595B5C</bg_color>
+                </active_state>
+                <hilite_state>
+                    <bg_color>0xFF696C6E</bg_color>
+                </hilite_state>
+            </pushbutton_widget>
+        </panel_widget>
+        <pushbutton_widget height="25" id="okay" left="0" top="0" width="80">
+            <anchor_pos bottom="8" right="8"/>
+            <bg_color>0xFF595B5C</bg_color>
+            <corner_radius>3</corner_radius>
+            <icon_placement spacing="4">-1</icon_placement>
+            <text>
+                <label>CLOSE</label>
+                <font name="Roboto" size="12"/>
+                <text_color>0xFFEDEDED</text_color>
+            </text>
+            <active_state>
+                <bg_color>0xFF595B5C</bg_color>
+            </active_state>
+            <hilite_state>
+                <bg_color>0xFF696C6E</bg_color>
+            </hilite_state>
+        </pushbutton_widget>
+        <panel_widget height="1" id="abtb" left="0" top="0" width="1">
+            <anchor_pos bottom="41" left="8" right="8" top="40"/>
+            <bg_color>0x00000000</bg_color>
+            <radio_widget height="309" id="tabs" left="0" top="0" width="130">
+                <anchor_pos bottom="0" left="0" top="0"/>
+                <bg_color>0xFF1D1D1D</bg_color>
+                <radio_button_widget height="154" id="1" left="0" top="0" width="1">
+                    <anchor_pos left="0" top="0"/>
+                    <bg_color>0xFF292929</bg_color>
+                    <corner_radius bl="no" br="no" tl="yes" tr="no">3</corner_radius>
+                    <icon_placement spacing="4">-1</icon_placement>
+                    <text>
+                        <label>ABOUT</label>
+                        <font name="Roboto" size="12"/>
+                        <text_color>0xFFD0D0D0</text_color>
+                    </text>
+                    <active_state>
+                        <bg_color>0xFF393939</bg_color>
+                        <fg_color>0xFFFFFFFF</fg_color>
+                    </active_state>
+                    <hilite_state>
+                        <bg_color>0xFF313131</bg_color>
+                        <fg_color>0xFFFFFFFF</fg_color>
+                    </hilite_state>
+                </radio_button_widget>
+                <radio_button_widget height="154" id="2" left="0" top="0" width="1">
+                    <anchor_pos left="0" top="156"/>
+                    <bg_color>0xFF292929</bg_color>
+                    <corner_radius bl="yes" br="no" tl="no" tr="no">3</corner_radius>
+                    <icon_placement spacing="4">-1</icon_placement>
+                    <text>
+                        <label>LEGAL</label>
+                        <font name="Roboto" size="12"/>
+                        <text_color>0xFFD0D0D0</text_color>
+                    </text>
+                    <active_state>
+                        <bg_color>0xFF393939</bg_color>
+                        <fg_color>0xFFFFFFFF</fg_color>
+                    </active_state>
+                    <hilite_state>
+                        <bg_color>0xFF313131</bg_color>
+                        <fg_color>0xFFFFFFFF</fg_color>
+                    </hilite_state>
+                </radio_button_widget>
+            </radio_widget>
+            <panel_widget height="309" id="atvA" left="130" top="0" width="424">
+                <anchor_pos bottom="0" left="130" right="0" top="0"/>
+                <bg_color>0xFF393939</bg_color>
+                <corner_radius bl="no" br="yes" tl="no" tr="yes">3</corner_radius>
+                <panel_widget height="229" id="pan1" left="0" name="Logo Panel" top="0" width="424">
+                    <anchor_pos bottom="80" left="0" right="0" top="0"/>
+                    <bg_color>0x00000000</bg_color>
+                    <image_widget height="0" id="poly" left="0" name="Polygon Left" top="0" width="0">
+                        <anchor_pos bottom="0" left="0" right="0" top="0"/>
+                        <bg_color>0x00000000</bg_color>
+                        <image>24</image>
+                        <scale_mode>stretch</scale_mode>
+                    </image_widget>
+                    <image_widget height="30" id="l6lo" left="0" name="Line 6 Logo" top="0" width="0">
+                        <relative_pos x="50" y="15"/>
+                        <bg_color>0x00000000</bg_color>
+                        <image>15</image>
+                        <scale_mode>keep_aspect</scale_mode>
+                    </image_widget>
+                    <image_widget height="130" id="dvai" left="0" name="Device About Image" top="0" width="0">
+                        <relative_pos x="50" y="50"/>
+                        <bg_color>0x00000000</bg_color>
+                        <image>63</image>
+                        <scale_mode>keep_aspect</scale_mode>
+                    </image_widget>
+                    <image_widget height="20" id="hxlo" left="0" name="Helix Logo" top="0" width="0">
+                        <relative_pos x="50" y="85"/>
+                        <bg_color>0x00000000</bg_color>
+                        <image>60</image>
+                        <scale_mode>keep_aspect</scale_mode>
+                    </image_widget>
+                </panel_widget>
+                <panel_widget height="80" id="1" left="0" name="Text Panel" top="229" width="424">
+                    <anchor_pos bottom="0" left="0" right="0"/>
+                    <bg_color>0xFF000000</bg_color>
+                    <panel_widget height="1" id="1" left="0" name="Separator" top="0" width="424">
+                        <anchor_pos left="0" right="0" top="0"/>
+                        <bg_color>0xFF336D87</bg_color>
+                    </panel_widget>
+                    <text_widget height="18" id="nam1" left="0" name="Name1" top="0" width="400">
+                        <anchor_pos left="10" right="10" top="6"/>
+                        <bg_color>0x00000000</bg_color>
+                        <text>
+                            <label>Text Label</label>
+                            <font name="Roboto" size="14" weight="bold"/>
+                            <align horz="center"/>
+                            <text_color>0xCCFFFFFF</text_color>
+                        </text>
+                    </text_widget>
+                    <text_widget height="18" id="nam2" left="0" name="Name2" top="0" width="400">
+                        <anchor_pos left="10" right="10" top="30"/>
+                        <bg_color>0x00000000</bg_color>
+                        <text>
+                            <label>Text Label</label>
+                            <font name="Roboto" size="14"/>
+                            <align horz="center"/>
+                            <text_color>0xCCFFFFFF</text_color>
+                        </text>
+                    </text_widget>
+                    <text_widget height="24" id="copy" left="0" name="Copyright" top="0" width="400">
+                        <anchor_pos bottom="6" left="10" right="10"/>
+                        <bg_color>0x00000000</bg_color>
+                        <text>
+                            <label>Copyright © 2018-2024 Yamaha Guitar Group, Inc. All rights reserved.</label>
+                            <font name="Roboto" size="11"/>
+                            <align horz="center" vert="bottom"/>
+                            <text_color>0xCCFFFFFF</text_color>
+                        </text>
+                    </text_widget>
+                </panel_widget>
+            </panel_widget>
+            <panel_widget height="309" id="atvL" left="130" top="0" width="424">
+                <anchor_pos bottom="0" left="130" right="0" top="0"/>
+                <bg_color>0xFF393939</bg_color>
+                <corner_radius bl="no" br="yes" tl="no" tr="yes">3</corner_radius>
+                <text_widget height="293" id="lgtx" left="8" top="8" width="408">
+                    <anchor_pos bottom="8" left="8" right="8" top="8"/>
+                    <bg_color>0x00000000</bg_color>
+                    <text>
+                        <label>Text Label</label>
+                        <font name="Roboto" size="13"/>
+                        <multiline>yes</multiline>
+                        <text_color>0xFF999999</text_color>
+                    </text>
+                    <scrolling>
+                        <enabled>yes</enabled>
+                        <vscroll_step snap="element"/>
+                        <scrollbars>
+                            <visibility h="none"/>
+                            <width>8</width>
+                            <border_thickness>0</border_thickness>
+                            <bg_color>0xFF1A1A1A</bg_color>
+                            <thumb_color>0xFF808080</thumb_color>
+                            <thumb_hilite_color>0xFFCCCCCC</thumb_hilite_color>
+                            <arrow_buttons size="0"/>
+                        </scrollbars>
+                    </scrolling>
+                </text_widget>
+            </panel_widget>
+        </panel_widget>
+    </panel_widget>
+</xg>

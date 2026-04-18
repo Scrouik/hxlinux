@@ -1,0 +1,166 @@
+
+<xg>
+	<panel_widget height="300" id="main" left="0" top="0" width="600">
+		<bg_color>0xFF1D1D1D</bg_color>
+        <border_thickness>1</border_thickness>
+        <border_color>0xFFB3B3B3</border_color>
+        
+		<pushbutton_widget height="25" id="canc" left="0" top="0" width="80">
+			<anchor_pos bottom="16" right="115"/>
+			<bg_color>0xFF393939</bg_color>
+			<corner_radius bl="yes" br="yes" tl="yes" tr="yes">3</corner_radius>
+			<text>
+				<label>CANCEL</label>
+				<font name="Roboto" size="12"/>
+				<align horz="center" vert="middle"/>
+				<text_color>0xFFEDEDED</text_color>
+			</text>
+			<button_repeat>no</button_repeat>
+			<active_state>
+				<bg_color>0xFF595B5C</bg_color>
+			</active_state>
+			<hilite_state>
+				<bg_color>0xFF696C6E</bg_color>
+			</hilite_state>
+		</pushbutton_widget>
+		<pushbutton_widget height="25" id="okay" left="0" top="0" width="80">
+			<anchor_pos bottom="16" right="20"/>
+			<bg_color>0xFF393939</bg_color>
+			<corner_radius bl="yes" br="yes" tl="yes" tr="yes">3</corner_radius>
+			<text>
+				<label>OK</label>
+				<font name="Roboto" size="12"/>
+				<align horz="center" vert="middle"/>
+				<text_color>0xFFEDEDED</text_color>
+			</text>
+			<button_repeat>no</button_repeat>
+			<active_state>
+				<bg_color>0xFF595B5C</bg_color>
+			</active_state>
+			<hilite_state>
+				<bg_color>0xFF696C6E</bg_color>
+			</hilite_state>
+		</pushbutton_widget>
+		<text_widget height="32" id="mnlb" left="0" name="main label" top="0" width="1">
+			<anchor_pos left="55" right="15" top="25"/>
+			<text>
+				<label>The %s preset you are loading does not match the current Hardware Compatibility (HC) mode.</label>
+				<font name="Roboto" size="13" style="bold"/>
+				<align horz="left" vert="middle"/>
+				<multiline>yes</multiline>
+				<text_color>0xFFD0D0D0</text_color>
+			</text>
+		</text_widget>
+		<text_widget height="32" id="text" left="0" name="title text 2" top="0" width="1">
+			<anchor_pos left="56" right="15" top="80"/>
+			<text>
+				<label>Select an option and click OK (or click Cancel to cancel the file load):</label>
+				<font name="Roboto" size="12"/>
+				<align horz="left" vert="middle"/>
+				<multiline>yes</multiline>
+				<text_color>0xFFB1B1B1</text_color>
+			</text>
+		</text_widget>
+		<radio_widget height="72" id="rdio" left="0" top="0" width="25">
+			<anchor_pos left="55" top="120"/>
+			<radio_button_widget height="0" id="1" left="3" top="3" width="0">
+				<bg_color>0xFF333333</bg_color>
+				<image>76</image>
+				<border_color>0xFFCCCCCC</border_color>
+				<corner_radius bl="yes" br="yes" tl="yes" tr="yes">2</corner_radius>
+				<active_state>
+					<bg_color>0xFF666666</bg_color>
+				</active_state>
+				<hilite_state>
+					<bg_color>0xFFCCCCCC</bg_color>
+				</hilite_state>
+			</radio_button_widget>
+			<radio_button_widget height="0" id="2" left="3" top="47" width="0">
+				<bg_color>0xFF333333</bg_color>
+				<image>76</image>
+				<border_color>0xFFCCCCCC</border_color>
+				<border_thickness>0</border_thickness>
+				<corner_radius bl="yes" br="yes" tl="yes" tr="yes">2</corner_radius>
+				<active_state>
+					<bg_color>0xFF666666</bg_color>
+				</active_state>
+				<hilite_state>
+					<bg_color>0xFFCCCCCC</bg_color>
+				</hilite_state>
+			</radio_button_widget>
+		</radio_widget>
+		<text_widget height="18" id="op1A" left="0" name="" top="0" width="1">
+			<anchor_pos left="86" right="15" top="120"/>
+			<text>
+				<label>Change the current HC mode to %s and load the preset.</label>
+				<font name="Roboto" size="12"/>
+				<align horz="left" vert="middle"/>
+				<multiline>yes</multiline>
+				<text_color>0xFFB1B1B1</text_color>
+			</text>
+		</text_widget>
+		<text_widget height="18" id="op1B" left="0" name="" top="0" width="1">
+			<anchor_pos left="86" right="15" top="136"/>
+			<text>
+				<label>(The Helix Native UI and preset library contents will reflect this new mode.)</label>
+				<font name="Roboto" size="11"/>
+				<align horz="left" vert="middle"/>
+				<multiline>yes</multiline>
+				<text_color>0xFFB1B1B1</text_color>
+			</text>
+		</text_widget>
+		<text_widget height="18" id="op2A" left="0" name="" top="0" width="1">
+			<anchor_pos left="86" right="15" top="164"/>
+			<text>
+				<label>Translate the %s preset to a %s preset and load the preset.</label>
+				<font name="Roboto" size="12"/>
+				<align horz="left" vert="middle"/>
+				<multiline>yes</multiline>
+				<text_color>0xFFB1B1B1</text_color>
+			</text>
+		</text_widget>
+		<text_widget height="18" id="op2B" left="0" name="" top="0" width="1">
+			<anchor_pos left="86" right="15" top="180"/>
+			<text>
+				<label>(Some preset settings not compatible with %s may be lost.)</label>
+				<font name="Roboto" size="11"/>
+				<align horz="left" vert="middle"/>
+				<multiline>yes</multiline>
+				<text_color>0xFFB1B1B1</text_color>
+			</text>
+		</text_widget>
+		<panel_widget height="1" id="1" left="0" top="0" width="1">
+			<anchor_pos bottom="60" left="15" right="15"/>
+			<bg_color>0xFF999999</bg_color>
+		</panel_widget>
+		<text_widget height="18" id="txt1" left="0" name="text" top="0" width="250">
+			<anchor_pos bottom="28" left="50"/>
+			<text>
+				<label>Don't ask me again</label>
+				<font name="Roboto" size="12"/>
+				<align horz="left" vert="middle"/>
+				<multiline>yes</multiline>
+				<text_color>0xFFB1B1B1</text_color>
+			</text>
+		</text_widget>
+		<text_widget height="16" id="txt1" left="0" name="text" top="0" width="260">
+			<anchor_pos bottom="14" left="50"/>
+			<text>
+				<label>(This setting can be changed in the Preferences.)</label>
+				<font name="Roboto" size="11"/>
+				<align horz="left" vert="middle"/>
+				<multiline>yes</multiline>
+				<text_color>0xFFB1B1B1</text_color>
+			</text>
+		</text_widget>
+		<toggle_widget height="0" id="dama" left="0" top="0" width="0">
+			<anchor_pos bottom="25" left="25"/>
+			<bg_color>0xFF999999</bg_color>
+			<image>76</image>
+			<corner_radius>2</corner_radius>
+		</toggle_widget>
+		<image_widget height="0" id="1" left="15" top="25" width="0">
+			<image>77</image>
+		</image_widget>
+	</panel_widget>
+</xg>
