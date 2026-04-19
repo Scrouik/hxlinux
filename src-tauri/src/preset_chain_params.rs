@@ -44,7 +44,7 @@ fn read_params_hex(mut cur: &str, num_params: usize) -> Option<(Vec<ChainParamVa
             let v = &cur[2..10];
             let raw = u32::from_str_radix(v, 16).ok()?;
             let f = f32::from_bits(raw) as f64;
-            out.push(ChainParamValue::Number((f * 100.0).round() / 100.0));
+            out.push(ChainParamValue::Number(f));
             cur = &cur[10..];
         } else if cur.len() >= 2 {
             let b = u8::from_str_radix(&cur[0..2], 16).ok()?;

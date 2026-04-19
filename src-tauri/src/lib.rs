@@ -22,6 +22,7 @@ use tauri::{
     LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, Size, WindowEvent,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use helix::HelixState;
 use helix::ModeRequest;
@@ -387,9 +388,9 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
     Ok(())
 }
 
-/// Retourne les slots du dernier preset lu, sous forme [catégorie, nom].
+/// Retourne les slots du dernier preset lu, sous forme [catégorie, nom, module_hex].
 #[tauri::command]
-fn get_preset_slots(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<Vec<[String; 2]>> {
+fn get_preset_slots(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<Vec<[String; 3]>> {
     let helix_arc = {
         let app = state.lock().unwrap();
         app.helix_state.clone()?
@@ -414,7 +415,7 @@ fn get_preset_slots(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<Vec<[St
 
 /// Retourne les slots uniquement si les données correspondent au preset actif.
 #[tauri::command]
-fn get_active_preset_slots(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<Vec<[String; 2]>> {
+fn get_active_preset_slots(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<Vec<[String; 3]>> {
     let (active_preset, helix_arc) = {
         let app = state.lock().unwrap();
         (app.active_preset, app.helix_state.clone()?)
@@ -435,9 +436,9 @@ fn get_active_preset_slots(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<
     Some(parse_preset_slots(&s.preset_data))
 }
 
-/// Version debug : retourne aussi les coordonnées brutes de grille [x, y].
+/// Version debug : coordonnées grille [x, y] + `module_hex`.
 #[tauri::command]
-fn get_active_preset_slots_debug(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<Vec<[String; 4]>> {
+fn get_active_preset_slots_debug(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<Vec<[String; 5]>> {
     let (active_preset, helix_arc) = {
         let app = state.lock().unwrap();
         (app.active_preset, app.helix_state.clone()?)
@@ -555,35 +556,86 @@ fn read_models_definition_file(app: tauri::AppHandle, file_base: String) -> Resu
     fs::read_to_string(&path).map_err(|e| format!("{}: {}", path.display(), e))
 }
 
-lazy_static! {
-    /// ID module (hex entre 0x19…0x1a) → `[catégorie, nom]` selon `Kempline/modules.py`.
-    /// Les `nom` sont souvent des libellés longs (≠ `name` court dans `resources/models/*.models`).
-    static ref MODULES_BY_ID: HashMap<String, [String; 2]> = {
-        let mut map = HashMap::new();
-        let modules_py = include_str!("../../Kempline/modules.py");
-        for line in modules_py.lines() {
-            let parts: Vec<&str> = line.split('\'').collect();
-            if parts.len() >= 6 {
-                let key = parts[1].trim().to_lowercase();
-                let category = parts[3].trim().to_string();
-                let name = parts[5].trim().to_string();
-                if !key.is_empty() && !category.is_empty() && !name.is_empty() {
-                    map.insert(key, [category, name]);
-                }
+/// Remplit `map` depuis `HX_ModelCatalog.json` : chaque `presetMeta.chainHex` (chaîne ou tableau)
+/// → `[categories[].name, models[].name]` (référentiel central).
+fn insert_modules_from_hx_catalog(map: &mut HashMap<String, [String; 2]>, catalog: &Value) {
+    let Some(categories) = catalog.get("categories").and_then(|c| c.as_array()) else {
+        return;
+    };
+    for cat in categories {
+        let Some(cat_name) = cat.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        let cat_name = cat_name.trim();
+        if cat_name.is_empty() {
+            continue;
+        }
+        insert_hex_from_catalog_model_list(map, cat_name, cat.get("models"));
+        if let Some(subs) = cat.get("subcategories").and_then(|s| s.as_array()) {
+            for sub in subs {
+                insert_hex_from_catalog_model_list(map, cat_name, sub.get("models"));
             }
         }
-        map
+    }
+}
+
+fn insert_hex_from_catalog_model_list(
+    map: &mut HashMap<String, [String; 2]>,
+    cat_name: &str,
+    models: Option<&Value>,
+) {
+    let Some(arr) = models.and_then(|m| m.as_array()) else {
+        return;
     };
-    static ref MODULE_FALLBACKS: HashMap<String, [String; 2]> = {
+    for m in arr {
+        let Some(obj) = m.as_object() else {
+            continue;
+        };
+        let Some(model_name) = obj.get("name").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let model_name = model_name.trim();
+        if model_name.is_empty() {
+            continue;
+        };
+        let Some(pm) = obj.get("presetMeta").and_then(|p| p.as_object()) else {
+            continue;
+        };
+        let Some(hex_v) = pm.get("chainHex") else {
+            continue;
+        };
+        let pair = [cat_name.to_string(), model_name.to_string()];
+        match hex_v {
+            Value::String(s) => {
+                let h = s.trim().to_lowercase();
+                if !h.is_empty() {
+                    map.insert(h, pair.clone());
+                }
+            }
+            Value::Array(a) => {
+                for x in a {
+                    if let Some(s) = x.as_str() {
+                        let h = s.trim().to_lowercase();
+                        if !h.is_empty() {
+                            map.insert(h, pair.clone());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+lazy_static! {
+    /// ID module (hex entre 0x19…0x1a) → `[catégorie, nom]`.
+    /// Source unique : `HX_ModelCatalog.json` (`presetMeta.chainHex` chaîne ou tableau + nom court du modèle).
+    static ref MODULES_BY_ID: HashMap<String, [String; 2]> = {
+        const HX_CATALOG_JSON: &str = include_str!("../resources/HX_ModelCatalog.json");
+        let catalog: Value =
+            serde_json::from_str(HX_CATALOG_JSON).expect("HX_ModelCatalog.json invalide");
         let mut map = HashMap::new();
-        // Missing from current local modules.py snapshot but observed on device.
-        map.insert(
-            "cd02a7".to_string(),
-            [
-                String::from("Distortion"),
-                String::from("Pillars"),
-            ],
-        );
+        insert_modules_from_hx_catalog(&mut map, &catalog);
         map
     };
 }
@@ -594,6 +646,8 @@ struct ParsedSlot {
     name: String,
     grid_x: Option<u8>,
     grid_y: Option<u8>,
+    /// Hex entre 0x19…0x1a (minuscules), vide si inconnu / slot vide.
+    module_hex: String,
 }
 
 /// Découpe le flux preset aux marqueurs [0x82, 0x13] (équivalent Kempline `split('8213')` sur l'hex).
@@ -676,15 +730,13 @@ fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
                     let _ = write!(&mut id_hex, "{:02x}", b);
                 }
 
-                if let Some(entry) = MODULES_BY_ID
-                    .get(&id_hex)
-                    .or_else(|| MODULE_FALLBACKS.get(&id_hex))
-                {
+                if let Some(entry) = MODULES_BY_ID.get(&id_hex) {
                     parsed_slots.push(ParsedSlot {
                         category: entry[0].clone(),
                         name: entry[1].clone(),
                         grid_x: extract_grid_x(chunk, after_id),
                         grid_y: extract_grid_y(chunk, after_id),
+                        module_hex: id_hex,
                     });
                     // Un segment transporte au plus un module utile pour le fallback.
                     break;
@@ -695,9 +747,10 @@ fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
                 if is_assignable_chunk && best_unknown.is_none() {
                     best_unknown = Some(ParsedSlot {
                         category: String::from("Unknown"),
-                        name: id_hex,
+                        name: id_hex.clone(),
                         grid_x: extract_grid_x(chunk, after_id),
                         grid_y: extract_grid_y(chunk, after_id),
+                        module_hex: id_hex,
                     });
                 }
                 continue;
@@ -715,7 +768,9 @@ fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
     let mut deduped: Vec<ParsedSlot> = Vec::with_capacity(parsed_slots.len());
     for slot in parsed_slots {
         let is_dup = deduped.last().map_or(false, |prev| {
-            prev.category == slot.category && prev.name == slot.name
+            prev.category == slot.category
+                && prev.name == slot.name
+                && prev.module_hex == slot.module_hex
         });
         if !is_dup {
             deduped.push(slot);
@@ -765,10 +820,8 @@ fn extract_first_module_from_assignable_chunk(chunk: &[u8]) -> ParsedSlot {
                     for b in id_bytes {
                         let _ = write!(&mut id_hex, "{:02x}", b);
                     }
-                    let (category, name) = if let Some(entry) = MODULES_BY_ID
-                        .get(&id_hex)
-                        .or_else(|| MODULE_FALLBACKS.get(&id_hex))
-                    {
+                    let module_hex = id_hex.clone();
+                    let (category, name) = if let Some(entry) = MODULES_BY_ID.get(&id_hex) {
                         (entry[0].clone(), entry[1].clone())
                     } else {
                         (String::from("Unknown"), id_hex)
@@ -780,6 +833,7 @@ fn extract_first_module_from_assignable_chunk(chunk: &[u8]) -> ParsedSlot {
                         name,
                         grid_x,
                         grid_y,
+                        module_hex,
                     };
                 }
                 cursor = id_start + rel_end + 1;
@@ -793,6 +847,7 @@ fn extract_first_module_from_assignable_chunk(chunk: &[u8]) -> ParsedSlot {
         name: String::from("(sans id)"),
         grid_x: None,
         grid_y: None,
+        module_hex: String::new(),
     }
 }
 
@@ -861,6 +916,7 @@ fn try_parse_preset_kempline_grid(data: &[u8]) -> Option<Vec<ParsedSlot>> {
                 name: String::from("<empty>"),
                 grid_x: None,
                 grid_y: None,
+                module_hex: String::new(),
             }
         } else {
             extract_first_module_from_assignable_chunk(seg)
@@ -874,17 +930,20 @@ fn try_parse_preset_kempline_grid(data: &[u8]) -> Option<Vec<ParsedSlot>> {
     Some(out)
 }
 
-fn parse_preset_slots(data: &[u8]) -> Vec<[String; 2]> {
+fn parse_preset_slots(data: &[u8]) -> Vec<[String; 3]> {
     if let Some(grid) = try_parse_preset_kempline_grid(data) {
-        return grid.into_iter().map(|s| [s.category, s.name]).collect();
+        return grid
+            .into_iter()
+            .map(|s| [s.category, s.name, s.module_hex])
+            .collect();
     }
     parse_preset_slots_internal(data)
         .into_iter()
-        .map(|s| [s.category, s.name])
+        .map(|s| [s.category, s.name, s.module_hex])
         .collect()
 }
 
-fn parse_preset_slots_debug(data: &[u8]) -> Vec<[String; 4]> {
+fn parse_preset_slots_debug(data: &[u8]) -> Vec<[String; 5]> {
     if let Some(grid) = try_parse_preset_kempline_grid(data) {
         return grid
             .into_iter()
@@ -894,6 +953,7 @@ fn parse_preset_slots_debug(data: &[u8]) -> Vec<[String; 4]> {
                     s.name,
                     s.grid_x.map(|v| v.to_string()).unwrap_or_default(),
                     s.grid_y.map(|v| v.to_string()).unwrap_or_default(),
+                    s.module_hex,
                 ]
             })
             .collect();
@@ -906,6 +966,7 @@ fn parse_preset_slots_debug(data: &[u8]) -> Vec<[String; 4]> {
                 s.name,
                 s.grid_x.map(|v| v.to_string()).unwrap_or_default(),
                 s.grid_y.map(|v| v.to_string()).unwrap_or_default(),
+                s.module_hex,
             ]
         })
         .collect()

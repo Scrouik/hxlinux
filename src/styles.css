@@ -180,16 +180,13 @@ html, body {
 
 .models-params-row {
   display: grid;
-  grid-template-columns:
-    minmax(0, 1.35fr)
-    minmax(44px, 0.45fr)
-    minmax(56px, 0.85fr)
-    minmax(44px, 0.45fr);
+  grid-template-columns: minmax(0, 1.15fr) minmax(44px, auto) minmax(72px, 1fr) minmax(44px, auto);
   column-gap: 10px;
   row-gap: 4px;
-  align-items: baseline;
+  align-items: center;
   font-size: 13px;
   line-height: 1.4;
+  text-transform: none;
 }
 
 .models-params-row-name {
@@ -200,17 +197,18 @@ html, body {
 
 .models-params-row-min,
 .models-params-row-max {
-  text-align: right;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+  text-align: center;
+  min-width: 0;
 }
 
 .models-params-row-chain {
-  text-align: center;
   color: var(--text);
-  font-variant-numeric: tabular-nums;
+  text-align: center;
   word-break: break-word;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .models-params-error {

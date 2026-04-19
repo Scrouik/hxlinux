@@ -1,6 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import {
+  getPresetMetaForModel,
+  pickChannel,
+  pickSignal,
+} from "./hxModelCatalogMeta";
 import "./styles.css";
 
 let currentPresetIndex = -1;
@@ -17,7 +22,14 @@ const statusEl = document.getElementById("status") as HTMLElement;
 const presetLabelEl = document.getElementById("preset-label") as HTMLElement;
 const contentEl = document.getElementById("content") as HTMLElement;
 
-type SlotDebug = { category: string; name: string; gridX?: string; gridY?: string };
+type SlotDebug = {
+  category: string;
+  name: string;
+  gridX?: string;
+  gridY?: string;
+  /** Hex module preset (Rust), pour presetMeta.signal / chainHex parallèles. */
+  moduleHex?: string;
+};
 
 const MODELS_PARAMS_IDLE_PLACEHOLDER =
   "Les paramètres du bloc sélectionné s'afficheront ici.";
@@ -281,7 +293,9 @@ async function loadModelsDefinitionArray(fileBase: string): Promise<ModelDefinit
 
 /**
  * Le nom de slot côté USB / `parse_preset_slots` vient de `MODULES_BY_ID`
- * (`Kempline/modules.py` dans `lib.rs`) : libellés longs type
+ * (Rust : `HX_ModelCatalog.json` uniquement via `presetMeta.chainHex`) : libellé slot = **nom court**
+ * du modèle dans le catalogue pour les hex connus ; sinon le preset n’a pas d’entrée et le slot
+ * peut rester « Unknown » jusqu’à ce que `chainHex` soit renseigné dans le catalogue.
  * « Ampeg SVT Brt Bass Ampeg SVT (bright channel) (mono) ».
  * Les fichiers `*.models` utilisent le `name` court (« Ampeg SVT Brt ») + `symbolicID`.
  */
@@ -289,15 +303,31 @@ function stripKemplineMonoStereoSuffix(s: string): string {
   return s.replace(/\s*\((mono|stereo)\)\s*$/i, "").trim();
 }
 
+/**
+ * Ex. catalogue `SVT-4 Pro` vs USB `Ampeg SVT-4 PRO (mono)` → après strip, le libellé USB se termine
+ * par le `name` court du `.models` (préfixe marque / casse différente).
+ */
+function kemplineStrippedEndsWithCatalogName(knStrip: string, catalogName: string): boolean {
+  const k = knStrip.trim();
+  const c = catalogName.trim();
+  if (!k || !c || c.length > k.length) return false;
+  if (k.toLowerCase() === c.toLowerCase()) return true;
+  if (!k.toLowerCase().endsWith(c.toLowerCase())) return false;
+  if (k.length === c.length) return true;
+  const before = k[k.length - c.length - 1];
+  return before === " " || before === "\t" || before === "(";
+}
+
 function modelCatalogNameMatchesKemplineSlot(catalogName: string, kemplineSlotName: string): boolean {
   const cn = catalogName.trim();
   const kn = kemplineSlotName.trim();
   if (!cn || !kn) return false;
-  if (kn === cn) return true;
+  if (kn === cn || kn.toLowerCase() === cn.toLowerCase()) return true;
   if (kn.startsWith(`${cn} `) || kn.startsWith(`${cn}(`)) return true;
   const knStrip = stripKemplineMonoStereoSuffix(kn);
-  if (knStrip === cn) return true;
+  if (knStrip === cn || knStrip.toLowerCase() === cn.toLowerCase()) return true;
   if (knStrip.startsWith(`${cn} `) || knStrip.startsWith(`${cn}(`)) return true;
+  if (kemplineStrippedEndsWithCatalogName(knStrip, cn)) return true;
   return false;
 }
 
@@ -313,6 +343,10 @@ function pickModelDefinitionForKemplineName(
   const stripped = stripKemplineMonoStereoSuffix(kn);
   const exactStrip = list.find((e) => e.name.trim() === stripped);
   if (exactStrip) return exactStrip;
+  const exactStripI = list.find(
+    (e) => e.name.trim().toLowerCase() === stripped.toLowerCase(),
+  );
+  if (exactStripI) return exactStripI;
 
   let best: ModelDefinitionJson | null = null;
   let bestLen = -1;
@@ -388,6 +422,8 @@ function renderModelsParamsPane(
   params: ModelParamDefJson[],
   resolvedCatalogModelName?: string,
   chainValues?: ChainParamValueJson[] | null,
+  catalogChannel?: string | null,
+  catalogSignal?: string | null,
 ) {
   setModelsParamsPaneCategory(slot.category);
   const inner = getModelsParamsInner();
@@ -397,7 +433,13 @@ function renderModelsParamsPane(
   head.className = "models-params-model-head";
   const title = document.createElement("div");
   title.className = "models-params-model-title";
-  title.textContent = (resolvedCatalogModelName ?? slot.name).trim() || "—";
+  const baseName = (resolvedCatalogModelName ?? slot.name).trim() || "—";
+  const parts: string[] = [baseName];
+  const ch = (catalogChannel ?? "").trim();
+  const sig = (catalogSignal ?? "").trim();
+  if (ch) parts.push(ch);
+  if (sig) parts.push(sig);
+  title.textContent = parts.join(" · ");
   if (resolvedCatalogModelName && resolvedCatalogModelName.trim() !== slot.name.trim()) {
     const usb = document.createElement("div");
     usb.className = "models-params-model-usb-name";
@@ -489,7 +531,18 @@ async function loadAndShowModelsParamsForSlot(
     const short = found.entry.name.trim();
     kemplineTooltipCache.set(tooltipCacheKey(slot), short);
     applyShortNameToSlotNodes(slot, short);
-    renderModelsParamsPane(slot, found.entry.params ?? [], short, chainValues);
+    const meta = await getPresetMetaForModel(slot.category, short);
+    if (seq !== modelsParamsLoadSeq) return;
+    const catalogChannel = pickChannel(meta);
+    const catalogSignal = pickSignal(meta, slot.moduleHex);
+    renderModelsParamsPane(
+      slot,
+      found.entry.params ?? [],
+      short,
+      chainValues,
+      catalogChannel,
+      catalogSignal,
+    );
   } catch (e) {
     if (seq !== modelsParamsLoadSeq) return;
     showModelsParamsError(e instanceof Error ? e.message : String(e));
@@ -1329,13 +1382,20 @@ async function requestLoadForPreset(index: number) {
         console.log(`[PresetDebug][models] slots ready preset=${index} count=${slots.length}`);
         loadedPresetIndex = index;
         const normalizedSlots: SlotDebug[] = debugRoutingMode
-          ? (slots as [string, string, string, string][]).map(([category, name, gridX, gridY]) => ({
+          ? (slots as unknown as [string, string, string, string, string][]).map(
+              ([category, name, gridX, gridY, moduleHex]) => ({
+                category,
+                name,
+                gridX,
+                gridY,
+                moduleHex: moduleHex?.trim() || undefined,
+              }),
+            )
+          : (slots as unknown as [string, string, string][]).map(([category, name, moduleHex]) => ({
               category,
               name,
-              gridX,
-              gridY,
-            }))
-          : (slots as [string, string][]).map(([category, name]) => ({ category, name }));
+              moduleHex: moduleHex?.trim() || undefined,
+            }));
         // Evite d'afficher une vieille réponse si l'utilisateur a recliqué ailleurs.
         if (currentPresetIndex === index) {
           let routingFlow: [string, string][] = [];
