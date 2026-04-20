@@ -2,7 +2,7 @@
 
 Ce fichier sert de **mémo locale** quand l’historique de chat ou le contexte IDE est perdu après un redémarrage. Il complète le `README.md` (objectifs produit et commandes de base).
 
-**Dernière mise à jour significative** : **avril 2026** — panneau paramètres **min | chaîne | max** ; **`HX_ModelCatalog.json`** enrichi (`presetMeta.chainHex` / `signal`, mono+stéréo) ; table **`MODULES_BY_ID`** générée côté Rust depuis le catalogue embarqué ; front **`hxModelCatalogMeta.ts`** (`pickSignal` / `pickChannel`) ; scripts Python sous **`scripts/`** ; il reste des **`chainHex` vides** à compléter à la main (voir section catalogue ci-dessous).
+**Dernière mise à jour significative** : **avril 2026** — panneau paramètres **min | chaîne | max | brut** ; jointure **catalogue `id` ↔ `.models` `symbolicID`** (fallback nom) ; filtrage **`stereo-only`** selon le signal ; formatage colonne « chaîne » via **`HelixControls.json`** pour les `displayType` listés plus bas ; **`HX_ModelCatalog.json`** enrichi (`presetMeta.chainHex` / `signal`, mono+stéréo) ; table **`MODULES_BY_ID`** générée côté Rust depuis le catalogue embarqué ; front **`hxModelCatalogMeta.ts`** ; scripts Python sous **`scripts/`** ; il reste des **`chainHex` vides** à compléter à la main (voir section catalogue ci-dessous).
 
 ## À quoi sert l’application
 
@@ -66,7 +66,50 @@ Pistes de champs (à valider ensemble avant implémentation dans `models.ts`) :
 - **Liste discrète** : par ex. `chainEnum` : `[{ "raw": 0, "label": "220 Hz" }, …]` ou tableau de labels indexés par l’entier lu ; si la chaîne est un **u8** `2`, afficher le libellé d’index 2.
 - **Registre dans le code** : pour les `displayType` répétitifs, une seule règle dans `models.ts` évite de dupliquer des milliers de lignes dans les JSON ; les cas **spécifiques à un modèle** restent dans le `.models` de ce modèle.
 
-Tant que ces règles ne sont pas déclarées, la colonne **chaîne** reste une **vue brute** (ou légèrement formatée : bool on/off, float arrondi côté Rust) — d’où les écarts d’échelle par rapport à l’écran du Helix.
+Pour les `displayType` **non** couverts par `HelixControls.json` (voir section suivante), la colonne **chaîne** reste une **vue brute** (ou légèrement formatée : bool on/off, float arrondi côté Rust) — d’où les écarts d’échelle par rapport à l’écran du Helix.
+
+---
+
+## Panneau paramètres — déjà traité dans `src/models.ts` (mémo pour ne pas refaire la demande)
+
+Tout ceci concerne la vue **models** : grille + panneau **min | chaîne | max** (et colonne **brut** à droite).
+
+### Jointure catalogue ↔ `.models`
+
+- **Priorité** : `id` du modèle dans **`HX_ModelCatalog.json`** = **`symbolicID`** du bloc dans **`*.models`** (même chaîne).
+- **Fallback** : matching par **nom** Kempline vs `name` du `.models` (heuristiques mono/stéréo existantes).
+- Métadonnées **`presetMeta`** (canal, signal, `chainHex` parallèle) : `src/hxModelCatalogMeta.ts` — la map catalogue inclut aussi l’**`id`** pour la jointure ci-dessus.
+
+### Alignement liste `params` ↔ valeurs chaîne
+
+- Paramètres avec **`"stereo-only": true`** : **masqués** quand le signal catalogue est **mono** (`pickSignal` + `moduleHex`), pour ne pas décaler l’index du zip avec les valeurs lues dans le binaire.
+
+### Source des règles d’affichage « chaîne »
+
+- Fichier **`src-tauri/resources/HelixControls.json`** chargé côté front (fetch sur `/src-tauri/resources/HelixControls.json`), cache en mémoire.
+- Les clés du JSON correspondent au **`displayType`** du paramètre dans le `.models`.
+
+### Formatage « chaîne » via `HelixControls.json` (pipeline générique)
+
+Pour toute valeur **numérique** dont le **`displayType`** est une clé présente dans `HelixControls.json`, `src/models.ts` applique **`formatHelixFromControl`** :
+
+1. **Exception** optionnelle : objet **`HELIX_DISPLAY_EXCEPTIONS`** (clé = `displayType`) pour court-circuiter le générique si un cas ne colle pas.
+2. **`format` = tableau de chaînes** (ex. `off_on`, `sync_note`) → libellé par index **`Math.round(valeur)`** (borné au tableau).
+3. **`format` = tableau d’objets** (`lowerBound` / `upperBound`) → choix de la plage **`[lower, upper)`** sur la **valeur brute**, puis fusion des champs `format` / `formatUnits` / `unitsMultiplier` de la plage ; si `format` n’est **pas** un motif `%.…f` → texte littéral (**`Off`**, etc.).
+4. Sinon **`format` chaîne** : `valeur × dspToDisplayScale` (si défini), puis `× unitsMultiplier` (si défini), puis **`format`** (`%.…f`) et substitution dans **`formatUnits`** si elle contient un token `%.…f` ; les séquences **`%%`** dans `formatUnits` deviennent un **`%`** littéral (comme sprintf).
+5. Sinon entrée **`isDiscrete: true`** sans `format` exploitable → affichage **`Math.round(valeur)`** ; sinon repli numérique brut.
+
+Détails d’implémentation utiles :
+
+- **`alias`** dans `HelixControls.json` (ex. `time_ms_20_1800` → `time_ms`) : résolu **au chargement** ; la map expose la définition complète pour chaque clé.
+- **Plages `format[]` + `dspToDisplayScale`** (ex. `time_ms`) : le choix de la plage utilise **`valeur_brute × dspToDisplayScale`** (unité d’affichage, ex. ms), puis on réapplique le même facteur pour le formatage final — les bornes du JSON sont alignées sur l’affichage, pas sur le brut secondes.
+
+Les cas déjà validés manuellement (**`generic_knob`**, **`generic_knob_1to1`**, **`frequency`**, **`eq_low_cut`**, **`eq_high_cut`**) restent couverts par ce même moteur ; tout autre `displayType` présent dans Helix et dans les `.models` est **automatiquement** formaté selon sa définition JSON (sauf exception ajoutée dans `HELIX_DISPLAY_EXCEPTIONS`).
+
+### UI debug
+
+- **Colonne tout à droite** : valeur **brute** reçue de la chaîne (avant format `HelixControls`).
+- **Logs jointure ID** : `localStorage.setItem("models_debug_id_join", "1")` → `console.warn` si fallback **nom** alors qu’un **id** catalogue était présent, ou si aucun match.
 
 ---
 

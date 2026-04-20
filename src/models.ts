@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import {
+  getCatalogModelIdForModel,
   getPresetMetaForModel,
   pickChannel,
   pickSignal,
@@ -14,6 +15,8 @@ let loading = false;
 let pendingPresetIndex = -1;
 let lastRequestedPresetIndex = -1;
 const ENABLE_PRESET_CONTENT = true;
+const DEBUG_MODEL_ID_JOIN_FALLBACK =
+  localStorage.getItem("models_debug_id_join") === "1";
 let requestedPresetNameIndex = -1;
 let debugRoutingMode = localStorage.getItem("models_debug_routing") === "1";
 let connectedDeviceName: string | null = null;
@@ -230,6 +233,7 @@ type ModelParamDefJson = {
   min?: number;
   max?: number;
   default?: number | string | boolean;
+  "stereo-only"?: boolean;
 };
 
 type ModelDefinitionJson = {
@@ -364,9 +368,11 @@ function pickModelDefinitionForKemplineName(
 
 async function findModelDefinitionForSlot(
   slot: SlotDebug,
+  catalogModelId?: string | null,
 ): Promise<{ entry: ModelDefinitionJson; fileBase: string } | null> {
   const nameTarget = slot.name.trim();
   if (!nameTarget || nameTarget === "<empty>") return null;
+  const idTarget = (catalogModelId ?? "").trim();
   const bases = modelsDefinitionFileBasesForCategory(slot.category);
   if (bases.length === 0) return null;
   for (const fileBase of bases) {
@@ -376,8 +382,24 @@ async function findModelDefinitionForSlot(
     } catch {
       continue;
     }
+    if (idTarget) {
+      const byId = list.find((e) => (e.symbolicID || "").trim() === idTarget);
+      if (byId) return { entry: byId, fileBase };
+    }
     const entry = pickModelDefinitionForKemplineName(list, nameTarget);
-    if (entry) return { entry, fileBase };
+    if (entry) {
+      if (idTarget && DEBUG_MODEL_ID_JOIN_FALLBACK) {
+        console.warn(
+          `[models] Fallback nom utilise (ID introuvable): id=${idTarget} category="${slot.category}" slot="${nameTarget}" matched="${entry.name}" file="${fileBase}.models"`,
+        );
+      }
+      return { entry, fileBase };
+    }
+  }
+  if (idTarget && DEBUG_MODEL_ID_JOIN_FALLBACK) {
+    console.warn(
+      `[models] Aucun match par ID ni par nom: id=${idTarget} category="${slot.category}" slot="${nameTarget}" tried=${bases.join(",")}`,
+    );
   }
   return null;
 }
@@ -391,10 +413,295 @@ function formatParamBound(n: number | undefined): string {
 
 /** Valeurs `ChainParamValue` sérialisées (serde untagged). */
 type ChainParamValueJson = boolean | number | string;
+type HelixControlFormatBandJson = {
+  lowerBound?: number;
+  upperBound?: number;
+  format?: string;
+  formatUnits?: string;
+  unitsMultiplier?: number;
+};
+type HelixControlDefJson = {
+  dspToDisplayScale?: number;
+  /** `format` dans le JSON : `%.1f`, tableau de plages, ou liste de libellés (`off_on`, `sync_note`, …). */
+  format?: string | string[] | HelixControlFormatBandJson[];
+  formatUnits?: string;
+  unitsMultiplier?: number;
+  isDiscrete?: boolean;
+};
 
-function formatChainParamValueJson(v: ChainParamValueJson): string {
+/**
+ * Exceptions rares : retourner une chaîne non vide pour court-circuiter le pipeline générique.
+ * Clé = `displayType` (clé racine dans `HelixControls.json`).
+ */
+const HELIX_DISPLAY_EXCEPTIONS: Record<
+  string,
+  (raw: number, def: HelixControlDefJson) => string | null
+> = {};
+
+let helixControlsMapPromise: Promise<Map<string, HelixControlDefJson>> | null = null;
+
+function deepCloneHelixControl(def: HelixControlDefJson): HelixControlDefJson {
+  try {
+    return JSON.parse(JSON.stringify(def)) as HelixControlDefJson;
+  } catch {
+    return { ...def };
+  }
+}
+
+/** Parse un objet valeur Helix (sans résolution d’`alias`). */
+function parseHelixControlObject(o: Record<string, unknown>): HelixControlDefJson {
+  let parsedFormat: string | string[] | HelixControlFormatBandJson[] | undefined;
+  if (typeof o.format === "string") {
+    parsedFormat = o.format;
+  } else if (Array.isArray(o.format) && o.format.length > 0) {
+    const allStr = o.format.every((x) => typeof x === "string");
+    const allObj = o.format.every((x) => x && typeof x === "object");
+    if (allStr) {
+      parsedFormat = o.format as string[];
+    } else if (allObj) {
+      const bands: HelixControlFormatBandJson[] = [];
+      for (const it of o.format) {
+        if (!it || typeof it !== "object") continue;
+        const b = it as {
+          lowerBound?: unknown;
+          upperBound?: unknown;
+          format?: unknown;
+          formatUnits?: unknown;
+          unitsMultiplier?: unknown;
+        };
+        bands.push({
+          lowerBound:
+            typeof b.lowerBound === "number" && Number.isFinite(b.lowerBound)
+              ? b.lowerBound
+              : undefined,
+          upperBound:
+            typeof b.upperBound === "number" && Number.isFinite(b.upperBound)
+              ? b.upperBound
+              : undefined,
+          format: typeof b.format === "string" ? b.format : undefined,
+          formatUnits: typeof b.formatUnits === "string" ? b.formatUnits : undefined,
+          unitsMultiplier:
+            typeof b.unitsMultiplier === "number" && Number.isFinite(b.unitsMultiplier)
+              ? b.unitsMultiplier
+              : undefined,
+        });
+      }
+      parsedFormat = bands;
+    }
+  }
+  return {
+    dspToDisplayScale:
+      typeof o.dspToDisplayScale === "number" && Number.isFinite(o.dspToDisplayScale)
+        ? o.dspToDisplayScale
+        : undefined,
+    format: parsedFormat,
+    formatUnits: typeof o.formatUnits === "string" ? o.formatUnits : undefined,
+    unitsMultiplier:
+      typeof o.unitsMultiplier === "number" && Number.isFinite(o.unitsMultiplier)
+        ? o.unitsMultiplier
+        : undefined,
+    isDiscrete: o.isDiscrete === true,
+  };
+}
+
+async function loadHelixControlsMap(): Promise<Map<string, HelixControlDefJson>> {
+  const url = "/src-tauri/resources/HelixControls.json";
+  const res = await fetch(url);
+  if (!res.ok) {
+    console.warn("HelixControls.json : chargement impossible.", res.status);
+    return new Map();
+  }
+  const raw = await res.text();
+  const data = JSON.parse(raw) as Record<string, unknown>;
+  const rawMap = new Map<string, Record<string, unknown>>();
+  for (const [k, v] of Object.entries(data)) {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      rawMap.set(k, v as Record<string, unknown>);
+    }
+  }
+  const map = new Map<string, HelixControlDefJson>();
+  const stack = new Set<string>();
+
+  function resolveKey(key: string): HelixControlDefJson {
+    if (map.has(key)) return map.get(key)!;
+    if (stack.has(key)) {
+      console.warn(`HelixControls.json : alias cyclique ou manquant autour de "${key}".`);
+      return {};
+    }
+    stack.add(key);
+    const o = rawMap.get(key);
+    if (!o) {
+      stack.delete(key);
+      return {};
+    }
+    const aliasRaw = o.alias;
+    let def: HelixControlDefJson;
+    if (typeof aliasRaw === "string" && aliasRaw.trim()) {
+      def = deepCloneHelixControl(resolveKey(aliasRaw.trim()));
+    } else {
+      def = parseHelixControlObject(o);
+    }
+    map.set(key, def);
+    stack.delete(key);
+    return def;
+  }
+
+  for (const key of rawMap.keys()) {
+    resolveKey(key);
+  }
+  return map;
+}
+
+async function getHelixControlsMap(): Promise<Map<string, HelixControlDefJson>> {
+  if (!helixControlsMapPromise) {
+    helixControlsMapPromise = loadHelixControlsMap().catch((e) => {
+      helixControlsMapPromise = null;
+      throw e;
+    });
+  }
+  return helixControlsMapPromise;
+}
+
+function parsePrintfFloatPrecision(format: string): number | null {
+  const m = format.match(/^%[+\- 0#]*(?:\.(\d+))?f$/);
+  if (!m) return null;
+  const n = Number.parseInt(m[1] ?? "6", 10);
+  if (!Number.isFinite(n) || n < 0 || n > 12) return null;
+  return n;
+}
+
+function formatWithPrintfFloat(value: number, format: string): string | null {
+  const precision = parsePrintfFloatPrecision(format);
+  if (precision === null) return null;
+  const s = value.toFixed(precision);
+  if (format.includes("+") && value >= 0) return `+${s}`;
+  return s;
+}
+
+function pickFormatBandForValue(
+  value: number,
+  bands: HelixControlFormatBandJson[],
+): HelixControlFormatBandJson | null {
+  let fallback: HelixControlFormatBandJson | null = null;
+  for (let i = 0; i < bands.length; i += 1) {
+    const b = bands[i];
+    if (i === bands.length - 1) fallback = b;
+    const lb = typeof b.lowerBound === "number" ? b.lowerBound : Number.NEGATIVE_INFINITY;
+    const ub = typeof b.upperBound === "number" ? b.upperBound : Number.POSITIVE_INFINITY;
+    // Bornes semi-ouvertes [lowerBound, upperBound) pour éviter les ambiguïtés à 20/1000.
+    if (value >= lb && value < ub) return b;
+  }
+  return fallback;
+}
+
+const HELIX_PRINTF_TOKEN_RE = /%[+\- 0#]*(?:\.\d+)?f/;
+
+/** `%%` dans les chaînes Helix = un `%` littéral (convention sprintf). */
+function helixUnescapePercentMarks(s: string): string {
+  return s.replace(/%%/g, "%");
+}
+
+/**
+ * Pipeline générique `HelixControls.json` pour une valeur numérique de chaîne :
+ * liste discrète (`format: ["Off","On"]`), plages (`format: [{ lowerBound, upperBound, … }]`),
+ * ou format simple (`dspToDisplayScale` + `format` + `formatUnits` optionnel).
+ * Les exceptions métier se greffent sur `HELIX_DISPLAY_EXCEPTIONS`.
+ */
+function formatHelixFromControl(rawValue: number, control: HelixControlDefJson, displayType: string): string {
+  const ex = HELIX_DISPLAY_EXCEPTIONS[displayType];
+  if (ex) {
+    const s = ex(rawValue, control);
+    if (s !== null && s.length > 0) return s;
+  }
+
+  const fmt = control.format;
+
+  if (Array.isArray(fmt) && fmt.length > 0 && typeof fmt[0] === "string") {
+    const labels = fmt as string[];
+    const idx = Math.max(0, Math.min(labels.length - 1, Math.round(rawValue)));
+    return labels[idx] ?? "—";
+  }
+
+  let format: string | undefined;
+  let formatUnits = control.formatUnits;
+  let unitsMultiplier = control.unitsMultiplier;
+
+  if (typeof fmt === "string") {
+    format = fmt;
+  } else if (Array.isArray(fmt) && fmt.length > 0 && typeof fmt[0] === "object") {
+    const bands = fmt as HelixControlFormatBandJson[];
+    const dspPick = control.dspToDisplayScale;
+    const valueForBandPick =
+      typeof dspPick === "number" && Number.isFinite(dspPick) ? rawValue * dspPick : rawValue;
+    const band = pickFormatBandForValue(valueForBandPick, bands);
+    if (band) {
+      format = band.format ?? format;
+      formatUnits = band.formatUnits ?? formatUnits;
+      unitsMultiplier = band.unitsMultiplier ?? unitsMultiplier;
+    }
+  }
+
+  if (format && !HELIX_PRINTF_TOKEN_RE.test(format)) {
+    const lit = (formatUnits ?? format).trim();
+    return helixUnescapePercentMarks(lit.length > 0 ? lit : "—");
+  }
+
+  let value = rawValue;
+  const dsp = control.dspToDisplayScale;
+  if (typeof dsp === "number" && Number.isFinite(dsp)) {
+    value *= dsp;
+  }
+  if (typeof unitsMultiplier === "number" && Number.isFinite(unitsMultiplier)) {
+    value *= unitsMultiplier;
+  }
+
+  const formatted = format ? formatWithPrintfFloat(value, format) : null;
+  if (formatUnits) {
+    if (formatted !== null && HELIX_PRINTF_TOKEN_RE.test(formatUnits)) {
+      return helixUnescapePercentMarks(formatUnits.replace(HELIX_PRINTF_TOKEN_RE, formatted));
+    }
+    return helixUnescapePercentMarks(formatUnits);
+  }
+  if (formatted !== null) return formatted;
+  if (control.isDiscrete) {
+    return String(Math.round(rawValue));
+  }
+  const s = String(value);
+  if (s.includes("e") || s.includes("E")) return value.toPrecision(4);
+  return s;
+}
+
+function normalizeCatalogSignal(signal: string | null | undefined): "mono" | "stereo" | null {
+  const s = (signal ?? "").trim().toLowerCase();
+  if (!s) return null;
+  if (s.includes("stereo")) return "stereo";
+  if (s.includes("mono")) return "mono";
+  return null;
+}
+
+function paramsVisibleForSignal(
+  params: ModelParamDefJson[],
+  catalogSignal: string | null | undefined,
+): ModelParamDefJson[] {
+  const signal = normalizeCatalogSignal(catalogSignal);
+  if (signal !== "mono") return params;
+  return params.filter((p) => p["stereo-only"] !== true);
+}
+
+function formatChainParamValueJson(
+  v: ChainParamValueJson,
+  param?: ModelParamDefJson,
+  helixControlsMap?: Map<string, HelixControlDefJson>,
+): string {
   if (typeof v === "boolean") return v ? "on" : "off";
   if (typeof v === "number" && Number.isFinite(v)) {
+    const controlKey = (param?.displayType ?? "").trim();
+    if (controlKey && helixControlsMap?.has(controlKey)) {
+      const def = helixControlsMap.get(controlKey);
+      if (def) {
+        return formatHelixFromControl(v, def, controlKey);
+      }
+    }
     const s = String(v);
     if (s.includes("e") || s.includes("E")) return v.toPrecision(4);
     return s;
@@ -404,6 +711,13 @@ function formatChainParamValueJson(v: ChainParamValueJson): string {
     if (t.length > 48) return `${t.slice(0, 44)}…`;
     return t || "—";
   }
+  return "—";
+}
+
+function formatRawChainParamValueJson(v: ChainParamValueJson): string {
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  if (typeof v === "string") return v;
   return "—";
 }
 
@@ -424,6 +738,7 @@ function renderModelsParamsPane(
   chainValues?: ChainParamValueJson[] | null,
   catalogChannel?: string | null,
   catalogSignal?: string | null,
+  helixControlsMap?: Map<string, HelixControlDefJson>,
 ) {
   setModelsParamsPaneCategory(slot.category);
   const inner = getModelsParamsInner();
@@ -451,8 +766,9 @@ function renderModelsParamsPane(
 
   const list = document.createElement("ul");
   list.className = "models-params-list";
+  const visibleParams = paramsVisibleForSignal(params, catalogSignal);
   let i = 0;
-  for (const p of params) {
+  for (const p of visibleParams) {
     const li = document.createElement("li");
     li.className = "models-params-row";
     const label = document.createElement("span");
@@ -465,11 +781,15 @@ function renderModelsParamsPane(
     chainEl.className = "models-params-row-chain";
     const cv = chainValues?.[i];
     chainEl.textContent =
-      cv !== undefined ? formatChainParamValueJson(cv) : "—";
+      cv !== undefined ? formatChainParamValueJson(cv, p, helixControlsMap) : "—";
     const maxEl = document.createElement("span");
     maxEl.className = "models-params-row-max";
     maxEl.textContent = formatParamBound(p.max);
-    li.append(label, minEl, chainEl, maxEl);
+    const rawEl = document.createElement("span");
+    rawEl.className = "models-params-row-raw";
+    rawEl.textContent = cv !== undefined ? formatRawChainParamValueJson(cv) : "—";
+    if (cv !== undefined) rawEl.title = formatRawChainParamValueJson(cv);
+    li.append(label, minEl, chainEl, maxEl, rawEl);
     list.appendChild(li);
     i += 1;
   }
@@ -522,7 +842,9 @@ async function loadAndShowModelsParamsForSlot(
         chainValues = null;
       }
     }
-    const found = await findModelDefinitionForSlot(slot);
+    const catalogModelId = await getCatalogModelIdForModel(slot.category, slot.name);
+    if (seq !== modelsParamsLoadSeq) return;
+    const found = await findModelDefinitionForSlot(slot, catalogModelId);
     if (seq !== modelsParamsLoadSeq) return;
     if (!found) {
       showModelsParamsNotFound(slot);
@@ -535,6 +857,8 @@ async function loadAndShowModelsParamsForSlot(
     if (seq !== modelsParamsLoadSeq) return;
     const catalogChannel = pickChannel(meta);
     const catalogSignal = pickSignal(meta, slot.moduleHex);
+    const helixControlsMap = await getHelixControlsMap();
+    if (seq !== modelsParamsLoadSeq) return;
     renderModelsParamsPane(
       slot,
       found.entry.params ?? [],
@@ -542,6 +866,7 @@ async function loadAndShowModelsParamsForSlot(
       chainValues,
       catalogChannel,
       catalogSignal,
+      helixControlsMap,
     );
   } catch (e) {
     if (seq !== modelsParamsLoadSeq) return;
@@ -560,7 +885,8 @@ async function resolveShortModelDisplayName(slot: SlotDebug): Promise<string> {
   const key = tooltipCacheKey(slot);
   const hit = kemplineTooltipCache.get(key);
   if (hit !== undefined) return hit;
-  const found = await findModelDefinitionForSlot(slot);
+  const catalogModelId = await getCatalogModelIdForModel(slot.category, slot.name);
+  const found = await findModelDefinitionForSlot(slot, catalogModelId);
   const display = (found?.entry.name ?? slot.name).trim() || "—";
   kemplineTooltipCache.set(key, display);
   return display;

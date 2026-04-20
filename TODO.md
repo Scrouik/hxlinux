@@ -31,3 +31,6 @@
 - [ ] Visualisation de la chaîne de signal.
 - [ ] Génération de presets via IA.
 - [ ] Export / import de fichiers `.hlx`.
+
+
+Vérifier si la jointure avec le fichier model est fait a partir du symbolicID et pas du name.

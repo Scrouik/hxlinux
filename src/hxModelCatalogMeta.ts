@@ -10,7 +10,12 @@ export type PresetMetaJson = {
   emulationName?: string;
 };
 
-let metaMapPromise: Promise<Map<string, PresetMetaJson>> | null = null;
+type CatalogModelEntry = {
+  id: string | null;
+  presetMeta: PresetMetaJson | null;
+};
+
+let catalogMapPromise: Promise<Map<string, CatalogModelEntry>> | null = null;
 
 function catalogKey(category: string, modelName: string): string {
   return `${category.trim().toLowerCase()}\0${modelName.trim().toLowerCase()}`;
@@ -25,7 +30,7 @@ function normalizeHexList(chainHex: string | string[] | undefined): string[] {
   return chainHex.map((h) => String(h).trim().toLowerCase()).filter(Boolean);
 }
 
-async function loadPresetMetaMap(): Promise<Map<string, PresetMetaJson>> {
+async function loadCatalogModelMap(): Promise<Map<string, CatalogModelEntry>> {
   const url = "/src-tauri/resources/HX_ModelCatalog.json";
   const res = await fetch(url);
   if (!res.ok) {
@@ -34,16 +39,27 @@ async function loadPresetMetaMap(): Promise<Map<string, PresetMetaJson>> {
   }
   const raw = await res.text();
   const data = JSON.parse(raw) as { categories?: unknown[] };
-  const map = new Map<string, PresetMetaJson>();
+  const map = new Map<string, CatalogModelEntry>();
   const record = (catName: string, models: unknown) => {
     if (!Array.isArray(models)) return;
     for (const m of models) {
       if (!m || typeof m !== "object") continue;
-      const mo = m as { name?: string; presetMeta?: PresetMetaJson };
+      const mo = m as { id?: string | number; name?: string; presetMeta?: PresetMetaJson };
       const name = typeof mo.name === "string" ? mo.name.trim() : "";
-      if (!name || !mo.presetMeta) continue;
+      if (!name) continue;
       const key = catalogKey(catName, name);
-      if (!map.has(key)) map.set(key, { ...mo.presetMeta });
+      if (map.has(key)) continue;
+      const idRaw = mo.id;
+      const id =
+        typeof idRaw === "string"
+          ? (idRaw.trim() || null)
+          : typeof idRaw === "number"
+            ? String(idRaw)
+            : null;
+      map.set(key, {
+        id,
+        presetMeta: mo.presetMeta ? { ...mo.presetMeta } : null,
+      });
     }
   };
   for (const cat of data.categories ?? []) {
@@ -64,14 +80,28 @@ export async function getPresetMetaForModel(
   slotCategory: string,
   modelDisplayName: string,
 ): Promise<PresetMetaJson | null> {
-  if (!metaMapPromise) {
-    metaMapPromise = loadPresetMetaMap().catch((e) => {
-      metaMapPromise = null;
+  if (!catalogMapPromise) {
+    catalogMapPromise = loadCatalogModelMap().catch((e) => {
+      catalogMapPromise = null;
       throw e;
     });
   }
-  const map = await metaMapPromise;
-  return map.get(catalogKey(slotCategory, modelDisplayName)) ?? null;
+  const map = await catalogMapPromise;
+  return map.get(catalogKey(slotCategory, modelDisplayName))?.presetMeta ?? null;
+}
+
+export async function getCatalogModelIdForModel(
+  slotCategory: string,
+  modelDisplayName: string,
+): Promise<string | null> {
+  if (!catalogMapPromise) {
+    catalogMapPromise = loadCatalogModelMap().catch((e) => {
+      catalogMapPromise = null;
+      throw e;
+    });
+  }
+  const map = await catalogMapPromise;
+  return map.get(catalogKey(slotCategory, modelDisplayName))?.id ?? null;
 }
 
 export function pickChannel(meta: PresetMetaJson | null): string | null {
@@ -110,5 +140,5 @@ export function pickSignal(meta: PresetMetaJson | null, moduleHex: string | unde
 
 /** Tests uniquement. */
 export function resetHxCatalogMetaMapForTests(): void {
-  metaMapPromise = null;
+  catalogMapPromise = null;
 }
