@@ -2,7 +2,7 @@
 
 Ce fichier sert de **mémo locale** quand l’historique de chat ou le contexte IDE est perdu après un redémarrage. Il complète le `README.md` (objectifs produit et commandes de base).
 
-**Dernière mise à jour significative** : **avril 2026** — panneau paramètres **min | chaîne | max | brut** ; jointure **catalogue `id` ↔ `.models` `symbolicID`** (fallback nom) ; filtrage **`stereo-only`** selon le signal ; formatage colonne « chaîne » via **`HelixControls.json`** pour les `displayType` listés plus bas ; **`HX_ModelCatalog.json`** enrichi (`presetMeta.chainHex` / `signal`, mono+stéréo) ; table **`MODULES_BY_ID`** générée côté Rust depuis le catalogue embarqué ; front **`hxModelCatalogMeta.ts`** ; scripts Python sous **`scripts/`** ; il reste des **`chainHex` vides** à compléter à la main (voir section catalogue ci-dessous).
+**Dernière mise à jour significative** : **avril 2026** — panneau paramètres : grille **nom | min | cellule (valeur + contrôle) | max** ; **en-tête en grille 2×2** (catégorie en ambre à gauche L1, **`presetMeta.emulationName`** en blanc à droite L1, bloc infos sous-titre à gauche L2, **icône catalogue** à droite L2 + **aperçu au survol** taille quasi native) ; **toggles Off/On** pour paramètres **bool** (`valueType === 2` ou `displayType` **`off_on`**) sans slider ; **`pickEmulationName`** dans **`hxModelCatalogMeta.ts`** ; format **`.models`** étendu côté TS (**`min` / `max`** `number | boolean`) ; jointure **catalogue `id` ↔ `.models` `symbolicID`** (fallback nom) ; filtrage **`stereo-only`** ; formatage « chaîne » via **`HelixControls.json`** ; **`HX_ModelCatalog.json`** / **`MODULES_BY_ID`** / scripts **`scripts/`** ; **`chainHex` vides** encore à compléter à la main (section catalogue). **Prochaine session (UI matrice)** : **`Icons_line.png`** manquant ou incorrect sur **Path 2** (rangée L3) — voir section matrice.
 
 ## À quoi sert l’application
 
@@ -72,7 +72,32 @@ Pour les `displayType` **non** couverts par `HelixControls.json` (voir section s
 
 ## Panneau paramètres — déjà traité dans `src/models.ts` (mémo pour ne pas refaire la demande)
 
-Tout ceci concerne la vue **models** : grille + panneau **min | chaîne | max** (et colonne **brut** à droite).
+Tout ceci concerne la vue **models** : grille + panneau **nom | min | cellule | max**. La **cellule** centrale contient soit un **slider** (valeur formatée Helix au-dessus + `<input type="range">`), soit une paire de **boutons Off / On** pour les paramètres booléens (voir ci-dessous). La **valeur brute JSON** de la chaîne reste en **infobulle** sur la ligne (et sur le curseur). Les colonnes sont alignées via **`display: grid` sur `ul.models-params-list`** et **`grid-template-columns: subgrid` sur chaque `li.models-params-row`** ; sans support **subgrid**, repli sur une **table** HTML (`display: table`) à colonnes resserrées.
+
+### En-tête du panneau (`#models-params-pane-header`) — grille 2 colonnes × 2 lignes
+
+| Cellule | Contenu | Alignement / style |
+|---------|---------|---------------------|
+| **(1,1)** | Titre **catégorie** du slot (`#models-params-pane-title`) | Gauche, **`var(--amber)`** |
+| **(2,1)** | **`presetMeta.emulationName`** (`#models-params-pane-emulation-name`, via **`pickEmulationName`**) | Droite, **blanc** ; masqué si chaîne vide |
+| **(1,2)** | Sous-tête modèle (nom court catalogue, canal/signal, nom USB si différent, etc.) | Gauche |
+| **(2,2)** | **Icône** (`icons_models/` ou repli `icons_category/`) | Droite ; **survol** → popover **`position: fixed`** sur `body` avec la même URL, image **`width`/`height: auto`** jusqu’à **`max-width: 90vw`** / **`max-height: 85vh`** (évite les PNG énormes hors écran) ; fermeture avec léger délai + survol de la popover |
+
+Structure HTML : les **quatre** blocs sont des **enfants directs** du `header` (ordre DOM : titre, emulation, subhead, wrap icône) ; le placement repose sur **`grid-column` / `grid-row`** en CSS (`src/styles.css`, classes **`.models-params-pane-*`**).
+
+### Format des paramètres (`.models` ↔ ligne UI)
+
+Chaque entrée **`params[]`** est un objet **`ModelParamDefJson`** côté `models.ts` :
+
+- **`symbolicID`**, **`name`**, **`displayType`** (clé vers **`HelixControls.json`** quand elle existe).
+- **`valueType`** (usage Line 6) : **`0`** = entier pas slider / incréments entiers ; **`1`** = float ; **`2`** = **bool** (souvent avec **`displayType`** `off_on` côté Helix).
+- **`min` / `max`** : en JSON Line 6 ce sont le plus souvent des **nombres** ; pour les bool **`off_on`** le fichier peut porter **`false` / `true`** — le front les accepte (**`number | boolean`**) pour l’affichage des bornes et la logique slider (**slider** uniquement si min/max sont des nombres avec **`max > min`**).
+- **`"stereo-only": true`** : ligne masquée en **mono** (voir **`pickSignal`** + **`moduleHex`**).
+- **`default`** : peut être nombre, chaîne ou bool selon le modèle.
+
+**Valeurs chaîne** (`invoke` → **`ChainParamValueJson`**) : **`boolean`**, **`number`**, ou **`string`** (hex blob). Pour l’**UI bool** : la cellule affiche les **boutons Off/On** si la valeur se lit comme bool (**`true`/`false`**) **ou** entier **`0`/`1`** *et* (**`valueType === 2`** **ou** `displayType` normalisé en **`off_on`**). Libellés des boutons : tableau **`format`** à deux chaînes dans **`HelixControls.json`** pour ce `displayType`, sinon défaut **Off / On**. Les clics mettent à jour **l’aperçu local** (texte chaîne + infobulle) en respectant le type d’origine (**bool** vs **0/1**) ; **aucune** écriture vers le Helix (idem que le slider d’aperçu).
+
+**Formatage affiché** (`formatChainParamValueJson`) : les **bool** passent par **`formatHelixFromControl`** quand le `displayType` a une entrée Helix (ex. index 0/1 sur tableau `format`) ; sinon repli **`on` / `off`**.
 
 ### Jointure catalogue ↔ `.models`
 
@@ -82,7 +107,7 @@ Tout ceci concerne la vue **models** : grille + panneau **min | chaîne | max** 
 
 ### Alignement liste `params` ↔ valeurs chaîne
 
-- Paramètres avec **`"stereo-only": true`** : **masqués** quand le signal catalogue est **mono** (`pickSignal` + `moduleHex`), pour ne pas décaler l’index du zip avec les valeurs lues dans le binaire.
+- Paramètres avec **`"stereo-only": true`** : **masqués** quand le signal catalogue est **mono** (`pickSignal` + `moduleHex`). Le zip **`chainValues[j]`** utilise toujours l’index **`j`** dans le tableau **`params` complet** du `.models` (les lignes masquées ne sont pas affichées, mais les indices ne sont pas renumérotés).
 
 ### Source des règles d’affichage « chaîne »
 
@@ -108,7 +133,7 @@ Les cas déjà validés manuellement (**`generic_knob`**, **`generic_knob_1to1`*
 
 ### UI debug
 
-- **Colonne tout à droite** : valeur **brute** reçue de la chaîne (avant format `HelixControls`).
+- **Infobulle** sur chaque ligne (et sur le curseur d’aperçu) : même texte que l’ancienne colonne **brute** — valeur reçue de la chaîne (avant format `HelixControls`).
 - **Logs jointure ID** : `localStorage.setItem("models_debug_id_join", "1")` → `console.warn` si fallback **nom** alors qu’un **id** catalogue était présent, ou si aucun match.
 
 ---
@@ -187,9 +212,9 @@ Grille **20 colonnes × 4 lignes**, cellules **56×56 px** (`NUM_COLS = 20`, `NU
 
 | Ligne | Rôle |
 |-------|------|
-| **L1** | Path 1 — slots 0–7, I/O Input / Output, traits horizontaux `Icons_line.png` entre colonnes paires, pastille `Icons_split_merge.png` aux colonnes **jonction** (split/merge issus du routing). |
+| **L1** | Path 1 — slots 0–7, I/O Input / Output, traits horizontaux **`Icons_line.png`** entre colonnes paires, pastille `Icons_split_merge.png` aux colonnes **jonction** (split/merge issus du routing). |
 | **L2** | Description Path 1 — textes catégorie ; aux colonnes split/merge, petite barre verticale `Icons_vertical_line.png`. |
-| **L3** | Path 2 — slots 8–15 si branche B ; aux mêmes colonnes, icônes coin **`Icons_link_split.png`** / **`Icons_link_merge.png`** (alignées sur `stomp_layout`). |
+| **L3** | Path 2 — slots 8–15 si branche B ; aux mêmes colonnes, icônes coin **`Icons_link_split.png`** / **`Icons_link_merge.png`** (alignées sur `stomp_layout`). **À corriger** : réintroduire ou aligner les **traits horizontaux `Icons_line.png`** sur cette rangée (équivalent visuel L1) — actuellement **manquant / incomplet sur Path 2** ; l’asset est dans **`src-tauri/resources/icons_category/Icons_line.png`**. |
 | **L4** | Description Path 2 — catégories path B. |
 
 - **Colonne 20** : numéros de ligne grille (debug lisible).
@@ -197,7 +222,7 @@ Grille **20 colonnes × 4 lignes**, cellules **56×56 px** (`NUM_COLS = 20`, `NU
 - **`ENABLE_MATRIX_VSPAN_ON_PATH2`** (`models.ts`) : par défaut **`false`**. Un overlay `vspan` vertical sur Path 2 partageait la même `grid-area` que les icônes lien ; les deux se superposaient. Laisser à `true` uniquement pour un revert visuel expérimental (commentaires **REVERT** à côté).
 - **Ancienne mise en page (5 lignes + rangée 3 « séparateur » 0 px)** : le retour est documenté en blocs commentés **REVERT** dans `models.ts` et `styles.css` (constantes de lignes, hauteurs de rangées, boucle séparateur, classes `row-line-debug-sep`, etc.).
 
-Panneau paramètres : liste **`.models-params-list`** avec lignes **`.models-params-row`** en grille **nom | min | chaîne | max** (classes `.models-params-row-min`, `-chain`, `-max`).
+Panneau paramètres : **`ul.models-params-list`** = grille à 4 colonnes partagées ; chaque **`li.models-params-row`** = **subgrid** sur ces colonnes, enfants directs **nom | min | cellule | max** (valeur formatée dans **`.models-params-slider-cell`** : slider **ou** **`.models-params-bool-toggle`** + **`.models-params-bool-btn`** ; classes `.models-params-row-min`, `-chain`, `-max`).
 
 Le CSS associé est sous **`.models-pane .hx-matrix-*`** et **`.models-params-*`** dans `styles.css`. Des régressions visuelles passent souvent par : parent sans `.models-pane`, ou styles inline dupliqués dans `models.html` vs `styles.css`.
 
@@ -216,12 +241,12 @@ Chemins côté front pour les PNG sous Tauri : souvent `/src-tauri/resources/...
 
 - Chaque modèle du JSON peut porter un objet **`presetMeta`** : notamment **`chainHex`** (une chaîne hex **ou** un tableau **`[mono, stéréo]`**) et **`signal`** en parallèle (`["mono", "stereo"]`) quand le même bloc existe en deux variantes.
 - **`src-tauri/src/lib.rs`** : au build, **`MODULES_BY_ID`** est rempli **uniquement** depuis **`include_str!("../resources/HX_ModelCatalog.json")`** en parcourant tous les `presetMeta.chainHex` (chaîne ou tableau) + nom court du modèle. C’est cette table qui sert à résoudre l’UID hex du segment preset vers **catégorie + nom** affichés.
-- **`src/hxModelCatalogMeta.ts`** : en dev, `fetch` du catalogue sous `/src-tauri/resources/HX_ModelCatalog.json`, map **catégorie + nom** → `presetMeta`, helpers **`pickSignal` / `pickChannel`** pour choisir le bon libellé quand `chainHex` / `signal` sont des tableaux parallèles au `module_hex` du slot.
+- **`src/hxModelCatalogMeta.ts`** : en dev, `fetch` du catalogue sous `/src-tauri/resources/HX_ModelCatalog.json`, map **catégorie + nom** → `presetMeta`, helpers **`pickSignal` / `pickChannel` / `pickEmulationName`** pour choisir le bon libellé quand `chainHex` / `signal` sont des tableaux parallèles au `module_hex` du slot, et afficher **`presetMeta.emulationName`** dans l’en-tête du panneau paramètres.
 - **`scripts/apply_mono_stereo_pairs_to_catalog.py`** : lit **`modules_by_id.json`**, regroupe les paires dont le nom long ne diffère que par **`(mono)`** / **`(stereo)`** / **`(stéréo)`** (même catégorie, même indice Guitar/Bass si présent), met à jour la fiche catalogue dont le **`name`** matche : `chainHex` + `signal` en tableaux. Dernière exécution indicative : **115** paires détectées, **103** fiches mises à jour, **12** sans correspondance catalogue (surtout **Dynamic** et **Vol/Pan** — noms de catégorie / modèle qui ne collent pas aux critères du script).
 - **`scripts/enrich_catalog_preset_meta.py`** — autre script d’enrichissement `presetMeta` (heuristiques nom long, etc.), à lancer au besoin.
 - **Travail restant (manuel)** : il reste de l’ordre de **~100** entrées **`"chainHex": ""`** dans **`HX_ModelCatalog.json`** (compter avec `rg '"chainHex":\\s*""' src-tauri/resources/HX_ModelCatalog.json`). Le goulot d’étranglement est d’**assigner le bloc sur la machine** pour récupérer l’hex, puis de recopier dans le JSON. Piste plus tard : script de **suggestion** hex depuis `modules_by_id.json` pour les cas évidents, et assouplir le mapping catégorie pour les **12** paires skippées si on veut les couvrir sans toucher à la machine deux fois.
 
-**Note** : une copie **`External files/HX_ModelCatalog.json`** peut exister hors bundle ; elle n’a **pas** été incluse dans le commit local ci-dessous (diff très volumineux) — resynchroniser à la main si tu t’en sers comme miroir.
+**Note** : une copie **`External files/HX_ModelCatalog.json`** peut exister hors bundle ; les commits UI « légers » peuvent l’**exclure** (diff très volumineux) — resynchroniser à la main si tu t’en sers comme miroir.
 
 ### Git — commits sans indexer les gros sous-dossiers de `resources/`
 
@@ -240,7 +265,7 @@ git push origin refactor/multithread
 
 Les fichiers **à la racine** de `src-tauri/resources/` (ex. `HX_ModelCatalog.json`) restent éligibles au staging s’ils sont modifiés. Ajoute d’autres `:(exclude)…` si tu dois aussi ignorer `External files/` ou autre.
 
-**Commits / contexte** : sur la branche **`refactor/multithread`**, le commit **`f79be40`** reste la référence pour `preset_chain_params` + UI min | chaîne | max. Un commit local regroupe le catalogue (`HX_ModelCatalog.json`), `modules_by_id.json`, `HelixControls.json`, les scripts `scripts/*.py`, `hxModelCatalogMeta.ts`, les évolutions `lib.rs` / `models.ts` / `styles.css` et cette **`description.md`** (message **`feat(catalog): presetMeta chainHex/signal, MODULES_BY_ID depuis le JSON`** — voir **`git log -1`**).
+**Commits / contexte** : sur la branche **`refactor/multithread`**, le commit **`f79be40`** reste une référence pour `preset_chain_params` + première itération UI min | chaîne | max. Un commit local ultérieur (**`dd9ee9f`**, message **`feat(models): panneau paramètres et en-tête catalogue`**) regroupe notamment **`index.html`**, **`models.html`**, **`src/models.ts`**, **`src/styles.css`**, **`src/hxModelCatalogMeta.ts`** (en-tête 2×2, `emulationName`, toggles bool, aperçu survol icône, etc.). Les gros diffs **`HX_ModelCatalog.json`** / **`TODO.md`** / **`description.md`** peuvent rester hors commit jusqu’à message dédié — voir **`git log`** / **`git status`**.
 
 ## Reprise rapide après redémarrage
 

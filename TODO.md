@@ -34,3 +34,4 @@
 
 
 Vérifier si la jointure avec le fichier model est fait a partir du symbolicID et pas du name.
+Dans les models il y a des parametres qui ne sont que pour certain signal (sterero ou mono)
