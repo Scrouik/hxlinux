@@ -3,8 +3,10 @@ import { listen } from "@tauri-apps/api/event";
 
 import {
   getCatalogModelIdForModel,
+  getCatalogModelImageForModel,
   getPresetMetaForModel,
   pickChannel,
+  pickEmulationName,
   pickSignal,
 } from "./hxModelCatalogMeta";
 import "./styles.css";
@@ -45,6 +47,41 @@ function getModelsParamsPaneTitleEl(): HTMLElement | null {
   return document.getElementById("models-params-pane-title");
 }
 
+function getModelsParamsSubheadEl(): HTMLElement | null {
+  return document.getElementById("models-params-pane-subhead");
+}
+
+function getModelsParamsModelIconWrapEl(): HTMLElement | null {
+  return document.getElementById("models-params-pane-model-icon-wrap");
+}
+
+function getModelsParamsEmulationNameEl(): HTMLElement | null {
+  return document.getElementById("models-params-pane-emulation-name");
+}
+
+function setModelsParamsPaneEmulationName(text: string | null): void {
+  const el = getModelsParamsEmulationNameEl();
+  if (!el) return;
+  if (!text) {
+    el.textContent = "";
+    el.removeAttribute("title");
+    el.hidden = true;
+    return;
+  }
+  el.textContent = text;
+  el.title = text;
+  el.hidden = false;
+}
+
+/** Vide le sous-titre modèle, `emulationName` et l’icône sous le bandeau titre. */
+function clearModelsParamsSubheadAndIcon(): void {
+  getModelsParamsSubheadEl()?.replaceChildren();
+  setModelsParamsPaneEmulationName(null);
+  disposeModelsParamsIconLivePreview();
+  hideModelsParamsIconPreviewPopover();
+  getModelsParamsModelIconWrapEl()?.replaceChildren();
+}
+
 /** En-tête du panneau : nom de catégorie du modèle (ex. « Amp »), vide si aucun bloc ciblé. */
 function setModelsParamsPaneCategory(category: string) {
   const el = getModelsParamsPaneTitleEl();
@@ -63,6 +100,7 @@ function clearSlotSelectionVisual() {
 
 function resetModelsParamsIdleHint() {
   setModelsParamsPaneCategory("");
+  clearModelsParamsSubheadAndIcon();
   const inner = getModelsParamsInner();
   if (!inner) return;
   inner.replaceChildren();
@@ -75,6 +113,7 @@ function resetModelsParamsIdleHint() {
 /** Panneau Paramètres Models : aucun contenu (ex. clic sur un slot vide). */
 function clearModelsParamsPaneContent() {
   setModelsParamsPaneCategory("");
+  clearModelsParamsSubheadAndIcon();
   const inner = getModelsParamsInner();
   if (!inner) return;
   inner.replaceChildren();
@@ -230,8 +269,11 @@ type ModelParamDefJson = {
   symbolicID: string;
   name: string;
   displayType?: string;
-  min?: number;
-  max?: number;
+  /** 0 = entier, 1 = float, 2 = bool (Line 6). */
+  valueType?: number;
+  /** JSON Line 6 : souvent nombres ; bool pour `off_on` (ex. Bright / Contour). */
+  min?: number | boolean;
+  max?: number | boolean;
   default?: number | string | boolean;
   "stereo-only"?: boolean;
 };
@@ -411,6 +453,29 @@ function formatParamBound(n: number | undefined): string {
   return s;
 }
 
+/** Min / max affichés comme la colonne « chaîne » (Helix + `displayType`) quand c’est possible. */
+function formatParamBoundForDisplay(
+  bound: number | boolean | undefined,
+  param: ModelParamDefJson,
+  helixControlsMap?: Map<string, HelixControlDefJson>,
+): string {
+  if (bound === undefined) return "—";
+  if (typeof bound === "boolean") {
+    const dt = (param.displayType ?? "").trim();
+    if (dt && helixControlsMap?.has(dt)) {
+      const def = helixControlsMap.get(dt)!;
+      return formatHelixFromControl(bound ? 1 : 0, def, dt);
+    }
+    return bound ? "on" : "off";
+  }
+  if (!Number.isFinite(bound)) return "—";
+  const dt = (param.displayType ?? "").trim();
+  if (dt && helixControlsMap?.has(dt)) {
+    return formatChainParamValueJson(bound, param, helixControlsMap);
+  }
+  return formatParamBound(bound);
+}
+
 /** Valeurs `ChainParamValue` sérialisées (serde untagged). */
 type ChainParamValueJson = boolean | number | string;
 type HelixControlFormatBandJson = {
@@ -419,6 +484,9 @@ type HelixControlFormatBandJson = {
   format?: string;
   formatUnits?: string;
   unitsMultiplier?: number;
+  /** Présent sur les segments `step[]` Helix (pas sur `format[]`). */
+  fine?: number;
+  coarse?: number;
 };
 type HelixControlDefJson = {
   dspToDisplayScale?: number;
@@ -427,6 +495,8 @@ type HelixControlDefJson = {
   formatUnits?: string;
   unitsMultiplier?: number;
   isDiscrete?: boolean;
+  /** `step` Helix : `{ fine, coarse }` ou tableau de plages (même logique que `format`). */
+  step?: unknown;
 };
 
 /**
@@ -501,6 +571,7 @@ function parseHelixControlObject(o: Record<string, unknown>): HelixControlDefJso
         ? o.unitsMultiplier
         : undefined,
     isDiscrete: o.isDiscrete === true,
+    step: o.step !== undefined ? o.step : undefined,
   };
 }
 
@@ -592,6 +663,49 @@ function pickFormatBandForValue(
     if (value >= lb && value < ub) return b;
   }
   return fallback;
+}
+
+/** Incrément en unité **brute chaîne** (DSP) pour le snap du slider. */
+function helixRawIncrementFromStep(rawValue: number, def: HelixControlDefJson): number | null {
+  const st = def.step;
+  if (st === undefined || st === null) return null;
+  if (typeof st === "object" && !Array.isArray(st) && "fine" in st) {
+    const fine = (st as { fine?: unknown }).fine;
+    if (typeof fine !== "number" || !Number.isFinite(fine) || fine <= 0) return null;
+    const dsp = def.dspToDisplayScale;
+    if (typeof dsp === "number" && dsp > 0 && Number.isFinite(dsp)) return fine / dsp;
+    return fine;
+  }
+  if (Array.isArray(st) && st.length > 0 && typeof st[0] === "object") {
+    const segs = st as HelixControlFormatBandJson[];
+    const band = pickFormatBandForValue(rawValue, segs);
+    const fine = band?.fine;
+    if (typeof fine === "number" && Number.isFinite(fine) && fine > 0) return fine;
+  }
+  return null;
+}
+
+function fallbackRawIncrement(p: ModelParamDefJson, min: number, max: number): number {
+  if (p.valueType === 0) return 1;
+  const span = max - min;
+  if (!Number.isFinite(span) || span <= 0) return 0.001;
+  const coarse = span / 200;
+  return Math.max(1e-6, Math.min(span, coarse));
+}
+
+function snapRawToIncrement(
+  v: number,
+  min: number,
+  max: number,
+  inc: number,
+  valueType?: number,
+): number {
+  if (!Number.isFinite(inc) || inc <= 0) return Math.min(max, Math.max(min, v));
+  const n = Math.round((v - min) / inc);
+  let s = min + n * inc;
+  s = Math.min(max, Math.max(min, s));
+  if (valueType === 0) s = Math.round(s);
+  return s;
 }
 
 const HELIX_PRINTF_TOKEN_RE = /%[+\- 0#]*(?:\.\d+)?f/;
@@ -688,12 +802,29 @@ function paramsVisibleForSignal(
   return params.filter((p) => p["stereo-only"] !== true);
 }
 
+/** Masqué en mono : même règle que `paramsVisibleForSignal` (l’index `chainValues` reste celui du `.models` complet). */
+function paramHiddenForMonoStereoOnly(
+  p: ModelParamDefJson,
+  catalogSignal: string | null | undefined,
+): boolean {
+  return paramsVisibleForSignal([p], catalogSignal).length === 0;
+}
+
 function formatChainParamValueJson(
   v: ChainParamValueJson,
   param?: ModelParamDefJson,
   helixControlsMap?: Map<string, HelixControlDefJson>,
 ): string {
-  if (typeof v === "boolean") return v ? "on" : "off";
+  if (typeof v === "boolean") {
+    const controlKey = (param?.displayType ?? "").trim();
+    if (controlKey && helixControlsMap?.has(controlKey)) {
+      const def = helixControlsMap.get(controlKey);
+      if (def) {
+        return formatHelixFromControl(v ? 1 : 0, def, controlKey);
+      }
+    }
+    return v ? "on" : "off";
+  }
   if (typeof v === "number" && Number.isFinite(v)) {
     const controlKey = (param?.displayType ?? "").trim();
     if (controlKey && helixControlsMap?.has(controlKey)) {
@@ -721,7 +852,43 @@ function formatRawChainParamValueJson(v: ChainParamValueJson): string {
   return "—";
 }
 
+/** `true` / `false` pour bool ; `0` / `1` pour entiers discrets ; sinon pas d’UI bool. */
+function chainValueAsBool(cv: ChainParamValueJson): boolean | null {
+  if (typeof cv === "boolean") return cv;
+  if (typeof cv === "number" && Number.isFinite(cv)) {
+    if (cv === 0 || cv === 1) return cv !== 0;
+    return null;
+  }
+  return null;
+}
+
+function isOffOnDisplayType(displayType: string | undefined): boolean {
+  const t = (displayType ?? "").trim().toLowerCase();
+  return t === "off_on";
+}
+
+function boolToggleLabels(
+  p: ModelParamDefJson,
+  helixControlsMap?: Map<string, HelixControlDefJson>,
+): [string, string] {
+  const dt = (p.displayType ?? "").trim();
+  const def = dt ? helixControlsMap?.get(dt) : undefined;
+  const fmt = def?.format;
+  if (Array.isArray(fmt) && fmt.length >= 2 && typeof fmt[0] === "string" && typeof fmt[1] === "string") {
+    return [fmt[0] as string, fmt[1] as string];
+  }
+  return ["Off", "On"];
+}
+
+function canModelsParamsBoolToggle(p: ModelParamDefJson, cv: ChainParamValueJson | undefined): boolean {
+  if (cv === undefined) return false;
+  if (chainValueAsBool(cv) === null) return false;
+  if (p.valueType === 2) return true;
+  return isOffOnDisplayType(p.displayType);
+}
+
 function showModelsParamsLoading() {
+  clearModelsParamsSubheadAndIcon();
   const inner = getModelsParamsInner();
   if (!inner) return;
   inner.replaceChildren();
@@ -738,7 +905,9 @@ function renderModelsParamsPane(
   chainValues?: ChainParamValueJson[] | null,
   catalogChannel?: string | null,
   catalogSignal?: string | null,
+  catalogEmulationName?: string | null,
   helixControlsMap?: Map<string, HelixControlDefJson>,
+  catalogModelImage?: string | null,
 ) {
   setModelsParamsPaneCategory(slot.category);
   const inner = getModelsParamsInner();
@@ -763,12 +932,24 @@ function renderModelsParamsPane(
   } else {
     head.append(title);
   }
+  const subhead = getModelsParamsSubheadEl();
+  if (subhead) {
+    subhead.replaceChildren(head);
+  } else {
+    inner.appendChild(head);
+  }
+  setModelsParamsPaneEmulationName(
+    catalogEmulationName && catalogEmulationName.trim()
+      ? catalogEmulationName.trim()
+      : null,
+  );
+  setModelsParamsHeaderIcon(slot, catalogModelImage);
 
   const list = document.createElement("ul");
   list.className = "models-params-list";
-  const visibleParams = paramsVisibleForSignal(params, catalogSignal);
-  let i = 0;
-  for (const p of visibleParams) {
+  for (let j = 0; j < params.length; j += 1) {
+    const p = params[j];
+    if (paramHiddenForMonoStereoOnly(p, catalogSignal)) continue;
     const li = document.createElement("li");
     li.className = "models-params-row";
     const label = document.createElement("span");
@@ -776,28 +957,129 @@ function renderModelsParamsPane(
     label.textContent = (p.name || p.symbolicID || "").trim() || "—";
     const minEl = document.createElement("span");
     minEl.className = "models-params-row-min";
-    minEl.textContent = formatParamBound(p.min);
+    minEl.textContent = formatParamBoundForDisplay(p.min, p, helixControlsMap);
     const chainEl = document.createElement("span");
     chainEl.className = "models-params-row-chain";
-    const cv = chainValues?.[i];
+    const cv = chainValues?.[j];
     chainEl.textContent =
       cv !== undefined ? formatChainParamValueJson(cv, p, helixControlsMap) : "—";
     const maxEl = document.createElement("span");
     maxEl.className = "models-params-row-max";
-    maxEl.textContent = formatParamBound(p.max);
-    const rawEl = document.createElement("span");
-    rawEl.className = "models-params-row-raw";
-    rawEl.textContent = cv !== undefined ? formatRawChainParamValueJson(cv) : "—";
-    if (cv !== undefined) rawEl.title = formatRawChainParamValueJson(cv);
-    li.append(label, minEl, chainEl, maxEl, rawEl);
+    maxEl.textContent = formatParamBoundForDisplay(p.max, p, helixControlsMap);
+    const sliderCell = document.createElement("div");
+    sliderCell.className = "models-params-slider-cell";
+    const rawTitleStr =
+      cv !== undefined ? formatRawChainParamValueJson(cv) : "—";
+    li.title = rawTitleStr;
+    sliderCell.title = rawTitleStr;
+    li.append(label, minEl, sliderCell, maxEl);
+
+    const minN = p.min;
+    const maxN = p.max;
+    const canSlider =
+      typeof cv === "number" &&
+      Number.isFinite(cv) &&
+      typeof minN === "number" &&
+      typeof maxN === "number" &&
+      Number.isFinite(minN) &&
+      Number.isFinite(maxN) &&
+      maxN > minN;
+    if (canSlider) {
+      sliderCell.append(chainEl);
+      const dt = (p.displayType ?? "").trim();
+      const helixDef =
+        dt && helixControlsMap?.has(dt) ? helixControlsMap.get(dt)! : undefined;
+      let inc = helixDef ? helixRawIncrementFromStep(cv, helixDef) : null;
+      if (inc === null || !Number.isFinite(inc) || inc <= 0) {
+        inc = fallbackRawIncrement(p, minN, maxN);
+      }
+      const init = snapRawToIncrement(cv, minN, maxN, inc, p.valueType);
+      const input = document.createElement("input");
+      input.type = "range";
+      input.className = "models-params-slider";
+      input.min = String(minN);
+      input.max = String(maxN);
+      if (inc >= 1e-9) {
+        const span = maxN - minN;
+        if (inc < span / 2) input.step = String(inc);
+      }
+      input.value = String(init);
+      {
+        let v = Number(input.value);
+        if (!Number.isFinite(v)) v = init;
+        v = snapRawToIncrement(v, minN, maxN, inc, p.valueType);
+        if (Number(input.value) !== v) input.value = String(v);
+      }
+      input.title = rawTitleStr;
+      input.setAttribute(
+        "aria-label",
+        `${(p.name || p.symbolicID || "").trim()} — aperçu local, non envoyé au Helix`,
+      );
+      input.addEventListener("input", () => {
+        let v = Number(input.value);
+        if (!Number.isFinite(v)) return;
+        v = snapRawToIncrement(v, minN, maxN, inc, p.valueType);
+        if (Number(input.value) !== v) input.value = String(v);
+        chainEl.textContent = formatChainParamValueJson(v, p, helixControlsMap);
+        const s = formatRawChainParamValueJson(v);
+        li.title = s;
+        sliderCell.title = s;
+        input.title = s;
+      });
+      sliderCell.append(input);
+    } else if (cv !== undefined && canModelsParamsBoolToggle(p, cv)) {
+      sliderCell.append(chainEl);
+      let currentB = chainValueAsBool(cv)!;
+      const [labOff, labOn] = boolToggleLabels(p, helixControlsMap);
+      const rowWrap = document.createElement("div");
+      rowWrap.className = "models-params-bool-toggle";
+      const bOff = document.createElement("button");
+      bOff.type = "button";
+      bOff.className = "models-params-bool-btn";
+      bOff.textContent = labOff;
+      const bOn = document.createElement("button");
+      bOn.type = "button";
+      bOn.className = "models-params-bool-btn";
+      bOn.textContent = labOn;
+      const paramLabel = `${(p.name || p.symbolicID || "").trim()} — aperçu local, non envoyé au Helix`;
+      bOff.setAttribute("aria-label", `${paramLabel} : ${labOff}`);
+      bOn.setAttribute("aria-label", `${paramLabel} : ${labOn}`);
+      const syncButtons = (): void => {
+        bOff.classList.toggle("models-params-bool-btn--selected", !currentB);
+        bOn.classList.toggle("models-params-bool-btn--selected", currentB);
+      };
+      const applyBool = (nextB: boolean): void => {
+        currentB = nextB;
+        const v: ChainParamValueJson = typeof cv === "boolean" ? nextB : nextB ? 1 : 0;
+        chainEl.textContent = formatChainParamValueJson(v, p, helixControlsMap);
+        const s = formatRawChainParamValueJson(v);
+        li.title = s;
+        sliderCell.title = s;
+        syncButtons();
+      };
+      bOff.addEventListener("click", () => {
+        if (!currentB) return;
+        applyBool(false);
+      });
+      bOn.addEventListener("click", () => {
+        if (currentB) return;
+        applyBool(true);
+      });
+      syncButtons();
+      rowWrap.append(bOff, bOn);
+      sliderCell.append(rowWrap);
+    } else {
+      sliderCell.append(chainEl);
+    }
+
     list.appendChild(li);
-    i += 1;
   }
-  inner.append(head, list);
+  inner.appendChild(list);
 }
 
 function showModelsParamsNotFound(slot: SlotDebug) {
   setModelsParamsPaneCategory(slot.category);
+  clearModelsParamsSubheadAndIcon();
   const inner = getModelsParamsInner();
   if (!inner) return;
   inner.replaceChildren();
@@ -809,6 +1091,7 @@ function showModelsParamsNotFound(slot: SlotDebug) {
 
 function showModelsParamsError(message: string) {
   setModelsParamsPaneCategory("");
+  clearModelsParamsSubheadAndIcon();
   const inner = getModelsParamsInner();
   if (!inner) return;
   inner.replaceChildren();
@@ -853,10 +1136,14 @@ async function loadAndShowModelsParamsForSlot(
     const short = found.entry.name.trim();
     kemplineTooltipCache.set(tooltipCacheKey(slot), short);
     applyShortNameToSlotNodes(slot, short);
-    const meta = await getPresetMetaForModel(slot.category, short);
+    const [meta, catalogImage] = await Promise.all([
+      getPresetMetaForModel(slot.category, short),
+      getCatalogModelImageForModel(slot.category, short),
+    ]);
     if (seq !== modelsParamsLoadSeq) return;
     const catalogChannel = pickChannel(meta);
     const catalogSignal = pickSignal(meta, slot.moduleHex);
+    const catalogEmulationName = pickEmulationName(meta);
     const helixControlsMap = await getHelixControlsMap();
     if (seq !== modelsParamsLoadSeq) return;
     renderModelsParamsPane(
@@ -866,7 +1153,9 @@ async function loadAndShowModelsParamsForSlot(
       chainValues,
       catalogChannel,
       catalogSignal,
+      catalogEmulationName,
       helixControlsMap,
+      catalogImage,
     );
   } catch (e) {
     if (seq !== modelsParamsLoadSeq) return;
@@ -945,6 +1234,198 @@ function iconForCategory(category: string, name: string): string | null {
   const filename = CATEGORY_ICON_BY_KEY[key];
   if (!filename) return null;
   return `/src-tauri/resources/icons_category/${filename}`;
+}
+
+/** Fichier `image` du catalogue : uniquement un nom de fichier PNG sûr pour `icons_models/`. */
+function sanitizeIconsModelsFilename(name: string): string | null {
+  const t = name.trim();
+  if (!t || t.includes("/") || t.includes("\\") || t.includes("..")) return null;
+  if (!/^[a-zA-Z0-9_.-]+\.png$/i.test(t)) return null;
+  return t;
+}
+
+let modelsParamsIconPreviewPopover: HTMLDivElement | null = null;
+let modelsParamsIconPreviewPopoverImg: HTMLImageElement | null = null;
+let modelsParamsIconPreviewHideTimer: ReturnType<typeof setTimeout> | null = null;
+let modelsParamsIconPreviewScrollController: AbortController | null = null;
+let modelsParamsIconLivePreviewController: AbortController | null = null;
+
+function getModelsParamsIconPreviewPopover(): { root: HTMLDivElement; img: HTMLImageElement } {
+  if (!modelsParamsIconPreviewPopover) {
+    const root = document.createElement("div");
+    root.className = "models-params-pane-model-icon-preview-popover";
+    root.hidden = true;
+    root.setAttribute("role", "tooltip");
+    const img = document.createElement("img");
+    img.className = "models-params-pane-model-icon-preview-img";
+    img.alt = "";
+    img.decoding = "async";
+    root.append(img);
+    document.body.append(root);
+    modelsParamsIconPreviewPopover = root;
+    modelsParamsIconPreviewPopoverImg = img;
+    root.addEventListener("mouseenter", () => {
+      if (modelsParamsIconPreviewHideTimer !== null) {
+        clearTimeout(modelsParamsIconPreviewHideTimer);
+        modelsParamsIconPreviewHideTimer = null;
+      }
+    });
+    root.addEventListener("mouseleave", () => {
+      scheduleHideModelsParamsIconPreviewPopover(160);
+    });
+  }
+  return { root: modelsParamsIconPreviewPopover, img: modelsParamsIconPreviewPopoverImg! };
+}
+
+function disposeIconPreviewScrollListeners(): void {
+  modelsParamsIconPreviewScrollController?.abort();
+  modelsParamsIconPreviewScrollController = null;
+}
+
+function disposeModelsParamsIconLivePreview(): void {
+  modelsParamsIconLivePreviewController?.abort();
+  modelsParamsIconLivePreviewController = null;
+}
+
+function hideModelsParamsIconPreviewPopover(): void {
+  if (modelsParamsIconPreviewHideTimer !== null) {
+    clearTimeout(modelsParamsIconPreviewHideTimer);
+    modelsParamsIconPreviewHideTimer = null;
+  }
+  disposeIconPreviewScrollListeners();
+  if (modelsParamsIconPreviewPopoverImg) {
+    modelsParamsIconPreviewPopoverImg.onload = null;
+    modelsParamsIconPreviewPopoverImg.onerror = null;
+    modelsParamsIconPreviewPopoverImg.removeAttribute("src");
+  }
+  if (modelsParamsIconPreviewPopover) modelsParamsIconPreviewPopover.hidden = true;
+}
+
+function scheduleHideModelsParamsIconPreviewPopover(ms: number): void {
+  if (modelsParamsIconPreviewHideTimer !== null) {
+    clearTimeout(modelsParamsIconPreviewHideTimer);
+    modelsParamsIconPreviewHideTimer = null;
+  }
+  modelsParamsIconPreviewHideTimer = window.setTimeout(() => {
+    modelsParamsIconPreviewHideTimer = null;
+    hideModelsParamsIconPreviewPopover();
+  }, ms);
+}
+
+function positionModelsParamsIconPreviewPopover(anchor: HTMLElement): void {
+  const pop = modelsParamsIconPreviewPopover;
+  if (!pop || pop.hidden) return;
+  const rect = anchor.getBoundingClientRect();
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const gap = 8;
+  const pad = 6;
+  const rw = pop.offsetWidth;
+  const rh = pop.offsetHeight;
+  let left = rect.right - rw;
+  let top = rect.top - gap - rh;
+  if (top < pad) top = rect.bottom + gap;
+  if (left < pad) left = pad;
+  if (left + rw > vw - pad) left = Math.max(pad, vw - pad - rw);
+  if (top + rh > vh - pad) top = Math.max(pad, vh - pad - rh);
+  pop.style.left = `${Math.round(left)}px`;
+  pop.style.top = `${Math.round(top)}px`;
+}
+
+function attachIconPreviewScrollListeners(anchor: HTMLElement): void {
+  disposeIconPreviewScrollListeners();
+  modelsParamsIconPreviewScrollController = new AbortController();
+  const { signal } = modelsParamsIconPreviewScrollController;
+  const repos = () => positionModelsParamsIconPreviewPopover(anchor);
+  window.addEventListener("scroll", repos, { capture: true, signal });
+  window.addEventListener("resize", repos, { signal });
+}
+
+function showModelsParamsIconPreviewPopover(anchor: HTMLElement, imageSrc: string): void {
+  if (modelsParamsIconPreviewHideTimer !== null) {
+    clearTimeout(modelsParamsIconPreviewHideTimer);
+    modelsParamsIconPreviewHideTimer = null;
+  }
+  const { root, img } = getModelsParamsIconPreviewPopover();
+  img.src = imageSrc;
+  const reveal = (): void => {
+    root.hidden = false;
+    requestAnimationFrame(() => {
+      positionModelsParamsIconPreviewPopover(anchor);
+      attachIconPreviewScrollListeners(anchor);
+    });
+  };
+  img.onload = null;
+  img.onerror = () => {
+    reveal();
+  };
+  if (img.complete && img.naturalWidth > 0) reveal();
+  else img.onload = () => reveal();
+}
+
+function bindModelsParamsIconLivePreview(
+  wrap: HTMLElement,
+  imageSrc: string,
+  signal: AbortSignal,
+): void {
+  wrap.addEventListener(
+    "mouseenter",
+    () => {
+      showModelsParamsIconPreviewPopover(wrap, imageSrc);
+    },
+    { signal },
+  );
+  wrap.addEventListener(
+    "mouseleave",
+    () => {
+      scheduleHideModelsParamsIconPreviewPopover(120);
+    },
+    { signal },
+  );
+}
+
+/**
+ * Icône modèle (`HX_ModelCatalog.json` → `icons_models/`) ; repli icône catégorie matrice si absent ou erreur chargement.
+ */
+function setModelsParamsHeaderIcon(slot: SlotDebug, catalogModelImage?: string | null): void {
+  const wrap = getModelsParamsModelIconWrapEl();
+  if (!wrap) return;
+  disposeModelsParamsIconLivePreview();
+  hideModelsParamsIconPreviewPopover();
+  wrap.replaceChildren();
+  const safe = catalogModelImage ? sanitizeIconsModelsFilename(catalogModelImage) : null;
+  let src: string | null = null;
+  if (safe) src = `/src-tauri/resources/icons_models/${safe}`;
+  if (!src) src = iconForCategory(slot.category, slot.name);
+  if (src) {
+    const img = document.createElement("img");
+    img.className = "models-params-pane-model-icon-img";
+    img.alt = "";
+    img.width = 22;
+    img.height = 22;
+    img.decoding = "async";
+    if (safe) {
+      const catFallback = iconForCategory(slot.category, slot.name);
+      if (catFallback) {
+        img.addEventListener(
+          "error",
+          () => {
+            if (img.src !== catFallback) img.src = catFallback;
+          },
+          { once: true },
+        );
+      }
+    }
+    img.src = src;
+    wrap.appendChild(img);
+    modelsParamsIconLivePreviewController = new AbortController();
+    bindModelsParamsIconLivePreview(wrap, src, modelsParamsIconLivePreviewController.signal);
+  } else {
+    const ph = document.createElement("div");
+    ph.className = "models-params-pane-model-icon-fallback";
+    ph.textContent = "?";
+    wrap.appendChild(ph);
+  }
 }
 
 function lettersOnlyAlpha(s: string): string {

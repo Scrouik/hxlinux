@@ -95,11 +95,22 @@ html, body {
 }
 
 .models-params-pane-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 12px;
+  row-gap: 6px;
+  align-items: start;
   padding: 8px 14px 0;
   flex-shrink: 0;
+  min-width: 0;
 }
 
 .models-params-pane-title {
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: start;
+  text-align: left;
   margin: 0;
   font-size: 13px;
   font-weight: 600;
@@ -107,6 +118,89 @@ html, body {
   color: var(--amber);
   line-height: 1.3;
   min-height: 1.3em;
+}
+
+.models-params-pane-emulation-name {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+  text-align: right;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.models-params-pane-emulation-name[hidden] {
+  display: none !important;
+}
+
+.models-params-pane-subhead {
+  grid-column: 1;
+  grid-row: 2;
+  justify-self: start;
+  text-align: left;
+  min-width: 0;
+}
+
+.models-params-pane-model-icon-wrap {
+  grid-column: 2;
+  grid-row: 2;
+  justify-self: end;
+  align-self: start;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.models-params-pane-model-icon-img {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  display: block;
+}
+
+.models-params-pane-model-icon-fallback {
+  width: 22px;
+  height: 22px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+/* Aperçu survol : hors du panneau (overflow) — position fixed sur body */
+.models-params-pane-model-icon-preview-popover {
+  position: fixed;
+  z-index: 20000;
+  padding: 8px;
+  pointer-events: auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  box-sizing: border-box;
+}
+
+.models-params-pane-model-icon-preview-img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(100%, 90vw);
+  max-height: 85vh;
+  object-fit: contain;
+  image-rendering: auto;
 }
 
 .models-params-inner {
@@ -144,7 +238,7 @@ html, body {
 }
 
 .models-params-model-head {
-  margin-bottom: 10px;
+  margin-bottom: 6px;
 }
 
 .models-params-model-title {
@@ -169,56 +263,229 @@ html, body {
   word-break: break-word;
 }
 
+/*
+ * Panneau paramètres (liste sous la grille) :
+ * - `ul.models-params-list` = grille parente (subgrid) ou table (fallback).
+ * - Chaque `li.models-params-row` = une ligne : nom | min | slider | max.
+ * - `--models-params-row-gap` = espace vertical entre deux lignes uniquement.
+ * - `--models-params-slider-cell-min-h` = hauteur mini de la colonne centrale (readout + gap + curseur)
+ *   pour que les lignes **sans** curseur aient la même hauteur que celles **avec** curseur.
+ */
 .models-params-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  --models-params-row-gap: 3px;
+  /* 12px readout (voir `.models-params-slider-cell > .models-params-row-chain`) × 1.2 + gap 2px + range 16px */
+  --models-params-slider-cell-min-h: calc(12px * 1.2 + 2px + 16px);
 }
 
 .models-params-row {
-  display: grid;
-  grid-template-columns:
-    minmax(0, 1.05fr)
-    minmax(44px, auto)
-    minmax(72px, 0.85fr)
-    minmax(44px, auto)
-    minmax(96px, 1.15fr);
-  column-gap: 10px;
-  row-gap: 4px;
-  align-items: center;
   font-size: 13px;
-  line-height: 1.4;
+  line-height: 1.35;
   text-transform: none;
+  box-sizing: border-box;
+}
+
+/* Fallback sans subgrid : table = largeur col. nom = max sur toutes les lignes ; milieu s’étire */
+@supports not (grid-template-columns: subgrid) {
+  .models-params-list {
+    display: table;
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0 var(--models-params-row-gap);
+    table-layout: fixed;
+  }
+
+  .models-params-row {
+    display: table-row;
+  }
+
+  .models-params-row > .models-params-row-name,
+  .models-params-row > .models-params-row-min,
+  .models-params-row > .models-params-slider-cell,
+  .models-params-row > .models-params-row-max {
+    display: table-cell;
+    vertical-align: bottom;
+  }
+
+  .models-params-row > .models-params-row-name {
+    width: 1%;
+    padding-right: 10px;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .models-params-row > .models-params-row-min {
+    width: 1%;
+    padding-right: 8px;
+    white-space: nowrap;
+  }
+
+  .models-params-row > .models-params-slider-cell {
+    min-width: 64px;
+    padding: 0 4px;
+  }
+
+  .models-params-row > .models-params-row-max {
+    width: 1%;
+    padding-left: 8px;
+    white-space: nowrap;
+  }
+}
+
+/* Grille + subgrid : col. nom = intrinsic max (plus long libellé), slider en 1fr */
+@supports (grid-template-columns: subgrid) {
+  .models-params-list {
+    display: grid;
+    grid-template-columns:
+      max-content
+      max-content
+      minmax(72px, 1fr)
+      max-content;
+    grid-auto-rows: auto;
+    column-gap: 12px;
+    row-gap: var(--models-params-row-gap);
+    align-items: stretch;
+  }
+
+  .models-params-row {
+    display: grid;
+    grid-template-columns: subgrid;
+    grid-column: 1 / -1;
+    align-items: end;
+  }
+}
+
+.models-params-slider-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 2px;
+  min-width: 0;
+  min-height: var(--models-params-slider-cell-min-h);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.models-params-slider-cell > .models-params-row-chain {
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--amber);
+}
+
+.models-params-bool-toggle {
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  align-items: stretch;
+  justify-content: center;
+  width: 100%;
+}
+
+.models-params-bool-btn {
+  flex: 1;
+  min-height: 24px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  line-height: 1.2;
+  color: var(--text-dim);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.models-params-bool-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--amber-dim);
+}
+
+.models-params-bool-btn--selected {
+  color: var(--bg-base);
+  background: var(--amber);
+  border-color: var(--amber-dim);
+}
+
+.models-params-slider {
+  width: 100%;
+  margin: 0;
+  min-height: 16px;
+  box-sizing: border-box;
+  cursor: pointer;
+  accent-color: var(--amber);
+}
+
+/* Piste en ambre ; pouce clair (hors ambre) pour rester lisible. */
+.models-params-slider::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--amber);
+}
+.models-params-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  border: 1px solid var(--amber-dim);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+.models-params-slider::-moz-range-track {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--amber-dim);
+}
+.models-params-slider::-moz-range-progress {
+  height: 5px;
+  border-radius: 3px 0 0 3px;
+  background: var(--amber);
+}
+.models-params-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  border: 1px solid var(--amber-dim);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
 
 .models-params-row-name {
-  color: var(--text-muted);
+  color: var(--text-primary);
   min-width: 0;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 
-.models-params-row-min,
+.models-params-row-min {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  justify-self: end;
+  min-width: 0;
+  white-space: nowrap;
+}
+
 .models-params-row-max {
   color: var(--text-dim);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
-  text-align: center;
+  text-align: left;
+  justify-self: start;
   min-width: 0;
+  white-space: nowrap;
 }
 
 .models-params-row-chain {
   color: var(--text);
   text-align: center;
-  word-break: break-word;
-  min-width: 0;
-  font-variant-numeric: tabular-nums;
-}
-
-.models-params-row-raw {
-  color: var(--text-dim);
-  text-align: right;
   word-break: break-word;
   min-width: 0;
   font-variant-numeric: tabular-nums;

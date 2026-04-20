@@ -13,6 +13,8 @@ export type PresetMetaJson = {
 type CatalogModelEntry = {
   id: string | null;
   presetMeta: PresetMetaJson | null;
+  /** Fichier PNG sous `icons_models/` (ex. `FX_HX_EQ_SimpleTilt.png`). */
+  image: string | null;
 };
 
 let catalogMapPromise: Promise<Map<string, CatalogModelEntry>> | null = null;
@@ -44,7 +46,12 @@ async function loadCatalogModelMap(): Promise<Map<string, CatalogModelEntry>> {
     if (!Array.isArray(models)) return;
     for (const m of models) {
       if (!m || typeof m !== "object") continue;
-      const mo = m as { id?: string | number; name?: string; presetMeta?: PresetMetaJson };
+      const mo = m as {
+        id?: string | number;
+        name?: string;
+        presetMeta?: PresetMetaJson;
+        image?: string;
+      };
       const name = typeof mo.name === "string" ? mo.name.trim() : "";
       if (!name) continue;
       const key = catalogKey(catName, name);
@@ -56,9 +63,13 @@ async function loadCatalogModelMap(): Promise<Map<string, CatalogModelEntry>> {
           : typeof idRaw === "number"
             ? String(idRaw)
             : null;
+      const imgRaw = mo.image;
+      const image =
+        typeof imgRaw === "string" && imgRaw.trim().length > 0 ? imgRaw.trim() : null;
       map.set(key, {
         id,
         presetMeta: mo.presetMeta ? { ...mo.presetMeta } : null,
+        image,
       });
     }
   };
@@ -104,10 +115,32 @@ export async function getCatalogModelIdForModel(
   return map.get(catalogKey(slotCategory, modelDisplayName))?.id ?? null;
 }
 
+/** Nom de fichier `image` du catalogue (ex. `FX_HX_EQ_SimpleTilt.png`), ou `null`. */
+export async function getCatalogModelImageForModel(
+  slotCategory: string,
+  modelDisplayName: string,
+): Promise<string | null> {
+  if (!catalogMapPromise) {
+    catalogMapPromise = loadCatalogModelMap().catch((e) => {
+      catalogMapPromise = null;
+      throw e;
+    });
+  }
+  const map = await catalogMapPromise;
+  return map.get(catalogKey(slotCategory, modelDisplayName))?.image ?? null;
+}
+
 export function pickChannel(meta: PresetMetaJson | null): string | null {
   const c = meta?.channel;
   if (typeof c !== "string") return null;
   const t = c.trim();
+  return t.length > 0 ? t : null;
+}
+
+export function pickEmulationName(meta: PresetMetaJson | null): string | null {
+  const e = meta?.emulationName;
+  if (typeof e !== "string") return null;
+  const t = e.trim();
   return t.length > 0 ? t : null;
 }
 
