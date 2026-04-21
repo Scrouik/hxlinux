@@ -2,7 +2,7 @@
 
 Ce fichier sert de **mémo locale** quand l’historique de chat ou le contexte IDE est perdu après un redémarrage. Il complète le `README.md` (objectifs produit et commandes de base).
 
-**Dernière mise à jour significative** : **avril 2026** — panneau paramètres : grille **nom | min | cellule (valeur + contrôle) | max** ; **en-tête en grille 2×2** (catégorie en ambre à gauche L1, **`presetMeta.emulationName`** en blanc à droite L1, bloc infos sous-titre à gauche L2, **icône catalogue** à droite L2 + **aperçu au survol** taille quasi native) ; **toggles Off/On** pour paramètres **bool** (`valueType === 2` ou `displayType` **`off_on`**) sans slider ; **`pickEmulationName`** dans **`hxModelCatalogMeta.ts`** ; format **`.models`** étendu côté TS (**`min` / `max`** `number | boolean`) ; jointure **catalogue `id` ↔ `.models` `symbolicID`** (fallback nom) ; filtrage **`stereo-only`** ; formatage « chaîne » via **`HelixControls.json`** ; **`HX_ModelCatalog.json`** / **`MODULES_BY_ID`** / scripts **`scripts/`** ; **`chainHex` vides** encore à compléter à la main (section catalogue). **Prochaine session (UI matrice)** : **`Icons_line.png`** manquant ou incorrect sur **Path 2** (rangée L3) — voir section matrice.
+**Dernière mise à jour significative** : **avril 2026** — panneau paramètres : grille **nom | min | cellule (valeur + contrôle) | max** ; **en-tête en grille 2×2** (catégorie en ambre à gauche L1, **`presetMeta.emulationName`** en blanc à droite L1, bloc infos sous-titre à gauche L2, **icône catalogue** à droite L2 + **aperçu au survol** taille quasi native) ; **toggles Off/On** pour paramètres **bool** (`valueType === 2` ou `displayType` **`off_on`**) sans slider ; **`pickEmulationName`** dans **`hxModelCatalogMeta.ts`** ; format **`.models`** étendu côté TS (**`min` / `max`** `number | boolean`) ; jointure **catalogue `id` ↔ `.models` `symbolicID`** (fallback nom) ; filtrage **`stereo-only`** ; formatage « chaîne » via **`HelixControls.json`** ; **`HX_ModelCatalog.json`** / table Rust **`HX_CATALOG_MODULE_BY_HEX`** / scripts **`scripts/`** ; **`chainHex` vides** encore à compléter à la main (section catalogue). **Prochaine session (UI matrice)** : **`Icons_line.png`** manquant ou incorrect sur **Path 2** (rangée L3) — voir section matrice.
 
 ## À quoi sert l’application
 
@@ -16,7 +16,7 @@ Fonctions déjà utiles en pratique :
 - Mise en page type **grille** (16 blocs + routage), données renforcées par **`stomp_layout`** (split/merge, grille USB quand dispo).
 - **Panneau paramètres** (sous la grille dans la vue models) : clic sur un bloc → définitions **`.models`** (noms, min, max) + valeurs **chaîne** lues dans le segment binaire du slot (**pas** de requête USB supplémentaire ; tout vient du dump déjà chargé). Les pastilles de la matrice 16 portent **`data-kempline-slot-index`** (0–7 path 1, 8–15 path 2) pour cette corrélation.
 
-**État réel des valeurs chaîne** : alignement corrigé avec `user_slot_reader` Kempline (pointeur après le délimiteur `09` : ne **pas** faire `rel09 + 2` puis `+= 4` comme avant ; même séquence que Python `bytes_read` au début du `09` puis premier `+= 4`). En usage, **~90 %** des paramètres affichés correspondent bien ; le reste peut venir d’ordre / champs internes vs liste `params` du JSON, blocs **Amp+Cab** (`c319`, non géré dans `preset_chain_params`), **IR**, etc.
+**État réel des valeurs chaîne** : alignement corrigé avec `user_slot_reader` Kempline (pointeur après le délimiteur `09` : ne **pas** faire `rel09 + 2` puis `+= 4` comme avant ; même séquence que Python `bytes_read` au début du `09` puis premier `+= 4`). En usage, **~90 %** des paramètres affichés correspondent bien ; le reste peut venir d’ordre / champs internes vs liste `params` du JSON, blocs **Amp+Cab** (`c319` / multi-`c219`), **IR**, etc.
 
 Ce qui reste largement ouvert : **édition** des paramètres vers l’appareil, export/import de fichiers presets (voir `README.md`).
 
@@ -31,13 +31,7 @@ Les **valeurs** affichées dans la colonne **chaîne** ne viennent **pas** des f
 1. **`split_preset_by_8213`** (`lib.rs`) — découpe le flux en segments (marqueur `82 13` côté octets, équivalent au split hex `8213` chez Kempline).
 2. **`kempline_grid_window_start_and_seg_count`** — retrouve la **fenêtre de 20 segments** validée comme grille Kempline (même critères que `try_parse_preset_kempline_grid` : segment `00`, `01`, `02`, `03` aux positions attendues, 16 blocs assignables en `06` ou `08`).
 3. **`kempline_assignable_segment_bytes(data, slot_index)`** — pour un index **0…15** (ordre UI : path1 slots 0–7, path2 slots 8–15), renvoie le **segment brut** `&[u8]` correspondant à `KEMPLINE_ASSIG_INDICES[slot_index]`.
-4. **`parse_standard_assignable_segment`** (`preset_chain_params.rs`) — logique calquée sur **`user_slot_reader`** + **`read_params`** du Python Kempline (`simple_filter.py`) :
-   - n’accepte que les segments dont le **premier octet** est **`0x06`** (slot « standard » ; le `0x08` vide ou d’autres variantes ne suivent pas ce chemin) ;
-   - passe le reste en **chaîne hex** (deux caractères par octet), comme le script Python sur sa chaîne ;
-   - cherche le motif **`85188317`**, refuse **`c319`** (Amp+Cab : autre lecteur dans le Python, **non porté** chez nous pour l’instant) ;
-   - attend **`c219`**, extrait le « type » jusqu’au premier **`09`**, recale **`br`** exactement comme Python : **`br` sur le premier caractère du `09`**, puis premier saut **`+= 4`** (quatre caractères hex : en pratique `09` + la paire suivante) — une erreur ici décale **tout** `read_params` ;
-   - lit **`num_params`** sur **un octet** exprimé en **deux nibbles hex** consécutifs (`int(c0)*16 + int(c1)` en Python) ;
-   - saute **8** caractères hex additionnels, puis **`read_params_hex`** : suite de tokens (`c2`/`c3` bool, `ca` + 8 hex = float IEEE arrondi, paires hex = entier u8, optionnellement bloc `1bda…`).
+4. **`parse_assignable_segment_param_blocks`** (`preset_chain_params.rs`) — même recalage **`br`** / **`read_params_hex`** que **`user_slot_reader`** + **`read_params`** Kempline (`simple_filter.py`) après le motif **`85188317`** : un ou plusieurs blocs **`c219`** (cas standard **`c219`** seul ; Amp+Cab **`c319`** puis plusieurs **`c219`**). **`chain_param_values_for_assignable_segment`** dans **`lib.rs`** choisit le bloc **ampli** vs **cab** en classant chaque bloc par **`chainHex`** dans **`HX_ModelCatalog.json`** (`HX_CATALOG_MODULE_BY_HEX`).
 
 Les valeurs renvoyées au front sont une liste **`ChainParamValue`** (sérialisation JSON **untagged** : booléen, nombre, ou chaîne hex pour les blobs).
 
@@ -45,7 +39,7 @@ Les valeurs renvoyées au front sont une liste **`ChainParamValue`** (sérialisa
 
 1. Chaque pastille de la grille 16 a **`data-kempline-slot-index="0"` … `"15"`** (`gridSlotNode` dans `models.ts`).
 2. Au clic, **`loadAndShowModelsParamsForSlot`** appelle **`invoke("get_active_preset_slot_chain_param_values", { slotIndex })`** (si l’index est défini), puis charge le JSON **`.models`** (cache + `read_models_definition_file` / fetch selon l’environnement).
-3. **`findModelDefinitionForSlot`** associe le **nom long** issu du preset (table `MODULES_BY_ID` / `modules.py`) au bon objet modèle dans le tableau JSON (matching préfixe / nom le plus long, etc.).
+3. **`findModelDefinitionForSlot`** associe l’**id catalogue** (via `chainHex` dans `HX_ModelCatalog.json`) au bon objet modèle dans le tableau `.models` (`symbolicID`).
 4. **`renderModelsParamsPane`** affiche une ligne par entrée **`params[]`** du modèle : **min** et **max** viennent du JSON ; la **chaîne** est **`chainValues[i]`** à la même position **`i`** — c’est un **zip par indice** entre la liste décodée du firmware et la liste des paramètres HX Edit. Ce n’est **pas** une jointure par `symbolicID` : si l’ordre diverge ou si le firmware expose des champs internes non listés dans le JSON, l’alignement peut être faux pour quelques lignes.
 
 ### Ce qui n’était pas (encore) dans la description avant cette complétion
@@ -203,7 +197,7 @@ Le flux côté `models.ts` : après changement de preset → `request_preset_con
 ## Fichiers Rust à connaître pour le preset / UI grille
 
 - **`lib.rs`** — `parse_preset_slots`, `split_preset_by_8213`, `kempline_grid_window_start_and_seg_count`, `kempline_assignable_segment_bytes`, `try_parse_preset_kempline_grid`, `KEMPLINE_ASSIG_INDICES`, commentaires `[PresetDebug]`.
-- **`preset_chain_params.rs`** — `parse_standard_assignable_segment`, `read_params_hex`, enum sérialisable `ChainParamValue` (bool, float IEEE via `ca`, u8, blob `1bda`).
+- **`preset_chain_params.rs`** — `parse_assignable_segment_param_blocks`, `read_params_hex`, enum sérialisable `ChainParamValue` (bool, float IEEE via `ca`, u8, blob `1bda`).
 - **`stomp_layout.rs`** — `split_merge_from_usb_preset_body`, `compute_stomp_layout_from_kempline_grid_with_usb`, tests ; colonnes split/merge consommées par `models.ts`. Le helper `merge_after_col_from_usb_preset_body` n’existe qu’en build test (`#[cfg(test)]`) pour éviter un warning `dead_code` en `cargo build` lib.
 
 ## Front — matrice stomp 4×20 (`renderGrid16` dans `models.ts`)
@@ -231,8 +225,7 @@ Le CSS associé est sous **`.models-pane .hx-matrix-*`** et **`.models-params-*`
 - **`src-tauri/resources/HX_ModelCatalog.json`** — catalogue modèles.
 - **`src-tauri/resources/icons_models/`** — icônes par modèle.
 - **`src-tauri/resources/icons_category/`** — icônes catégories + assets maison pour la matrice : `Icons_line.png`, `Icons_split_merge.png`, `Icons_vertical_line.png`, `Icons_link_split.png`, `Icons_link_merge.png`, ainsi que les icônes I/O (`icon-input-category.png`, etc.).
-- **`src-tauri/resources/models/*.models`** — définitions JSON Line 6 (params, min/max, `displayType`, `valueType`, etc.) ; utilisées pour le panneau paramètres et le matching nom long Kempline ↔ nom court catalogue.
-- **`src-tauri/resources/modules_by_id.json`** — carte **hex → [catégorie, nom long]** (référence pour croiser avec la machine / outils ; **pas** la source runtime de `MODULES_BY_ID`, qui vient uniquement du catalogue ci-dessous).
+- **`src-tauri/resources/models/*.models`** — définitions JSON Line 6 (params, min/max, `displayType`, `valueType`, etc.) ; utilisées pour le panneau paramètres et le matching id catalogue ↔ `symbolicID`.
 - **`src-tauri/resources/HelixControls.json`** — données controls (fichier ajouté au bundle ; brancher dans l’app si besoin).
 
 Chemins côté front pour les PNG sous Tauri : souvent `/src-tauri/resources/...` (comme dans `models.ts` pour les I/O).
@@ -240,11 +233,11 @@ Chemins côté front pour les PNG sous Tauri : souvent `/src-tauri/resources/...
 ### Catalogue HX — `presetMeta`, `chainHex`, mono / stéréo (mémo session)
 
 - Chaque modèle du JSON peut porter un objet **`presetMeta`** : notamment **`chainHex`** (une chaîne hex **ou** un tableau **`[mono, stéréo]`**) et **`signal`** en parallèle (`["mono", "stereo"]`) quand le même bloc existe en deux variantes.
-- **`src-tauri/src/lib.rs`** : au build, **`MODULES_BY_ID`** est rempli **uniquement** depuis **`include_str!("../resources/HX_ModelCatalog.json")`** en parcourant tous les `presetMeta.chainHex` (chaîne ou tableau) + nom court du modèle. C’est cette table qui sert à résoudre l’UID hex du segment preset vers **catégorie + nom** affichés.
+- **`src-tauri/src/lib.rs`** : au build, **`HX_CATALOG_MODULE_BY_HEX`** est rempli **uniquement** depuis **`include_str!("../resources/HX_ModelCatalog.json")`** en parcourant tous les `presetMeta.chainHex` (chaîne ou tableau) + nom court du modèle. C’est cette table qui sert à résoudre l’UID hex du segment preset vers **catégorie + nom** affichés.
 - **`src/hxModelCatalogMeta.ts`** : en dev, `fetch` du catalogue sous `/src-tauri/resources/HX_ModelCatalog.json`, map **catégorie + nom** → `presetMeta`, helpers **`pickSignal` / `pickChannel` / `pickEmulationName`** pour choisir le bon libellé quand `chainHex` / `signal` sont des tableaux parallèles au `module_hex` du slot, et afficher **`presetMeta.emulationName`** dans l’en-tête du panneau paramètres.
-- **`scripts/apply_mono_stereo_pairs_to_catalog.py`** : lit **`modules_by_id.json`**, regroupe les paires dont le nom long ne diffère que par **`(mono)`** / **`(stereo)`** / **`(stéréo)`** (même catégorie, même indice Guitar/Bass si présent), met à jour la fiche catalogue dont le **`name`** matche : `chainHex` + `signal` en tableaux. Dernière exécution indicative : **115** paires détectées, **103** fiches mises à jour, **12** sans correspondance catalogue (surtout **Dynamic** et **Vol/Pan** — noms de catégorie / modèle qui ne collent pas aux critères du script).
-- **`scripts/enrich_catalog_preset_meta.py`** — autre script d’enrichissement `presetMeta` (heuristiques nom long, etc.), à lancer au besoin.
-- **Travail restant (manuel)** : il reste de l’ordre de **~100** entrées **`"chainHex": ""`** dans **`HX_ModelCatalog.json`** (compter avec `rg '"chainHex":\\s*""' src-tauri/resources/HX_ModelCatalog.json`). Le goulot d’étranglement est d’**assigner le bloc sur la machine** pour récupérer l’hex, puis de recopier dans le JSON. Piste plus tard : script de **suggestion** hex depuis `modules_by_id.json` pour les cas évidents, et assouplir le mapping catégorie pour les **12** paires skippées si on veut les couvrir sans toucher à la machine deux fois.
+- **`scripts/apply_mono_stereo_pairs_to_catalog.py`** : lit **`HX_ModelCatalog.json`**, détecte les paires mono/stéréo à partir des fiches qui ont déjà un **`chainHex`** et un libellé **`(mono)`** / **`(stereo)`** / **`(stéréo)`**, met à jour la fiche : `chainHex` + `signal` en tableaux.
+- **`scripts/enrich_catalog_preset_meta.py`** — complète les champs texte vides de **`presetMeta`** depuis le seul champ **`name`** du modèle (ne remplit pas **`chainHex`**).
+- **Travail restant (manuel)** : compléter les entrées **`"chainHex": ""`** dans **`HX_ModelCatalog.json`** (compter avec `rg '"chainHex":\\s*""' src-tauri/resources/HX_ModelCatalog.json`) en lisant l’hex sur le boîtier ou une autre source fiable.
 
 **Note** : une copie **`External files/HX_ModelCatalog.json`** peut exister hors bundle ; les commits UI « légers » peuvent l’**exclure** (diff très volumineux) — resynchroniser à la main si tu t’en sers comme miroir.
 

@@ -3,10 +3,11 @@
  */
 
 export type PresetMetaJson = {
+  categoryId?: number;
+  categoryName?: string;
   chainHex?: string | string[];
   channel?: string;
   signal?: string | string[];
-  instrument?: string | string[];
   emulationName?: string;
 };
 
@@ -32,6 +33,21 @@ function normalizeHexList(chainHex: string | string[] | undefined): string[] {
   return chainHex.map((h) => String(h).trim().toLowerCase()).filter(Boolean);
 }
 
+/**
+ * Hex lu sur le preset pour un slot Amp+Cab : `<ampHex>1a<cabHex>` (cf. Rust `cab_info_from_module_id`).
+ * Le catalogue aligne souvent `chainHex` sur l’ampli seul — on retente donc la partie amp après l’échec du match complet.
+ */
+function moduleHexCatalogLookupCandidates(hexNorm: string): string[] {
+  const out: string[] = [hexNorm];
+  const sep = "1a";
+  const i = hexNorm.indexOf(sep);
+  if (i > 0) {
+    const ampPart = hexNorm.slice(0, i);
+    if (ampPart.length > 0) out.push(ampPart);
+  }
+  return out;
+}
+
 async function loadCatalogModelMap(): Promise<Map<string, CatalogModelEntry>> {
   const url = "/src-tauri/resources/HX_ModelCatalog.json";
   const res = await fetch(url);
@@ -40,7 +56,7 @@ async function loadCatalogModelMap(): Promise<Map<string, CatalogModelEntry>> {
     return new Map();
   }
   const raw = await res.text();
-  const data = JSON.parse(raw) as { categories?: unknown[] };
+  const data = JSON.parse(raw) as { models?: unknown[]; categories?: unknown[] };
   const map = new Map<string, CatalogModelEntry>();
   const record = (catName: string, models: unknown) => {
     if (!Array.isArray(models)) return;
@@ -73,6 +89,22 @@ async function loadCatalogModelMap(): Promise<Map<string, CatalogModelEntry>> {
       });
     }
   };
+  if (Array.isArray(data.models) && data.models.length > 0) {
+    for (const m of data.models) {
+      if (!m || typeof m !== "object") continue;
+      const mo = m as {
+        id?: string | number;
+        name?: string;
+        presetMeta?: PresetMetaJson;
+        image?: string;
+      };
+      const cn = mo.presetMeta?.categoryName;
+      const catName =
+        typeof cn === "string" && cn.trim().length > 0 ? cn.trim() : "Unknown";
+      record(catName, [m]);
+    }
+    return map;
+  }
   for (const cat of data.categories ?? []) {
     if (!cat || typeof cat !== "object") continue;
     const c = cat as { name?: string; models?: unknown; subcategories?: unknown[] };
@@ -115,6 +147,27 @@ export async function getCatalogModelIdForModel(
   return map.get(catalogKey(slotCategory, modelDisplayName))?.id ?? null;
 }
 
+/** Jointure stricte via `presetMeta.chainHex` (hex module lu dans le preset). */
+export async function getCatalogModelIdForHex(moduleHex: string | undefined): Promise<string | null> {
+  const hexNorm = (moduleHex ?? "").trim().toLowerCase();
+  if (!hexNorm) return null;
+  if (!catalogMapPromise) {
+    catalogMapPromise = loadCatalogModelMap().catch((e) => {
+      catalogMapPromise = null;
+      throw e;
+    });
+  }
+  const map = await catalogMapPromise;
+  for (const h of moduleHexCatalogLookupCandidates(hexNorm)) {
+    for (const entry of map.values()) {
+      if (!entry.id) continue;
+      const hs = normalizeHexList(entry.presetMeta?.chainHex);
+      if (hs.includes(h)) return entry.id;
+    }
+  }
+  return null;
+}
+
 /** Nom de fichier `image` du catalogue (ex. `FX_HX_EQ_SimpleTilt.png`), ou `null`. */
 export async function getCatalogModelImageForModel(
   slotCategory: string,
@@ -128,6 +181,38 @@ export async function getCatalogModelImageForModel(
   }
   const map = await catalogMapPromise;
   return map.get(catalogKey(slotCategory, modelDisplayName))?.image ?? null;
+}
+
+export async function getPresetMetaForId(modelId: string | null | undefined): Promise<PresetMetaJson | null> {
+  const id = (modelId ?? "").trim();
+  if (!id) return null;
+  if (!catalogMapPromise) {
+    catalogMapPromise = loadCatalogModelMap().catch((e) => {
+      catalogMapPromise = null;
+      throw e;
+    });
+  }
+  const map = await catalogMapPromise;
+  for (const entry of map.values()) {
+    if ((entry.id ?? "").trim() === id) return entry.presetMeta ?? null;
+  }
+  return null;
+}
+
+export async function getCatalogModelImageForId(modelId: string | null | undefined): Promise<string | null> {
+  const id = (modelId ?? "").trim();
+  if (!id) return null;
+  if (!catalogMapPromise) {
+    catalogMapPromise = loadCatalogModelMap().catch((e) => {
+      catalogMapPromise = null;
+      throw e;
+    });
+  }
+  const map = await catalogMapPromise;
+  for (const entry of map.values()) {
+    if ((entry.id ?? "").trim() === id) return entry.image ?? null;
+  }
+  return null;
 }
 
 export function pickChannel(meta: PresetMetaJson | null): string | null {
@@ -159,10 +244,12 @@ export function pickSignal(meta: PresetMetaJson | null, moduleHex: string | unde
   const hexNorm = (moduleHex ?? "").trim().toLowerCase();
   const hexList = normalizeHexList(meta.chainHex);
   if (hexNorm && hexList.length > 0) {
-    const idx = hexList.indexOf(hexNorm);
-    if (idx >= 0 && idx < sig.length) {
-      const s = sig[idx];
-      if (typeof s === "string" && s.trim()) return s.trim();
+    for (const h of moduleHexCatalogLookupCandidates(hexNorm)) {
+      const idx = hexList.indexOf(h);
+      if (idx >= 0 && idx < sig.length) {
+        const s = sig[idx];
+        if (typeof s === "string" && s.trim()) return s.trim();
+      }
     }
   }
   for (const x of sig) {

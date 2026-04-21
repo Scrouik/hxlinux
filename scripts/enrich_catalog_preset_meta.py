@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
 """
-Enrichit HX_ModelCatalog.json avec un objet `presetMeta` par fiche modèle complète
-(champ `name` présent), en croisant modules_by_id.json.
+Post-traitement de HX_ModelCatalog.json (source unique : le catalogue lui-même).
 
-Règles (heuristiques) :
-- Une entrée modules [catégorie, nomLong] matche un modèle catalogue si :
-  - la catégorie modules == le nom de la catégorie HX (ex. Amp, Preamp) ;
-  - nomLong correspond au début du nom catalogue (égalité, ou préfixe + espace, ou + '(') ;
-  - si la sous-catégorie HX est Guitar ou Bass, on exige la présence de " Guitar " ou " Bass "
-    dans le nomLong (espaces autour, insensible à la casse), pour limiter les ambiguïtés.
-- On retient la correspondance au nomLong le plus long (la plus spécifique).
-- chainHex = clé hex dans modules_by_id.json.
-- Découpage du suffixe après le nom catalogue : premier mot Guitar/Bass -> instrument ;
-  texte avant la première '(' -> emulationName ; parenthèses : "channel" ou "chanel" -> channel ;
-  mono / stereo / stéréo -> signal.
+Anciennement ce script croisait un export hex → noms ; tout passe désormais par le catalogue.
+- Complète les champs texte vides de `presetMeta` (instrument, emulationName, channel, signal)
+  en analysant le seul champ `name` du modèle (`parse_suffix`).
+- Ne touche pas à `chainHex` : à renseigner manuellement ou via d’autres outils dans le JSON.
 
-Les entrées catalogue sans correspondance reçoivent presetMeta avec des chaînes vides.
+Usage : python3 scripts/enrich_catalog_preset_meta.py [chemin HX_ModelCatalog.json]
 """
 from __future__ import annotations
 
@@ -25,63 +17,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULES_PATH = ROOT / "src-tauri/resources/modules_by_id.json"
 CATALOG_PATH = ROOT / "src-tauri/resources/HX_ModelCatalog.json"
-
-
-def load_modules_entries() -> list[tuple[str, str, str]]:
-    raw = json.loads(MODULES_PATH.read_text(encoding="utf-8"))
-    out: list[tuple[str, str, str]] = []
-    for hex_key, pair in raw.items():
-        if not isinstance(pair, list) or len(pair) != 2:
-            continue
-        cat, name_str = str(pair[0]).strip(), str(pair[1]).strip()
-        if cat and name_str:
-            out.append((hex_key.strip().lower(), cat, name_str))
-    return out
-
-
-def name_long_matches_catalog_name(name_long: str, catalog_name: str) -> bool:
-    nl = name_long.strip().lower()
-    cn = catalog_name.strip().lower()
-    if not nl or not cn:
-        return False
-    if nl == cn:
-        return True
-    if nl.startswith(cn + " ") or nl.startswith(cn + "("):
-        return True
-    return False
-
-
-def subcategory_fits_name_long(sub_name: str | None, name_long: str) -> bool:
-    if not sub_name:
-        return True
-    s = sub_name.strip()
-    if s in ("Guitar", "Bass"):
-        needle = f" {s} "
-        return needle.lower() in f" {name_long} ".lower()
-    return True
-
-
-def best_modules_match(
-    entries: list[tuple[str, str, str]],
-    catalog_category: str,
-    catalog_subcategory: str | None,
-    model_name: str,
-) -> tuple[str, str, str] | None:
-    best: tuple[str, str, str] | None = None
-    best_len = -1
-    for hex_k, mod_cat, name_long in entries:
-        if mod_cat.strip() != catalog_category.strip():
-            continue
-        if not name_long_matches_catalog_name(name_long, model_name):
-            continue
-        if not subcategory_fits_name_long(catalog_subcategory, name_long):
-            continue
-        if len(name_long) > best_len:
-            best_len = len(name_long)
-            best = (hex_k, mod_cat, name_long)
-    return best
 
 
 def parse_suffix(name_long: str, catalog_name: str) -> dict[str, str]:
@@ -136,47 +72,63 @@ def empty_preset_meta() -> dict[str, str]:
     }
 
 
-def walk_models(
-    entries: list[tuple[str, str, str]],
-    catalog_category: str,
-    sub_name: str | None,
-    models: list | None,
-) -> None:
-    if not models:
-        return
-    for m in models:
-        if not isinstance(m, dict):
-            continue
-        if "name" not in m or not isinstance(m["name"], str):
-            continue
-        model_name = m["name"].strip()
-        if not model_name:
-            continue
-        match = best_modules_match(entries, catalog_category, sub_name, model_name)
-        meta = empty_preset_meta()
-        if match:
-            hex_k, _mc, name_long = match
-            meta["chainHex"] = hex_k
-            parsed = parse_suffix(name_long, model_name)
-            meta.update(parsed)
-        m["presetMeta"] = meta
+def chain_hex_is_empty(pm: dict) -> bool:
+    ch = pm.get("chainHex")
+    if ch is None:
+        return True
+    if isinstance(ch, str):
+        return not ch.strip()
+    if isinstance(ch, list):
+        return not any(isinstance(x, str) and x.strip() for x in ch)
+    return True
 
 
-def process_catalog(data: dict) -> None:
-    entries = load_modules_entries()
+def walk_and_repair_preset_meta(data: dict) -> tuple[int, int]:
+    """Retourne (nb fiches sans chainHex, nb champs presetMeta complétés)."""
+    missing_hex = 0
+    filled = 0
+
+    def visit(models: list | None) -> None:
+        nonlocal missing_hex, filled
+        if not models:
+            return
+        for m in models:
+            if not isinstance(m, dict):
+                continue
+            model_name = (m.get("name") or "").strip()
+            if not model_name:
+                continue
+            pm = m.get("presetMeta")
+            if not isinstance(pm, dict):
+                pm = empty_preset_meta()
+                m["presetMeta"] = pm
+            if chain_hex_is_empty(pm):
+                missing_hex += 1
+            parsed = parse_suffix(model_name, model_name)
+            for k, v in parsed.items():
+                if not v:
+                    continue
+                cur = pm.get(k)
+                if cur is None or str(cur).strip() == "":
+                    pm[k] = v
+                    filled += 1
+
+    models_root = data.get("models")
+    if isinstance(models_root, list) and len(models_root) > 0:
+        visit(models_root)
+        return missing_hex, filled
+
     for cat in data.get("categories", []) or []:
         if not isinstance(cat, dict):
             continue
         cname = cat.get("name")
         if not isinstance(cname, str):
             continue
-        walk_models(entries, cname, None, cat.get("models"))
+        visit(cat.get("models"))
         for sub in cat.get("subcategories") or []:
-            if not isinstance(sub, dict):
-                continue
-            sname = sub.get("name")
-            sn = sname if isinstance(sname, str) else None
-            walk_models(entries, cname, sn, sub.get("models"))
+            if isinstance(sub, dict):
+                visit(sub.get("models"))
+    return missing_hex, filled
 
 
 def main() -> int:
@@ -184,9 +136,11 @@ def main() -> int:
     if len(sys.argv) > 1:
         path = Path(sys.argv[1])
     data = json.loads(path.read_text(encoding="utf-8"))
-    process_catalog(data)
+    missing, filled = walk_and_repair_preset_meta(data)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=4) + "\n", encoding="utf-8")
-    print(f"Wrote {path}")
+    print(f"Écrit {path}")
+    print(f"Fiches sans chainHex (à compléter à la main) : {missing}")
+    print(f"Champs presetMeta complétés depuis `name` : {filled}")
     return 0
 
 

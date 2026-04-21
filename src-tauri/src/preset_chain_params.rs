@@ -69,33 +69,16 @@ fn read_params_hex(mut cur: &str, num_params: usize) -> Option<(Vec<ChainParamVa
     Some((out, consumed))
 }
 
-/// `seg` = segment 8213… pour un slot `06` (sans le préfixe `8213` global ; le contenu commence souvent par `06`).
-pub fn parse_standard_assignable_segment(seg: &[u8]) -> Option<Vec<ChainParamValue>> {
-    if seg.first().copied() != Some(0x06) {
-        return None;
-    }
-    let h = hex_lower(&seg[1..]);
-    let slot_info_start = h.find(PAT_85188317)?;
-    let mut br = slot_info_start + PAT_85188317.len();
-
-    let tail = h.get(br..)?;
-    if tail.starts_with("c319") {
-        return None;
-    }
-    if !tail.starts_with("c219") {
-        return None;
-    }
-    let c219_start = br;
+fn parse_c219_block_at(h: &str, c219_start: usize) -> Option<(Vec<ChainParamValue>, usize)> {
     let slice = h.get(c219_start..)?;
     let rel09 = slice.find("09")?;
     if rel09 < 4 {
         return None;
     }
     let _type_hex = &slice[4..rel09];
+    let mut br = c219_start + rel09;
     // Comme Python `user_slot_reader` : après le type, `bytes_read` est sur le **premier** caractère
-    // du délimiteur `09` ; le premier `bytes_read += 4` saute `09` + 2 hex suivants (pas `09` puis +4 séparément).
-    br = c219_start + rel09;
-
+    // du délimiteur `09` ; le premier `bytes_read += 4` saute `09` + 2 hex suivants.
     br += 4;
     br += 4;
     br += 6;
@@ -105,6 +88,52 @@ pub fn parse_standard_assignable_segment(seg: &[u8]) -> Option<Vec<ChainParamVal
     let num_params = usize::from_str_radix(&h[br..br + 2], 16).ok()?;
     br += 2;
     br += 8;
-    let (params, _consumed) = read_params_hex(h.get(br..)?, num_params)?;
-    Some(params)
+    let (params, consumed) = read_params_hex(h.get(br..)?, num_params)?;
+    Some((params, br + consumed))
+}
+
+/// Extrait un ou plusieurs blocs `read_params` d’un segment assignable (cas standard et Amp+Cab).
+pub fn parse_assignable_segment_param_blocks(seg: &[u8]) -> Option<Vec<Vec<ChainParamValue>>> {
+    // Même convention que `try_parse_preset_kempline_grid` : en-tête de segment `06` ou `08`.
+    if !matches!(seg.first().copied(), Some(0x06 | 0x08)) {
+        return None;
+    }
+    let h = hex_lower(&seg[1..]);
+    let slot_info_start = h.find(PAT_85188317)?;
+    let br = slot_info_start + PAT_85188317.len();
+    let tail = h.get(br..)?;
+    let mut out: Vec<Vec<ChainParamValue>> = Vec::new();
+
+    // Cas standard : un seul bloc `c219`.
+    if tail.starts_with("c219") {
+        let (params, _) = parse_c219_block_at(&h, br)?;
+        out.push(params);
+        return Some(out);
+    }
+
+    // Cas Amp+Cab (`c319`) : plusieurs blocs `c219` peuvent suivre.
+    if tail.starts_with("c319") {
+        let mut search = br + 4;
+        while search < h.len() {
+            let Some(rel) = h.get(search..)?.find("c219") else {
+                break;
+            };
+            let c219_start = search + rel;
+            let Some((params, next)) = parse_c219_block_at(&h, c219_start) else {
+                break;
+            };
+            out.push(params);
+            if next <= c219_start {
+                break;
+            }
+            search = next;
+        }
+        return if out.is_empty() { None } else { Some(out) };
+    }
+
+    // Tolérance : rechercher un `c219` plus loin si la tête contient des métadonnées inattendues.
+    let rel = tail.find("c219")?;
+    let (params, _) = parse_c219_block_at(&h, br + rel)?;
+    out.push(params);
+    Some(out)
 }

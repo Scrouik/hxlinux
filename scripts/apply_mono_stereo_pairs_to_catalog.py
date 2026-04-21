@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Pour chaque paire mono/stéréo dans modules_by_id.json (même catégorie, même base sans
-suffixe final (mono)|(stereo)|(stéréo), même indice Guitar/Bass si présent),
-met à jour la fiche catalogue HX (modèle avec « name ») :
+Pour chaque paire mono/stéréo détectée dans HX_ModelCatalog.json (même catégorie,
+même base sans suffixe final (mono)|(stereo)|(stéréo), même indice Guitar/Bass si présent),
+à partir des entrées qui ont déjà un `presetMeta.chainHex` (chaîne) par modèle,
+met à jour la fiche catalogue (modèle avec « name ») :
   presetMeta.chainHex = [hex_mono, hex_stereo]
   presetMeta.signal   = ["mono", "stereo"]
 
-Réutilise les heuristiques de enrich_catalog_preset_meta.py.
+Les hex mono/stéréo doivent déjà figurer sur les fiches modèle ; ce script les regroupe.
 """
 from __future__ import annotations
 
@@ -16,7 +17,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULES_PATH = ROOT / "src-tauri/resources/modules_by_id.json"
 CATALOG_PATH = ROOT / "src-tauri/resources/HX_ModelCatalog.json"
 
 SUFFIX_RE = re.compile(r"\s*\((mono|stereo|stéréo)\)\s*$", re.I)
@@ -51,15 +51,74 @@ def instrument_hint(name_long: str) -> str:
     return ""
 
 
-def load_modules_entries() -> list[tuple[str, str, str]]:
-    raw = json.loads(MODULES_PATH.read_text(encoding="utf-8"))
-    out: list[tuple[str, str, str]] = []
-    for hex_key, pair in raw.items():
-        if not isinstance(pair, list) or len(pair) != 2:
+def iter_catalog_models(data: dict):
+    models_root = data.get("models")
+    if isinstance(models_root, list) and len(models_root) > 0:
+        for m in models_root:
+            if not isinstance(m, dict):
+                continue
+            pm = m.get("presetMeta")
+            cn = pm.get("categoryName") if isinstance(pm, dict) else None
+            cname = cn.strip() if isinstance(cn, str) and cn.strip() else "Unknown"
+            yield cname, None, m
+        return
+    for cat in data.get("categories", []) or []:
+        if not isinstance(cat, dict):
             continue
-        cat, name_str = str(pair[0]).strip(), str(pair[1]).strip()
-        if cat and name_str:
-            out.append((hex_key.strip().lower(), cat, name_str))
+        cname = cat.get("name")
+        if not isinstance(cname, str):
+            continue
+        for m in cat.get("models") or []:
+            if isinstance(m, dict):
+                yield cname, None, m
+        for sub in cat.get("subcategories") or []:
+            if not isinstance(sub, dict):
+                continue
+            sn = sub.get("name")
+            subs = sn if isinstance(sn, str) else None
+            for m in sub.get("models") or []:
+                if isinstance(m, dict):
+                    yield cname, subs, m
+
+
+def primary_hex_from_preset_meta(pm: dict) -> str | None:
+    if not isinstance(pm, dict):
+        return None
+    ch = pm.get("chainHex")
+    if isinstance(ch, str) and ch.strip():
+        return ch.strip().lower()
+    if isinstance(ch, list):
+        for x in ch:
+            if isinstance(x, str) and x.strip():
+                return x.strip().lower()
+    return None
+
+
+def catalog_pairing_label(m: dict, sub_name: str | None) -> str:
+    name = (m.get("name") or "").strip()
+    bits = [name]
+    if sub_name and sub_name.strip():
+        bits.append(sub_name.strip())
+    pm = m.get("presetMeta") if isinstance(m.get("presetMeta"), dict) else {}
+    em = (pm.get("emulationName") or "").strip()
+    if em and em.lower() not in name.lower():
+        bits.append(em)
+    return " ".join(bits)
+
+
+def load_entries_from_catalog(data: dict) -> list[tuple[str, str, str]]:
+    """(hex, catégorie, libellé pour détection mono/stéréo)."""
+    out: list[tuple[str, str, str]] = []
+    for cat, sub, m in iter_catalog_models(data):
+        pm = m.get("presetMeta")
+        if not isinstance(pm, dict):
+            continue
+        hx = primary_hex_from_preset_meta(pm)
+        if not hx:
+            continue
+        label = catalog_pairing_label(m, sub)
+        if label:
+            out.append((hx, cat, label))
     return out
 
 
@@ -235,10 +294,10 @@ def main() -> int:
     path = CATALOG_PATH
     if len(sys.argv) > 1:
         path = Path(sys.argv[1])
-    entries = load_modules_entries()
-    pairs = build_mono_stereo_pairs(entries)
-    print(f"Paires mono+stéréo détectées dans modules_by_id.json : {len(pairs)}")
     data = json.loads(path.read_text(encoding="utf-8"))
+    entries = load_entries_from_catalog(data)
+    pairs = build_mono_stereo_pairs(entries)
+    print(f"Paires mono+stéréo détectées depuis le catalogue : {len(pairs)}")
     up, miss = walk_catalog_and_apply(data, pairs)
     print(f"Fiches catalogue mises à jour : {up}, sans correspondance : {miss}")
     path.write_text(json.dumps(data, ensure_ascii=False, indent=4) + "\n", encoding="utf-8")

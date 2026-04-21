@@ -2,9 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import {
-  getCatalogModelIdForModel,
-  getCatalogModelImageForModel,
-  getPresetMetaForModel,
+  getCatalogModelIdForHex,
+  getCatalogModelImageForId,
+  getPresetMetaForId,
   pickChannel,
   pickEmulationName,
   pickSignal,
@@ -82,11 +82,29 @@ function clearModelsParamsSubheadAndIcon(): void {
   getModelsParamsModelIconWrapEl()?.replaceChildren();
 }
 
-/** En-tête du panneau : nom de catégorie du modèle (ex. « Amp »), vide si aucun bloc ciblé. */
-function setModelsParamsPaneCategory(category: string) {
+/** En-tête du panneau : catégorie + hex module lu sur le HX si disponible. */
+function setModelsParamsPaneCategory(category: string, moduleHex?: string) {
   const el = getModelsParamsPaneTitleEl();
   if (!el) return;
-  el.textContent = category.trim();
+  const cat = category.trim();
+  const hex = (moduleHex ?? "").trim();
+  if (!cat && !hex) {
+    el.textContent = "";
+    return;
+  }
+  el.replaceChildren();
+  const catSpan = document.createElement("span");
+  catSpan.className = "models-params-pane-title-main";
+  catSpan.textContent = cat;
+  el.appendChild(catSpan);
+  if (hex) {
+    const hexUp = hex.toUpperCase();
+    const hexSpan = document.createElement("span");
+    hexSpan.className = "models-params-pane-title-module-hex";
+    hexSpan.textContent = hexUp;
+    hexSpan.title = `Hex lu depuis le HX : ${hexUp}`;
+    el.appendChild(hexSpan);
+  }
 }
 
 let selectedParamsSlotEl: HTMLElement | null = null;
@@ -268,6 +286,8 @@ function normalizeCategory(category: string): string {
 type ModelParamDefJson = {
   symbolicID: string;
   name: string;
+  /** Ordre des valeurs `read_params` côté firmware (tri croissant dans la chaîne). */
+  assign?: number;
   displayType?: string;
   /** 0 = entier, 1 = float, 2 = bool (Line 6). */
   valueType?: number;
@@ -287,6 +307,9 @@ type ModelDefinitionJson = {
 const modelsDefinitionsCache = new Map<string, ModelDefinitionJson[]>();
 let modelsParamsLoadSeq = 0;
 
+/** Fichiers `.models` cab / IR Line 6, dans l’ordre de recherche (ids souvent dans `cabmicirs` ou `cabmicirswithpan`). */
+const CAB_MODEL_DEFINITION_BASES = ["cab", "cabmicirs", "cabmicirswithpan"] as const;
+
 /** Bases de fichiers `.models` à essayer dans l’ordre (sans extension). */
 function modelsDefinitionFileBasesForCategory(category: string): string[] {
   const k = normalizeCategory(category);
@@ -294,7 +317,7 @@ function modelsDefinitionFileBasesForCategory(category: string): string[] {
     amp: ["amp"],
     preamp: ["preamp"],
     "amp+cab": ["amp", "cab", "preamp"],
-    cab: ["cab"],
+    cab: [...CAB_MODEL_DEFINITION_BASES],
     ir: ["cabmicirs", "cabmicirswithpan"],
     "impulse response": ["cabmicirs", "cabmicirswithpan"],
     delay: ["delay"],
@@ -337,77 +360,6 @@ async function loadModelsDefinitionArray(fileBase: string): Promise<ModelDefinit
   return parsed as ModelDefinitionJson[];
 }
 
-/**
- * Le nom de slot côté USB / `parse_preset_slots` vient de `MODULES_BY_ID`
- * (Rust : `HX_ModelCatalog.json` uniquement via `presetMeta.chainHex`) : libellé slot = **nom court**
- * du modèle dans le catalogue pour les hex connus ; sinon le preset n’a pas d’entrée et le slot
- * peut rester « Unknown » jusqu’à ce que `chainHex` soit renseigné dans le catalogue.
- * « Ampeg SVT Brt Bass Ampeg SVT (bright channel) (mono) ».
- * Les fichiers `*.models` utilisent le `name` court (« Ampeg SVT Brt ») + `symbolicID`.
- */
-function stripKemplineMonoStereoSuffix(s: string): string {
-  return s.replace(/\s*\((mono|stereo)\)\s*$/i, "").trim();
-}
-
-/**
- * Ex. catalogue `SVT-4 Pro` vs USB `Ampeg SVT-4 PRO (mono)` → après strip, le libellé USB se termine
- * par le `name` court du `.models` (préfixe marque / casse différente).
- */
-function kemplineStrippedEndsWithCatalogName(knStrip: string, catalogName: string): boolean {
-  const k = knStrip.trim();
-  const c = catalogName.trim();
-  if (!k || !c || c.length > k.length) return false;
-  if (k.toLowerCase() === c.toLowerCase()) return true;
-  if (!k.toLowerCase().endsWith(c.toLowerCase())) return false;
-  if (k.length === c.length) return true;
-  const before = k[k.length - c.length - 1];
-  return before === " " || before === "\t" || before === "(";
-}
-
-function modelCatalogNameMatchesKemplineSlot(catalogName: string, kemplineSlotName: string): boolean {
-  const cn = catalogName.trim();
-  const kn = kemplineSlotName.trim();
-  if (!cn || !kn) return false;
-  if (kn === cn || kn.toLowerCase() === cn.toLowerCase()) return true;
-  if (kn.startsWith(`${cn} `) || kn.startsWith(`${cn}(`)) return true;
-  const knStrip = stripKemplineMonoStereoSuffix(kn);
-  if (knStrip === cn || knStrip.toLowerCase() === cn.toLowerCase()) return true;
-  if (knStrip.startsWith(`${cn} `) || knStrip.startsWith(`${cn}(`)) return true;
-  if (kemplineStrippedEndsWithCatalogName(knStrip, cn)) return true;
-  return false;
-}
-
-/** Associe le libellé preset Kempline à une entrée du JSON `.models` (meilleur préfixe = `name` le plus long). */
-function pickModelDefinitionForKemplineName(
-  list: ModelDefinitionJson[],
-  kemplineSlotName: string,
-): ModelDefinitionJson | null {
-  const kn = kemplineSlotName.trim();
-  if (!kn) return null;
-  const exact = list.find((e) => e.name.trim() === kn);
-  if (exact) return exact;
-  const stripped = stripKemplineMonoStereoSuffix(kn);
-  const exactStrip = list.find((e) => e.name.trim() === stripped);
-  if (exactStrip) return exactStrip;
-  const exactStripI = list.find(
-    (e) => e.name.trim().toLowerCase() === stripped.toLowerCase(),
-  );
-  if (exactStripI) return exactStripI;
-
-  let best: ModelDefinitionJson | null = null;
-  let bestLen = -1;
-  for (const e of list) {
-    const n = (e.name || "").trim();
-    if (!n) continue;
-    if (!modelCatalogNameMatchesKemplineSlot(n, kn)) continue;
-    if (n.length > bestLen) {
-      bestLen = n.length;
-      best = e;
-    }
-  }
-  return best;
-}
-
 async function findModelDefinitionForSlot(
   slot: SlotDebug,
   catalogModelId?: string | null,
@@ -415,6 +367,7 @@ async function findModelDefinitionForSlot(
   const nameTarget = slot.name.trim();
   if (!nameTarget || nameTarget === "<empty>") return null;
   const idTarget = (catalogModelId ?? "").trim();
+  if (!idTarget) return null;
   const bases = modelsDefinitionFileBasesForCategory(slot.category);
   if (bases.length === 0) return null;
   for (const fileBase of bases) {
@@ -424,23 +377,12 @@ async function findModelDefinitionForSlot(
     } catch {
       continue;
     }
-    if (idTarget) {
-      const byId = list.find((e) => (e.symbolicID || "").trim() === idTarget);
-      if (byId) return { entry: byId, fileBase };
-    }
-    const entry = pickModelDefinitionForKemplineName(list, nameTarget);
-    if (entry) {
-      if (idTarget && DEBUG_MODEL_ID_JOIN_FALLBACK) {
-        console.warn(
-          `[models] Fallback nom utilise (ID introuvable): id=${idTarget} category="${slot.category}" slot="${nameTarget}" matched="${entry.name}" file="${fileBase}.models"`,
-        );
-      }
-      return { entry, fileBase };
-    }
+    const byId = list.find((e) => (e.symbolicID || "").trim() === idTarget);
+    if (byId) return { entry: byId, fileBase };
   }
-  if (idTarget && DEBUG_MODEL_ID_JOIN_FALLBACK) {
+  if (DEBUG_MODEL_ID_JOIN_FALLBACK) {
     console.warn(
-      `[models] Aucun match par ID ni par nom: id=${idTarget} category="${slot.category}" slot="${nameTarget}" tried=${bases.join(",")}`,
+      `[models] Aucun match par ID: id=${idTarget} category="${slot.category}" slot="${nameTarget}" tried=${bases.join(",")}`,
     );
   }
   return null;
@@ -478,6 +420,11 @@ function formatParamBoundForDisplay(
 
 /** Valeurs `ChainParamValue` sérialisées (serde untagged). */
 type ChainParamValueJson = boolean | number | string;
+type LinkedCabInfoJson = [string, string, string, string];
+type LinkedCabWithParamsJson = {
+  cab: LinkedCabInfoJson;
+  values: ChainParamValueJson[];
+};
 type HelixControlFormatBandJson = {
   lowerBound?: number;
   upperBound?: number;
@@ -887,66 +834,216 @@ function canModelsParamsBoolToggle(p: ModelParamDefJson, cv: ChainParamValueJson
   return isOffOnDisplayType(p.displayType);
 }
 
-function showModelsParamsLoading() {
-  clearModelsParamsSubheadAndIcon();
-  const inner = getModelsParamsInner();
-  if (!inner) return;
-  inner.replaceChildren();
-  const p = document.createElement("p");
-  p.className = "models-params-placeholder";
-  p.textContent = "Chargement des paramètres…";
-  inner.appendChild(p);
+function isMicParam(p: ModelParamDefJson): boolean {
+  const sid = (p.symbolicID ?? "").trim();
+  return sid === "Mic" || sid === "@mic";
 }
 
-function renderModelsParamsPane(
-  slot: SlotDebug,
-  params: ModelParamDefJson[],
-  resolvedCatalogModelName?: string,
-  chainValues?: ChainParamValueJson[] | null,
-  catalogChannel?: string | null,
-  catalogSignal?: string | null,
-  catalogEmulationName?: string | null,
-  helixControlsMap?: Map<string, HelixControlDefJson>,
-  catalogModelImage?: string | null,
-) {
-  setModelsParamsPaneCategory(slot.category);
-  const inner = getModelsParamsInner();
-  if (!inner) return;
-  inner.replaceChildren();
-  const head = document.createElement("div");
-  head.className = "models-params-model-head";
-  const title = document.createElement("div");
-  title.className = "models-params-model-title";
-  const baseName = (resolvedCatalogModelName ?? slot.name).trim() || "—";
-  const parts: string[] = [baseName];
-  const ch = (catalogChannel ?? "").trim();
-  const sig = (catalogSignal ?? "").trim();
-  if (ch) parts.push(ch);
-  if (sig) parts.push(sig);
-  title.textContent = parts.join(" · ");
-  if (resolvedCatalogModelName && resolvedCatalogModelName.trim() !== slot.name.trim()) {
-    const usb = document.createElement("div");
-    usb.className = "models-params-model-usb-name";
-    usb.textContent = slot.name.trim();
-    head.append(title, usb);
-  } else {
-    head.append(title);
-  }
-  const subhead = getModelsParamsSubheadEl();
-  if (subhead) {
-    subhead.replaceChildren(head);
-  } else {
-    inner.appendChild(head);
-  }
-  setModelsParamsPaneEmulationName(
-    catalogEmulationName && catalogEmulationName.trim()
-      ? catalogEmulationName.trim()
-      : null,
-  );
-  setModelsParamsHeaderIcon(slot, catalogModelImage);
+function helixStringFormatLabels(def: HelixControlDefJson | undefined): string[] | null {
+  const fmt = def?.format;
+  if (!Array.isArray(fmt) || fmt.length === 0) return null;
+  if (typeof fmt[0] !== "string") return null;
+  return fmt as string[];
+}
 
-  const list = document.createElement("ul");
-  list.className = "models-params-list";
+function chainValueAsMicIndex(cv: ChainParamValueJson | undefined): number | null {
+  if (cv === undefined) return null;
+  if (typeof cv === "number" && Number.isFinite(cv)) return Math.round(cv);
+  return null;
+}
+
+function canModelsParamsMicCombo(
+  p: ModelParamDefJson,
+  cv: ChainParamValueJson | undefined,
+  helixControlsMap: Map<string, HelixControlDefJson> | undefined,
+  minN: number | boolean | undefined,
+  maxN: number | boolean | undefined,
+): boolean {
+  if (!isMicParam(p)) return false;
+  if (chainValueAsMicIndex(cv) === null) return false;
+  if (typeof minN !== "number" || typeof maxN !== "number") return false;
+  if (!Number.isFinite(minN) || !Number.isFinite(maxN)) return false;
+  if (maxN < minN) return false;
+  const dt = (p.displayType ?? "").trim();
+  if (!dt || !helixControlsMap?.has(dt)) return false;
+  const labels = helixStringFormatLabels(helixControlsMap.get(dt));
+  return labels !== null && labels.length > 0;
+}
+
+function chainValueFromParamDefault(p: ModelParamDefJson): ChainParamValueJson | undefined {
+  const d = p.default;
+  if (typeof d === "boolean" || typeof d === "number" || typeof d === "string") return d;
+  return undefined;
+}
+
+/**
+ * Le binaire preset aligne les valeurs sur l'ordre DSP (`assign` croissant), puis les champs sans
+ * `assign` dans l'ordre où ils apparaissent dans le JSON. Le panneau UI zippe par indice dans
+ * `params[]` : sans cette étape, ampli / préampli (ex. Ch Vol vs Master) et d'autres blocs peuvent
+ * afficher la mauvaise valeur sur chaque ligne.
+ */
+function alignChainValuesToModelParamOrder(
+  chainValues: ChainParamValueJson[] | null | undefined,
+  params: ModelParamDefJson[],
+): Array<ChainParamValueJson | undefined> | null | undefined {
+  if (chainValues == null) return chainValues;
+  const withAssign: { idx: number; assign: number }[] = [];
+  const withoutAssign: number[] = [];
+  for (let i = 0; i < params.length; i += 1) {
+    const a = params[i].assign;
+    if (typeof a === "number" && Number.isFinite(a)) {
+      withAssign.push({ idx: i, assign: a });
+    } else {
+      withoutAssign.push(i);
+    }
+  }
+  if (withAssign.length === 0) {
+    return chainValues as ChainParamValueJson[];
+  }
+  withAssign.sort((x, y) => (x.assign !== y.assign ? x.assign - y.assign : x.idx - y.idx));
+  const out: Array<ChainParamValueJson | undefined> = new Array(params.length);
+  let c = 0;
+  for (const { idx } of withAssign) {
+    if (c < chainValues.length) {
+      out[idx] = chainValues[c];
+    }
+    c += 1;
+  }
+  for (const idx of withoutAssign) {
+    if (c < chainValues.length) {
+      out[idx] = chainValues[c];
+    }
+    c += 1;
+  }
+  return out;
+}
+
+type ModelsComboItem = { value: string; label: string };
+
+function labelForComboValue(items: ModelsComboItem[], value: string): string {
+  return items.find((i) => i.value === value)?.label ?? value;
+}
+
+type ModelsComboHandle = {
+  trigger: HTMLButtonElement;
+  /** Met à jour le libellé du bouton et `aria-selected` sur les options (ex. après clamp). */
+  syncSelection(value: string): void;
+};
+
+/**
+ * Liste déroulante scrollable (~5 lignes visibles) : remplace un `<select>` natif
+ * dont la hauteur du popup ne peut pas être contrôlée par le CSS.
+ */
+function mountModelsCombo(
+  parent: HTMLElement,
+  items: ModelsComboItem[],
+  selectedValue: string,
+  onSelect: (value: string) => void,
+  ariaLabel: string,
+): ModelsComboHandle {
+  const sortedItems = [...items].sort((a, b) =>
+    a.label.localeCompare(b.label, undefined, { sensitivity: "base", numeric: true }),
+  );
+  const wrap = document.createElement("div");
+  wrap.className = "models-params-combo-wrap";
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "models-params-combo-trigger";
+  trigger.setAttribute("aria-label", ariaLabel);
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+
+  const panel = document.createElement("div");
+  panel.className = "models-params-combo-panel";
+  panel.hidden = true;
+  panel.setAttribute("role", "listbox");
+
+  for (const it of sortedItems) {
+    const opt = document.createElement("button");
+    opt.type = "button";
+    opt.className = "models-params-combo-option";
+    opt.setAttribute("role", "option");
+    opt.dataset.value = it.value;
+    opt.textContent = it.label;
+    panel.appendChild(opt);
+  }
+
+  function syncSelection(value: string): void {
+    trigger.textContent =
+      labelForComboValue(sortedItems, value) || sortedItems[0]?.label || "—";
+    for (const el of panel.querySelectorAll<HTMLElement>(".models-params-combo-option")) {
+      el.setAttribute("aria-selected", el.dataset.value === value ? "true" : "false");
+    }
+  }
+
+  syncSelection(selectedValue);
+
+  let outsideAc: AbortController | null = null;
+
+  function closePanel(): void {
+    if (panel.hidden) return;
+    panel.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    outsideAc?.abort();
+    outsideAc = null;
+  }
+
+  function openPanel(): void {
+    panel.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    outsideAc = new AbortController();
+    const { signal } = outsideAc;
+    document.addEventListener(
+      "pointerdown",
+      (e) => {
+        if (!wrap.contains(e.target as Node)) closePanel();
+      },
+      { capture: true, signal },
+    );
+    document.addEventListener(
+      "keydown",
+      (ev: KeyboardEvent) => {
+        if (ev.key === "Escape") closePanel();
+      },
+      { capture: true, signal },
+    );
+    requestAnimationFrame(() => {
+      panel
+        .querySelector<HTMLElement>('.models-params-combo-option[aria-selected="true"]')
+        ?.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  trigger.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (panel.hidden) openPanel();
+    else closePanel();
+  });
+
+  panel.addEventListener("click", (e) => {
+    const t = (e.target as HTMLElement).closest(".models-params-combo-option");
+    if (!(t instanceof HTMLElement)) return;
+    const v = t.dataset.value;
+    if (v === undefined) return;
+    e.stopPropagation();
+    closePanel();
+    onSelect(v);
+  });
+
+  wrap.append(trigger, panel);
+  parent.appendChild(wrap);
+  return { trigger, syncSelection };
+}
+
+function appendModelsParamRows(
+  list: HTMLUListElement,
+  params: ModelParamDefJson[],
+  chainValues: Array<ChainParamValueJson | undefined> | null | undefined,
+  helixControlsMap?: Map<string, HelixControlDefJson>,
+  catalogSignal?: string | null,
+  ariaScopeLabel = "",
+): void {
   for (let j = 0; j < params.length; j += 1) {
     const p = params[j];
     if (paramHiddenForMonoStereoOnly(p, catalogSignal)) continue;
@@ -976,7 +1073,9 @@ function renderModelsParamsPane(
 
     const minN = p.min;
     const maxN = p.max;
+    const micCombo = canModelsParamsMicCombo(p, cv, helixControlsMap, minN, maxN);
     const canSlider =
+      !micCombo &&
       typeof cv === "number" &&
       Number.isFinite(cv) &&
       typeof minN === "number" &&
@@ -984,7 +1083,40 @@ function renderModelsParamsPane(
       Number.isFinite(minN) &&
       Number.isFinite(maxN) &&
       maxN > minN;
-    if (canSlider) {
+    if (micCombo) {
+      minEl.textContent = "—";
+      maxEl.textContent = "—";
+      sliderCell.classList.add("models-params-slider-cell--combo-only");
+      const dt = (p.displayType ?? "").trim();
+      const helixDef = helixControlsMap!.get(dt)!;
+      const labels = helixStringFormatLabels(helixDef)!;
+      const minI = Math.round(minN as number);
+      const maxI = Math.round(maxN as number);
+      let current = chainValueAsMicIndex(cv)!;
+      current = Math.max(minI, Math.min(maxI, current));
+      const micItems: ModelsComboItem[] = [];
+      for (let i = minI; i <= maxI; i += 1) {
+        micItems.push({ value: String(i), label: labels[i] ?? `Mic ${i}` });
+      }
+      const micAria = `${(p.name || p.symbolicID || "").trim()} (menu déroulant) — aperçu local${ariaScopeLabel}, non envoyé au Helix`;
+      const { trigger: micTrigger, syncSelection: syncMicCombo } = mountModelsCombo(
+        sliderCell,
+        micItems,
+        String(current),
+        (raw) => {
+          const v = Number.parseInt(raw, 10);
+          if (!Number.isFinite(v)) return;
+          const clamped = Math.max(minI, Math.min(maxI, v));
+          const s = formatRawChainParamValueJson(clamped);
+          li.title = s;
+          sliderCell.title = s;
+          micTrigger.title = s;
+          syncMicCombo(String(clamped));
+        },
+        micAria,
+      );
+      micTrigger.title = formatRawChainParamValueJson(current);
+    } else if (canSlider) {
       sliderCell.append(chainEl);
       const dt = (p.displayType ?? "").trim();
       const helixDef =
@@ -1013,7 +1145,7 @@ function renderModelsParamsPane(
       input.title = rawTitleStr;
       input.setAttribute(
         "aria-label",
-        `${(p.name || p.symbolicID || "").trim()} — aperçu local, non envoyé au Helix`,
+        `${(p.name || p.symbolicID || "").trim()} — aperçu local${ariaScopeLabel}, non envoyé au Helix`,
       );
       input.addEventListener("input", () => {
         let v = Number(input.value);
@@ -1041,7 +1173,7 @@ function renderModelsParamsPane(
       bOn.type = "button";
       bOn.className = "models-params-bool-btn";
       bOn.textContent = labOn;
-      const paramLabel = `${(p.name || p.symbolicID || "").trim()} — aperçu local, non envoyé au Helix`;
+      const paramLabel = `${(p.name || p.symbolicID || "").trim()} — aperçu local${ariaScopeLabel}, non envoyé au Helix`;
       bOff.setAttribute("aria-label", `${paramLabel} : ${labOff}`);
       bOn.setAttribute("aria-label", `${paramLabel} : ${labOn}`);
       const syncButtons = (): void => {
@@ -1071,14 +1203,224 @@ function renderModelsParamsPane(
     } else {
       sliderCell.append(chainEl);
     }
-
     list.appendChild(li);
   }
+}
+
+function pickCabIndexForLinkedCab(cabs: ModelDefinitionJson[], linkedCab: LinkedCabInfoJson | null): number {
+  if (!linkedCab || cabs.length === 0) return -1;
+  const linkedModelId = linkedCab[3]?.trim() ?? "";
+  if (!linkedModelId) return -1;
+  return cabs.findIndex((c) => (c.symbolicID ?? "").trim() === linkedModelId);
+}
+
+function renderCabSection(
+  inner: HTMLElement,
+  cabs: ModelDefinitionJson[],
+  linkedCab: LinkedCabInfoJson | null,
+  linkedCabValues: ChainParamValueJson[] | null,
+  helixControlsMap?: Map<string, HelixControlDefJson>,
+): void {
+  if (cabs.length === 0) return;
+  const title = document.createElement("div");
+  title.className = "models-params-cab-section-title";
+  title.append("Cab / IR (association locale)");
+  const cabChainHex = (linkedCab?.[0] ?? "").trim();
+  if (cabChainHex) {
+    title.append(" — chainHex cab ");
+    const hexSpan = document.createElement("span");
+    hexSpan.className = "models-params-cab-section-chain-hex";
+    hexSpan.textContent = cabChainHex.toUpperCase();
+    title.appendChild(hexSpan);
+    title.title =
+      "Hex du module cab lu dans le preset (à comparer à presetMeta.chainHex dans HX_ModelCatalog.json pour ce modèle).";
+  }
+  inner.appendChild(title);
+
+  const linkedIdx = pickCabIndexForLinkedCab(cabs, linkedCab);
+  let cabIdx = linkedIdx >= 0 ? linkedIdx : 0;
+  const renderList = () => {
+    const prev = inner.querySelector(".models-params-cab-list");
+    if (prev) prev.remove();
+    const list = document.createElement("ul");
+    list.className = "models-params-list models-params-cab-list";
+
+    const selectRow = document.createElement("li");
+    selectRow.className = "models-params-row";
+    const label = document.createElement("span");
+    label.className = "models-params-row-name";
+    label.textContent = "Cab / IR Model";
+    const minEl = document.createElement("span");
+    minEl.className = "models-params-row-min";
+    minEl.textContent = "—";
+    const maxEl = document.createElement("span");
+    maxEl.className = "models-params-row-max";
+    maxEl.textContent = "—";
+    const sliderCell = document.createElement("div");
+    sliderCell.className = "models-params-slider-cell";
+    const cabItems: ModelsComboItem[] = [];
+    for (const def of cabs) {
+      const sid = (def.symbolicID ?? "").trim();
+      if (!sid) continue;
+      cabItems.push({ value: sid, label: `${(def.name ?? sid).trim()} (${sid})` });
+    }
+    const currentSid = (cabs[cabIdx]?.symbolicID ?? "").trim();
+    mountModelsCombo(
+      sliderCell,
+      cabItems,
+      currentSid || cabItems[0]?.value || "",
+      (sidRaw) => {
+        const sid = sidRaw.trim();
+        const idx = cabs.findIndex((c) => (c.symbolicID ?? "").trim() === sid);
+        if (idx < 0) return;
+        cabIdx = idx;
+        renderList();
+      },
+      "Cab ou IR (menu déroulant) — aperçu local, non envoyé au Helix",
+    );
+    selectRow.append(label, minEl, sliderCell, maxEl);
+    list.appendChild(selectRow);
+
+    if (linkedCab && linkedIdx < 0) {
+      const info = document.createElement("li");
+      info.className = "models-params-row";
+      const t = document.createElement("span");
+      t.className = "models-params-row-name";
+      t.textContent = "Cab lié (ID)";
+      const l = document.createElement("span");
+      l.className = "models-params-row-min";
+      l.textContent = "—";
+      const c = document.createElement("span");
+      c.className = "models-params-row-chain";
+      c.textContent = linkedCab[3]?.trim()
+        ? `ID introuvable dans cab / cabmicirs / cabmicirswithpan: ${linkedCab[3].trim()}`
+        : "ID cab manquant (chainHex non renseigné)";
+      const r = document.createElement("span");
+      r.className = "models-params-row-max";
+      r.textContent = "—";
+      const cell = document.createElement("div");
+      cell.className = "models-params-slider-cell";
+      cell.append(c);
+      info.append(t, l, cell, r);
+      list.appendChild(info);
+    }
+
+    const cabDef = cabs[cabIdx];
+    const cabParams = cabDef?.params ?? [];
+    const cabDefaults = cabParams.map(chainValueFromParamDefault);
+    const cabValues =
+      linkedIdx >= 0 && cabIdx === linkedIdx && (linkedCabValues?.length ?? 0) > 0
+        ? linkedCabValues
+        : cabDefaults;
+    appendModelsParamRows(
+      list,
+      cabParams,
+      cabValues,
+      helixControlsMap,
+      null,
+      " (cab)",
+    );
+    inner.appendChild(list);
+  };
+  renderList();
+}
+
+function showModelsParamsLoading() {
+  clearModelsParamsSubheadAndIcon();
+  const inner = getModelsParamsInner();
+  if (!inner) return;
+  inner.replaceChildren();
+  const p = document.createElement("p");
+  p.className = "models-params-placeholder";
+  p.textContent = "Chargement des paramètres…";
+  inner.appendChild(p);
+}
+
+function renderModelsParamsPane(
+  slot: SlotDebug,
+  params: ModelParamDefJson[],
+  resolvedCatalogModelName?: string,
+  chainValues?: ChainParamValueJson[] | null,
+  linkedCab?: LinkedCabInfoJson | null,
+  linkedCabValues?: ChainParamValueJson[] | null,
+  allCabDefinitions?: ModelDefinitionJson[] | null,
+  catalogChannel?: string | null,
+  catalogSignal?: string | null,
+  catalogEmulationName?: string | null,
+  helixControlsMap?: Map<string, HelixControlDefJson>,
+  catalogModelImage?: string | null,
+) {
+  setModelsParamsPaneCategory(slot.category, slot.moduleHex);
+  const inner = getModelsParamsInner();
+  if (!inner) return;
+  inner.replaceChildren();
+  const head = document.createElement("div");
+  head.className = "models-params-model-head";
+  const title = document.createElement("div");
+  title.className = "models-params-model-title";
+  const baseName = (resolvedCatalogModelName ?? slot.name).trim() || "—";
+  const parts: string[] = [baseName];
+  const ch = (catalogChannel ?? "").trim();
+  const sig = (catalogSignal ?? "").trim();
+  if (ch) parts.push(ch);
+  if (sig) parts.push(sig);
+  title.textContent = parts.join(" · ");
+  const lines: HTMLElement[] = [title];
+  if (linkedCab && linkedCab[0] && linkedCab[2]) {
+    const cab = document.createElement("div");
+    cab.className = "models-params-model-sub";
+    const cabId = linkedCab[3]?.trim();
+    cab.textContent = cabId
+      ? `Cab: ${linkedCab[2]} · ${linkedCab[0].toUpperCase()} · ${cabId}`
+      : `Cab: ${linkedCab[2]} · ${linkedCab[0].toUpperCase()}`;
+    lines.push(cab);
+  }
+  if (resolvedCatalogModelName && resolvedCatalogModelName.trim() !== slot.name.trim()) {
+    const usb = document.createElement("div");
+    usb.className = "models-params-model-usb-name";
+    usb.textContent = slot.name.trim();
+    lines.push(usb);
+    head.append(...lines);
+  } else {
+    head.append(...lines);
+  }
+  const subhead = getModelsParamsSubheadEl();
+  if (subhead) {
+    subhead.replaceChildren(head);
+  } else {
+    inner.appendChild(head);
+  }
+  setModelsParamsPaneEmulationName(
+    catalogEmulationName && catalogEmulationName.trim()
+      ? catalogEmulationName.trim()
+      : null,
+  );
+  setModelsParamsHeaderIcon(slot, catalogModelImage);
+
+  const list = document.createElement("ul");
+  list.className = "models-params-list";
+  const chainAligned = alignChainValuesToModelParamOrder(chainValues, params);
+  appendModelsParamRows(
+    list,
+    params,
+    chainAligned ?? null,
+    helixControlsMap,
+    catalogSignal,
+  );
   inner.appendChild(list);
+  if (normalizeCategory(slot.category) === "amp+cab" && (allCabDefinitions?.length ?? 0) > 0) {
+    renderCabSection(
+      inner,
+      allCabDefinitions!,
+      linkedCab ?? null,
+      linkedCabValues ?? null,
+      helixControlsMap,
+    );
+  }
 }
 
 function showModelsParamsNotFound(slot: SlotDebug) {
-  setModelsParamsPaneCategory(slot.category);
+  setModelsParamsPaneCategory(slot.category, slot.moduleHex);
   clearModelsParamsSubheadAndIcon();
   const inner = getModelsParamsInner();
   if (!inner) return;
@@ -1106,7 +1448,7 @@ async function loadAndShowModelsParamsForSlot(
   kemplineSlotIndex?: number,
 ) {
   const seq = ++modelsParamsLoadSeq;
-  setModelsParamsPaneCategory(slot.category);
+  setModelsParamsPaneCategory(slot.category, slot.moduleHex);
   showModelsParamsLoading();
   const nk = normalizeCategory(slot.category);
   if (nk === "routing" || nk === "none" || nk === "favorites") {
@@ -1115,6 +1457,9 @@ async function loadAndShowModelsParamsForSlot(
   }
   try {
     let chainValues: ChainParamValueJson[] | null = null;
+    let linkedCab: LinkedCabInfoJson | null = null;
+    let linkedCabValues: ChainParamValueJson[] | null = null;
+    let allCabDefinitions: ModelDefinitionJson[] | null = null;
     if (kemplineSlotIndex !== undefined && Number.isInteger(kemplineSlotIndex)) {
       try {
         chainValues = await invoke<ChainParamValueJson[] | null>(
@@ -1124,8 +1469,26 @@ async function loadAndShowModelsParamsForSlot(
       } catch {
         chainValues = null;
       }
+      try {
+        const linkedCabFull = await invoke<LinkedCabWithParamsJson | null>(
+          "get_active_preset_slot_linked_cab_with_params",
+          { slotIndex: kemplineSlotIndex },
+        );
+        linkedCab = linkedCabFull?.cab ?? null;
+        linkedCabValues = linkedCabFull?.values ?? null;
+      } catch {
+        linkedCabValues = null;
+        try {
+          linkedCab = await invoke<LinkedCabInfoJson | null>(
+            "get_active_preset_slot_linked_cab",
+            { slotIndex: kemplineSlotIndex },
+          );
+        } catch {
+          linkedCab = null;
+        }
+      }
     }
-    const catalogModelId = await getCatalogModelIdForModel(slot.category, slot.name);
+    const catalogModelId = await getCatalogModelIdForHex(slot.moduleHex);
     if (seq !== modelsParamsLoadSeq) return;
     const found = await findModelDefinitionForSlot(slot, catalogModelId);
     if (seq !== modelsParamsLoadSeq) return;
@@ -1137,13 +1500,29 @@ async function loadAndShowModelsParamsForSlot(
     kemplineTooltipCache.set(tooltipCacheKey(slot), short);
     applyShortNameToSlotNodes(slot, short);
     const [meta, catalogImage] = await Promise.all([
-      getPresetMetaForModel(slot.category, short),
-      getCatalogModelImageForModel(slot.category, short),
+      getPresetMetaForId(catalogModelId),
+      getCatalogModelImageForId(catalogModelId),
     ]);
     if (seq !== modelsParamsLoadSeq) return;
     const catalogChannel = pickChannel(meta);
     const catalogSignal = pickSignal(meta, slot.moduleHex);
     const catalogEmulationName = pickEmulationName(meta);
+    if (nk === "amp+cab") {
+      try {
+        const byId = new Map<string, ModelDefinitionJson>();
+        for (const base of CAB_MODEL_DEFINITION_BASES) {
+          const defs = await loadModelsDefinitionArray(base);
+          for (const d of defs) {
+            const sid = (d.symbolicID ?? "").trim();
+            if (!sid || byId.has(sid)) continue;
+            byId.set(sid, d);
+          }
+        }
+        allCabDefinitions = [...byId.values()];
+      } catch {
+        allCabDefinitions = null;
+      }
+    }
     const helixControlsMap = await getHelixControlsMap();
     if (seq !== modelsParamsLoadSeq) return;
     renderModelsParamsPane(
@@ -1151,6 +1530,9 @@ async function loadAndShowModelsParamsForSlot(
       found.entry.params ?? [],
       short,
       chainValues,
+      linkedCab,
+      linkedCabValues,
+      allCabDefinitions,
       catalogChannel,
       catalogSignal,
       catalogEmulationName,
@@ -1174,7 +1556,7 @@ async function resolveShortModelDisplayName(slot: SlotDebug): Promise<string> {
   const key = tooltipCacheKey(slot);
   const hit = kemplineTooltipCache.get(key);
   if (hit !== undefined) return hit;
-  const catalogModelId = await getCatalogModelIdForModel(slot.category, slot.name);
+  const catalogModelId = await getCatalogModelIdForHex(slot.moduleHex);
   const found = await findModelDefinitionForSlot(slot, catalogModelId);
   const display = (found?.entry.name ?? slot.name).trim() || "—";
   kemplineTooltipCache.set(key, display);

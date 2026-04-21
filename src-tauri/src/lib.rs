@@ -514,7 +514,7 @@ fn get_active_preset_stomp_layout(
 }
 
 /// Valeurs de chaîne lues dans le segment preset du slot **Kempline 0..15** (`read_params` Python).
-/// `None` : pas de données preset actives, slot hors plage, segment vide `06`, ou bloc Amp+Cab (`c319`) non pris en charge.
+/// `None` : pas de données preset actives, slot hors plage, segment vide `06`, ou parse impossible.
 #[tauri::command]
 fn get_active_preset_slot_chain_param_values(
     state: tauri::State<Arc<Mutex<AppState>>>,
@@ -535,7 +535,88 @@ fn get_active_preset_slot_chain_param_values(
         return None;
     }
     let seg = kempline_assignable_segment_bytes(&s.preset_data, slot_index as usize)?;
-    preset_chain_params::parse_standard_assignable_segment(seg)
+    chain_param_values_for_assignable_segment(&seg)
+}
+
+/// Cab rattaché détecté dans un slot Amp+Cab, sous la forme `[module_hex, catégorie, nom, model_id]`.
+#[tauri::command]
+fn get_active_preset_slot_linked_cab(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_index: u32,
+) -> Option<[String; 4]> {
+    if slot_index >= 16 {
+        return None;
+    }
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        (app.active_preset, app.helix_state.clone()?)
+    };
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() {
+        return None;
+    }
+    if s.preset_index != active_preset {
+        return None;
+    }
+    let seg = kempline_assignable_segment_bytes(&s.preset_data, slot_index as usize)?;
+    if !is_amp_cab_assignable_chunk(seg) {
+        return None;
+    }
+    let ids = extract_module_ids_from_assignable_chunk(seg);
+    let blocks = preset_chain_params::parse_assignable_segment_param_blocks(&seg)?;
+    let cab_bi = catalog_cab_c219_block_index(&ids, blocks.len());
+    cab_bi
+        .and_then(|bi| block_chain_hex_for_c219(bi, &ids))
+        .and_then(|h| cab_info_from_module_id(&h))
+        .or_else(|| ids.iter().find_map(|id| cab_info_from_module_id(id)))
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LinkedCabWithParams {
+    cab: [String; 4],
+    values: Vec<preset_chain_params::ChainParamValue>,
+}
+
+/// Cab rattaché + valeurs de ses paramètres décodées dans la chaîne Amp+Cab.
+#[tauri::command]
+fn get_active_preset_slot_linked_cab_with_params(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_index: u32,
+) -> Option<LinkedCabWithParams> {
+    if slot_index >= 16 {
+        return None;
+    }
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        (app.active_preset, app.helix_state.clone()?)
+    };
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() {
+        return None;
+    }
+    if s.preset_index != active_preset {
+        return None;
+    }
+    let seg = kempline_assignable_segment_bytes(&s.preset_data, slot_index as usize)?;
+    if !is_amp_cab_assignable_chunk(seg) {
+        return None;
+    }
+
+    let ids = extract_module_ids_from_assignable_chunk(seg);
+    let blocks = preset_chain_params::parse_assignable_segment_param_blocks(seg)?;
+
+    let cab_bi = catalog_cab_c219_block_index(&ids, blocks.len());
+
+    let cab = cab_bi
+        .and_then(|bi| block_chain_hex_for_c219(bi, &ids))
+        .and_then(|h| cab_info_from_module_id(&h))
+        .or_else(|| ids.iter().find_map(|id| cab_info_from_module_id(id)))?;
+
+    let values = cab_bi
+        .and_then(|bi| blocks.get(bi))
+        .cloned()
+        .or_else(|| blocks.last().cloned())?;
+    Some(LinkedCabWithParams { cab, values })
 }
 
 /// Lecture d’un fichier JSON de définition de modèles (`resources/models/{file_base}.models`).
@@ -557,8 +638,70 @@ fn read_models_definition_file(app: tauri::AppHandle, file_base: String) -> Resu
 }
 
 /// Remplit `map` depuis `HX_ModelCatalog.json` : chaque `presetMeta.chainHex` (chaîne ou tableau)
-/// → `[categories[].name, models[].name]` (référentiel central).
+/// → `[catégorie, nom modèle]` (`presetMeta.categoryName` + `name` si liste plate `models[]`, sinon
+/// `categories[].name` + `models[].name` en format historique).
+fn insert_chainhex_into_module_map(
+    map: &mut HashMap<String, [String; 2]>,
+    pair: &[String; 2],
+    hex_v: &Value,
+) {
+    match hex_v {
+        Value::String(s) => {
+            let h = s.trim().to_lowercase();
+            if !h.is_empty() {
+                map.insert(h, pair.clone());
+            }
+        }
+        Value::Array(a) => {
+            for x in a {
+                if let Some(s) = x.as_str() {
+                    let h = s.trim().to_lowercase();
+                    if !h.is_empty() {
+                        map.insert(h, pair.clone());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn insert_hex_from_flat_models_list(map: &mut HashMap<String, [String; 2]>, models: &[Value]) {
+    for m in models {
+        let Some(obj) = m.as_object() else {
+            continue;
+        };
+        let Some(model_name) = obj.get("name").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let model_name = model_name.trim();
+        if model_name.is_empty() {
+            continue;
+        };
+        let Some(pm) = obj.get("presetMeta").and_then(|p| p.as_object()) else {
+            continue;
+        };
+        let cat_name = pm
+            .get("categoryName")
+            .and_then(|n| n.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Unknown");
+        let Some(hex_v) = pm.get("chainHex") else {
+            continue;
+        };
+        let pair = [cat_name.to_string(), model_name.to_string()];
+        insert_chainhex_into_module_map(map, &pair, hex_v);
+    }
+}
+
 fn insert_modules_from_hx_catalog(map: &mut HashMap<String, [String; 2]>, catalog: &Value) {
+    if let Some(models) = catalog.get("models").and_then(|m| m.as_array()) {
+        if !models.is_empty() {
+            insert_hex_from_flat_models_list(map, models);
+            return;
+        }
+    }
     let Some(categories) = catalog.get("categories").and_then(|c| c.as_array()) else {
         return;
     };
@@ -605,24 +748,102 @@ fn insert_hex_from_catalog_model_list(
             continue;
         };
         let pair = [cat_name.to_string(), model_name.to_string()];
-        match hex_v {
-            Value::String(s) => {
-                let h = s.trim().to_lowercase();
-                if !h.is_empty() {
-                    map.insert(h, pair.clone());
-                }
+        insert_chainhex_into_module_map(map, &pair, hex_v);
+    }
+}
+
+fn insert_model_id_hexes(map: &mut HashMap<String, String>, model_id: &str, hex_v: &Value) {
+    match hex_v {
+        Value::String(s) => {
+            let h = s.trim().to_lowercase();
+            if !h.is_empty() {
+                map.insert(h, model_id.to_string());
             }
-            Value::Array(a) => {
-                for x in a {
-                    if let Some(s) = x.as_str() {
-                        let h = s.trim().to_lowercase();
-                        if !h.is_empty() {
-                            map.insert(h, pair.clone());
-                        }
+        }
+        Value::Array(a) => {
+            for x in a {
+                if let Some(s) = x.as_str() {
+                    let h = s.trim().to_lowercase();
+                    if !h.is_empty() {
+                        map.insert(h, model_id.to_string());
                     }
                 }
             }
-            _ => {}
+        }
+        _ => {}
+    }
+}
+
+fn insert_model_ids_from_flat_models(map: &mut HashMap<String, String>, models: &[Value]) {
+    for m in models {
+        let Some(obj) = m.as_object() else {
+            continue;
+        };
+        let Some(model_id) = obj
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let Some(pm) = obj.get("presetMeta").and_then(|p| p.as_object()) else {
+            continue;
+        };
+        let Some(hex_v) = pm.get("chainHex") else {
+            continue;
+        };
+        insert_model_id_hexes(map, &model_id, hex_v);
+    }
+}
+
+/// Remplit `map` hex -> `id` modèle (catalogue), depuis `HX_ModelCatalog.json`.
+fn insert_model_ids_from_hx_catalog(map: &mut HashMap<String, String>, catalog: &Value) {
+    if let Some(models) = catalog.get("models").and_then(|m| m.as_array()) {
+        if !models.is_empty() {
+            insert_model_ids_from_flat_models(map, models);
+            return;
+        }
+    }
+    let Some(categories) = catalog.get("categories").and_then(|c| c.as_array()) else {
+        return;
+    };
+    let mut insert_for_models = |models: Option<&Value>| {
+        let Some(arr) = models.and_then(|m| m.as_array()) else {
+            return;
+        };
+        for m in arr {
+            let Some(obj) = m.as_object() else {
+                continue;
+            };
+            let model_id = obj
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let Some(model_id) = model_id else {
+                continue;
+            };
+            let Some(pm) = obj.get("presetMeta").and_then(|p| p.as_object()) else {
+                continue;
+            };
+            let Some(hex_v) = pm.get("chainHex") else {
+                continue;
+            };
+            insert_model_id_hexes(map, &model_id, hex_v);
+        }
+    };
+    for cat in categories {
+        let Some(cat_obj) = cat.as_object() else {
+            continue;
+        };
+        insert_for_models(cat_obj.get("models"));
+        if let Some(subs) = cat_obj.get("subcategories").and_then(|s| s.as_array()) {
+            for sub in subs {
+                if let Some(sub_obj) = sub.as_object() {
+                    insert_for_models(sub_obj.get("models"));
+                }
+            }
         }
     }
 }
@@ -630,7 +851,7 @@ fn insert_hex_from_catalog_model_list(
 lazy_static! {
     /// ID module (hex entre 0x19…0x1a) → `[catégorie, nom]`.
     /// Source unique : `HX_ModelCatalog.json` (`presetMeta.chainHex` chaîne ou tableau + nom court du modèle).
-    static ref MODULES_BY_ID: HashMap<String, [String; 2]> = {
+    static ref HX_CATALOG_MODULE_BY_HEX: HashMap<String, [String; 2]> = {
         const HX_CATALOG_JSON: &str = include_str!("../resources/HX_ModelCatalog.json");
         let catalog: Value =
             serde_json::from_str(HX_CATALOG_JSON).expect("HX_ModelCatalog.json invalide");
@@ -638,6 +859,153 @@ lazy_static! {
         insert_modules_from_hx_catalog(&mut map, &catalog);
         map
     };
+    /// ID module hex -> ID modèle catalogue (`models[].id`), utile pour jointure stable vers `.models.symbolicID`.
+    static ref MODEL_ID_BY_HEX: HashMap<String, String> = {
+        const HX_CATALOG_JSON: &str = include_str!("../resources/HX_ModelCatalog.json");
+        let catalog: Value =
+            serde_json::from_str(HX_CATALOG_JSON).expect("HX_ModelCatalog.json invalide");
+        let mut map = HashMap::new();
+        insert_model_ids_from_hx_catalog(&mut map, &catalog);
+        map
+    };
+}
+
+/// Famille catalogue pour un `chainHex` : choix du bloc `c219` ampli vs cab en Amp+Cab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CatalogSlotKind {
+    AmpLike,
+    CabLike,
+    Other,
+}
+
+/// Candidats hex pour joindre le catalogue (comme côté TS : chaîne complète puis préfixe avant `1a`).
+fn chain_hex_catalog_lookup_candidates(hex_norm: &str) -> Vec<String> {
+    let h = hex_norm.trim().to_lowercase();
+    if h.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![h.clone()];
+    if let Some(i) = h.find("1a") {
+        let prefix = h.get(..i).unwrap_or("").to_string();
+        if !prefix.is_empty() && prefix != h {
+            out.push(prefix);
+        }
+    }
+    out
+}
+
+/// `pair[0]` = `presetMeta.categoryName` dans le catalogue plat.
+fn catalog_slot_kind_from_category_name(cat: &str) -> CatalogSlotKind {
+    let c = cat.trim().to_lowercase();
+    if c == "amp" || c == "preamp" {
+        CatalogSlotKind::AmpLike
+    } else if c == "cab" || c == "ir" || c.contains("impulse") {
+        CatalogSlotKind::CabLike
+    } else {
+        CatalogSlotKind::Other
+    }
+}
+
+/// Repli si le hex n’est pas indexé : préfixes d’`id` catalogue Line 6.
+fn catalog_slot_kind_from_model_id(id: &str) -> Option<CatalogSlotKind> {
+    let lower = id.trim().to_ascii_lowercase();
+    if lower.starts_with("hd2_amp") || lower.starts_with("hd2_preamp") {
+        return Some(CatalogSlotKind::AmpLike);
+    }
+    if lower.starts_with("hd2_cab") {
+        return Some(CatalogSlotKind::CabLike);
+    }
+    None
+}
+
+fn catalog_slot_kind_for_chain_hex(hex: &str) -> CatalogSlotKind {
+    let h = hex.trim().to_lowercase();
+    if h.is_empty() {
+        return CatalogSlotKind::Other;
+    }
+    for cand in chain_hex_catalog_lookup_candidates(&h) {
+        if let Some(pair) = HX_CATALOG_MODULE_BY_HEX.get(&cand) {
+            let k = catalog_slot_kind_from_category_name(&pair[0]);
+            if k != CatalogSlotKind::Other {
+                return k;
+            }
+        }
+        if let Some(id) = MODEL_ID_BY_HEX.get(&cand) {
+            if let Some(k) = catalog_slot_kind_from_model_id(id) {
+                return k;
+            }
+        }
+    }
+    CatalogSlotKind::Other
+}
+
+/// Hex module (`presetMeta.chainHex` dans le catalogue) associé au bloc `c219` d’index `block_index`.
+/// Plusieurs IDs `0x19…0x1a` : un bloc par ID. Un seul ID combiné `ampHex1acabHex` : bloc 0 / 1 = ampli / cab
+/// (ordre inversé si le catalogue indique clairement cab puis ampli sur les deux parties).
+fn block_chain_hex_for_c219(block_index: usize, ids: &[String]) -> Option<String> {
+    if ids.is_empty() {
+        return None;
+    }
+    if ids.len() == 1 {
+        let h = ids[0].trim().to_lowercase();
+        if let Some(sep) = h.find("1a") {
+            let amp = h.get(..sep)?.to_string();
+            let cab = h.get(sep + 2..)?.to_string();
+            if amp.is_empty() || cab.is_empty() {
+                return None;
+            }
+            let amp_k = catalog_slot_kind_for_chain_hex(&amp);
+            let cab_k = catalog_slot_kind_for_chain_hex(&cab);
+            let swap = matches!(amp_k, CatalogSlotKind::CabLike)
+                && matches!(cab_k, CatalogSlotKind::AmpLike);
+            let (first_hex, second_hex) = if swap { (cab, amp) } else { (amp, cab) };
+            return match block_index {
+                0 => Some(first_hex),
+                1 => Some(second_hex),
+                _ => None,
+            };
+        }
+        return (block_index == 0).then_some(h);
+    }
+    ids.get(block_index)
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+}
+
+/// Index du bloc `c219` dont le `chainHex` (catalogue) est cab / IR, ou `None`.
+fn catalog_cab_c219_block_index(ids: &[String], num_blocks: usize) -> Option<usize> {
+    (0..num_blocks).find(|&bi| {
+        block_chain_hex_for_c219(bi, ids)
+            .map(|h| matches!(catalog_slot_kind_for_chain_hex(&h), CatalogSlotKind::CabLike))
+            .unwrap_or(false)
+    })
+}
+
+/// Valeurs `read_params` du bloc **ampli** : en Amp+Cab (`c319`), le bloc est choisi via le catalogue
+/// (`HX_CATALOG_MODULE_BY_HEX` / `chainHex`), pas l’index seul.
+fn chain_param_values_for_assignable_segment(seg: &[u8]) -> Option<Vec<preset_chain_params::ChainParamValue>> {
+    let blocks = preset_chain_params::parse_assignable_segment_param_blocks(seg)?;
+    match blocks.len() {
+        0 => None,
+        1 => Some(blocks[0].clone()),
+        _ => {
+            if !is_amp_cab_assignable_chunk(seg) {
+                return Some(blocks[0].clone());
+            }
+            let ids = extract_module_ids_from_assignable_chunk(seg);
+            if ids.is_empty() {
+                return blocks.iter().max_by_key(|b| b.len()).cloned();
+            }
+            for bi in 0..blocks.len() {
+                if let Some(h) = block_chain_hex_for_c219(bi, &ids) {
+                    if matches!(catalog_slot_kind_for_chain_hex(&h), CatalogSlotKind::AmpLike) {
+                        return Some(blocks[bi].clone());
+                    }
+                }
+            }
+            blocks.iter().max_by_key(|b| b.len()).cloned()
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -674,9 +1042,16 @@ fn split_preset_by_8213(data: &[u8]) -> Vec<&[u8]> {
 
 /// Parse les slots d'un preset brut.
 /// Décodage "best effort" : on segmente sur [0x82, 0x13], puis on retient
-/// au plus un module par segment (priorité à un ID connu dans MODULES_BY_ID).
+/// au plus un module par segment (priorité à un ID connu dans HX_CATALOG_MODULE_BY_HEX).
 /// Cela évite de sur-parser des séquences 0x19..0x1a parasites.
 fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
+    fn category_with_chunk_hint(base_category: &str, chunk: &[u8]) -> String {
+        if base_category.eq_ignore_ascii_case("amp") && is_amp_cab_assignable_chunk(chunk) {
+            return String::from("Amp+Cab");
+        }
+        base_category.to_string()
+    }
+
     fn extract_grid_x(chunk: &[u8], scan_from: usize) -> Option<u8> {
         let end = chunk.len().min(scan_from.saturating_add(40));
         let mut i = scan_from;
@@ -730,9 +1105,9 @@ fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
                     let _ = write!(&mut id_hex, "{:02x}", b);
                 }
 
-                if let Some(entry) = MODULES_BY_ID.get(&id_hex) {
+                if let Some(entry) = HX_CATALOG_MODULE_BY_HEX.get(&id_hex) {
                     parsed_slots.push(ParsedSlot {
-                        category: entry[0].clone(),
+                        category: category_with_chunk_hint(&entry[0], chunk),
                         name: entry[1].clone(),
                         grid_x: extract_grid_x(chunk, after_id),
                         grid_y: extract_grid_y(chunk, after_id),
@@ -785,10 +1160,84 @@ fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
 
 /// Marqueur de slot vide (Kempline `request_preset.py` : `0814c0`).
 const KEMPLINE_EMPTY_SLOT: [u8; 3] = [0x08, 0x14, 0xc0];
+/// Marqueur de bloc combiné Amp+Cab dans le segment assignable.
+const AMP_CAB_MARKER: [u8; 6] = [0x85, 0x18, 0x83, 0x17, 0xc3, 0x19];
 
 /// Indices des 16 blocs assignables dans la fenêtre de 20 segments (slots 1–8 puis 11–18).
 const KEMPLINE_ASSIG_INDICES: [usize; 16] =
     [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18];
+
+fn is_amp_cab_assignable_chunk(chunk: &[u8]) -> bool {
+    if chunk.first().copied() != Some(0x06) {
+        return false;
+    }
+    chunk[1..]
+        .windows(AMP_CAB_MARKER.len())
+        .any(|w| w == AMP_CAB_MARKER)
+}
+
+/// Extrait tous les IDs module `0x19 <id...> 0x1a` trouvés dans un segment assignable.
+fn extract_module_ids_from_assignable_chunk(chunk: &[u8]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < chunk.len() {
+        if chunk[cursor] != 0x19 {
+            cursor += 1;
+            continue;
+        }
+        let id_start = cursor + 1;
+        let Some(rel_end) = chunk[id_start..].iter().position(|&b| b == 0x1a) else {
+            cursor += 1;
+            continue;
+        };
+        let id_bytes = &chunk[id_start..id_start + rel_end];
+        cursor = id_start + rel_end + 1;
+        if id_bytes.is_empty() {
+            continue;
+        }
+        let mut id_hex = String::with_capacity(id_bytes.len() * 2);
+        for b in id_bytes {
+            let _ = write!(&mut id_hex, "{:02x}", b);
+        }
+        out.push(id_hex);
+    }
+    out
+}
+
+/// Résout un module ID en info Cab:
+/// - cas direct: `id_hex` est déjà un cab (`category == Cab`)
+/// - cas combiné Amp+Cab: ID de forme `<amp_hex>1a<cab_hex>` ; on extrait alors la partie cab.
+fn cab_info_from_module_id(id_hex: &str) -> Option<[String; 4]> {
+    let entry = HX_CATALOG_MODULE_BY_HEX.get(id_hex)?;
+    if entry[0].eq_ignore_ascii_case("cab") {
+        let model_id = MODEL_ID_BY_HEX.get(id_hex).cloned().unwrap_or_default();
+        return Some([
+            id_hex.to_string(),
+            entry[0].clone(),
+            entry[1].clone(),
+            model_id,
+        ]);
+    }
+    if entry[0].eq_ignore_ascii_case("amp+cab") {
+        let (_, cab_hex) = id_hex.rsplit_once("1a")?;
+        let cab_hex = cab_hex.trim().to_lowercase();
+        if cab_hex.is_empty() {
+            return None;
+        }
+        let cab_entry = HX_CATALOG_MODULE_BY_HEX.get(&cab_hex)?;
+        if !cab_entry[0].eq_ignore_ascii_case("cab") {
+            return None;
+        }
+        let model_id = MODEL_ID_BY_HEX.get(&cab_hex).cloned().unwrap_or_default();
+        return Some([
+            cab_hex,
+            cab_entry[0].clone(),
+            cab_entry[1].clone(),
+            model_id,
+        ]);
+    }
+    None
+}
 
 fn extract_grid_xy_after_id(chunk: &[u8], scan_from: usize) -> (Option<u8>, Option<u8>) {
     let end = chunk.len().min(scan_from.saturating_add(40));
@@ -821,8 +1270,14 @@ fn extract_first_module_from_assignable_chunk(chunk: &[u8]) -> ParsedSlot {
                         let _ = write!(&mut id_hex, "{:02x}", b);
                     }
                     let module_hex = id_hex.clone();
-                    let (category, name) = if let Some(entry) = MODULES_BY_ID.get(&id_hex) {
-                        (entry[0].clone(), entry[1].clone())
+                    let (category, name) = if let Some(entry) = HX_CATALOG_MODULE_BY_HEX.get(&id_hex) {
+                        let cat =
+                            if entry[0].eq_ignore_ascii_case("amp") && is_amp_cab_assignable_chunk(chunk) {
+                                String::from("Amp+Cab")
+                            } else {
+                                entry[0].clone()
+                            };
+                        (cat, entry[1].clone())
                     } else {
                         (String::from("Unknown"), id_hex)
                     };
@@ -1008,6 +1463,8 @@ pub fn run() {
             get_active_preset_routing_markers,
             get_active_preset_stomp_layout,
             get_active_preset_slot_chain_param_values,
+            get_active_preset_slot_linked_cab,
+            get_active_preset_slot_linked_cab_with_params,
             get_preset_data_hex,
             read_models_definition_file,
         ])
