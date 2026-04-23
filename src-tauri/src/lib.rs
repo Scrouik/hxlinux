@@ -538,6 +538,109 @@ fn get_active_preset_slot_chain_param_values(
     chain_param_values_for_assignable_segment(&seg)
 }
 
+/// Valeurs de chaîne des segments I/O Path 1 (Input/Output) dans la fenêtre Kempline.
+/// `io_kind`: "input" | "output" (tolérance: "main", "main l/r", "mainlr").
+#[tauri::command]
+fn get_active_preset_path1_io_chain_param_values(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    io_kind: String,
+) -> Option<Vec<preset_chain_params::ChainParamValue>> {
+    let kind = io_kind.trim().to_ascii_lowercase();
+    let seg_idx_in_window = if kind == "input" {
+        0usize
+    } else if kind == "output" || kind == "main" || kind == "main l/r" || kind == "mainlr" {
+        9usize
+    } else {
+        return None;
+    };
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        (app.active_preset, app.helix_state.clone()?)
+    };
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() {
+        return None;
+    }
+    if s.preset_index != active_preset {
+        return None;
+    }
+    let (start, _) = kempline_grid_window_start_and_seg_count(&s.preset_data)?;
+    let segs = split_preset_by_8213(&s.preset_data);
+    let abs = start.checked_add(seg_idx_in_window)?;
+    let seg = segs.get(abs).copied()?;
+    preset_chain_params::parse_flow_io_segment_params(seg)
+}
+
+/// JSON de debug pour un slot Kempline : segment assignable brut (hex) + décodage `read_params`
+/// (même logique que `get_active_preset_slot_chain_param_values`) + métadonnées grille.
+/// Utile pour analyser des amplis « riches » (`chainHex` ex. cd0207) sans sniffer le port USB réseau
+/// (il n’y en a pas : le flux est bulk IN/OUT continu côté `rusb`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ActivePresetSlotAssignableUsbJson {
+    slot_index: u32,
+    slot_category: Option<String>,
+    slot_name: Option<String>,
+    module_hex: Option<String>,
+    segment_byte_len: usize,
+    segment_hex: String,
+    /// Nombre de valeurs par bloc `c219` après `85188317` (plusieurs blocs = ampli / effet complexe).
+    param_block_sizes: Option<Vec<usize>>,
+    chain_param_values: Option<Vec<preset_chain_params::ChainParamValue>>,
+}
+
+#[tauri::command]
+fn get_active_preset_slot_assignable_usb_json(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_index: u32,
+) -> Option<ActivePresetSlotAssignableUsbJson> {
+    if slot_index >= 16 {
+        return None;
+    }
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        (app.active_preset, app.helix_state.clone()?)
+    };
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() {
+        return None;
+    }
+    if s.preset_index != active_preset {
+        return None;
+    }
+    let seg = kempline_assignable_segment_bytes(&s.preset_data, slot_index as usize)?;
+    let seg_owned = seg.to_vec();
+    let mut segment_hex = String::with_capacity(seg_owned.len() * 2);
+    for b in &seg_owned {
+        let _ = write!(&mut segment_hex, "{:02x}", b);
+    }
+    let (slot_category, slot_name, module_hex) =
+        try_parse_preset_kempline_grid(&s.preset_data).map_or((None, None, None), |grid| {
+            grid.get(slot_index as usize)
+                .map(|cell| {
+                    (
+                        Some(cell.category.clone()),
+                        Some(cell.name.clone()),
+                        Some(cell.module_hex.clone()).filter(|h| !h.is_empty()),
+                    )
+                })
+                .unwrap_or((None, None, None))
+        });
+    let param_block_sizes = preset_chain_params::parse_assignable_segment_param_blocks(&seg_owned)
+        .map(|blocks| blocks.iter().map(|b| b.len()).collect());
+    let chain_param_values = chain_param_values_for_assignable_segment(&seg_owned);
+    Some(ActivePresetSlotAssignableUsbJson {
+        slot_index,
+        slot_category,
+        slot_name,
+        module_hex,
+        segment_byte_len: seg_owned.len(),
+        segment_hex,
+        param_block_sizes,
+        chain_param_values,
+    })
+}
+
 /// Cab rattaché détecté dans un slot Amp+Cab, sous la forme `[module_hex, catégorie, nom, model_id]`.
 #[tauri::command]
 fn get_active_preset_slot_linked_cab(
@@ -562,8 +665,8 @@ fn get_active_preset_slot_linked_cab(
     if !is_amp_cab_assignable_chunk(seg) {
         return None;
     }
-    let ids = extract_module_ids_from_assignable_chunk(seg);
     let blocks = preset_chain_params::parse_assignable_segment_param_blocks(&seg)?;
+    let ids = augmented_module_ids_for_assignable_chunk(seg, blocks.len());
     let cab_bi = catalog_cab_c219_block_index(&ids, blocks.len());
     cab_bi
         .and_then(|bi| block_chain_hex_for_c219(bi, &ids))
@@ -602,8 +705,8 @@ fn get_active_preset_slot_linked_cab_with_params(
         return None;
     }
 
-    let ids = extract_module_ids_from_assignable_chunk(seg);
     let blocks = preset_chain_params::parse_assignable_segment_param_blocks(seg)?;
+    let ids = augmented_module_ids_for_assignable_chunk(seg, blocks.len());
 
     let cab_bi = catalog_cab_c219_block_index(&ids, blocks.len());
 
@@ -990,9 +1093,16 @@ fn chain_param_values_for_assignable_segment(seg: &[u8]) -> Option<Vec<preset_ch
         1 => Some(blocks[0].clone()),
         _ => {
             if !is_amp_cab_assignable_chunk(seg) {
-                return Some(blocks[0].clone());
+                // Plusieurs `c219` sans combinaison Amp+Cab : concaténer les valeurs dans l’ordre
+                // (amplis / effets avec plusieurs blocs `read_params` dans le même segment).
+                let mut merged: Vec<preset_chain_params::ChainParamValue> =
+                    Vec::with_capacity(blocks.iter().map(|b| b.len()).sum());
+                for b in &blocks {
+                    merged.extend_from_slice(b);
+                }
+                return Some(merged);
             }
-            let ids = extract_module_ids_from_assignable_chunk(seg);
+            let ids = augmented_module_ids_for_assignable_chunk(seg, blocks.len());
             if ids.is_empty() {
                 return blocks.iter().max_by_key(|b| b.len()).cloned();
             }
@@ -1085,6 +1195,7 @@ fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
         let is_assignable_chunk = matches!(chunk.first().copied(), Some(0x06 | 0x08));
         let mut best_unknown: Option<ParsedSlot> = None;
         let mut cursor = 0usize;
+        let parsed_len_before = parsed_slots.len();
 
         while cursor < chunk.len() {
             if chunk[cursor] != 0x19 {
@@ -1135,6 +1246,15 @@ fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
 
         if let Some(slot) = best_unknown {
             parsed_slots.push(slot);
+        } else if parsed_slots.len() == parsed_len_before
+            && is_assignable_chunk
+            && is_amp_cab_assignable_chunk(chunk)
+        {
+            // Même logique que la grille Kempline : Amp+Cab sans `19…1a` catalogue dans ce segment.
+            let inferred = extract_first_module_from_assignable_chunk(chunk);
+            if !inferred.module_hex.is_empty() {
+                parsed_slots.push(inferred);
+            }
         }
     }
 
@@ -1167,13 +1287,23 @@ const AMP_CAB_MARKER: [u8; 6] = [0x85, 0x18, 0x83, 0x17, 0xc3, 0x19];
 const KEMPLINE_ASSIG_INDICES: [usize; 16] =
     [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18];
 
+/// `true` si le segment porte le couple **85188317 + c319** (blocs `c219` ampli puis cab).
+/// Même convention que la fenêtre Kempline / `parse_assignable_segment_param_blocks` : premier octet
+/// **`0x06` ou `0x08`** (les dumps USB / slots réels utilisent souvent **`0x08`** — ex. *Paquet Amp+Cab sans EQ*).
 fn is_amp_cab_assignable_chunk(chunk: &[u8]) -> bool {
-    if chunk.first().copied() != Some(0x06) {
+    if !matches!(chunk.first().copied(), Some(0x06 | 0x08)) {
         return false;
     }
-    chunk[1..]
+    // Signature historique explicite : `85188317c319`.
+    if chunk[1..]
         .windows(AMP_CAB_MARKER.len())
         .any(|w| w == AMP_CAB_MARKER)
+    {
+        return true;
+    }
+    // Tolérance firmware/dumps : certains segments Amp+Cab n'exposent pas `c319` mais
+    // conservent deux blocs `c219` dont les types se classent `AmpLike` puis `CabLike`.
+    segment_has_amp_then_cab_c219_signature(chunk)
 }
 
 /// Extrait tous les IDs module `0x19 <id...> 0x1a` trouvés dans un segment assignable.
@@ -1182,6 +1312,18 @@ fn extract_module_ids_from_assignable_chunk(chunk: &[u8]) -> Vec<String> {
     let mut cursor = 0usize;
     while cursor < chunk.len() {
         if chunk[cursor] != 0x19 {
+            cursor += 1;
+            continue;
+        }
+        // Faux positif Amp+Cab uniquement : fin du marqueur `85 18 83 17 c3 19` — l’octet `0x19` est le 2ᵉ
+        // octet de l’opcode `0xc319`, pas le préfixe `0x19` d’un ID module. Ne pas élargir à tout `c3`/`c2`
+        // précédent un `0x19` : `0xc3`/`0xc2` encodent aussi des booléens dans `read_params`.
+        if cursor >= 3
+            && chunk[cursor - 3] == 0x83
+            && chunk[cursor - 2] == 0x17
+            && chunk[cursor - 1] == 0xc3
+            && chunk[cursor] == 0x19
+        {
             cursor += 1;
             continue;
         }
@@ -1202,6 +1344,311 @@ fn extract_module_ids_from_assignable_chunk(chunk: &[u8]) -> Vec<String> {
         out.push(id_hex);
     }
     out
+}
+
+fn assignable_segment_hex_lower_body(seg: &[u8]) -> String {
+    let mut s = String::with_capacity(seg.len().saturating_sub(1) * 2);
+    for b in seg.get(1..).unwrap_or(&[]) {
+        let _ = write!(&mut s, "{:02x}", b);
+    }
+    s
+}
+
+/// Détection Amp+Cab sans marqueur `c319` :
+/// au moins deux types `c219`, avec un `AmpLike` suivi d'un `CabLike`.
+fn segment_has_amp_then_cab_c219_signature(seg: &[u8]) -> bool {
+    if !matches!(seg.first().copied(), Some(0x06 | 0x08)) {
+        return false;
+    }
+    let h = assignable_segment_hex_lower_body(seg);
+    let types = extract_c219_argument_type_hexes(&h);
+    if types.len() < 2 {
+        return false;
+    }
+    let keys: Vec<String> = types
+        .iter()
+        .map(|t| chain_hex_key_from_c219_argument_type(t))
+        .collect();
+    for (i, amp_key) in keys.iter().enumerate() {
+        if !matches!(
+            catalog_slot_kind_for_chain_hex(amp_key),
+            CatalogSlotKind::AmpLike
+        ) {
+            continue;
+        }
+        for cab_key in keys.iter().skip(i + 1) {
+            if matches!(
+                catalog_slot_kind_for_chain_hex(cab_key),
+                CatalogSlotKind::CabLike
+            ) {
+                return true;
+            }
+        }
+    }
+    // Cas catalogue où les parties individuelles sont peu classées, mais la combinaison est connue.
+    for (i, first) in keys.iter().enumerate() {
+        for second in keys.iter().skip(i + 1) {
+            let forward = format!("{first}1a{second}");
+            if HX_CATALOG_MODULE_BY_HEX
+                .get(&forward)
+                .map(|e| e[0].eq_ignore_ascii_case("amp+cab"))
+                .unwrap_or(false)
+            {
+                return true;
+            }
+            let reverse = format!("{second}1a{first}");
+            if HX_CATALOG_MODULE_BY_HEX
+                .get(&reverse)
+                .map(|e| e[0].eq_ignore_ascii_case("amp+cab"))
+                .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Chaîne hex (sans le premier octet du segment) : même convention que `preset_chain_params::hex_lower(&seg[1..])`.
+fn extract_c219_argument_type_hexes(h: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut search = 0usize;
+    while let Some(rel) = h.get(search..).and_then(|s| s.find("c219")) {
+        let start = search + rel;
+        let Some(slice) = h.get(start..) else {
+            break;
+        };
+        let Some(rel09) = slice.find("09").filter(|&p| p >= 4) else {
+            search = start.saturating_add(4);
+            continue;
+        };
+        if let Some(t) = slice.get(4..rel09) {
+            if !t.is_empty() {
+                out.push(t.to_string());
+            }
+        }
+        search = start + rel09;
+    }
+    out
+}
+
+/// Préfixe `chainHex` catalogue le plus courant : 6 caractères hex (3 octets), ex. `cd0217`.
+fn chain_hex_key_from_c219_argument_type(t: &str) -> String {
+    let s = t.trim().to_ascii_lowercase();
+    if s.len() >= 6 && s[..6].chars().all(|c| c.is_ascii_hexdigit()) {
+        return s[..6].to_string();
+    }
+    s
+}
+
+/// Clé `chainHex` candidate à partir d'un champ binaire brut (`0x19...0x1a` ou `0x1a...0x09`).
+/// Priorité: exact catalogue -> préfixe 6 hex (convention majoritaire).
+fn chain_hex_key_from_raw_field_bytes(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut full = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(&mut full, "{:02x}", b);
+    }
+    let full = full.trim().to_ascii_lowercase();
+    if full.is_empty() {
+        return None;
+    }
+    if HX_CATALOG_MODULE_BY_HEX.contains_key(&full) {
+        return Some(full);
+    }
+    if full.len() >= 6 && full[..6].chars().all(|c| c.is_ascii_hexdigit()) {
+        return Some(full[..6].to_string());
+    }
+    Some(full)
+}
+
+/// Fallback Amp+Cab depuis les marqueurs "dualslot" vus côté Kempline :
+/// `0x19 <amp_field> 0x1a <cab_field> 0x09`.
+fn infer_amp_cab_hex_pair_from_19_1a_09_markers(chunk: &[u8]) -> Option<(String, String)> {
+    if !matches!(chunk.first().copied(), Some(0x06 | 0x08)) {
+        return None;
+    }
+    let mut cursor = 0usize;
+    while cursor < chunk.len() {
+        if chunk[cursor] != 0x19 {
+            cursor += 1;
+            continue;
+        }
+        let amp_start = cursor + 1;
+        let Some(rel_sep) = chunk.get(amp_start..)?.iter().position(|&b| b == 0x1a) else {
+            cursor += 1;
+            continue;
+        };
+        let amp_end = amp_start + rel_sep;
+        let cab_start = amp_end + 1;
+        let Some(rel_end09) = chunk.get(cab_start..)?.iter().position(|&b| b == 0x09) else {
+            cursor = cab_start;
+            continue;
+        };
+        let cab_end = cab_start + rel_end09;
+        let amp_key = chain_hex_key_from_raw_field_bytes(&chunk[amp_start..amp_end])?;
+        let cab_key = chain_hex_key_from_raw_field_bytes(&chunk[cab_start..cab_end])?;
+        if amp_key.is_empty() || cab_key.is_empty() {
+            cursor = cab_end.saturating_add(1);
+            continue;
+        }
+        let amp_k = catalog_slot_kind_for_chain_hex(&amp_key);
+        let cab_k = catalog_slot_kind_for_chain_hex(&cab_key);
+        if matches!(amp_k, CatalogSlotKind::CabLike) && matches!(cab_k, CatalogSlotKind::AmpLike) {
+            return Some((cab_key, amp_key));
+        }
+        if matches!(amp_k, CatalogSlotKind::AmpLike) && matches!(cab_k, CatalogSlotKind::CabLike) {
+            return Some((amp_key, cab_key));
+        }
+        if HX_CATALOG_MODULE_BY_HEX.contains_key(&format!("{amp_key}1a{cab_key}")) {
+            return Some((amp_key, cab_key));
+        }
+        if HX_CATALOG_MODULE_BY_HEX.contains_key(&format!("{cab_key}1a{amp_key}")) {
+            return Some((cab_key, amp_key));
+        }
+        cursor = cab_end.saturating_add(1);
+    }
+    None
+}
+
+/// Module principal extrait d'une structure dual-slot `0x19 <A> 0x1a <B> 0x09`.
+/// Retourne:
+/// - `A1aB` si la combinaison existe au catalogue,
+/// - sinon le premier champ (`A` ou `B`) reconnu au catalogue (préférence `B`, souvent utile sur ces dumps).
+fn infer_module_hex_from_19_1a_09_fields(chunk: &[u8]) -> Option<String> {
+    if !matches!(chunk.first().copied(), Some(0x06 | 0x08)) {
+        return None;
+    }
+    let mut cursor = 0usize;
+    while cursor < chunk.len() {
+        if chunk[cursor] != 0x19 {
+            cursor += 1;
+            continue;
+        }
+        let a_start = cursor + 1;
+        let Some(rel_sep) = chunk.get(a_start..)?.iter().position(|&b| b == 0x1a) else {
+            cursor += 1;
+            continue;
+        };
+        let a_end = a_start + rel_sep;
+        let b_start = a_end + 1;
+        let Some(rel_end09) = chunk.get(b_start..)?.iter().position(|&b| b == 0x09) else {
+            cursor = b_start;
+            continue;
+        };
+        let b_end = b_start + rel_end09;
+        let a_key = chain_hex_key_from_raw_field_bytes(&chunk[a_start..a_end]);
+        let b_key = chain_hex_key_from_raw_field_bytes(&chunk[b_start..b_end]);
+
+        if let (Some(a), Some(b)) = (&a_key, &b_key) {
+            let combined = format!("{a}1a{b}");
+            if HX_CATALOG_MODULE_BY_HEX.contains_key(&combined) {
+                return Some(combined);
+            }
+            let a_known = HX_CATALOG_MODULE_BY_HEX.contains_key(a);
+            let b_known = HX_CATALOG_MODULE_BY_HEX.contains_key(b);
+            let a_kind = catalog_slot_kind_for_chain_hex(a);
+            let b_kind = catalog_slot_kind_for_chain_hex(b);
+            // Priorité affichage slot principal: Amp/Preamp avant Cab/IR.
+            if a_known
+                && matches!(a_kind, CatalogSlotKind::AmpLike)
+                && matches!(b_kind, CatalogSlotKind::CabLike)
+            {
+                return Some(a.clone());
+            }
+            if b_known
+                && matches!(b_kind, CatalogSlotKind::AmpLike)
+                && matches!(a_kind, CatalogSlotKind::CabLike)
+            {
+                return Some(b.clone());
+            }
+            if a_known && !matches!(a_kind, CatalogSlotKind::CabLike) && matches!(b_kind, CatalogSlotKind::CabLike) {
+                return Some(a.clone());
+            }
+            if b_known && !matches!(b_kind, CatalogSlotKind::CabLike) && matches!(a_kind, CatalogSlotKind::CabLike) {
+                return Some(b.clone());
+            }
+        }
+        if let Some(a) = a_key {
+            if HX_CATALOG_MODULE_BY_HEX.contains_key(&a) {
+                return Some(a);
+            }
+            if a.len() >= 4 {
+                return Some(a);
+            }
+        }
+        if let Some(b) = b_key {
+            if HX_CATALOG_MODULE_BY_HEX.contains_key(&b) {
+                return Some(b);
+            }
+            if b.len() >= 4 {
+                return Some(b);
+            }
+        }
+        cursor = b_end.saturating_add(1);
+    }
+    None
+}
+
+/// Paire ampli + cab à partir des types d’argument de **tous** les `c219` visibles dans le corps hex du segment.
+/// Plusieurs blocs `c219` (ampli + effet interne + cab, etc.) : premier type **AmpLike** catalogue puis premier **CabLike** après ;
+/// si le catalogue ne classe pas, repli = premier et dernier préfixe 6 hex.
+fn infer_amp_cab_hex_pair_from_segment_hex_body(h: &str) -> Option<(String, String)> {
+    let types = extract_c219_argument_type_hexes(h);
+    if types.len() < 2 {
+        return None;
+    }
+    let keys: Vec<String> = types
+        .iter()
+        .map(|t| chain_hex_key_from_c219_argument_type(t))
+        .collect();
+    for (i, ak) in keys.iter().enumerate() {
+        if matches!(
+            catalog_slot_kind_for_chain_hex(ak),
+            CatalogSlotKind::AmpLike
+        ) {
+            for ck in keys.iter().skip(i + 1) {
+                if matches!(
+                    catalog_slot_kind_for_chain_hex(ck),
+                    CatalogSlotKind::CabLike
+                ) {
+                    return Some((ak.clone(), ck.clone()));
+                }
+            }
+        }
+    }
+    Some((keys.first()?.clone(), keys.last()?.clone()))
+}
+
+/// IDs `19…1a` si présents ; sinon, segment **Amp+Cab** avec **au moins deux** blocs `c219` parsés :
+/// infère `[hex_ampli, hex_cab]` depuis les types `c219` (y compris ampli + cab + blocs intermédiaires).
+fn augmented_module_ids_for_assignable_chunk(seg: &[u8], blocks_len: usize) -> Vec<String> {
+    let ids = extract_module_ids_from_assignable_chunk(seg);
+    if !is_amp_cab_assignable_chunk(seg) || blocks_len < 2 {
+        return ids;
+    }
+    let inferred_pair = infer_amp_cab_hex_pair_from_19_1a_09_markers(seg).or_else(|| {
+        let h = assignable_segment_hex_lower_body(seg);
+        infer_amp_cab_hex_pair_from_segment_hex_body(&h)
+    });
+    let Some((amp_k, cab_k)) = inferred_pair else {
+        if !ids.is_empty() {
+            return ids;
+        }
+        return Vec::new();
+    };
+    let inferred = vec![amp_k.clone(), cab_k.clone()];
+    // Faux positif : l’octet `0x19` du couple d’opcode `c219` (`c2` + `19`) est lu comme début d’un ID `19…1a`,
+    // souvent égal au seul type ampli des blocs — on préfère alors la paire inférée depuis les `c219`.
+    if ids.len() == 1 && ids[0] == amp_k {
+        return inferred;
+    }
+    if !ids.is_empty() {
+        return ids;
+    }
+    inferred
 }
 
 /// Résout un module ID en info Cab:
@@ -1256,11 +1703,60 @@ fn extract_grid_xy_after_id(chunk: &[u8], scan_from: usize) -> (Option<u8>, Opti
     (gx, gy)
 }
 
+/// Paire `(ampli, cab)` inférée : parse `c219` si possible, sinon types extraits du corps hex seul.
+fn inferred_amp_cab_hex_keys(chunk: &[u8]) -> Option<(String, String)> {
+    if !matches!(chunk.first().copied(), Some(0x06 | 0x08)) {
+        return None;
+    }
+    let h = assignable_segment_hex_lower_body(chunk);
+    let blocks_len = preset_chain_params::parse_assignable_segment_param_blocks(chunk)
+        .map(|b| b.len())
+        .unwrap_or(0);
+    if is_amp_cab_assignable_chunk(chunk) && blocks_len >= 2 {
+        let v = augmented_module_ids_for_assignable_chunk(chunk, blocks_len);
+        if v.len() == 2 {
+            return Some((v[0].clone(), v[1].clone()));
+        }
+    }
+    if let Some(p) = infer_amp_cab_hex_pair_from_19_1a_09_markers(chunk) {
+        return Some(p);
+    }
+    infer_amp_cab_hex_pair_from_segment_hex_body(&h)
+}
+
+/// `ampHex1acabHex` catalogue quand l’ID `19…1a` ne donne que l’ampli (faux positif `c219`) ou est absent.
+fn amp_cab_combined_chain_hex_for_slot_if_better(chunk: &[u8], extracted_id_hex: &str) -> Option<String> {
+    let (amp, cab) = inferred_amp_cab_hex_keys(chunk)?;
+    let amp = amp.trim().to_ascii_lowercase();
+    let cab = cab.trim().to_ascii_lowercase();
+    if amp.is_empty() || cab.is_empty() {
+        return None;
+    }
+    let combined = format!("{amp}1a{cab}");
+    if !HX_CATALOG_MODULE_BY_HEX.contains_key(&combined) {
+        return None;
+    }
+    let ext = extracted_id_hex.trim().to_ascii_lowercase();
+    if ext.is_empty() || ext == amp {
+        return Some(combined);
+    }
+    None
+}
+
 /// Premier module 0x19…0x1a dans un segment de slot assignable.
 fn extract_first_module_from_assignable_chunk(chunk: &[u8]) -> ParsedSlot {
     let mut cursor = 0usize;
+    let mut first_unknown_id_hex: Option<String> = None;
     while cursor < chunk.len() {
         if chunk[cursor] == 0x19 {
+            if cursor >= 3
+                && chunk[cursor - 3] == 0x83
+                && chunk[cursor - 2] == 0x17
+                && chunk[cursor - 1] == 0xc3
+            {
+                cursor += 1;
+                continue;
+            }
             let id_start = cursor + 1;
             if let Some(rel_end) = chunk[id_start..].iter().position(|&b| b == 0x1a) {
                 let id_bytes = &chunk[id_start..id_start + rel_end];
@@ -1269,33 +1765,119 @@ fn extract_first_module_from_assignable_chunk(chunk: &[u8]) -> ParsedSlot {
                     for b in id_bytes {
                         let _ = write!(&mut id_hex, "{:02x}", b);
                     }
-                    let module_hex = id_hex.clone();
-                    let (category, name) = if let Some(entry) = HX_CATALOG_MODULE_BY_HEX.get(&id_hex) {
-                        let cat =
-                            if entry[0].eq_ignore_ascii_case("amp") && is_amp_cab_assignable_chunk(chunk) {
-                                String::from("Amp+Cab")
-                            } else {
-                                entry[0].clone()
-                            };
+                    let module_hex = amp_cab_combined_chain_hex_for_slot_if_better(chunk, &id_hex)
+                        .unwrap_or_else(|| id_hex.clone());
+                    let after = id_start + rel_end + 1;
+                    // Cas dual-slot observé: `0x19 <ctrl/amp> 0x1a <id réel> 0x09`.
+                    // Si un meilleur module est inféré depuis cette structure, on le privilégie.
+                    let module_hex = if id_bytes.len() == 1 {
+                        infer_module_hex_from_19_1a_09_fields(chunk).unwrap_or(module_hex)
+                    } else {
+                        module_hex
+                    };
+                    let (category, name) = if let Some(entry) = HX_CATALOG_MODULE_BY_HEX.get(&module_hex) {
+                        let e0 = entry[0].trim().to_ascii_lowercase();
+                        let cat = if is_amp_cab_assignable_chunk(chunk)
+                            && (e0 == "amp" || e0 == "preamp" || e0 == "amp+cab")
+                        {
+                            String::from("Amp+Cab")
+                        } else {
+                            entry[0].clone()
+                        };
                         (cat, entry[1].clone())
                     } else {
-                        (String::from("Unknown"), id_hex)
+                        // On ne retourne pas immédiatement: certains segments dual-slot portent
+                        // d'abord un octet de contrôle (`06`) dans `0x19...0x1a`, puis l'ID réel
+                        // dans la partie `0x1a...0x09`.
+                        if first_unknown_id_hex.is_none() {
+                            first_unknown_id_hex = Some(id_hex.clone());
+                        }
+                        (String::new(), String::new())
                     };
-                    let after = id_start + rel_end + 1;
-                    let (grid_x, grid_y) = extract_grid_xy_after_id(chunk, after);
-                    return ParsedSlot {
-                        category,
-                        name,
-                        grid_x,
-                        grid_y,
-                        module_hex,
-                    };
+                    if !category.is_empty() || !name.is_empty() {
+                        let (grid_x, grid_y) = extract_grid_xy_after_id(chunk, after);
+                        return ParsedSlot {
+                            category,
+                            name,
+                            grid_x,
+                            grid_y,
+                            module_hex,
+                        };
+                    }
+                    cursor = after;
+                    continue;
                 }
                 cursor = id_start + rel_end + 1;
                 continue;
             }
         }
         cursor += 1;
+    }
+    // Repli grille : Amp+Cab sans ID `19…1a` utilisable.
+    // 1) Essai via la détection Amp+Cab historique.
+    // 2) Tolérance: essai direct sur les types `c219` (même sans marqueur `c319`), mais
+    //    on ne retient le résultat que si le `chainHex` combiné existe dans le catalogue.
+    let h = assignable_segment_hex_lower_body(chunk);
+    let inferred_pair = inferred_amp_cab_hex_keys(chunk)
+        .or_else(|| infer_amp_cab_hex_pair_from_segment_hex_body(&h));
+    if let Some((amp, cab)) = inferred_pair {
+        let amp = amp.trim().to_ascii_lowercase();
+        let cab = cab.trim().to_ascii_lowercase();
+        if !amp.is_empty() && !cab.is_empty() {
+            let combined = format!("{amp}1a{cab}");
+            if let Some(entry) = HX_CATALOG_MODULE_BY_HEX.get(&combined) {
+                let (grid_x, grid_y) = extract_grid_xy_after_id(chunk, 0);
+                let e0 = entry[0].trim().to_ascii_lowercase();
+                let category = if e0 == "amp" || e0 == "preamp" || e0 == "amp+cab" {
+                    String::from("Amp+Cab")
+                } else {
+                    entry[0].clone()
+                };
+                return ParsedSlot {
+                    category,
+                    name: entry[1].clone(),
+                    grid_x,
+                    grid_y,
+                    module_hex: combined,
+                };
+            }
+        }
+    }
+    if let Some(module_hex) = infer_module_hex_from_19_1a_09_fields(chunk) {
+        let (grid_x, grid_y) = extract_grid_xy_after_id(chunk, 0);
+        if let Some(entry) = HX_CATALOG_MODULE_BY_HEX.get(&module_hex) {
+            let e0 = entry[0].trim().to_ascii_lowercase();
+            let category = if is_amp_cab_assignable_chunk(chunk)
+                && (e0 == "amp" || e0 == "preamp" || e0 == "amp+cab")
+            {
+                String::from("Amp+Cab")
+            } else {
+                entry[0].clone()
+            };
+            return ParsedSlot {
+                category,
+                name: entry[1].clone(),
+                grid_x,
+                grid_y,
+                module_hex,
+            };
+        }
+        return ParsedSlot {
+            category: String::from("Unknown"),
+            name: module_hex.clone(),
+            grid_x,
+            grid_y,
+            module_hex,
+        };
+    }
+    if let Some(id_hex) = first_unknown_id_hex {
+        return ParsedSlot {
+            category: String::from("Unknown"),
+            name: id_hex.clone(),
+            grid_x: None,
+            grid_y: None,
+            module_hex: id_hex,
+        };
     }
     ParsedSlot {
         category: String::from("Unknown"),
@@ -1463,6 +2045,8 @@ pub fn run() {
             get_active_preset_routing_markers,
             get_active_preset_stomp_layout,
             get_active_preset_slot_chain_param_values,
+            get_active_preset_path1_io_chain_param_values,
+            get_active_preset_slot_assignable_usb_json,
             get_active_preset_slot_linked_cab,
             get_active_preset_slot_linked_cab_with_params,
             get_preset_data_hex,
@@ -1808,4 +2392,133 @@ fn find_supported_device_handle() -> Option<(&'static str, Arc<rusb::DeviceHandl
         }
     }
     None
+}
+
+#[cfg(test)]
+mod assignable_amp_cab_chunk_tests {
+    use super::{is_amp_cab_assignable_chunk, AMP_CAB_MARKER};
+
+    #[test]
+    fn is_amp_cab_true_when_marker_present_after_prefix_08() {
+        let mut chunk = vec![0x08, 0x00];
+        chunk.extend_from_slice(&AMP_CAB_MARKER);
+        assert!(is_amp_cab_assignable_chunk(&chunk));
+    }
+
+    #[test]
+    fn is_amp_cab_true_when_marker_present_after_prefix_06() {
+        let mut chunk = vec![0x06, 0x00];
+        chunk.extend_from_slice(&AMP_CAB_MARKER);
+        assert!(is_amp_cab_assignable_chunk(&chunk));
+    }
+
+    #[test]
+    fn is_amp_cab_false_without_marker() {
+        assert!(!is_amp_cab_assignable_chunk(&[0x08, 0x00, 0x00]));
+    }
+}
+
+#[cfg(test)]
+mod assignable_module_id_extraction_tests {
+    use super::{
+        augmented_module_ids_for_assignable_chunk, extract_module_ids_from_assignable_chunk,
+        AMP_CAB_MARKER,
+    };
+    use crate::preset_chain_params;
+
+    /// L’octet `0x19` final de `…83 17 c3 19` (marqueur Amp+Cab) ne doit pas être pris pour un ID `19…1a`.
+    #[test]
+    fn skips_c319_trailing_byte_19_false_positive() {
+        let mut v = vec![0x08];
+        v.extend_from_slice(&AMP_CAB_MARKER);
+        v.extend_from_slice(&[0x06, 0x1a]);
+        v.push(0x19);
+        v.extend_from_slice(&[0xcd, 0x02, 0xcf]);
+        v.push(0x1a);
+        let ids = extract_module_ids_from_assignable_chunk(&v);
+        assert_eq!(ids, vec!["cd02cf".to_string()]);
+    }
+
+    /// Un `0xc3` (bool chaîne) immédiatement suivi d’un vrai `0x19…1a` ne doit pas être ignoré.
+    #[test]
+    fn does_not_skip_module_mark_after_bool_c3() {
+        let v = vec![0x08, 0xc3, 0x19, 0xcd, 0x02, 0xcf, 0x1a];
+        let ids = extract_module_ids_from_assignable_chunk(&v);
+        assert_eq!(ids, vec!["cd02cf".to_string()]);
+    }
+
+    #[test]
+    fn augments_dual_slot_ids_with_cab_when_only_amp_marker_is_present() {
+        let seg = vec![
+            0x06, 0x14, 0x85, 0x18, 0x83, 0x17, 0xc3, 0x19, 0x06, 0x1a, 0xcd, 0x02, 0xcf, 0x09,
+            0x21, 0x0a, 0xc3, 0x0b, 0x83, 0x02, 0x0c, 0x03, 0x0c, 0x04, 0x9c, 0xca, 0x3f, 0x4c,
+            0xcc, 0xcc, 0xca, 0x3f, 0x4f, 0x5c, 0x29, 0xca, 0x3f, 0x51, 0xeb, 0x85, 0xca, 0x3f,
+            0x54, 0x7a, 0xe1, 0xca, 0x3f, 0x57, 0x0a, 0x3d, 0xca, 0x3f, 0x59, 0x99, 0x99, 0xca,
+            0x3f, 0x5c, 0x28, 0xf5, 0xca, 0x3f, 0x5e, 0xb8, 0x52, 0xca, 0x3f, 0x61, 0x47, 0xae,
+            0xca, 0x3f, 0x63, 0xd7, 0x0a, 0xca, 0x3f, 0x66, 0x66, 0x66, 0xca, 0x3f, 0x68, 0xf5,
+            0xc2, 0x0c, 0x83, 0x02, 0x07, 0x03, 0x07, 0x04, 0x97, 0x0a, 0xca, 0x3f, 0x40, 0x00,
+            0x00, 0xca, 0x41, 0x10, 0x00, 0x00, 0xca, 0x42, 0x34, 0x00, 0x00, 0xca, 0x41, 0x9f,
+            0x33, 0x33, 0xca, 0x46, 0x9d, 0x08, 0x00, 0xca, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let blocks_len = preset_chain_params::parse_assignable_segment_param_blocks(&seg)
+            .map(|b| b.len())
+            .unwrap_or(0);
+        assert_eq!(blocks_len, 2);
+        let ids = augmented_module_ids_for_assignable_chunk(&seg, blocks_len);
+        assert_eq!(ids, vec!["06".to_string(), "cd02cf".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod extract_first_module_amp_cab_inference_tests {
+    use super::extract_first_module_from_assignable_chunk;
+
+    fn assignable_seg_from_ascii_hex(hex_lower: &str) -> Vec<u8> {
+        let mut out = vec![0x08u8];
+        let h = hex_lower.as_bytes();
+        for i in (0..h.len()).step_by(2) {
+            let b = u8::from_str_radix(std::str::from_utf8(&h[i..i + 2]).unwrap(), 16).unwrap();
+            out.push(b);
+        }
+        out
+    }
+
+    /// Sans aucun `19…1a` : `module_hex` = `cd02171acd0228` (catalogue) à partir des deux blocs `c219`.
+    #[test]
+    fn infers_combined_chain_hex_for_amp_cab_without_module_markers() {
+        let one_float = "ca3f800000";
+        let params_hex: String = std::iter::repeat(one_float).take(21).collect();
+        let amp = "c219cd02171aff09110ac30b830215031504dc0015";
+        let cab = "c219cd02281aff09110ac30b830215031504dc0015";
+        let body = format!("85188317c319{amp}{params_hex}{cab}{params_hex}");
+        let seg = assignable_seg_from_ascii_hex(&body);
+        assert!(super::is_amp_cab_assignable_chunk(&seg));
+        let slot = extract_first_module_from_assignable_chunk(&seg);
+        assert_eq!(slot.module_hex, "cd02171acd0228");
+        assert_eq!(slot.category, "Amp+Cab");
+        assert!(!slot.name.is_empty());
+    }
+
+    #[test]
+    fn infers_combined_chain_hex_from_dual_slot_19_1a_09_markers_without_c219() {
+        // Structure proche du parse Kempline dual-slot:
+        // 0x19 <amp> 0x1a <cab> 0x09 ... ; sans `c319` ni blocs `c219`.
+        let seg = vec![
+            0x08, 0x85, 0x18, 0x83, 0x17, 0xc2, 0x19, 0xcd, 0x02, 0x17, 0x1a, 0xcd, 0x02, 0x28,
+            0x09, 0x10, 0x0a, 0xc3,
+        ];
+        let slot = extract_first_module_from_assignable_chunk(&seg);
+        assert_eq!(slot.module_hex, "cd02171acd0228");
+        assert!(!slot.category.is_empty());
+    }
+
+    #[test]
+    fn prefers_amp_like_side_from_dual_slot_when_a_and_b_are_known() {
+        let seg = vec![
+            0x06, 0x14, 0x85, 0x18, 0x83, 0x17, 0xc3, 0x19, 0x06, 0x1a, 0xcd, 0x02, 0xcf, 0x09,
+            0x21, 0x0a, 0xc3,
+        ];
+        let slot = extract_first_module_from_assignable_chunk(&seg);
+        assert_eq!(slot.module_hex, "06");
+    }
 }

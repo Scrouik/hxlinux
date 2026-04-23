@@ -964,10 +964,10 @@
             "presetMeta": {
                 "categoryId": 1,
                 "categoryName": "Distortion",
-                "chainHex": "cd0236",
-                "emulationName": "Mono, Stereo 73 Electro-Harmonix RamGerman Ubersonic Guitar Bogner Ueberschall",
+                "chainHex": ["cd0236", "cd0237"],
+                "emulationName": "73 Electro-Harmonix RamGerman Ubersonic Guitar Bogner Ueberschall",
                 "channel": "",
-                "signal": "mono"
+                "signal": ["mono", "stereo"]
             }
         },
         {
@@ -2168,7 +2168,7 @@
                     "cd01dc",
                     "cd01dd"
                 ],
-                "emulationName": "",
+                "emulationName": "Xotic® SP Compressor",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -2248,7 +2248,7 @@
                     "cd022d",
                     "cd022e"
                 ],
-                "emulationName": "",
+                "emulationName": "Ashly® CLX-52 and created in conjunction with Billy Sheehan",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -2288,7 +2288,7 @@
                     "78",
                     "7d"
                 ],
-                "emulationName": "",
+                "emulationName": "Teletronix® LA-2A®",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -2349,7 +2349,7 @@
                     "cd016f",
                     "cd0170"
                 ],
-                "emulationName": "",
+                "emulationName": "Line 6 Original multiband compressor",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -2380,7 +2380,7 @@
                     "7b",
                     "cc80"
                 ],
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -2417,7 +2417,7 @@
                     "7a",
                     "7f"
                 ],
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -2451,7 +2451,7 @@
                     "cd0255",
                     "cd0256"
                 ],
-                "emulationName": "",
+                "emulationName": "Horizon Devices Precision Drive's gate circuit",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -2490,7 +2490,7 @@
                     "cd0169",
                     "cd016a"
                 ],
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -2740,7 +2740,7 @@
                     "cc84",
                     "cc88"
                 ],
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -2770,7 +2770,7 @@
                     "cc82",
                     "cc86"
                 ],
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -2806,7 +2806,7 @@
                     "cd020f",
                     "cd0210"
                 ],
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -2863,7 +2863,7 @@
                     "cc83",
                     "cc87"
                 ],
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -2893,7 +2893,7 @@
                     "cd0211",
                     "cd0212"
                 ],
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -2947,7 +2947,7 @@
                     "cc81",
                     "cc85"
                 ],
-                "emulationName": "",
+                "emulationName": "MXR® 10-Band Graphic EQ",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -2986,7 +2986,7 @@
                     "cd0143",
                     "cd0144"
                 ],
-                "emulationName": "",
+                "emulationName": "MESA/Boogie® Mark IV Graphic EQ",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3022,7 +3022,7 @@
                     "cd0244",
                     "cd0245"
                 ],
-                "emulationName": "",
+                "emulationName": "BOSS® AC-2 Acoustic Simulator",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3060,7 +3060,7 @@
                     "cca3",
                     "ccb3"
                 ],
-                "emulationName": "",
+                "emulationName": "Fender® optical tremolo circuit",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3101,7 +3101,7 @@
                     "cca2",
                     "ccb2"
                 ],
-                "emulationName": "",
+                "emulationName": "Vox® AC-15 Tremolo",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3154,7 +3154,7 @@
                     "cd013e",
                     "cd013f"
                 ],
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3207,7 +3207,7 @@
                     "cd0186",
                     "cd0187"
                 ],
-                "emulationName": "",
+                "emulationName": "Lightfoot Labs© Goatkeeper",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3245,7 +3245,7 @@
                     "cc9f",
                     "ccab"
                 ],
-                "emulationName": "",
+                "emulationName": "MXR® Phase 90",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3283,7 +3283,7 @@
                     "cd022f",
                     "cd0230"
                 ],
-                "emulationName": "",
+                "emulationName": "Electro-Harmonix® Small Stone phaser",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3330,7 +3330,7 @@
                     "cca0",
                     "ccac"
                 ],
-                "emulationName": "",
+                "emulationName": "Shin-ei Uni-Vibe®",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3427,7 +3427,7 @@
                     "cd0126",
                     "cd0127"
                 ],
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3477,7 +3477,7 @@
                     "cc9d",
                     "cca9"
                 ],
-                "emulationName": "",
+                "emulationName": "MXR® 117 Flanger",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3530,7 +3530,7 @@
                     "cc9e",
                     "ccaa"
                 ],
-                "emulationName": "",
+                "emulationName": "A/DA Flanger",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3580,7 +3580,7 @@
                     "cc9c",
                     "cca8"
                 ],
-                "emulationName": "",
+                "emulationName": "Electro-Harmonix® Deluxe EM",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3648,7 +3648,7 @@
                     "cd0130",
                     "cd0131"
                 ],
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3698,7 +3698,7 @@
                     "cc9b",
                     "cca6"
                 ],
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3756,7 +3756,7 @@
                     "cc9a",
                     "cca5"
                 ],
-                "emulationName": "",
+                "emulationName": "BOSS® CE-1",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3806,7 +3806,7 @@
                     "cd0177",
                     "cd0178"
                 ],
-                "emulationName": "",
+                "emulationName": "Modded Arion SCH-Z Chorus",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3853,7 +3853,7 @@
                     "cd028d",
                     "cd028e"
                 ],
-                "emulationName": "",
+                "emulationName": "Ampeg Liquifier",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3903,7 +3903,7 @@
                     "cd02ad",
                     "cd02ae"
                 ],
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3950,7 +3950,7 @@
                     "cca4",
                     "ccb4"
                 ],
-                "emulationName": "",
+                "emulationName": "BOSS® VB-2 Vibrato",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -3992,7 +3992,7 @@
                     "cd025b",
                     "cd025c"
                 ],
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -4028,7 +4028,7 @@
                     "cd0188",
                     "cd0189"
                 ],
-                "emulationName": "Mono, Stereo Line 6 Original",
+                "emulationName": "Line 6 Original Doubler",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -4061,7 +4061,7 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "cd0240",
-                "emulationName": "Mono Line 6 Original",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": "mono"
             }
@@ -4111,7 +4111,7 @@
                     "cca1",
                     "ccad"
                 ],
-                "emulationName": "Mono, Stereo Line 6 Original",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -4220,7 +4220,7 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "cca7",
-                "emulationName": "",
+                "emulationName": "DyTronics Tri-Stereo Chorus",
                 "channel": "",
                 "signal": "stereo"
             }
@@ -4278,7 +4278,7 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "ccb1",
-                "emulationName": "",
+                "emulationName": "Fender® Vibratone",
                 "channel": "",
                 "signal": "stereo"
             }
@@ -4336,7 +4336,7 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "ccaf",
-                "emulationName": "",
+                "emulationName": "Leslie® 122",
                 "channel": "",
                 "signal": "stereo"
             }
@@ -4394,7 +4394,7 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "ccb0",
-                "emulationName": "",
+                "emulationName": "Leslie® 145",
                 "channel": "",
                 "signal": "stereo"
             }
@@ -4524,7 +4524,7 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "ccae",
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": "stereo"
             }
@@ -4566,9 +4566,9 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "cd01d2",
-                "emulationName": "Legacy Line 6 Original",
+                "emulationName": "Line 6 Original",
                 "channel": "",
-                "signal": ""
+                "signal": "Legacy"
             }
         },
         {
@@ -4608,9 +4608,9 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "cd01d1",
-                "emulationName": "Legacy Line 6 Original",
+                "emulationName": "Line 6 Original",
                 "channel": "",
-                "signal": ""
+                "signal": "Legacy"
             }
         },
         {
@@ -4650,9 +4650,9 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "cd01ca",
-                "emulationName": "Legacy 1960 Vox AC-15 Tremolo",
+                "emulationName": "1960 Vox AC-15 Tremolo",
                 "channel": "",
-                "signal": ""
+                "signal": "Legacy"
             }
         },
         {
@@ -4692,9 +4692,9 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "cd01cf",
-                "emulationName": "Legacy 1964 Fender Deluxe Reverb",
+                "emulationName": "1964 Fender Deluxe Reverb",
                 "channel": "",
-                "signal": ""
+                "signal": "Legacy"
             }
         },
         {
@@ -4845,9 +4845,9 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "cd01cc",
-                "emulationName": "Legacy Mu-Tron Bi-Phase",
+                "emulationName": "Mu-Tron Bi-Phase",
                 "channel": "",
-                "signal": ""
+                "signal": "Legacy"
             }
         },
         {
@@ -4886,7 +4886,7 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "cd01da",
-                "emulationName": "Legacy Shin-ei Uni-Vibe",
+                "emulationName": "Shin-ei Uni-Vibe",
                 "channel": "",
                 "signal": "Legacy"
             }
@@ -4928,9 +4928,9 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "cd01d3",
-                "emulationName": "Legacy MXR Phase 90",
+                "emulationName": "MXR Phase 90",
                 "channel": "",
-                "signal": ""
+                "signal": "Legacy"
             }
         },
         {
@@ -4969,9 +4969,9 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "cd01d4",
-                "emulationName": "Legacy BOSS VB-2",
+                "emulationName": "BOSS VB-2",
                 "channel": "",
-                "signal": ""
+                "signal": "Legacy"
             }
         },
         {
@@ -5129,7 +5129,7 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "cd01c8",
-                "emulationName": "MXR Flanger",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": "Legacy"
             }
@@ -5171,7 +5171,7 @@
                 "categoryId": 4,
                 "categoryName": "Modulation",
                 "chainHex": "cd01ce",
-                "emulationName": "A/DA Flanger",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": "Legacy"
             }
@@ -5574,7 +5574,7 @@
                     "50",
                     "5c"
                 ],
-                "emulationName": "Mono, Stereo Line 6 Original",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -5633,7 +5633,7 @@
                     "4f",
                     "58"
                 ],
-                "emulationName": "Mono, Stereo Line 6 Original",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -5772,7 +5772,7 @@
                     "4d",
                     "55"
                 ],
-                "emulationName": "Mono, Stereo TC Electronic 2290",
+                "emulationName": "TC Electronic 2290",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -5831,7 +5831,7 @@
                     "cd011d",
                     "cd011e"
                 ],
-                "emulationName": "Mono, Stereo Line 6 Original",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -5888,7 +5888,7 @@
                     "cd014b",
                     "cd014c"
                 ],
-                "emulationName": "Mono, Stereo Line 6 Original",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -5953,7 +5953,7 @@
                     "cd015b",
                     "cd015c"
                 ],
-                "emulationName": "Mono, Stereo Line 6 Original",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -6009,7 +6009,7 @@
                     "cd014d",
                     "cd014e"
                 ],
-                "emulationName": "Mono, Stereo Line 6 Original",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -6059,7 +6059,7 @@
                     "52",
                     "5e"
                 ],
-                "emulationName": "Mono, Stereo Maestro Echoplex EP-3",
+                "emulationName": "Maestro Echoplex EP-3",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -6130,7 +6130,7 @@
                     "cd018a",
                     "cd018b"
                 ],
-                "emulationName": "Mono, Stereo Roland RE-201 Space Echo",
+                "emulationName": "Roland RE-201 Space Echo",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -6180,7 +6180,7 @@
                     "4c",
                     "54"
                 ],
-                "emulationName": "Mono, Stereo BOSS DM-2",
+                "emulationName": "BOSS DM-2",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -6239,7 +6239,7 @@
                     "4b",
                     "53"
                 ],
-                "emulationName": "Mono, Stereo BOSS DM-2 w/ Adrian Mod",
+                "emulationName": "BOSS DM-2 w/ Adrian Mod",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -6304,7 +6304,7 @@
                     "cd0159",
                     "cd015a"
                 ],
-                "emulationName": "Mono, Stereo Line 6 Original",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -6360,7 +6360,7 @@
                     "4e",
                     "56"
                 ],
-                "emulationName": "Mono, Stereo Electro-Harmonix Deluxe Memory Man",
+                "emulationName": "Electro-Harmonix Deluxe Memory Man",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -6530,8 +6530,8 @@
             "presetMeta": {
                 "categoryId": 5,
                 "categoryName": "Delay",
-                "chainHex": "cd0243",
-                "emulationName": "Mono Line 6 Original",
+                "chainHex": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": "mono"
             }
@@ -6595,7 +6595,7 @@
                 "categoryId": 5,
                 "categoryName": "Delay",
                 "chainHex": "cd0243",
-                "emulationName": "Mono Line 6 Original",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": "mono"
             }
@@ -6655,7 +6655,7 @@
                     "cd0266",
                     "cd0267"
                 ],
-                "emulationName": "Mono, Stereo Line 6 Original",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": [
                     "mono",
@@ -7070,7 +7070,7 @@
                 "categoryId": 5,
                 "categoryName": "Delay",
                 "chainHex": "cd011f",
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": "stereo"
             }
@@ -7165,7 +7165,7 @@
                 "categoryId": 5,
                 "categoryName": "Delay",
                 "chainHex": "59",
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": "stereo"
             }
@@ -7263,7 +7263,7 @@
                 "categoryId": 5,
                 "categoryName": "Delay",
                 "chainHex": "5a",
-                "emulationName": "",
+                "emulationName": "Line 6 Original",
                 "channel": "",
                 "signal": "stereo"
             }
@@ -7313,9 +7313,9 @@
                 "categoryId": 5,
                 "categoryName": "Delay",
                 "chainHex": "cd0198",
-                "emulationName": "Legacy Line 6 Original",
+                "emulationName": "Line 6 Original",
                 "channel": "",
-                "signal": ""
+                "signal": "stereo"
             }
         },
         {
@@ -7437,10 +7437,10 @@
             "presetMeta": {
                 "categoryId": 5,
                 "categoryName": "Delay",
-                "chainHex": "cd0198",
-                "emulationName": "Legacy Line 6 Original",
+                "chainHex": "5b",
+                "emulationName": "Line 6 Original",
                 "channel": "",
-                "signal": ""
+                "signal": "Legacy"
             }
         },
         {
@@ -8083,10 +8083,10 @@
             "presetMeta": {
                 "categoryId": 5,
                 "categoryName": "Delay",
-                "chainHex": "",
+                "chainHex": "cd026f",
                 "emulationName": "",
                 "channel": "",
-                "signal": ""
+                "signal": "Legacy"
             }
         },
         {
@@ -8128,10 +8128,10 @@
             "presetMeta": {
                 "categoryId": 5,
                 "categoryName": "Delay",
-                "chainHex": "",
+                "chainHex": "cd0295",
                 "emulationName": "",
                 "channel": "",
-                "signal": ""
+                "signal": "Legacy"
             }
         },
         {
@@ -10397,10 +10397,10 @@
             "presetMeta": {
                 "categoryId": 7,
                 "categoryName": "Pitch/Synth",
-                "chainHex": "",
-                "emulationName": "",
+                "chainHex": "cd0288",
+                "emulationName": "Line 6 Original",
                 "channel": "",
-                "signal": ""
+                "signal": "Legacy"
             }
         },
         {
@@ -23154,7 +23154,7 @@
             "presetMeta": {
                 "categoryId": 13,
                 "categoryName": "Cab",
-                "chainHex": "",
+                "chainHex": "3f",
                 "emulationName": "",
                 "channel": "",
                 "signal": ""
@@ -23190,10 +23190,10 @@
             "presetMeta": {
                 "categoryId": 13,
                 "categoryName": "Cab",
-                "chainHex": "",
+                "chainHex": "cd02b4",
                 "emulationName": "",
                 "channel": "",
-                "signal": ""
+                "signal": "single"
             }
         },
         {
@@ -23588,7 +23588,7 @@
             "presetMeta": {
                 "categoryId": 13,
                 "categoryName": "Cab",
-                "chainHex": "32",
+                "chainHex": "cd02cf",
                 "emulationName": "",
                 "channel": "",
                 "signal": "mono"

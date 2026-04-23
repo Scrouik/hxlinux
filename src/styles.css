@@ -429,6 +429,15 @@ html, body {
   --models-params-slider-cell-min-h: calc(12px * 1.2 + 2px + 16px);
 }
 
+/*
+ * Lignes masquées (`hidden`, ex. bandes EQ quand le switch EQ est off — voir `appendModelsParamRows` dans `src/models.ts`).
+ * Sans cette règle, `.models-params-row { display: grid | table-row; }` prime sur l’attribut `hidden`
+ * (le style UA `display:none` pour `[hidden]` est surchargé) : les lignes restent visibles et interactives.
+ */
+.models-params-list > .models-params-row[hidden] {
+  display: none !important;
+}
+
 .models-params-row {
   font-size: 13px;
   line-height: 1.35;
@@ -1477,6 +1486,20 @@ html, body {
   padding: 4px 2px;
 }
 
+.models-pane .hx-matrix-cell .hx-io.node--params-clickable {
+  cursor: pointer;
+}
+
+.models-pane .hx-matrix-cell .hx-io.node--params-clickable:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: -2px;
+}
+
+.models-pane .hx-matrix-cell .hx-io.node--selected {
+  box-shadow: inset 0 0 0 2px var(--amber);
+  border-radius: 4px;
+}
+
 /* Infobulle au survol de toute la cellule : contenu limité à la cellule 56×56. */
 .models-pane .hx-matrix-cell > .node.node--hx-slot {
   box-sizing: border-box;
@@ -1539,6 +1562,22 @@ html, body {
   align-items: center;
   justify-content: center;
   pointer-events: auto;
+}
+
+/* Séparateurs cliquables sur Path 1 (même mécanique de sélection que les slots). */
+.models-pane .hx-matrix-path1-separator.node--params-clickable {
+  pointer-events: auto !important;
+  cursor: pointer;
+}
+
+.models-pane .hx-matrix-path1-separator.node--params-clickable:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: -2px;
+}
+
+.models-pane .hx-matrix-path1-separator.node--selected {
+  box-shadow: inset 0 0 0 2px var(--amber);
+  border-radius: 4px;
 }
 
 /* Trait vertical split/merge : « Description Path 1 » (L2) = `.hx-matrix-r2-vline` ; pas d’overlay L3 (évite chevauchement avec `Icons_link_*`). */

@@ -16,9 +16,20 @@ type CatalogModelEntry = {
   presetMeta: PresetMetaJson | null;
   /** Fichier PNG sous `icons_models/` (ex. `FX_HX_EQ_SimpleTilt.png`). */
   image: string | null;
+  /** Ordre des clés `params` côté catalogue (`HX_ModelCatalog.json`). */
+  catalogParamOrder: string[];
 };
 
-let catalogMapPromise: Promise<Map<string, CatalogModelEntry>> | null = null;
+type CatalogIndexes = {
+  /** Vue historique : clé = catégorie + nom. */
+  byCategoryAndName: Map<string, CatalogModelEntry>;
+  /** Jointure stricte du slot preset : `chainHex` -> entrée catalogue. */
+  byHex: Map<string, CatalogModelEntry>;
+  /** Jointure stricte par ID catalogue -> entrée. */
+  byId: Map<string, CatalogModelEntry>;
+};
+
+let catalogIndexesPromise: Promise<CatalogIndexes> | null = null;
 
 function catalogKey(category: string, modelName: string): string {
   return `${category.trim().toLowerCase()}\0${modelName.trim().toLowerCase()}`;
@@ -31,6 +42,23 @@ function normalizeHexList(chainHex: string | string[] | undefined): string[] {
     return t ? [t] : [];
   }
   return chainHex.map((h) => String(h).trim().toLowerCase()).filter(Boolean);
+}
+
+function extractCatalogParamOrder(paramsRaw: unknown): string[] {
+  const out: string[] = [];
+  const walk = (v: unknown) => {
+    if (Array.isArray(v)) {
+      for (const x of v) walk(x);
+      return;
+    }
+    if (!v || typeof v !== "object") return;
+    for (const k of Object.keys(v as Record<string, unknown>)) {
+      const kk = k.trim();
+      if (kk) out.push(kk);
+    }
+  };
+  walk(paramsRaw);
+  return out;
 }
 
 /**
@@ -48,16 +76,18 @@ function moduleHexCatalogLookupCandidates(hexNorm: string): string[] {
   return out;
 }
 
-async function loadCatalogModelMap(): Promise<Map<string, CatalogModelEntry>> {
+async function loadCatalogModelIndexes(): Promise<CatalogIndexes> {
   const url = "/src-tauri/resources/HX_ModelCatalog.json";
   const res = await fetch(url);
   if (!res.ok) {
     console.warn("HX_ModelCatalog.json : chargement presetMeta impossible.", res.status);
-    return new Map();
+    return { byCategoryAndName: new Map(), byHex: new Map(), byId: new Map() };
   }
   const raw = await res.text();
   const data = JSON.parse(raw) as { models?: unknown[]; categories?: unknown[] };
-  const map = new Map<string, CatalogModelEntry>();
+  const byCategoryAndName = new Map<string, CatalogModelEntry>();
+  const byHex = new Map<string, CatalogModelEntry>();
+  const byId = new Map<string, CatalogModelEntry>();
   const record = (catName: string, models: unknown) => {
     if (!Array.isArray(models)) return;
     for (const m of models) {
@@ -67,11 +97,11 @@ async function loadCatalogModelMap(): Promise<Map<string, CatalogModelEntry>> {
         name?: string;
         presetMeta?: PresetMetaJson;
         image?: string;
+        params?: unknown;
       };
       const name = typeof mo.name === "string" ? mo.name.trim() : "";
       if (!name) continue;
       const key = catalogKey(catName, name);
-      if (map.has(key)) continue;
       const idRaw = mo.id;
       const id =
         typeof idRaw === "string"
@@ -82,11 +112,22 @@ async function loadCatalogModelMap(): Promise<Map<string, CatalogModelEntry>> {
       const imgRaw = mo.image;
       const image =
         typeof imgRaw === "string" && imgRaw.trim().length > 0 ? imgRaw.trim() : null;
-      map.set(key, {
+      const entry: CatalogModelEntry = {
         id,
         presetMeta: mo.presetMeta ? { ...mo.presetMeta } : null,
         image,
-      });
+        catalogParamOrder: extractCatalogParamOrder(mo.params),
+      };
+      // Pour compat historique: garder la première entrée d'un (category, name).
+      if (!byCategoryAndName.has(key)) {
+        byCategoryAndName.set(key, entry);
+      }
+      if (id && !byId.has(id)) {
+        byId.set(id, entry);
+      }
+      for (const h of normalizeHexList(entry.presetMeta?.chainHex)) {
+        if (!byHex.has(h)) byHex.set(h, entry);
+      }
     }
   };
   if (Array.isArray(data.models) && data.models.length > 0) {
@@ -97,13 +138,14 @@ async function loadCatalogModelMap(): Promise<Map<string, CatalogModelEntry>> {
         name?: string;
         presetMeta?: PresetMetaJson;
         image?: string;
+        params?: unknown;
       };
       const cn = mo.presetMeta?.categoryName;
       const catName =
         typeof cn === "string" && cn.trim().length > 0 ? cn.trim() : "Unknown";
       record(catName, [m]);
     }
-    return map;
+    return { byCategoryAndName, byHex, byId };
   }
   for (const cat of data.categories ?? []) {
     if (!cat || typeof cat !== "object") continue;
@@ -116,54 +158,43 @@ async function loadCatalogModelMap(): Promise<Map<string, CatalogModelEntry>> {
       record(cn, (sub as { models?: unknown }).models);
     }
   }
-  return map;
+  return { byCategoryAndName, byHex, byId };
+}
+
+async function getCatalogIndexes(): Promise<CatalogIndexes> {
+  if (!catalogIndexesPromise) {
+    catalogIndexesPromise = loadCatalogModelIndexes().catch((e) => {
+      catalogIndexesPromise = null;
+      throw e;
+    });
+  }
+  return catalogIndexesPromise;
 }
 
 export async function getPresetMetaForModel(
   slotCategory: string,
   modelDisplayName: string,
 ): Promise<PresetMetaJson | null> {
-  if (!catalogMapPromise) {
-    catalogMapPromise = loadCatalogModelMap().catch((e) => {
-      catalogMapPromise = null;
-      throw e;
-    });
-  }
-  const map = await catalogMapPromise;
-  return map.get(catalogKey(slotCategory, modelDisplayName))?.presetMeta ?? null;
+  const idx = await getCatalogIndexes();
+  return idx.byCategoryAndName.get(catalogKey(slotCategory, modelDisplayName))?.presetMeta ?? null;
 }
 
 export async function getCatalogModelIdForModel(
   slotCategory: string,
   modelDisplayName: string,
 ): Promise<string | null> {
-  if (!catalogMapPromise) {
-    catalogMapPromise = loadCatalogModelMap().catch((e) => {
-      catalogMapPromise = null;
-      throw e;
-    });
-  }
-  const map = await catalogMapPromise;
-  return map.get(catalogKey(slotCategory, modelDisplayName))?.id ?? null;
+  const idx = await getCatalogIndexes();
+  return idx.byCategoryAndName.get(catalogKey(slotCategory, modelDisplayName))?.id ?? null;
 }
 
 /** Jointure stricte via `presetMeta.chainHex` (hex module lu dans le preset). */
 export async function getCatalogModelIdForHex(moduleHex: string | undefined): Promise<string | null> {
   const hexNorm = (moduleHex ?? "").trim().toLowerCase();
   if (!hexNorm) return null;
-  if (!catalogMapPromise) {
-    catalogMapPromise = loadCatalogModelMap().catch((e) => {
-      catalogMapPromise = null;
-      throw e;
-    });
-  }
-  const map = await catalogMapPromise;
+  const idx = await getCatalogIndexes();
   for (const h of moduleHexCatalogLookupCandidates(hexNorm)) {
-    for (const entry of map.values()) {
-      if (!entry.id) continue;
-      const hs = normalizeHexList(entry.presetMeta?.chainHex);
-      if (hs.includes(h)) return entry.id;
-    }
+    const entry = idx.byHex.get(h);
+    if (entry?.id) return entry.id;
   }
   return null;
 }
@@ -173,46 +204,32 @@ export async function getCatalogModelImageForModel(
   slotCategory: string,
   modelDisplayName: string,
 ): Promise<string | null> {
-  if (!catalogMapPromise) {
-    catalogMapPromise = loadCatalogModelMap().catch((e) => {
-      catalogMapPromise = null;
-      throw e;
-    });
-  }
-  const map = await catalogMapPromise;
-  return map.get(catalogKey(slotCategory, modelDisplayName))?.image ?? null;
+  const idx = await getCatalogIndexes();
+  return idx.byCategoryAndName.get(catalogKey(slotCategory, modelDisplayName))?.image ?? null;
 }
 
 export async function getPresetMetaForId(modelId: string | null | undefined): Promise<PresetMetaJson | null> {
   const id = (modelId ?? "").trim();
   if (!id) return null;
-  if (!catalogMapPromise) {
-    catalogMapPromise = loadCatalogModelMap().catch((e) => {
-      catalogMapPromise = null;
-      throw e;
-    });
-  }
-  const map = await catalogMapPromise;
-  for (const entry of map.values()) {
-    if ((entry.id ?? "").trim() === id) return entry.presetMeta ?? null;
-  }
-  return null;
+  const idx = await getCatalogIndexes();
+  return idx.byId.get(id)?.presetMeta ?? null;
 }
 
 export async function getCatalogModelImageForId(modelId: string | null | undefined): Promise<string | null> {
   const id = (modelId ?? "").trim();
   if (!id) return null;
-  if (!catalogMapPromise) {
-    catalogMapPromise = loadCatalogModelMap().catch((e) => {
-      catalogMapPromise = null;
-      throw e;
-    });
-  }
-  const map = await catalogMapPromise;
-  for (const entry of map.values()) {
-    if ((entry.id ?? "").trim() === id) return entry.image ?? null;
-  }
-  return null;
+  const idx = await getCatalogIndexes();
+  return idx.byId.get(id)?.image ?? null;
+}
+
+export async function getCatalogParamOrderForId(
+  modelId: string | null | undefined,
+): Promise<string[] | null> {
+  const id = (modelId ?? "").trim();
+  if (!id) return null;
+  const idx = await getCatalogIndexes();
+  const order = idx.byId.get(id)?.catalogParamOrder ?? [];
+  return order.length > 0 ? [...order] : null;
 }
 
 export function pickChannel(meta: PresetMetaJson | null): string | null {
@@ -260,5 +277,5 @@ export function pickSignal(meta: PresetMetaJson | null, moduleHex: string | unde
 
 /** Tests uniquement. */
 export function resetHxCatalogMetaMapForTests(): void {
-  catalogMapPromise = null;
+  catalogIndexesPromise = null;
 }

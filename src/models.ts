@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   getCatalogModelIdForHex,
   getCatalogModelImageForId,
+  getCatalogParamOrderForId,
   getPresetMetaForId,
   pickChannel,
   pickEmulationName,
@@ -34,6 +35,10 @@ type SlotDebug = {
   gridY?: string;
   /** Hex module preset (Rust), pour presetMeta.signal / chainHex parallèles. */
   moduleHex?: string;
+  /** ID catalogue imposé (jointure stricte par ID, sans fallback nom). */
+  catalogModelId?: string;
+  /** Type structurel Kempline (`00..03`) pour I/O, distinct d'un chainHex modèle. */
+  slotTypeHex?: string;
 };
 
 const MODELS_PARAMS_IDLE_PLACEHOLDER =
@@ -82,8 +87,12 @@ function clearModelsParamsSubheadAndIcon(): void {
   getModelsParamsModelIconWrapEl()?.replaceChildren();
 }
 
-/** En-tête du panneau : catégorie + hex module lu sur le HX si disponible. */
-function setModelsParamsPaneCategory(category: string, moduleHex?: string) {
+/** En-tête du panneau : catégorie + chainHex lu (ou `—`) ; `slotTypeHex` en info debug I/O. */
+function setModelsParamsPaneCategory(
+  category: string,
+  moduleHex?: string,
+  slotTypeHex?: string,
+) {
   const el = getModelsParamsPaneTitleEl();
   if (!el) return;
   const cat = category.trim();
@@ -97,14 +106,20 @@ function setModelsParamsPaneCategory(category: string, moduleHex?: string) {
   catSpan.className = "models-params-pane-title-main";
   catSpan.textContent = cat;
   el.appendChild(catSpan);
+  const hexSpan = document.createElement("span");
+  hexSpan.className = "models-params-pane-title-module-hex";
   if (hex) {
     const hexUp = hex.toUpperCase();
-    const hexSpan = document.createElement("span");
-    hexSpan.className = "models-params-pane-title-module-hex";
-    hexSpan.textContent = hexUp;
-    hexSpan.title = `Hex lu depuis le HX : ${hexUp}`;
-    el.appendChild(hexSpan);
+    hexSpan.textContent = `chainHex: ${hexUp}`;
+    hexSpan.title = `chainHex lu depuis le HX : ${hexUp}`;
+  } else {
+    const st = (slotTypeHex ?? "").trim().toUpperCase();
+    hexSpan.textContent = st ? `chainHex: — (slotType ${st})` : "chainHex: —";
+    hexSpan.title = st
+      ? `chainHex non détecté pour ce slot (slotType Kempline: ${st})`
+      : "chainHex non détecté pour ce slot";
   }
+  el.appendChild(hexSpan);
 }
 
 let selectedParamsSlotEl: HTMLElement | null = null;
@@ -289,12 +304,16 @@ type ModelParamDefJson = {
   /** Ordre des valeurs `read_params` côté firmware (tri croissant dans la chaîne). */
   assign?: number;
   displayType?: string;
+  displayType_stereo?: string;
   /** 0 = entier, 1 = float, 2 = bool (Line 6). */
   valueType?: number;
   /** JSON Line 6 : souvent nombres ; bool pour `off_on` (ex. Bright / Contour). */
   min?: number | boolean;
+  min_stereo?: number | boolean;
   max?: number | boolean;
+  max_stereo?: number | boolean;
   default?: number | string | boolean;
+  default_stereo?: number | string | boolean;
   "stereo-only"?: boolean;
 };
 
@@ -437,6 +456,11 @@ type HelixControlFormatBandJson = {
 };
 type HelixControlDefJson = {
   dspToDisplayScale?: number;
+  /**
+   * Décalage entier DSP → affichage (ex. `integer_slider_1based` : indices 0…N-1 côté chaîne,
+   * libellés 1…N côté UI → offset `1`).
+   */
+  dspToDisplayIntegerOffset?: number;
   /** `format` dans le JSON : `%.1f`, tableau de plages, ou liste de libellés (`off_on`, `sync_note`, …). */
   format?: string | string[] | HelixControlFormatBandJson[];
   formatUnits?: string;
@@ -510,6 +534,10 @@ function parseHelixControlObject(o: Record<string, unknown>): HelixControlDefJso
     dspToDisplayScale:
       typeof o.dspToDisplayScale === "number" && Number.isFinite(o.dspToDisplayScale)
         ? o.dspToDisplayScale
+        : undefined,
+    dspToDisplayIntegerOffset:
+      typeof o.dspToDisplayIntegerOffset === "number" && Number.isFinite(o.dspToDisplayIntegerOffset)
+        ? o.dspToDisplayIntegerOffset
         : undefined,
     format: parsedFormat,
     formatUnits: typeof o.formatUnits === "string" ? o.formatUnits : undefined,
@@ -594,6 +622,17 @@ function formatWithPrintfFloat(value: number, format: string): string | null {
   const s = value.toFixed(precision);
   if (format.includes("+") && value >= 0) return `+${s}`;
   return s;
+}
+
+function formatWithPrintfTemplate(
+  value: number,
+  template: string,
+): { numeric: string; rendered: string } | null {
+  const token = template.match(HELIX_PRINTF_TOKEN_RE)?.[0];
+  if (!token) return null;
+  const numeric = formatWithPrintfFloat(value, token);
+  if (numeric === null) return null;
+  return { numeric, rendered: template.replace(HELIX_PRINTF_TOKEN_RE, numeric) };
 }
 
 function pickFormatBandForValue(
@@ -715,17 +754,25 @@ function formatHelixFromControl(rawValue: number, control: HelixControlDefJson, 
   if (typeof unitsMultiplier === "number" && Number.isFinite(unitsMultiplier)) {
     value *= unitsMultiplier;
   }
+  const intOff = control.dspToDisplayIntegerOffset;
+  if (typeof intOff === "number" && Number.isFinite(intOff)) {
+    value += intOff;
+  }
 
-  const formatted = format ? formatWithPrintfFloat(value, format) : null;
+  const formatTemplate = format ? formatWithPrintfTemplate(value, format) : null;
+  const formattedNumeric = formatTemplate?.numeric ?? null;
+  const formattedFromFormat = formatTemplate?.rendered ?? null;
   if (formatUnits) {
-    if (formatted !== null && HELIX_PRINTF_TOKEN_RE.test(formatUnits)) {
-      return helixUnescapePercentMarks(formatUnits.replace(HELIX_PRINTF_TOKEN_RE, formatted));
+    if (formattedNumeric !== null && HELIX_PRINTF_TOKEN_RE.test(formatUnits)) {
+      return helixUnescapePercentMarks(
+        formatUnits.replace(HELIX_PRINTF_TOKEN_RE, formattedNumeric),
+      );
     }
     return helixUnescapePercentMarks(formatUnits);
   }
-  if (formatted !== null) return formatted;
+  if (formattedFromFormat !== null) return helixUnescapePercentMarks(formattedFromFormat);
   if (control.isDiscrete) {
-    return String(Math.round(rawValue));
+    return String(Math.round(value));
   }
   const s = String(value);
   if (s.includes("e") || s.includes("E")) return value.toPrecision(4);
@@ -738,6 +785,28 @@ function normalizeCatalogSignal(signal: string | null | undefined): "mono" | "st
   if (s.includes("stereo")) return "stereo";
   if (s.includes("mono")) return "mono";
   return null;
+}
+
+function paramForSignalVariant(
+  p: ModelParamDefJson,
+  catalogSignal: string | null | undefined,
+): ModelParamDefJson {
+  if (normalizeCatalogSignal(catalogSignal) !== "stereo") return p;
+  if (
+    p.displayType_stereo === undefined &&
+    p.min_stereo === undefined &&
+    p.max_stereo === undefined &&
+    p.default_stereo === undefined
+  ) {
+    return p;
+  }
+  return {
+    ...p,
+    displayType: p.displayType_stereo ?? p.displayType,
+    min: p.min_stereo ?? p.min,
+    max: p.max_stereo ?? p.max,
+    default: p.default_stereo ?? p.default,
+  };
 }
 
 function paramsVisibleForSignal(
@@ -800,13 +869,60 @@ function formatRawChainParamValueJson(v: ChainParamValueJson): string {
 }
 
 /** `true` / `false` pour bool ; `0` / `1` pour entiers discrets ; sinon pas d’UI bool. */
-function chainValueAsBool(cv: ChainParamValueJson): boolean | null {
+function chainValueAsBool(cv: ChainParamValueJson | undefined): boolean | null {
+  if (cv === undefined) return null;
   if (typeof cv === "boolean") return cv;
   if (typeof cv === "number" && Number.isFinite(cv)) {
     if (cv === 0 || cv === 1) return cv !== 0;
     return null;
   }
   return null;
+}
+
+/*
+ * Masquage des bandes EQ quand le switch **EQ** est off (`appendModelsParamRows`, ex. **HD2_AmpSVT4Pro** /
+ * **HD2_PreampSVT4Pro**) :
+ * - Maître : `symbolicID === "EQ"`, `valueType` booléen, `displayType` `off_on` (`modelsEqMasterIndex`).
+ * - Suiveurs : entrées après EQ dans `paramsForDisplay` jusqu’au premier `symbolicID` commençant par `@`
+ *   (souvent absent du catalogue HX → jusqu’à **EQLevel** inclus).
+ * - `li.hidden` + `data-models-eq-band` ; le handler du toggle EQ met à jour `hidden` sur ces `li`.
+ *
+ * Particularité : `.models-params-row` impose `display: grid` ou `table-row`, ce qui surcharge l’effet
+ * navigateur de `[hidden]`. Conserver dans **styles.css** :
+ *   `.models-params-list > .models-params-row[hidden] { display: none !important; }`
+ */
+
+/** EQ allumé côté affichage : valeur chaîne (bool / 0–1) ou défaut du `.models`. */
+function eqSwitchDisplayedOn(cv: ChainParamValueJson | undefined, eqParam: ModelParamDefJson): boolean {
+  const b = chainValueAsBool(cv);
+  if (b !== null) return b;
+  const d = eqParam.default;
+  if (typeof d === "boolean") return d;
+  return true;
+}
+
+function modelsEqMasterIndex(params: ModelParamDefJson[]): number {
+  const i = params.findIndex((p) => (p.symbolicID ?? "").trim() === "EQ");
+  if (i < 0) return -1;
+  const p = params[i];
+  const vt = Number(p.valueType);
+  if (!Number.isFinite(vt) || vt !== 2) return -1;
+  if ((p.displayType ?? "").trim().toLowerCase() !== "off_on") return -1;
+  return i;
+}
+
+/** Premier index strictement après `EQ` où le `symbolicID` commence par `@`, sinon fin de liste. */
+function modelsEqGraphicSectionEndExclusive(params: ModelParamDefJson[], eqIdx: number): number {
+  for (let k = eqIdx + 1; k < params.length; k += 1) {
+    const sid = (params[k].symbolicID ?? "").trim();
+    if (sid.startsWith("@")) return k;
+  }
+  return params.length;
+}
+
+function modelsParamRowIsEqGraphicFollower(params: ModelParamDefJson[], eqIdx: number, rowIndex: number): boolean {
+  if (eqIdx < 0 || rowIndex <= eqIdx) return false;
+  return rowIndex < modelsEqGraphicSectionEndExclusive(params, eqIdx);
 }
 
 function isOffOnDisplayType(displayType: string | undefined): boolean {
@@ -876,6 +992,16 @@ function chainValueFromParamDefault(p: ModelParamDefJson): ChainParamValueJson |
   return undefined;
 }
 
+function filterParamsByCatalogOrder(
+  params: ModelParamDefJson[],
+  catalogParamOrder: string[] | null | undefined,
+): ModelParamDefJson[] {
+  const order = catalogParamOrder ?? [];
+  if (order.length === 0) return params;
+  const allowed = new Set(order.map((x) => x.trim()).filter(Boolean));
+  return params.filter((p) => allowed.has((p.symbolicID ?? "").trim()));
+}
+
 /**
  * Le binaire preset aligne les valeurs sur l'ordre DSP (`assign` croissant), puis les champs sans
  * `assign` dans l'ordre où ils apparaissent dans le JSON. Le panneau UI zippe par indice dans
@@ -884,36 +1010,83 @@ function chainValueFromParamDefault(p: ModelParamDefJson): ChainParamValueJson |
  */
 function alignChainValuesToModelParamOrder(
   chainValues: ChainParamValueJson[] | null | undefined,
-  params: ModelParamDefJson[],
+  paramsForDisplay: ModelParamDefJson[],
+  allModelParams: ModelParamDefJson[],
+  catalogSignal?: string | null,
+  catalogParamOrder?: string[] | null,
 ): Array<ChainParamValueJson | undefined> | null | undefined {
   if (chainValues == null) return chainValues;
-  const withAssign: { idx: number; assign: number }[] = [];
-  const withoutAssign: number[] = [];
-  for (let i = 0; i < params.length; i += 1) {
-    const a = params[i].assign;
-    if (typeof a === "number" && Number.isFinite(a)) {
-      withAssign.push({ idx: i, assign: a });
-    } else {
-      withoutAssign.push(i);
-    }
+  const signal = normalizeCatalogSignal(catalogSignal);
+
+  const stereoOnlyById = new Map<string, boolean>();
+  for (const p of allModelParams) {
+    const sid = (p.symbolicID ?? "").trim();
+    if (!sid || stereoOnlyById.has(sid)) continue;
+    stereoOnlyById.set(sid, p["stereo-only"] === true);
   }
-  if (withAssign.length === 0) {
-    return chainValues as ChainParamValueJson[];
-  }
-  withAssign.sort((x, y) => (x.assign !== y.assign ? x.assign - y.assign : x.idx - y.idx));
-  const out: Array<ChainParamValueJson | undefined> = new Array(params.length);
-  let c = 0;
-  for (const { idx } of withAssign) {
-    if (c < chainValues.length) {
-      out[idx] = chainValues[c];
+
+  const buildSourceOrderIdsFromCatalog = (includeStereoOnly: boolean): string[] => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of catalogParamOrder ?? []) {
+      const sid = raw.trim();
+      if (!sid || seen.has(sid)) continue;
+      const isStereoOnly = stereoOnlyById.get(sid) === true;
+      if (!includeStereoOnly && isStereoOnly) continue;
+      out.push(sid);
+      seen.add(sid);
     }
-    c += 1;
-  }
-  for (const idx of withoutAssign) {
-    if (c < chainValues.length) {
-      out[idx] = chainValues[c];
+    return out;
+  };
+
+  const buildSourceOrderIdsFromModels = (includeStereoOnly: boolean): string[] => {
+    const withAssign: { sid: string; assign: number; idx: number }[] = [];
+    const withoutAssign: { sid: string; idx: number }[] = [];
+    for (let i = 0; i < allModelParams.length; i += 1) {
+      const p = allModelParams[i];
+      if (!includeStereoOnly && p["stereo-only"] === true) continue;
+      const sid = (p.symbolicID ?? "").trim();
+      if (!sid) continue;
+      const a = p.assign;
+      if (typeof a === "number" && Number.isFinite(a)) {
+        withAssign.push({ sid, assign: a, idx: i });
+      } else {
+        withoutAssign.push({ sid, idx: i });
+      }
     }
-    c += 1;
+    withAssign.sort((x, y) => (x.assign !== y.assign ? x.assign - y.assign : x.idx - y.idx));
+    return [...withAssign.map((x) => x.sid), ...withoutAssign.map((x) => x.sid)];
+  };
+
+  const sourceAll =
+    (catalogParamOrder?.length ?? 0) > 0
+      ? buildSourceOrderIdsFromCatalog(true)
+      : buildSourceOrderIdsFromModels(true);
+  let source = sourceAll;
+  if (signal === "mono") {
+    const sourceMono =
+      (catalogParamOrder?.length ?? 0) > 0
+        ? buildSourceOrderIdsFromCatalog(false)
+        : buildSourceOrderIdsFromModels(false);
+    const diffAll = Math.abs(sourceAll.length - chainValues.length);
+    const diffMono = Math.abs(sourceMono.length - chainValues.length);
+    if (diffMono < diffAll) source = sourceMono;
+  }
+
+  const valueBySymbolicId = new Map<string, ChainParamValueJson>();
+  const n = Math.min(chainValues.length, source.length);
+  for (let i = 0; i < n; i += 1) {
+    const sid = source[i];
+    if (!sid || valueBySymbolicId.has(sid)) continue;
+    valueBySymbolicId.set(sid, chainValues[i]);
+  }
+  const out: Array<ChainParamValueJson | undefined> = new Array(paramsForDisplay.length);
+  for (let i = 0; i < paramsForDisplay.length; i += 1) {
+    const sid = (paramsForDisplay[i].symbolicID ?? "").trim();
+    if (!sid) continue;
+    if (valueBySymbolicId.has(sid)) {
+      out[i] = valueBySymbolicId.get(sid);
+    }
   }
   return out;
 }
@@ -1044,11 +1217,21 @@ function appendModelsParamRows(
   catalogSignal?: string | null,
   ariaScopeLabel = "",
 ): void {
+  const eqIdx = modelsEqMasterIndex(params);
+  const eqOn =
+    eqIdx >= 0 ? eqSwitchDisplayedOn(chainValues?.[eqIdx], params[eqIdx]) : true;
   for (let j = 0; j < params.length; j += 1) {
-    const p = params[j];
-    if (paramHiddenForMonoStereoOnly(p, catalogSignal)) continue;
+    const pRaw = params[j];
+    if (paramHiddenForMonoStereoOnly(pRaw, catalogSignal)) continue;
+    const p = paramForSignalVariant(pRaw, catalogSignal);
     const li = document.createElement("li");
     li.className = "models-params-row";
+    const isEqGraphicFollower = modelsParamRowIsEqGraphicFollower(params, eqIdx, j);
+    if (isEqGraphicFollower) {
+      li.dataset.modelsEqBand = "1";
+      // Voir docblock au-dessus de `eqSwitchDisplayedOn` : `hidden` exige le correctif CSS sur `.models-params-row[hidden]`.
+      li.hidden = !eqOn;
+    }
     const label = document.createElement("span");
     label.className = "models-params-row-name";
     label.textContent = (p.name || p.symbolicID || "").trim() || "—";
@@ -1180,6 +1363,7 @@ function appendModelsParamRows(
         bOff.classList.toggle("models-params-bool-btn--selected", !currentB);
         bOn.classList.toggle("models-params-bool-btn--selected", currentB);
       };
+      const isEqMaster = (p.symbolicID ?? "").trim() === "EQ";
       const applyBool = (nextB: boolean): void => {
         currentB = nextB;
         const v: ChainParamValueJson = typeof cv === "boolean" ? nextB : nextB ? 1 : 0;
@@ -1188,6 +1372,12 @@ function appendModelsParamRows(
         li.title = s;
         sliderCell.title = s;
         syncButtons();
+        // Même contrainte CSS que pour `li.hidden` à l’init (docblock `eqSwitchDisplayedOn`).
+        if (isEqMaster) {
+          for (const node of list.querySelectorAll("li[data-models-eq-band]")) {
+            if (node instanceof HTMLLIElement) node.hidden = !nextB;
+          }
+        }
       };
       bOff.addEventListener("click", () => {
         if (!currentB) return;
@@ -1339,6 +1529,7 @@ function showModelsParamsLoading() {
 function renderModelsParamsPane(
   slot: SlotDebug,
   params: ModelParamDefJson[],
+  catalogParamOrder: string[] | null,
   resolvedCatalogModelName?: string,
   chainValues?: ChainParamValueJson[] | null,
   linkedCab?: LinkedCabInfoJson | null,
@@ -1350,7 +1541,7 @@ function renderModelsParamsPane(
   helixControlsMap?: Map<string, HelixControlDefJson>,
   catalogModelImage?: string | null,
 ) {
-  setModelsParamsPaneCategory(slot.category, slot.moduleHex);
+  setModelsParamsPaneCategory(slot.category, slot.moduleHex, slot.slotTypeHex);
   const inner = getModelsParamsInner();
   if (!inner) return;
   inner.replaceChildren();
@@ -1399,10 +1590,17 @@ function renderModelsParamsPane(
 
   const list = document.createElement("ul");
   list.className = "models-params-list";
-  const chainAligned = alignChainValuesToModelParamOrder(chainValues, params);
+  const paramsForDisplay = filterParamsByCatalogOrder(params, catalogParamOrder);
+  const chainAligned = alignChainValuesToModelParamOrder(
+    chainValues,
+    paramsForDisplay,
+    params,
+    catalogSignal,
+    catalogParamOrder,
+  );
   appendModelsParamRows(
     list,
-    params,
+    paramsForDisplay,
     chainAligned ?? null,
     helixControlsMap,
     catalogSignal,
@@ -1420,7 +1618,7 @@ function renderModelsParamsPane(
 }
 
 function showModelsParamsNotFound(slot: SlotDebug) {
-  setModelsParamsPaneCategory(slot.category, slot.moduleHex);
+  setModelsParamsPaneCategory(slot.category, slot.moduleHex, slot.slotTypeHex);
   clearModelsParamsSubheadAndIcon();
   const inner = getModelsParamsInner();
   if (!inner) return;
@@ -1443,12 +1641,68 @@ function showModelsParamsError(message: string) {
   inner.appendChild(p);
 }
 
+function showModelsParamsRawFallback(
+  slot: SlotDebug,
+  chainValues: ChainParamValueJson[] | null | undefined,
+) {
+  setModelsParamsPaneCategory(slot.category || "Unknown", slot.moduleHex, slot.slotTypeHex);
+  clearModelsParamsSubheadAndIcon();
+  setModelsParamsPaneEmulationName(null);
+  setModelsParamsHeaderIcon(slot, null);
+  const inner = getModelsParamsInner();
+  if (!inner) return;
+  inner.replaceChildren();
+
+  const note = document.createElement("p");
+  note.className = "models-params-placeholder";
+  const hex = (slot.moduleHex ?? "").trim();
+  note.textContent = hex
+    ? `Jointure catalogue absente pour ${hex.toUpperCase()} — affichage brut des valeurs de chaîne.`
+    : "Jointure catalogue absente — affichage brut des valeurs de chaîne.";
+  inner.appendChild(note);
+
+  const list = document.createElement("ul");
+  list.className = "models-params-list";
+  const vals = chainValues ?? [];
+  for (let i = 0; i < vals.length; i += 1) {
+    const v = vals[i];
+    if (v === undefined) continue;
+    const li = document.createElement("li");
+    li.className = "models-params-row";
+
+    const name = document.createElement("span");
+    name.className = "models-params-row-name";
+    name.textContent = `Param ${i + 1}`;
+
+    const min = document.createElement("span");
+    min.className = "models-params-row-min";
+    min.textContent = "—";
+
+    const max = document.createElement("span");
+    max.className = "models-params-row-max";
+    max.textContent = "—";
+
+    const cell = document.createElement("div");
+    cell.className = "models-params-slider-cell";
+    const chain = document.createElement("span");
+    chain.className = "models-params-row-chain";
+    chain.textContent = formatChainParamValueJson(v);
+    const raw = formatRawChainParamValueJson(v);
+    li.title = raw;
+    cell.title = raw;
+    cell.appendChild(chain);
+    li.append(name, min, cell, max);
+    list.appendChild(li);
+  }
+  inner.appendChild(list);
+}
+
 async function loadAndShowModelsParamsForSlot(
   slot: SlotDebug,
   kemplineSlotIndex?: number,
 ) {
   const seq = ++modelsParamsLoadSeq;
-  setModelsParamsPaneCategory(slot.category, slot.moduleHex);
+  setModelsParamsPaneCategory(slot.category, slot.moduleHex, slot.slotTypeHex);
   showModelsParamsLoading();
   const nk = normalizeCategory(slot.category);
   if (nk === "routing" || nk === "none" || nk === "favorites") {
@@ -1488,9 +1742,35 @@ async function loadAndShowModelsParamsForSlot(
         }
       }
     }
-    const catalogModelId = await getCatalogModelIdForHex(slot.moduleHex);
+    if ((nk === "input" || nk === "output") && (chainValues?.length ?? 0) === 0) {
+      try {
+        chainValues = await invoke<ChainParamValueJson[] | null>(
+          "get_active_preset_path1_io_chain_param_values",
+          { ioKind: nk === "input" ? "input" : "output" },
+        );
+      } catch {
+        chainValues = chainValues ?? null;
+      }
+    }
+    const catalogModelId =
+      (slot.catalogModelId ?? "").trim() || (await getCatalogModelIdForHex(slot.moduleHex));
+    const catalogModelIdTrimmed = (catalogModelId ?? "").trim();
+    if (!catalogModelIdTrimmed) {
+      if (seq !== modelsParamsLoadSeq) return;
+      const hex = (slot.moduleHex ?? "").trim();
+      if ((chainValues?.length ?? 0) > 0) {
+        showModelsParamsRawFallback(slot, chainValues);
+        return;
+      }
+      showModelsParamsError(
+        hex
+          ? `Jointure ID impossible : aucun modèle catalogue pour chainHex « ${hex.toUpperCase()} ».`
+          : "Jointure ID impossible : chainHex manquant pour ce slot.",
+      );
+      return;
+    }
     if (seq !== modelsParamsLoadSeq) return;
-    const found = await findModelDefinitionForSlot(slot, catalogModelId);
+    const found = await findModelDefinitionForSlot(slot, catalogModelIdTrimmed);
     if (seq !== modelsParamsLoadSeq) return;
     if (!found) {
       showModelsParamsNotFound(slot);
@@ -1499,9 +1779,10 @@ async function loadAndShowModelsParamsForSlot(
     const short = found.entry.name.trim();
     kemplineTooltipCache.set(tooltipCacheKey(slot), short);
     applyShortNameToSlotNodes(slot, short);
-    const [meta, catalogImage] = await Promise.all([
+    const [meta, catalogImage, catalogParamOrder] = await Promise.all([
       getPresetMetaForId(catalogModelId),
       getCatalogModelImageForId(catalogModelId),
+      getCatalogParamOrderForId(catalogModelId),
     ]);
     if (seq !== modelsParamsLoadSeq) return;
     const catalogChannel = pickChannel(meta);
@@ -1528,6 +1809,7 @@ async function loadAndShowModelsParamsForSlot(
     renderModelsParamsPane(
       slot,
       found.entry.params ?? [],
+      catalogParamOrder,
       short,
       chainValues,
       linkedCab,
@@ -1556,7 +1838,8 @@ async function resolveShortModelDisplayName(slot: SlotDebug): Promise<string> {
   const key = tooltipCacheKey(slot);
   const hit = kemplineTooltipCache.get(key);
   if (hit !== undefined) return hit;
-  const catalogModelId = await getCatalogModelIdForHex(slot.moduleHex);
+  const catalogModelId =
+    (slot.catalogModelId ?? "").trim() || (await getCatalogModelIdForHex(slot.moduleHex));
   const found = await findModelDefinitionForSlot(slot, catalogModelId);
   const display = (found?.entry.name ?? slot.name).trim() || "—";
   kemplineTooltipCache.set(key, display);
@@ -2017,6 +2300,37 @@ function routingMatrixTooltip(kind: "split" | "merge", detailTitle: string): str
   return `${label} — ${d}`;
 }
 
+function path1SeparatorSlot(boundary: number, kind: "split" | "merge" | null): SlotDebug {
+  if (kind === "split") {
+    return { category: "Routing", name: `Split (Path 1 #${boundary})`, moduleHex: "" };
+  }
+  if (kind === "merge") {
+    return { category: "Routing", name: `Merge (Path 1 #${boundary})`, moduleHex: "" };
+  }
+  return { category: "Routing", name: `Separator (Path 1 #${boundary})`, moduleHex: "" };
+}
+
+function path1IoSlot(kind: "input" | "output"): SlotDebug {
+  if (kind === "input") {
+    return {
+      category: "Input",
+      name: "Input",
+      moduleHex: "",
+      // Kempline `slot_type` Path 1: 00 = Input upper.
+      slotTypeHex: "00",
+      catalogModelId: "HelixStomp_AppDSPFlowInput",
+    };
+  }
+  return {
+    category: "Output",
+    name: "Output",
+    moduleHex: "",
+    // Kempline `slot_type` Path 1: 01 = Output upper.
+    slotTypeHex: "01",
+    catalogModelId: "HelixStomp_AppDSPFlowOutputMain",
+  };
+}
+
 /** Colonne grille paire (2,4,…,18) pour une frontière split/merge 1..8 ; `0` → après Input (col 2). */
 function matrixEvenColForRoutingBoundary(boundary: number): number {
   if (boundary === 0) return 2;
@@ -2069,6 +2383,20 @@ function makeMatrixPath2LinkIcon(src: string): HTMLElement {
 /** Colonnes paires « Path 1 » (L1) sans split/merge : icône ligne horizontale. */
 function makeMatrixPath1LineIcon(): HTMLElement {
   const wrap = document.createElement("div");
+  wrap.className = "hx-matrix-junction-line hx-matrix-path1-separator";
+  wrap.setAttribute("aria-hidden", "true");
+  const img = document.createElement("img");
+  img.className = "hx-matrix-junction-line-img";
+  img.src = MATRIX_PATH1_LINE_ICON;
+  img.alt = "";
+  img.decoding = "async";
+  wrap.appendChild(img);
+  return wrap;
+}
+
+/** Ligne horizontale « Path 2 » (L3), même asset `Icons_line.png` que Path 1. */
+function makeMatrixPath2LineIcon(): HTMLElement {
+  const wrap = document.createElement("div");
   wrap.className = "hx-matrix-junction-line";
   wrap.setAttribute("aria-hidden", "true");
   const img = document.createElement("img");
@@ -2083,7 +2411,7 @@ function makeMatrixPath1LineIcon(): HTMLElement {
 /** Split / merge sur « Path 1 » (L1) : icône jonction ; `title` sur la cellule grille. */
 function makePathRoutingNode(kind: "split" | "merge"): HTMLElement {
   const wrap = document.createElement("div");
-  wrap.className = `hx-matrix-routing-marker hx-matrix-routing-marker--${kind}`;
+  wrap.className = `hx-matrix-routing-marker hx-matrix-path1-separator hx-matrix-routing-marker--${kind}`;
   wrap.dataset.routingMarker = kind;
   const img = document.createElement("img");
   img.className = "hx-matrix-routing-marker-img";
@@ -2259,6 +2587,15 @@ function renderGrid16(
     return null;
   }
 
+  function routingKindAtBoundary(boundary: number): "split" | "merge" | null {
+    if (!showRoutingUi) return null;
+    const { splitCol, mergeCol } = routingCols;
+    if (boundary < 1 || boundary > 8) return null;
+    if (mergeCol === boundary) return "merge";
+    if (splitCol === boundary) return "split";
+    return null;
+  }
+
   const splitG = showRoutingUi ? matrixEvenColForRoutingBoundary(routingCols.splitCol) : -1;
   const mergeG = showRoutingUi ? matrixEvenColForRoutingBoundary(routingCols.mergeCol) : -1;
   const junctionDecoCols = new Set<number>();
@@ -2296,14 +2633,24 @@ function renderGrid16(
       } else if (row === LINE_DESC_PATH_1 && junctionDecoCols.has(col)) {
         inner = makeMatrixDescRowVerticalIcon();
       } else if (col === 1) {
-        if (row === LINE_PATH_1) inner = makeIoNode("input");
+        if (row === LINE_PATH_1) {
+          inner = makeIoNode("input");
+          bindSlotParamsInteraction(inner, path1IoSlot("input"));
+        }
       } else if (col === 2) {
         if (row === LINE_PATH_1) {
-          if (showRoutingUi && routingCols.splitCol === 0) inner = makePathRoutingNode("split");
+          const rk: "split" | "merge" | null =
+            showRoutingUi && routingCols.splitCol === 0 ? "split" : null;
+          if (rk === "split") inner = makePathRoutingNode("split");
           else inner = makeMatrixPath1LineIcon();
+          // Frontière 0: séparateur immédiatement après l'Input (Path 1).
+          bindSlotParamsInteraction(inner, path1SeparatorSlot(0, rk));
         }
       } else if (col === 19) {
-        if (row === LINE_PATH_1) inner = makeIoNode("output");
+        if (row === LINE_PATH_1) {
+          inner = makeIoNode("output");
+          bindSlotParamsInteraction(inner, path1IoSlot("output"));
+        }
       } else if (col >= 3 && col <= 17 && (col - 3) % 2 === 0) {
         const i = (col - 3) / 2;
         if (i >= 0 && i <= 7) {
@@ -2316,8 +2663,18 @@ function renderGrid16(
       } else if (col >= 4 && col <= 18 && (col - 4) % 2 === 0) {
         const j = (col - 4) / 2;
         if (row === LINE_PATH_1 && j >= 0 && j <= 7) {
-          inner = routingAtBoundary(j + 1);
+          const boundary = j + 1;
+          const rk = routingKindAtBoundary(boundary);
+          inner = routingAtBoundary(boundary);
           if (inner === null) inner = makeMatrixPath1LineIcon();
+          // Étape 1 UX: tous les séparateurs Path 1 sont cliquables comme les slots.
+          bindSlotParamsInteraction(inner, path1SeparatorSlot(boundary, rk));
+        } else if (row === LINE_PATH_2 && showRoutingUi && hasBranchB && j >= 0 && j <= 7) {
+          // Path 2 (L3): réafficher `Icons_line.png` entre split et merge.
+          const boundary = j + 1;
+          if (boundary > routingCols.splitCol && boundary < routingCols.mergeCol) {
+            inner = makeMatrixPath2LineIcon();
+          }
         }
       }
 
