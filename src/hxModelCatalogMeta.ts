@@ -1,14 +1,15 @@
 /**
- * Lecture locale de `HX_ModelCatalog.json` pour `presetMeta` (canal, signal, etc.).
+ * Lecture locale de `HX_ModelCatalog.json` pour `presetMeta` (basedOn, subCategory, etc.).
  */
 
 export type PresetMetaJson = {
   categoryId?: number;
   categoryName?: string;
   chainHex?: string | string[];
-  channel?: string;
-  signal?: string | string[];
-  emulationName?: string;
+  /** Légende « Based on » (CSV Line 6 / parsing nom). */
+  basedOn?: string;
+  /** Sous-catégorie instrument (ex. Guitar) ou paires type Mono/Stereo depuis le CSV. */
+  subCategory?: string | string[];
 };
 
 type CatalogModelEntry = {
@@ -232,47 +233,88 @@ export async function getCatalogParamOrderForId(
   return order.length > 0 ? [...order] : null;
 }
 
-export function pickChannel(meta: PresetMetaJson | null): string | null {
-  const c = meta?.channel;
+export function pickBasedOn(meta: PresetMetaJson | null): string | null {
+  const c = meta?.basedOn;
   if (typeof c !== "string") return null;
   const t = c.trim();
   return t.length > 0 ? t : null;
 }
 
-export function pickEmulationName(meta: PresetMetaJson | null): string | null {
-  const e = meta?.emulationName;
-  if (typeof e !== "string") return null;
-  const t = e.trim();
-  return t.length > 0 ? t : null;
+/** Normalise une étiquette mono/stéréo pour le routage des params (minuscules). */
+function normalizeRoutingMonoStereo(label: string | null | undefined): "mono" | "stereo" | null {
+  const s = (label ?? "").trim().toLowerCase();
+  if (!s) return null;
+  if (s.includes("stereo")) return "stereo";
+  if (s.includes("mono")) return "mono";
+  return null;
 }
 
 /**
- * `signal` : chaîne unique, ou tableau aligné sur `chainHex` (même ordre) quand `moduleHex` est connu.
+ * Signal de routage **mono | stéréo** pour l’UI params (masquage stereo-only, variantes .models).
+ * Déduit d’abord de `chainHex` + `moduleHex` (paires mono/stéréo), puis des libellés dans `subCategory`
+ * si ce sont encore des chaînes « mono » / « stereo » (ou un tableau parallèle à `chainHex`).
  */
 export function pickSignal(meta: PresetMetaJson | null, moduleHex: string | undefined): string | null {
   if (!meta) return null;
-  const sig = meta.signal;
-  if (sig === undefined || sig === null) return null;
-  if (typeof sig === "string") {
-    const t = sig.trim();
-    return t.length > 0 ? t : null;
-  }
-  if (!Array.isArray(sig)) return null;
-  const hexNorm = (moduleHex ?? "").trim().toLowerCase();
   const hexList = normalizeHexList(meta.chainHex);
-  if (hexNorm && hexList.length > 0) {
+  const hexNorm = (moduleHex ?? "").trim().toLowerCase();
+
+  if (hexNorm && hexList.length >= 2) {
     for (const h of moduleHexCatalogLookupCandidates(hexNorm)) {
       const idx = hexList.indexOf(h);
-      if (idx >= 0 && idx < sig.length) {
-        const s = sig[idx];
-        if (typeof s === "string" && s.trim()) return s.trim();
+      if (idx >= 0) {
+        return idx === 0 ? "mono" : "stereo";
       }
     }
   }
-  for (const x of sig) {
-    if (typeof x === "string" && x.trim()) return x.trim();
+
+  const sc = meta.subCategory;
+  if (typeof sc === "string") {
+    const t = sc.trim();
+    const r = normalizeRoutingMonoStereo(t);
+    if (r) return r;
+  }
+  if (Array.isArray(sc)) {
+    if (hexNorm && hexList.length > 0 && sc.length === hexList.length) {
+      for (const h of moduleHexCatalogLookupCandidates(hexNorm)) {
+        const idx = hexList.indexOf(h);
+        if (idx >= 0 && idx < sc.length) {
+          const cell = sc[idx];
+          if (typeof cell === "string") {
+            const r = normalizeRoutingMonoStereo(cell);
+            if (r) return r;
+          }
+        }
+      }
+    }
+    for (const x of sc) {
+      if (typeof x === "string") {
+        const r = normalizeRoutingMonoStereo(x);
+        if (r) return r;
+      }
+    }
+  }
+
+  if (hexList.length === 1 && hexNorm) {
+    for (const h of moduleHexCatalogLookupCandidates(hexNorm)) {
+      if (hexList.includes(h)) return "mono";
+    }
   }
   return null;
+}
+
+/** Libellé unique pour l’en-tête du panneau (sous-catégorie Line 6). */
+export function formatSubCategoryForHeader(meta: PresetMetaJson | null): string | null {
+  const sc = meta?.subCategory;
+  if (sc === undefined || sc === null) return null;
+  if (typeof sc === "string") {
+    const t = sc.trim();
+    return t.length > 0 ? t : null;
+  }
+  if (!Array.isArray(sc)) return null;
+  const bits = sc.map((x) => (typeof x === "string" ? x.trim() : "")).filter(Boolean);
+  if (bits.length === 0) return null;
+  return bits.join(" · ");
 }
 
 /** Tests uniquement. */

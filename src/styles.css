@@ -107,7 +107,7 @@ html, body {
 }
 
 .models-params-pane-title {
-  grid-column: 1;
+  grid-column: 1 / -1;
   grid-row: 1;
   display: flex;
   align-items: baseline;
@@ -136,27 +136,6 @@ html, body {
   font-weight: 500;
   letter-spacing: 0.03em;
   white-space: nowrap;
-}
-
-.models-params-pane-emulation-name {
-  grid-column: 2;
-  grid-row: 1;
-  justify-self: end;
-  text-align: right;
-  min-width: 0;
-  max-width: 100%;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.3;
-  letter-spacing: 0.02em;
-  color: #fff;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.models-params-pane-emulation-name[hidden] {
-  display: none !important;
 }
 
 .models-params-pane-subhead {

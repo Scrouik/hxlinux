@@ -5,7 +5,7 @@ même base sans suffixe final (mono)|(stereo)|(stéréo), même indice Guitar/Ba
 à partir des entrées qui ont déjà un `presetMeta.chainHex` (chaîne) par modèle,
 met à jour la fiche catalogue (modèle avec « name ») :
   presetMeta.chainHex = [hex_mono, hex_stereo]
-  presetMeta.signal   = ["mono", "stereo"]
+  presetMeta.subCategory = ["mono", "stereo"]
 
 Les hex mono/stéréo doivent déjà figurer sur les fiches modèle ; ce script les regroupe.
 """
@@ -100,9 +100,9 @@ def catalog_pairing_label(m: dict, sub_name: str | None) -> str:
     if sub_name and sub_name.strip():
         bits.append(sub_name.strip())
     pm = m.get("presetMeta") if isinstance(m.get("presetMeta"), dict) else {}
-    em = (pm.get("emulationName") or "").strip()
-    if em and em.lower() not in name.lower():
-        bits.append(em)
+    bo = (pm.get("basedOn") or "").strip()
+    if bo and bo.lower() not in name.lower():
+        bits.append(bo)
     return " ".join(bits)
 
 
@@ -157,9 +157,8 @@ def parse_suffix(name_long: str, catalog_name: str) -> dict[str, str]:
         rest = nl
 
     instrument = ""
-    emulation_name = ""
-    channel = ""
-    signal = ""
+    based_on = ""
+    sub_category = ""
 
     work = rest
     parts = work.split(None, 1)
@@ -168,21 +167,22 @@ def parse_suffix(name_long: str, catalog_name: str) -> dict[str, str]:
         work = parts[1].strip() if len(parts) > 1 else ""
 
     if "(" in work:
-        emulation_name = work[: work.index("(")].strip()
+        before_paren = work[: work.index("(")].strip()
         for inner in re.findall(r"\(([^)]*)\)", work):
             low = inner.lower()
             if "channel" in low or "chanel" in low:
-                channel = inner.strip()
+                based_on = inner.strip()
             if low in ("mono", "stereo", "stéréo") or "mono" in low or "stereo" in low or "stéréo" in low:
-                signal = inner.strip()
-    else:
-        emulation_name = work.strip()
+                sub_category = inner.strip()
+        if not based_on and before_paren:
+            based_on = before_paren
+    elif work.strip():
+        based_on = work.strip()
 
     return {
         "instrument": instrument,
-        "emulationName": emulation_name,
-        "channel": channel,
-        "signal": signal,
+        "basedOn": based_on,
+        "subCategory": sub_category,
     }
 
 
@@ -280,7 +280,7 @@ def walk_catalog_and_apply(
 
         pm = best_m.setdefault("presetMeta", {})
         pm["chainHex"] = [hex_m, hex_s]
-        pm["signal"] = ["mono", "stereo"]
+        pm["subCategory"] = ["mono", "stereo"]
         parsed = parse_suffix(nm, best_m["name"].strip())
         for k, v in parsed.items():
             if v and (not pm.get(k) or str(pm.get(k, "")).strip() == ""):

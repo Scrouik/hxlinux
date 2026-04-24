@@ -123,15 +123,33 @@ fn parse_info_slot_block_value_bytes(value: &[u8]) -> Option<Vec<ChainParamValue
 }
 
 /// Segments I/O de flux (`slot_type` Kempline 00/01/02/03) :
-/// les paramètres sont portés par le marqueur `0x07` jusqu'à la fin du segment.
-/// Kempline lit ce bloc via `num_params = value[2]` puis `read_params(value[7:])`.
+/// les paramètres sont portés par un marqueur `0x07` puis un bloc « info » (`num_params = value[2]`, `read_params(value[7:])`).
+///
+/// Plusieurs `0x07` peuvent apparaître (surtout **Split** `0x02`) : le premier bloc est parfois un
+/// en-tête avec `num_params == 0` → liste vide. On essaie donc **tous** les `0x07` et on retient le
+/// décodage **non vide** le plus long (en cas d’égalité, le **dernier** gagne — bloc paramètres en fin de segment).
 pub fn parse_flow_io_segment_params(seg: &[u8]) -> Option<Vec<ChainParamValue>> {
     if !matches!(seg.first().copied(), Some(0x00 | 0x01 | 0x02 | 0x03)) {
         return None;
     }
-    let pos_07 = seg.iter().position(|&b| b == 0x07)?;
-    let value = seg.get(pos_07 + 1..)?;
-    parse_info_slot_block_value_bytes(value)
+    let mut best: Option<Vec<ChainParamValue>> = None;
+    let mut best_len = 0usize;
+    for (abs, _) in seg.iter().enumerate().filter(|(_, &b)| b == 0x07) {
+        let Some(value) = seg.get(abs + 1..) else {
+            continue;
+        };
+        let Some(v) = parse_info_slot_block_value_bytes(value) else {
+            continue;
+        };
+        if v.is_empty() {
+            continue;
+        }
+        if v.len() >= best_len {
+            best_len = v.len();
+            best = Some(v);
+        }
+    }
+    best
 }
 
 /// Variante Amp/Preamp "dual-slot" observée sur certains segments:
@@ -322,5 +340,16 @@ mod tests {
             ChainParamValue::Number(v) => assert!((v - 1.0f64).abs() < 1e-6),
             _ => panic!("expected float"),
         }
+    }
+
+    #[test]
+    fn io_flow_segment_02_skips_empty_first_07_marker() {
+        // Split `0x02` : un premier `0x07` peut annoncer `num_params == 0` ; les vrais params suivent.
+        let seg = vec![
+            0x02, 0x07, 0x83, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x83, 0x02, 0x02, 0x03,
+            0x04, 0x97, 0x00, 0xca, 0x3f, 0x40, 0x00, 0x00, 0xca, 0x3f, 0x80, 0x00, 0x00,
+        ];
+        let vals = parse_flow_io_segment_params(&seg).expect("parse split flow");
+        assert_eq!(vals.len(), 2);
     }
 }

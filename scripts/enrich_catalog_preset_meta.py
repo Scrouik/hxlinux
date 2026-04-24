@@ -3,7 +3,7 @@
 Post-traitement de HX_ModelCatalog.json (source unique : le catalogue lui-même).
 
 Anciennement ce script croisait un export hex → noms ; tout passe désormais par le catalogue.
-- Complète les champs texte vides de `presetMeta` (instrument, emulationName, channel, signal)
+- Complète les champs texte vides de `presetMeta` (instrument, basedOn, subCategory)
   en analysant le seul champ `name` du modèle (`parse_suffix`).
 - Ne touche pas à `chainHex` : à renseigner manuellement ou via d’autres outils dans le JSON.
 
@@ -33,9 +33,8 @@ def parse_suffix(name_long: str, catalog_name: str) -> dict[str, str]:
         rest = nl
 
     instrument = ""
-    emulation_name = ""
-    channel = ""
-    signal = ""
+    based_on = ""
+    sub_category = ""
 
     work = rest
     parts = work.split(None, 1)
@@ -44,21 +43,22 @@ def parse_suffix(name_long: str, catalog_name: str) -> dict[str, str]:
         work = parts[1].strip() if len(parts) > 1 else ""
 
     if "(" in work:
-        emulation_name = work[: work.index("(")].strip()
+        before_paren = work[: work.index("(")].strip()
         for inner in re.findall(r"\(([^)]*)\)", work):
             low = inner.lower()
             if "channel" in low or "chanel" in low:
-                channel = inner.strip()
+                based_on = inner.strip()
             if low in ("mono", "stereo", "stéréo") or "mono" in low or "stereo" in low or "stéréo" in low:
-                signal = inner.strip()
-    else:
-        emulation_name = work.strip()
+                sub_category = inner.strip()
+        if not based_on and before_paren:
+            based_on = before_paren
+    elif work.strip():
+        based_on = work.strip()
 
     return {
         "instrument": instrument,
-        "emulationName": emulation_name,
-        "channel": channel,
-        "signal": signal,
+        "basedOn": based_on,
+        "subCategory": sub_category,
     }
 
 
@@ -66,9 +66,8 @@ def empty_preset_meta() -> dict[str, str]:
     return {
         "chainHex": "",
         "instrument": "",
-        "emulationName": "",
-        "channel": "",
-        "signal": "",
+        "basedOn": "",
+        "subCategory": "",
     }
 
 

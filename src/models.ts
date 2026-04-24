@@ -2,12 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import {
+  formatSubCategoryForHeader,
   getCatalogModelIdForHex,
   getCatalogModelImageForId,
   getCatalogParamOrderForId,
   getPresetMetaForId,
-  pickChannel,
-  pickEmulationName,
+  pickBasedOn,
   pickSignal,
 } from "./hxModelCatalogMeta";
 import "./styles.css";
@@ -33,12 +33,18 @@ type SlotDebug = {
   name: string;
   gridX?: string;
   gridY?: string;
-  /** Hex module preset (Rust), pour presetMeta.signal / chainHex parallèles. */
+  /** Hex module preset (Rust), pour routage mono/stéréo via chainHex parallèles. */
   moduleHex?: string;
   /** ID catalogue imposé (jointure stricte par ID, sans fallback nom). */
   catalogModelId?: string;
   /** Type structurel Kempline (`00..03`) pour I/O, distinct d'un chainHex modèle. */
   slotTypeHex?: string;
+};
+
+type RoutingMarker = {
+  category: string;
+  name: string;
+  moduleHex?: string;
 };
 
 const MODELS_PARAMS_IDLE_PLACEHOLDER =
@@ -60,28 +66,9 @@ function getModelsParamsModelIconWrapEl(): HTMLElement | null {
   return document.getElementById("models-params-pane-model-icon-wrap");
 }
 
-function getModelsParamsEmulationNameEl(): HTMLElement | null {
-  return document.getElementById("models-params-pane-emulation-name");
-}
-
-function setModelsParamsPaneEmulationName(text: string | null): void {
-  const el = getModelsParamsEmulationNameEl();
-  if (!el) return;
-  if (!text) {
-    el.textContent = "";
-    el.removeAttribute("title");
-    el.hidden = true;
-    return;
-  }
-  el.textContent = text;
-  el.title = text;
-  el.hidden = false;
-}
-
-/** Vide le sous-titre modèle, `emulationName` et l’icône sous le bandeau titre. */
+/** Vide le sous-titre modèle et l’icône sous le bandeau titre. */
 function clearModelsParamsSubheadAndIcon(): void {
   getModelsParamsSubheadEl()?.replaceChildren();
-  setModelsParamsPaneEmulationName(null);
   disposeModelsParamsIconLivePreview();
   hideModelsParamsIconPreviewPopover();
   getModelsParamsModelIconWrapEl()?.replaceChildren();
@@ -356,6 +343,9 @@ function modelsDefinitionFileBasesForCategory(category: string): string[] {
     looper: ["fixed"],
     input: ["io"],
     output: ["io"],
+    split: ["io"],
+    merge: ["io"],
+    routing: ["io"],
   };
   return m[k] ?? [];
 }
@@ -826,6 +816,23 @@ function paramHiddenForMonoStereoOnly(
   return paramsVisibleForSignal([p], catalogSignal).length === 0;
 }
 
+/**
+ * **Split A/B** (`split_ab_route_to`) et **Split Y** (`split_balance` → alias `pan`) : la chaîne preset
+ * porte souvent une valeur **normalisée 0…1** (101 pas : 0, 0.01, …, 1) alors que `HelixControls.json`
+ * formate sur **-100…+100**. Conversion linéaire vers l’échelle Helix uniquement pour ces `displayType`
+ * et tant que la valeur est dans ~[0, 1] (ne pas altérer un pan / split déjà en unités Helix).
+ */
+function helixNumericInputForSplitNormalized0To1(
+  raw: number,
+  param: ModelParamDefJson | undefined,
+): number {
+  const dt = (param?.displayType ?? "").trim();
+  if (dt !== "split_ab_route_to" && dt !== "split_balance") return raw;
+  if (!Number.isFinite(raw)) return raw;
+  if (raw < -0.0001 || raw > 1.0001) return raw;
+  return raw * 200 - 100;
+}
+
 function formatChainParamValueJson(
   v: ChainParamValueJson,
   param?: ModelParamDefJson,
@@ -846,7 +853,11 @@ function formatChainParamValueJson(
     if (controlKey && helixControlsMap?.has(controlKey)) {
       const def = helixControlsMap.get(controlKey);
       if (def) {
-        return formatHelixFromControl(v, def, controlKey);
+        return formatHelixFromControl(
+          helixNumericInputForSplitNormalized0To1(v, param),
+          def,
+          controlKey,
+        );
       }
     }
     const s = String(v);
@@ -866,6 +877,30 @@ function formatRawChainParamValueJson(v: ChainParamValueJson): string {
   if (typeof v === "number" && Number.isFinite(v)) return String(v);
   if (typeof v === "string") return v;
   return "—";
+}
+
+/** Infobulle ligne / slider : pour Split A/B et Split Y (0…1 sur fil), libellé Helix plutôt que la float brute. */
+function paramSliderHoverTitle(
+  cv: ChainParamValueJson | undefined,
+  p: ModelParamDefJson,
+  helixControlsMap?: Map<string, HelixControlDefJson>,
+): string {
+  if (cv === undefined) return "—";
+  const dt = (p.displayType ?? "").trim();
+  if (
+    (dt === "split_ab_route_to" || dt === "split_balance") &&
+    typeof p.min === "number" &&
+    typeof p.max === "number" &&
+    Number.isFinite(p.min) &&
+    Number.isFinite(p.max) &&
+    p.min === 0 &&
+    p.max === 1 &&
+    typeof cv === "number" &&
+    Number.isFinite(cv)
+  ) {
+    return formatChainParamValueJson(cv, p, helixControlsMap);
+  }
+  return formatRawChainParamValueJson(cv);
 }
 
 /** `true` / `false` pour bool ; `0` / `1` pour entiers discrets ; sinon pas d’UI bool. */
@@ -1058,16 +1093,36 @@ function alignChainValuesToModelParamOrder(
     return [...withAssign.map((x) => x.sid), ...withoutAssign.map((x) => x.sid)];
   };
 
-  const sourceAll =
-    (catalogParamOrder?.length ?? 0) > 0
-      ? buildSourceOrderIdsFromCatalog(true)
-      : buildSourceOrderIdsFromModels(true);
+  const fullAll = buildSourceOrderIdsFromModels(true);
+  const fullMono = buildSourceOrderIdsFromModels(false);
+  const catalogAll =
+    (catalogParamOrder?.length ?? 0) > 0 ? buildSourceOrderIdsFromCatalog(true) : null;
+  const catalogMono =
+    (catalogParamOrder?.length ?? 0) > 0 ? buildSourceOrderIdsFromCatalog(false) : null;
+
+  let sourceAll = catalogAll ?? fullAll;
+  // Catalogue HX ne liste souvent qu'un sous-ensemble (`params`) alors que le segment flow renvoie
+  // toute la séquence `read_params` du `.models` (ex. Split A/B : bypass / RouteTo / @enabled…).
+  // Si on zip uniquement sur le catalogue, la 1ʳᵉ valeur binaire (ex. bypass = 0) est erronément
+  // mappée sur `RouteTo` → affichage « Even Split » alors que RouteTo est à -100 (A 100).
+  if (
+    catalogAll !== null &&
+    chainValues.length > catalogAll.length &&
+    chainValues.length === fullAll.length
+  ) {
+    sourceAll = fullAll;
+  }
+
   let source = sourceAll;
   if (signal === "mono") {
-    const sourceMono =
-      (catalogParamOrder?.length ?? 0) > 0
-        ? buildSourceOrderIdsFromCatalog(false)
-        : buildSourceOrderIdsFromModels(false);
+    let sourceMono = catalogMono ?? fullMono;
+    if (
+      catalogMono !== null &&
+      chainValues.length > catalogMono.length &&
+      chainValues.length === fullMono.length
+    ) {
+      sourceMono = fullMono;
+    }
     const diffAll = Math.abs(sourceAll.length - chainValues.length);
     const diffMono = Math.abs(sourceMono.length - chainValues.length);
     if (diffMono < diffAll) source = sourceMono;
@@ -1248,10 +1303,9 @@ function appendModelsParamRows(
     maxEl.textContent = formatParamBoundForDisplay(p.max, p, helixControlsMap);
     const sliderCell = document.createElement("div");
     sliderCell.className = "models-params-slider-cell";
-    const rawTitleStr =
-      cv !== undefined ? formatRawChainParamValueJson(cv) : "—";
-    li.title = rawTitleStr;
-    sliderCell.title = rawTitleStr;
+    const hoverTitleStr = paramSliderHoverTitle(cv, p, helixControlsMap);
+    li.title = hoverTitleStr;
+    sliderCell.title = hoverTitleStr;
     li.append(label, minEl, sliderCell, maxEl);
 
     const minN = p.min;
@@ -1308,6 +1362,13 @@ function appendModelsParamRows(
       if (inc === null || !Number.isFinite(inc) || inc <= 0) {
         inc = fallbackRawIncrement(p, minN, maxN);
       }
+      if (
+        (dt === "split_ab_route_to" || dt === "split_balance") &&
+        minN === 0 &&
+        maxN === 1
+      ) {
+        inc = 0.01;
+      }
       const init = snapRawToIncrement(cv, minN, maxN, inc, p.valueType);
       const input = document.createElement("input");
       input.type = "range";
@@ -1325,7 +1386,7 @@ function appendModelsParamRows(
         v = snapRawToIncrement(v, minN, maxN, inc, p.valueType);
         if (Number(input.value) !== v) input.value = String(v);
       }
-      input.title = rawTitleStr;
+      input.title = hoverTitleStr;
       input.setAttribute(
         "aria-label",
         `${(p.name || p.symbolicID || "").trim()} — aperçu local${ariaScopeLabel}, non envoyé au Helix`,
@@ -1336,7 +1397,7 @@ function appendModelsParamRows(
         v = snapRawToIncrement(v, minN, maxN, inc, p.valueType);
         if (Number(input.value) !== v) input.value = String(v);
         chainEl.textContent = formatChainParamValueJson(v, p, helixControlsMap);
-        const s = formatRawChainParamValueJson(v);
+        const s = paramSliderHoverTitle(v, p, helixControlsMap);
         li.title = s;
         sliderCell.title = s;
         input.title = s;
@@ -1535,9 +1596,9 @@ function renderModelsParamsPane(
   linkedCab?: LinkedCabInfoJson | null,
   linkedCabValues?: ChainParamValueJson[] | null,
   allCabDefinitions?: ModelDefinitionJson[] | null,
-  catalogChannel?: string | null,
-  catalogSignal?: string | null,
-  catalogEmulationName?: string | null,
+  catalogBasedOn?: string | null,
+  catalogSubcategoryLabel?: string | null,
+  catalogRoutingSignal?: string | null,
   helixControlsMap?: Map<string, HelixControlDefJson>,
   catalogModelImage?: string | null,
 ) {
@@ -1551,10 +1612,10 @@ function renderModelsParamsPane(
   title.className = "models-params-model-title";
   const baseName = (resolvedCatalogModelName ?? slot.name).trim() || "—";
   const parts: string[] = [baseName];
-  const ch = (catalogChannel ?? "").trim();
-  const sig = (catalogSignal ?? "").trim();
-  if (ch) parts.push(ch);
-  if (sig) parts.push(sig);
+  const bo = (catalogBasedOn ?? "").trim();
+  const sub = (catalogSubcategoryLabel ?? "").trim();
+  if (bo) parts.push(bo);
+  if (sub) parts.push(sub);
   title.textContent = parts.join(" · ");
   const lines: HTMLElement[] = [title];
   if (linkedCab && linkedCab[0] && linkedCab[2]) {
@@ -1581,21 +1642,40 @@ function renderModelsParamsPane(
   } else {
     inner.appendChild(head);
   }
-  setModelsParamsPaneEmulationName(
-    catalogEmulationName && catalogEmulationName.trim()
-      ? catalogEmulationName.trim()
-      : null,
-  );
   setModelsParamsHeaderIcon(slot, catalogModelImage);
 
   const list = document.createElement("ul");
   list.className = "models-params-list";
   const paramsForDisplay = filterParamsByCatalogOrder(params, catalogParamOrder);
+  const catN = normalizeCategory(slot.category);
+  let chainForAlign = chainValues;
+  if (
+    (catN === "split" || catN === "merge") &&
+    (!chainForAlign || chainForAlign.length === 0) &&
+    params.length > 0
+  ) {
+    const order: string[] =
+      catalogParamOrder != null && catalogParamOrder.length > 0
+        ? catalogParamOrder
+        : params.map((p) => (p.symbolicID ?? "").trim()).filter(Boolean);
+    const bySid = new Map(
+      params
+        .map((p) => [(p.symbolicID ?? "").trim(), p] as const)
+        .filter(([k]) => Boolean(k)),
+    );
+    const synth: ChainParamValueJson[] = [];
+    for (const sid of order) {
+      const p = bySid.get(sid);
+      const d = p ? chainValueFromParamDefault(p) : undefined;
+      if (d !== undefined) synth.push(d);
+    }
+    if (synth.length > 0) chainForAlign = synth;
+  }
   const chainAligned = alignChainValuesToModelParamOrder(
-    chainValues,
+    chainForAlign,
     paramsForDisplay,
     params,
-    catalogSignal,
+    catalogRoutingSignal,
     catalogParamOrder,
   );
   appendModelsParamRows(
@@ -1603,7 +1683,7 @@ function renderModelsParamsPane(
     paramsForDisplay,
     chainAligned ?? null,
     helixControlsMap,
-    catalogSignal,
+    catalogRoutingSignal,
   );
   inner.appendChild(list);
   if (normalizeCategory(slot.category) === "amp+cab" && (allCabDefinitions?.length ?? 0) > 0) {
@@ -1647,7 +1727,6 @@ function showModelsParamsRawFallback(
 ) {
   setModelsParamsPaneCategory(slot.category || "Unknown", slot.moduleHex, slot.slotTypeHex);
   clearModelsParamsSubheadAndIcon();
-  setModelsParamsPaneEmulationName(null);
   setModelsParamsHeaderIcon(slot, null);
   const inner = getModelsParamsInner();
   if (!inner) return;
@@ -1752,6 +1831,17 @@ async function loadAndShowModelsParamsForSlot(
         chainValues = chainValues ?? null;
       }
     }
+    // Split / Merge : pas de `data-kempline-slot-index` sur les jonctions matrice — lire le segment flow 0x02 / 0x03.
+    if ((nk === "split" || nk === "merge") && (chainValues?.length ?? 0) === 0) {
+      try {
+        chainValues = await invoke<ChainParamValueJson[] | null>(
+          "get_active_preset_kempline_flow_chain_param_values",
+          { flowKind: nk },
+        );
+      } catch {
+        chainValues = chainValues ?? null;
+      }
+    }
     const catalogModelId =
       (slot.catalogModelId ?? "").trim() || (await getCatalogModelIdForHex(slot.moduleHex));
     const catalogModelIdTrimmed = (catalogModelId ?? "").trim();
@@ -1785,9 +1875,9 @@ async function loadAndShowModelsParamsForSlot(
       getCatalogParamOrderForId(catalogModelId),
     ]);
     if (seq !== modelsParamsLoadSeq) return;
-    const catalogChannel = pickChannel(meta);
-    const catalogSignal = pickSignal(meta, slot.moduleHex);
-    const catalogEmulationName = pickEmulationName(meta);
+    const catalogBasedOn = pickBasedOn(meta);
+    const catalogSubcategoryLabel = formatSubCategoryForHeader(meta);
+    const catalogRoutingSignal = pickSignal(meta, slot.moduleHex);
     if (nk === "amp+cab") {
       try {
         const byId = new Map<string, ModelDefinitionJson>();
@@ -1815,9 +1905,9 @@ async function loadAndShowModelsParamsForSlot(
       linkedCab,
       linkedCabValues,
       allCabDefinitions,
-      catalogChannel,
-      catalogSignal,
-      catalogEmulationName,
+      catalogBasedOn,
+      catalogSubcategoryLabel,
+      catalogRoutingSignal,
       helixControlsMap,
       catalogImage,
     );
@@ -2300,17 +2390,61 @@ function routingMatrixTooltip(kind: "split" | "merge", detailTitle: string): str
   return `${label} — ${d}`;
 }
 
-function path1SeparatorSlot(boundary: number, kind: "split" | "merge" | null): SlotDebug {
+function path1SeparatorSlot(
+  boundary: number,
+  kind: "split" | "merge" | null,
+  marker?: RoutingMarker,
+): SlotDebug {
+  const markerHex = (marker?.moduleHex ?? "").trim();
+  const markerCategory = (marker?.category ?? "").trim();
+  const markerName = (marker?.name ?? "").trim();
   if (kind === "split") {
-    return { category: "Routing", name: `Split (Path 1 #${boundary})`, moduleHex: "" };
+    return {
+      category: markerCategory || "Split",
+      name: markerName || `Split (Path 1 #${boundary})`,
+      moduleHex: markerHex,
+    };
   }
   if (kind === "merge") {
-    return { category: "Routing", name: `Merge (Path 1 #${boundary})`, moduleHex: "" };
+    return {
+      category: markerCategory || "Merge",
+      name: markerName || `Merge (Path 1 #${boundary})`,
+      moduleHex: markerHex,
+    };
   }
   return { category: "Routing", name: `Separator (Path 1 #${boundary})`, moduleHex: "" };
 }
 
+type FlowIoCatalogIds = {
+  input: string;
+  output: string;
+};
+
+const FLOW_IO_IDS_STOMP: FlowIoCatalogIds = {
+  input: "HelixStomp_AppDSPFlowInput",
+  output: "HelixStomp_AppDSPFlowOutputMain",
+};
+
+const FLOW_IO_IDS_HX_FX: FlowIoCatalogIds = {
+  input: "HelixFx_AppDSPFlowInput",
+  output: "HelixFx_AppDSPFlowOutput",
+};
+
+const FLOW_IO_IDS_HD2: FlowIoCatalogIds = {
+  input: "HD2_AppDSPFlow1Input",
+  output: "HD2_AppDSPFlowOutput",
+};
+
+/** Choix explicite de l'ID catalogue I/O selon la machine détectée (pas de chainHex pour ces slots). */
+function flowIoCatalogIdsForConnectedDevice(name: string | null): FlowIoCatalogIds {
+  const n = (name ?? "").toLowerCase();
+  if (n.includes("stomp")) return FLOW_IO_IDS_STOMP;
+  if (n.includes("effects") || n.includes("hx fx")) return FLOW_IO_IDS_HX_FX;
+  return FLOW_IO_IDS_HD2;
+}
+
 function path1IoSlot(kind: "input" | "output"): SlotDebug {
+  const flowIds = flowIoCatalogIdsForConnectedDevice(connectedDeviceName);
   if (kind === "input") {
     return {
       category: "Input",
@@ -2318,7 +2452,7 @@ function path1IoSlot(kind: "input" | "output"): SlotDebug {
       moduleHex: "",
       // Kempline `slot_type` Path 1: 00 = Input upper.
       slotTypeHex: "00",
-      catalogModelId: "HelixStomp_AppDSPFlowInput",
+      catalogModelId: flowIds.input,
     };
   }
   return {
@@ -2327,7 +2461,7 @@ function path1IoSlot(kind: "input" | "output"): SlotDebug {
     moduleHex: "",
     // Kempline `slot_type` Path 1: 01 = Output upper.
     slotTypeHex: "01",
-    catalogModelId: "HelixStomp_AppDSPFlowOutputMain",
+    catalogModelId: flowIds.output,
   };
 }
 
@@ -2478,7 +2612,7 @@ function makeMatrixRowLineLabel(line: number): HTMLElement {
  */
 function renderGrid16(
   slots: SlotDebug[],
-  routing: [string, string][],
+  routing: RoutingMarker[],
   stompLayout: ActivePresetStompLayout | null,
 ) {
   const lastB = lastFilledSlotRowIndex(slots, 8, 8);
@@ -2494,10 +2628,10 @@ function renderGrid16(
         }
       : computeRoutingJunctionColumns(slots);
 
-  const splitEntry = routing.find(([, name]) => name.toLowerCase().includes("split"));
-  const mergeEntry = routing.find(([, name]) => name.toLowerCase().includes("merge"));
-  const splitTip = splitEntry ? `${splitEntry[0]}: ${splitEntry[1]}` : "Split";
-  const mergeTip = mergeEntry ? `${mergeEntry[0]}: ${mergeEntry[1]}` : "Merge";
+  const splitEntry = routing.find((m) => m.name.toLowerCase().includes("split"));
+  const mergeEntry = routing.find((m) => m.name.toLowerCase().includes("merge"));
+  const splitTip = splitEntry ? `${splitEntry.category}: ${splitEntry.name}` : "Split";
+  const mergeTip = mergeEntry ? `${mergeEntry.category}: ${mergeEntry.name}` : "Merge";
 
   const root = document.createElement("div");
   root.className = "flow grid16 hx-edit-chain hx-matrix";
@@ -2644,7 +2778,7 @@ function renderGrid16(
           if (rk === "split") inner = makePathRoutingNode("split");
           else inner = makeMatrixPath1LineIcon();
           // Frontière 0: séparateur immédiatement après l'Input (Path 1).
-          bindSlotParamsInteraction(inner, path1SeparatorSlot(0, rk));
+          bindSlotParamsInteraction(inner, path1SeparatorSlot(0, rk, rk === "split" ? splitEntry : undefined));
         }
       } else if (col === 19) {
         if (row === LINE_PATH_1) {
@@ -2668,7 +2802,14 @@ function renderGrid16(
           inner = routingAtBoundary(boundary);
           if (inner === null) inner = makeMatrixPath1LineIcon();
           // Étape 1 UX: tous les séparateurs Path 1 sont cliquables comme les slots.
-          bindSlotParamsInteraction(inner, path1SeparatorSlot(boundary, rk));
+          bindSlotParamsInteraction(
+            inner,
+            path1SeparatorSlot(
+              boundary,
+              rk,
+              rk === "split" ? splitEntry : rk === "merge" ? mergeEntry : undefined,
+            ),
+          );
         } else if (row === LINE_PATH_2 && showRoutingUi && hasBranchB && j >= 0 && j <= 7) {
           // Path 2 (L3): réafficher `Icons_line.png` entre split et merge.
           const boundary = j + 1;
@@ -2816,7 +2957,7 @@ function buildFlowSections(slots: SlotDebug[]) {
 
 async function renderSlots(
   rawSlots: SlotDebug[],
-  routingFromFlow: [string, string][] = [],
+  routingFromFlow: RoutingMarker[] = [],
   stompLayout: ActivePresetStompLayout | null = null,
 ) {
   if (rawSlots.length === 0) {
@@ -2944,12 +3085,17 @@ async function requestLoadForPreset(index: number) {
             }));
         // Evite d'afficher une vieille réponse si l'utilisateur a recliqué ailleurs.
         if (currentPresetIndex === index) {
-          let routingFlow: [string, string][] = [];
+          let routingFlow: RoutingMarker[] = [];
           let stompLayout: ActivePresetStompLayout | null = null;
           if (isKemplineGrid16(normalizedSlots)) {
             try {
-              const r = await invoke<[string, string][] | null>("get_active_preset_routing_markers");
-              routingFlow = r ?? [];
+              const r = await invoke<[string, string, string][] | null>("get_active_preset_routing_markers");
+              routingFlow =
+                r?.map(([category, name, moduleHex]) => ({
+                  category,
+                  name,
+                  moduleHex: moduleHex?.trim() || undefined,
+                })) ?? [];
             } catch {
               console.warn("[PresetDebug][models] get_active_preset_routing_markers error");
             }

@@ -459,7 +459,7 @@ fn get_active_preset_slots_debug(state: tauri::State<Arc<Mutex<AppState>>>) -> O
 #[tauri::command]
 fn get_active_preset_routing_markers(
     state: tauri::State<Arc<Mutex<AppState>>>,
-) -> Option<Vec<[String; 2]>> {
+) -> Option<Vec<[String; 3]>> {
     let (active_preset, helix_arc) = {
         let app = state.lock().unwrap();
         (app.active_preset, app.helix_state.clone()?)
@@ -472,10 +472,14 @@ fn get_active_preset_routing_markers(
     if s.preset_index != active_preset {
         return None;
     }
-    let markers: Vec<[String; 2]> = parse_preset_slots_internal(&s.preset_data)
+    let markers: Vec<[String; 3]> = parse_preset_slots_internal(&s.preset_data)
         .into_iter()
-        .filter(|p| p.category == "Routing")
-        .map(|p| [p.category, p.name])
+        .filter(|p| {
+            let c = p.category.to_ascii_lowercase();
+            let n = p.name.to_ascii_lowercase();
+            c == "routing" || c == "split" || c == "merge" || n.contains("split") || n.contains("merge")
+        })
+        .map(|p| [p.category, p.name, p.module_hex])
         .collect();
     Some(markers)
 }
@@ -550,6 +554,39 @@ fn get_active_preset_path1_io_chain_param_values(
         0usize
     } else if kind == "output" || kind == "main" || kind == "main l/r" || kind == "mainlr" {
         9usize
+    } else {
+        return None;
+    };
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        (app.active_preset, app.helix_state.clone()?)
+    };
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() {
+        return None;
+    }
+    if s.preset_index != active_preset {
+        return None;
+    }
+    let (start, _) = kempline_grid_window_start_and_seg_count(&s.preset_data)?;
+    let segs = split_preset_by_8213(&s.preset_data);
+    let abs = start.checked_add(seg_idx_in_window)?;
+    let seg = segs.get(abs).copied()?;
+    preset_chain_params::parse_flow_io_segment_params(seg)
+}
+
+/// Valeurs de chaîne des segments **flow** Kempline (Split / Merge) dans la fenêtre 20 segments.
+/// `flow_kind`: `split` (segment `0x02`, index 10) ou `merge` / `mixer` (segment `0x03`, index 19).
+#[tauri::command]
+fn get_active_preset_kempline_flow_chain_param_values(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    flow_kind: String,
+) -> Option<Vec<preset_chain_params::ChainParamValue>> {
+    let kind = flow_kind.trim().to_ascii_lowercase();
+    let seg_idx_in_window = if kind == "split" {
+        10usize
+    } else if kind == "merge" || kind == "mixer" || kind == "join" {
+        19usize
     } else {
         return None;
     };
@@ -1185,6 +1222,39 @@ fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
         None
     }
 
+    fn infer_flow_split_chain_hex(chunk: &[u8]) -> Option<String> {
+        if chunk.first().copied() != Some(0x02) {
+            return None;
+        }
+        // Cas direct observé sur certains dumps de flow : signature `6c cd 00 XX`.
+        for w in chunk.windows(4) {
+            if w[0] == 0x6c && w[1] == 0xcd && w[2] == 0x00 {
+                return Some(format!("6ccd00{:02x}", w[3]));
+            }
+        }
+        // Variante compacte dans le segment split `02`: `cd 01 vv` ou `cd 02 33`.
+        let body = chunk.get(1..).unwrap_or(&[]);
+        for w in body.windows(3) {
+            if w[0] != 0xcd {
+                continue;
+            }
+            if w[1] == 0x01 {
+                let mapped = match w[2] {
+                    0x01 => Some("6ccd0023"), // Split Y
+                    0x00 => Some("6ccd0024"), // Split A/B
+                    0x02 => Some("6ccd0025"), // Split Crossover
+                    _ => None,
+                };
+                if let Some(h) = mapped {
+                    return Some(h.to_string());
+                }
+            } else if w[1] == 0x02 && w[2] == 0x33 {
+                return Some(String::from("6ccd0026")); // Split Dynamic
+            }
+        }
+        None
+    }
+
     let chunks = split_preset_by_8213(data);
 
     let mut parsed_slots: Vec<ParsedSlot> = Vec::new();
@@ -1242,6 +1312,20 @@ fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
                 continue;
             }
             cursor += 1;
+        }
+
+        if parsed_slots.len() == parsed_len_before {
+            if let Some(split_hex) = infer_flow_split_chain_hex(chunk) {
+                if let Some(entry) = HX_CATALOG_MODULE_BY_HEX.get(&split_hex) {
+                    parsed_slots.push(ParsedSlot {
+                        category: entry[0].clone(),
+                        name: entry[1].clone(),
+                        grid_x: None,
+                        grid_y: None,
+                        module_hex: split_hex,
+                    });
+                }
+            }
         }
 
         if let Some(slot) = best_unknown {
@@ -2046,6 +2130,7 @@ pub fn run() {
             get_active_preset_stomp_layout,
             get_active_preset_slot_chain_param_values,
             get_active_preset_path1_io_chain_param_values,
+            get_active_preset_kempline_flow_chain_param_values,
             get_active_preset_slot_assignable_usb_json,
             get_active_preset_slot_linked_cab,
             get_active_preset_slot_linked_cab_with_params,
