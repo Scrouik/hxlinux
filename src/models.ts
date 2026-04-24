@@ -350,6 +350,14 @@ function modelsDefinitionFileBasesForCategory(category: string): string[] {
   return m[k] ?? [];
 }
 
+/** Export Line 6 : préfixe avant le tableau JSON (ex. `amp.models` commence par `SVT4[`). */
+function stripModelsDefinitionFilePreamble(raw: string): string {
+  const s = raw.replace(/^\uFEFF/, "").trimStart();
+  const i = s.indexOf("[");
+  if (i <= 0) return s;
+  return s.slice(i);
+}
+
 async function loadModelsDefinitionArray(fileBase: string): Promise<ModelDefinitionJson[]> {
   const hit = modelsDefinitionsCache.get(fileBase);
   if (hit) return hit;
@@ -361,7 +369,7 @@ async function loadModelsDefinitionArray(fileBase: string): Promise<ModelDefinit
   } else {
     raw = await invoke<string>("read_models_definition_file", { fileBase });
   }
-  const parsed = JSON.parse(raw) as unknown;
+  const parsed = JSON.parse(stripModelsDefinitionFilePreamble(raw)) as unknown;
   if (!Array.isArray(parsed)) {
     throw new Error("Format .models invalide (tableau attendu).");
   }
@@ -369,15 +377,25 @@ async function loadModelsDefinitionArray(fileBase: string): Promise<ModelDefinit
   return parsed as ModelDefinitionJson[];
 }
 
+/**
+ * Charge la définition `.models` pour un slot : **jointure stricte par `symbolicID` = id catalogue**
+ * (`chainHex` → id, ou `catalogModelId`). Le **fichier** (`amp` vs `preamp`, etc.) vient du
+ * **`presetMeta.categoryName`** de cette entrée catalogue quand il est fourni — pas du nom USB et
+ * pas seulement de la catégorie affichée par la grille (peut diverger).
+ */
 async function findModelDefinitionForSlot(
   slot: SlotDebug,
   catalogModelId?: string | null,
+  /** `HX_ModelCatalog.json` → `presetMeta.categoryName` pour l’id joint (ex. « Amp », « Preamp »). */
+  catalogPresetCategoryName?: string | null,
 ): Promise<{ entry: ModelDefinitionJson; fileBase: string } | null> {
   const nameTarget = slot.name.trim();
   if (!nameTarget || nameTarget === "<empty>") return null;
   const idTarget = (catalogModelId ?? "").trim();
   if (!idTarget) return null;
-  const bases = modelsDefinitionFileBasesForCategory(slot.category);
+  const categoryForFiles =
+    (catalogPresetCategoryName ?? "").trim() || slot.category;
+  const bases = modelsDefinitionFileBasesForCategory(categoryForFiles);
   if (bases.length === 0) return null;
   for (const fileBase of bases) {
     let list: ModelDefinitionJson[];
@@ -391,7 +409,7 @@ async function findModelDefinitionForSlot(
   }
   if (DEBUG_MODEL_ID_JOIN_FALLBACK) {
     console.warn(
-      `[models] Aucun match par ID: id=${idTarget} category="${slot.category}" slot="${nameTarget}" tried=${bases.join(",")}`,
+      `[models] Aucun match par ID: id=${idTarget} filesCategory="${categoryForFiles}" slotCategory="${slot.category}" slot="${nameTarget}" tried=${bases.join(",")}`,
     );
   }
   return null;
@@ -817,17 +835,24 @@ function paramHiddenForMonoStereoOnly(
 }
 
 /**
- * **Split A/B** (`split_ab_route_to`) et **Split Y** (`split_balance` → alias `pan`) : la chaîne preset
- * porte souvent une valeur **normalisée 0…1** (101 pas : 0, 0.01, …, 1) alors que `HelixControls.json`
- * formate sur **-100…+100**. Conversion linéaire vers l’échelle Helix uniquement pour ces `displayType`
- * et tant que la valeur est dans ~[0, 1] (ne pas altérer un pan / split déjà en unités Helix).
+ * **Split A/B** (`split_ab_route_to`), **Split Y** (`split_balance`) et **`pan`** avec **min 0 / max 1**
+ * (ex. **Mixer** `A Pan` / `B Pan`) : valeur souvent **normalisée 0…1** sur le fil alors que
+ * `HelixControls.json` (`pan`) formate en **-100…+100**. Conversion `×200−100` seulement si les bornes
+ * `.models` sont bien 0 et 1 et que la valeur est dans ~[0, 1].
  */
 function helixNumericInputForSplitNormalized0To1(
   raw: number,
   param: ModelParamDefJson | undefined,
 ): number {
   const dt = (param?.displayType ?? "").trim();
-  if (dt !== "split_ab_route_to" && dt !== "split_balance") return raw;
+  const panLike =
+    dt === "split_ab_route_to" || dt === "split_balance" || dt === "pan";
+  if (!panLike) return raw;
+  const minN = param?.min;
+  const maxN = param?.max;
+  if (typeof minN !== "number" || typeof maxN !== "number" || minN !== 0 || maxN !== 1) {
+    return raw;
+  }
   if (!Number.isFinite(raw)) return raw;
   if (raw < -0.0001 || raw > 1.0001) return raw;
   return raw * 200 - 100;
@@ -888,7 +913,7 @@ function paramSliderHoverTitle(
   if (cv === undefined) return "—";
   const dt = (p.displayType ?? "").trim();
   if (
-    (dt === "split_ab_route_to" || dt === "split_balance") &&
+    (dt === "split_ab_route_to" || dt === "split_balance" || dt === "pan") &&
     typeof p.min === "number" &&
     typeof p.max === "number" &&
     Number.isFinite(p.min) &&
@@ -978,11 +1003,18 @@ function boolToggleLabels(
   return ["Off", "On"];
 }
 
+function isPolarityDisplayType(displayType: string | undefined): boolean {
+  return (displayType ?? "").trim().toLowerCase() === "polarity";
+}
+
 function canModelsParamsBoolToggle(p: ModelParamDefJson, cv: ChainParamValueJson | undefined): boolean {
   if (cv === undefined) return false;
   if (chainValueAsBool(cv) === null) return false;
   if (p.valueType === 2) return true;
-  return isOffOnDisplayType(p.displayType);
+  if (isOffOnDisplayType(p.displayType)) return true;
+  /** `polarity` : Normal / Inverted (`HelixControls.json`), bool ou 0/1 sur fil — pas un slider. */
+  if (isPolarityDisplayType(p.displayType)) return true;
+  return false;
 }
 
 function isMicParam(p: ModelParamDefJson): boolean {
@@ -1363,7 +1395,7 @@ function appendModelsParamRows(
         inc = fallbackRawIncrement(p, minN, maxN);
       }
       if (
-        (dt === "split_ab_route_to" || dt === "split_balance") &&
+        (dt === "split_ab_route_to" || dt === "split_balance" || dt === "pan") &&
         minN === 0 &&
         maxN === 1
       ) {
@@ -1697,7 +1729,7 @@ function renderModelsParamsPane(
   }
 }
 
-function showModelsParamsNotFound(slot: SlotDebug) {
+function showModelsParamsNotFound(slot: SlotDebug, resolvedCatalogId?: string | null) {
   setModelsParamsPaneCategory(slot.category, slot.moduleHex, slot.slotTypeHex);
   clearModelsParamsSubheadAndIcon();
   const inner = getModelsParamsInner();
@@ -1705,7 +1737,11 @@ function showModelsParamsNotFound(slot: SlotDebug) {
   inner.replaceChildren();
   const p = document.createElement("p");
   p.className = "models-params-placeholder";
-  p.textContent = `Aucune définition « ${slot.name.trim()} » pour la catégorie « ${slot.category.trim()} ».`;
+  const hex = (slot.moduleHex ?? "").trim();
+  const id = (resolvedCatalogId ?? "").trim();
+  p.textContent = id
+    ? `Aucune entrée .models pour l’id catalogue « ${id} » (USB « ${slot.name.trim()} », catégorie « ${slot.category.trim()} », chainHex ${hex ? hex.toUpperCase() : "—"}). Jointure par id symbolique, pas par nom.`
+    : `Aucune définition « ${slot.name.trim()} » pour la catégorie « ${slot.category.trim()} ».`;
   inner.appendChild(p);
 }
 
@@ -1785,7 +1821,7 @@ async function loadAndShowModelsParamsForSlot(
   showModelsParamsLoading();
   const nk = normalizeCategory(slot.category);
   if (nk === "routing" || nk === "none" || nk === "favorites") {
-    if (seq === modelsParamsLoadSeq) showModelsParamsNotFound(slot);
+    if (seq === modelsParamsLoadSeq) showModelsParamsNotFound(slot, null);
     return;
   }
   try {
@@ -1842,9 +1878,15 @@ async function loadAndShowModelsParamsForSlot(
         chainValues = chainValues ?? null;
       }
     }
-    const catalogModelId =
+    let catalogModelId =
       (slot.catalogModelId ?? "").trim() || (await getCatalogModelIdForHex(slot.moduleHex));
-    const catalogModelIdTrimmed = (catalogModelId ?? "").trim();
+    let catalogModelIdTrimmed = (catalogModelId ?? "").trim();
+    const mergeLike =
+      nk === "merge" ||
+      (nk === "routing" && slot.name.toLowerCase().includes("merge"));
+    if (!catalogModelIdTrimmed && mergeLike) {
+      catalogModelIdTrimmed = FLOW_JOIN_CATALOG_ID;
+    }
     if (!catalogModelIdTrimmed) {
       if (seq !== modelsParamsLoadSeq) return;
       const hex = (slot.moduleHex ?? "").trim();
@@ -1860,19 +1902,25 @@ async function loadAndShowModelsParamsForSlot(
       return;
     }
     if (seq !== modelsParamsLoadSeq) return;
-    const found = await findModelDefinitionForSlot(slot, catalogModelIdTrimmed);
+    const presetMetaForFiles = await getPresetMetaForId(catalogModelIdTrimmed);
+    const catalogPresetCategoryName = presetMetaForFiles?.categoryName ?? null;
+    const found = await findModelDefinitionForSlot(
+      slot,
+      catalogModelIdTrimmed,
+      catalogPresetCategoryName,
+    );
     if (seq !== modelsParamsLoadSeq) return;
     if (!found) {
-      showModelsParamsNotFound(slot);
+      showModelsParamsNotFound(slot, catalogModelIdTrimmed);
       return;
     }
     const short = found.entry.name.trim();
     kemplineTooltipCache.set(tooltipCacheKey(slot), short);
     applyShortNameToSlotNodes(slot, short);
-    const [meta, catalogImage, catalogParamOrder] = await Promise.all([
-      getPresetMetaForId(catalogModelId),
-      getCatalogModelImageForId(catalogModelId),
-      getCatalogParamOrderForId(catalogModelId),
+    const meta = presetMetaForFiles;
+    const [catalogImage, catalogParamOrder] = await Promise.all([
+      getCatalogModelImageForId(catalogModelIdTrimmed),
+      getCatalogParamOrderForId(catalogModelIdTrimmed),
     ]);
     if (seq !== modelsParamsLoadSeq) return;
     const catalogBasedOn = pickBasedOn(meta);
@@ -1928,9 +1976,20 @@ async function resolveShortModelDisplayName(slot: SlotDebug): Promise<string> {
   const key = tooltipCacheKey(slot);
   const hit = kemplineTooltipCache.get(key);
   if (hit !== undefined) return hit;
-  const catalogModelId =
+  const nk = normalizeCategory(slot.category);
+  let catalogModelId =
     (slot.catalogModelId ?? "").trim() || (await getCatalogModelIdForHex(slot.moduleHex));
-  const found = await findModelDefinitionForSlot(slot, catalogModelId);
+  let idTrim = (catalogModelId ?? "").trim();
+  const mergeLike =
+    nk === "merge" ||
+    (nk === "routing" && slot.name.toLowerCase().includes("merge"));
+  if (!idTrim && mergeLike) idTrim = FLOW_JOIN_CATALOG_ID;
+  const metaForFiles = await getPresetMetaForId(idTrim);
+  const found = await findModelDefinitionForSlot(
+    slot,
+    idTrim,
+    metaForFiles?.categoryName ?? null,
+  );
   const display = (found?.entry.name ?? slot.name).trim() || "—";
   kemplineTooltipCache.set(key, display);
   return display;
@@ -2410,6 +2469,7 @@ function path1SeparatorSlot(
       category: markerCategory || "Merge",
       name: markerName || `Merge (Path 1 #${boundary})`,
       moduleHex: markerHex,
+      catalogModelId: FLOW_JOIN_CATALOG_ID,
     };
   }
   return { category: "Routing", name: `Separator (Path 1 #${boundary})`, moduleHex: "" };
@@ -2434,6 +2494,14 @@ const FLOW_IO_IDS_HD2: FlowIoCatalogIds = {
   input: "HD2_AppDSPFlow1Input",
   output: "HD2_AppDSPFlowOutput",
 };
+
+/**
+ * **Mixer / Merge** (`HD2_AppDSPFlowJoin`) : `presetMeta.chainHex` est vide dans le catalogue HX ;
+ * le parseur flux n’infère pas encore d’hex `19…1a` pour le segment merge (`0x03`, fenêtre Kempline index 19).
+ * Jointure par **id catalogue** fixe, comme l’I/O Path 1 (les valeurs chaîne viennent tout de même de
+ * `get_active_preset_kempline_flow_chain_param_values`).
+ */
+const FLOW_JOIN_CATALOG_ID = "HD2_AppDSPFlowJoin";
 
 /** Choix explicite de l'ID catalogue I/O selon la machine détectée (pas de chainHex pour ces slots). */
 function flowIoCatalogIdsForConnectedDevice(name: string | null): FlowIoCatalogIds {

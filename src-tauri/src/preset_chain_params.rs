@@ -352,4 +352,22 @@ mod tests {
         let vals = parse_flow_io_segment_params(&seg).expect("parse split flow");
         assert_eq!(vals.len(), 2);
     }
+
+    #[test]
+    fn merge_flow_segment_03_from_usb_capture_parses() {
+        // Paquet Wireshark concaténé (IN) : le segment merge `0x03` est suivi d’un en-tête USB
+        // `08 01 00 18 ed 03…` ; on ne garde que les 120 octets de flux utiles avant cette collision.
+        let hex = "031483108206000783020003000490118408cc970d020ac30783020603060496ca00000000ca3f000000ca00000000ca3f000000c2ca0000000012c301c0038207010898c0c0c0c0c0c0c0c0049dc0c0c0c0c0c0c0c0c0c0c0c0c0028200dc0010d10000d10000d10000d10000d10000d10000d10000d100";
+        let seg: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        assert_eq!(seg.len(), 120);
+        let vals = parse_flow_io_segment_params(&seg).expect("parse merge flow");
+        assert_eq!(vals.len(), 6);
+        match &vals[4] {
+            ChainParamValue::Bool(_) => {}
+            other => panic!("B Polarity (index 4) must decode as Bool, got {:?}", other),
+        }
+    }
 }
