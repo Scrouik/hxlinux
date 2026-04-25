@@ -106,6 +106,13 @@ fn parse_info_slot_block_value_bytes(value: &[u8]) -> Option<Vec<ChainParamValue
     if value.len() < 8 {
         return None;
     }
+    // Signature Kempline attendue des blocs "info slot" flow:
+    // `83 02 <num_params> ...` (Input/Output/Split/Merge).
+    // Sans ce garde-fou, un `0x07` parasite plus loin dans le segment peut être pris
+    // pour un bloc params valide et décaler l'UI (cas Merge/B Polarity).
+    if value[0] != 0x83 || value[1] != 0x02 {
+        return None;
+    }
     let num_params = value[2] as usize;
     if num_params == 0 {
         return Some(Vec::new());

@@ -294,10 +294,7 @@ Les fichiers **à la racine** de `src-tauri/resources/` (ex. `HX_ModelCatalog.js
 **Commits / contexte** : sur la branche **`refactor/multithread`**, le commit **`f79be40`** reste une référence pour `preset_chain_params` + première itération UI min | chaîne | max. Un commit local ultérieur (**`dd9ee9f`**, message **`feat(models): panneau paramètres et en-tête catalogue`**) regroupe notamment **`index.html`**, **`models.html`**, **`src/models.ts`**, **`src/styles.css`**, **`src/hxModelCatalogMeta.ts`** (en-tête 2×2, toggles bool, aperçu survol icône, etc.). Le **21 avril 2026**, commit **`de27037`** (*Preset chaîne, catalogue HX et panneau paramètres*) : alignement **`assign`** côté TS, segments **`0x06|0x08`**, évolutions **`lib.rs`** / catalogue / scripts / styles, suppression **`modules_by_id.json`**. Les gros diffs **`HX_ModelCatalog.json`** / **`TODO.md`** / **`description.md`** peuvent rester hors commit jusqu’à message dédié — voir **`git log`** / **`git status`**.
 
 Todo : 
-  * **Merge** : fiabiliser la récupération des valeurs chaîne et le panneau paramètres pour les blocs **Merge** (voir test **`merge_flow_segment_03_from_usb_capture_parses`** dans **`preset_chain_params.rs`**).
-  * Récupérer les données dans la colonne "Based On" (colonne 3) du fichier csv **'Line 6 Models descriptions.csv'** et les insérer dans le parametre "basedOn" du fichier **`HX_ModelCatalog.json`**.
-  * Récupérer les données dans la colonne "Subcategory" (colonne 2) du fichier csv **'Line 6 Models descriptions.csv'** et les insérer dans le parametre "subCategory" du fichier **`HX_ModelCatalog.json`**. Il peut y avoir deux informations dans cette colonne. "Mono, Stereo" "Single, Dual" => ["Mono","Stereo"] ou ["Single","Dual"]
-  
+  * ✅ **Merge (traité le 25 avril 2026)** : récupération fiabilisée des valeurs chaîne et du panneau paramètres pour les blocs **Merge**. Correctif Rust dans **`parse_info_slot_block_value_bytes`** (**`preset_chain_params.rs`**) : validation stricte de la signature bloc flow **`83 02 <num_params>`** après marqueur `0x07` pour éviter les faux positifs et préserver le typage bool de **B Polarity** (**Normal / Invert**). Couvert par **`merge_flow_segment_03_from_usb_capture_parses`**.
 
 
 
