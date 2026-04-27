@@ -9,8 +9,10 @@ pub mod usb_listener;
 pub mod usb_writer;
 pub mod keep_alive;
 pub mod modes;
+pub mod live_write;
 
 use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicBool, Ordering};
 use crate::helix::packet::OutPacket;
 
 // ===========================================================
@@ -92,6 +94,15 @@ pub struct HelixState {
     // Si true : RequestPreset revient à Standard (clic utilisateur)
     // Si false : RequestPreset revient à RequestPresetNames (démarrage)
     pub preset_content_only: bool,
+
+    /// Dernier bloc `83 66 cd 05 … 1c` extrait d’un écho IN `27 … ed 03 03 10`
+    /// (capture HX Edit). Sert à aligner les écritures live sur la session USB réelle.
+    pub last_ed03_echo_model: Option<[u8; 16]>,
+    /// Dernier octet de séquence (`… cd 05 XX …`) envoyé en OUT live tant qu’on n’a pas reçu d’écho IN.
+    pub ed03_live_write_seq_sent: Option<u8>,
+    /// Compteurs dédiés au write live `27` (reverse-engineering HX Edit).
+    pub live_write_ctr: u16,
+    pub live_write_yy: u8,
 }
 
 // ===========================================================
@@ -104,6 +115,46 @@ pub enum KeepAliveCommand {
     StartX2,
     StartX80,
     StopAll,
+}
+
+static USB_PACKET_TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
+static USB_PACKET_TRACE_DELTA_ONLY: AtomicBool = AtomicBool::new(true);
+static PRESET_DEBUG_VERBOSE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_usb_packet_trace_enabled(enabled: bool) {
+    USB_PACKET_TRACE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn usb_packet_trace_enabled() -> bool {
+    USB_PACKET_TRACE_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn set_usb_packet_trace_delta_only(enabled: bool) {
+    USB_PACKET_TRACE_DELTA_ONLY.store(enabled, Ordering::Relaxed);
+}
+
+pub fn usb_packet_trace_delta_only() -> bool {
+    USB_PACKET_TRACE_DELTA_ONLY.load(Ordering::Relaxed)
+}
+
+pub fn set_preset_debug_verbose_enabled(enabled: bool) {
+    PRESET_DEBUG_VERBOSE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn preset_debug_verbose_enabled() -> bool {
+    PRESET_DEBUG_VERBOSE_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Construit une empreinte "stable" pour réduire le bruit de traces :
+/// certains keep-alive de 16 octets ne changent qu'au niveau d'un compteur.
+pub fn usb_trace_fingerprint(data: &[u8]) -> Vec<u8> {
+    let mut fp = data.to_vec();
+    // Trames USB internes observées: header fixe 08 00 00 18, compteur roulant
+    // en position 9 (0-based). On le neutralise pour la déduplication "delta-only".
+    if fp.len() == 16 && fp.starts_with(&[0x08, 0x00, 0x00, 0x18]) {
+        fp[9] = 0;
+    }
+    fp
 }
 
 impl HelixState {
@@ -131,7 +182,61 @@ impl HelixState {
             preset_pkt_counter: 0x001e,
             request_preset_session_id: 0xf4,
             session_quadruple: [0xf4, 0x1e, 0x00, 0x00],
+            last_ed03_echo_model: None,
+            ed03_live_write_seq_sent: None,
+            live_write_ctr: 0x6cbd,
+            live_write_yy: 0x17,
         }
+    }
+
+    /// Mémorise le suffixe « modèle » des échos paramètre (IN) pour caler les OUT live.
+    pub fn ingest_ed03_param_echo(&mut self, data: &[u8]) {
+        if data.len() < 16 {
+            return;
+        }
+        // Heuristique large:
+        // 1) repérer un marqueur ED03 plausible n'importe où dans la trame,
+        // 2) repérer un bloc modèle `83 66 cd ??` n'importe où,
+        // 3) conserver seulement si le bloc modèle est après le marqueur ED03.
+        let mut ed03_off: Option<usize> = None;
+        for i in 0..=data.len().saturating_sub(4) {
+            let w = &data[i..i + 4];
+            if *w == [0xed, 0x03, 0x03, 0x10]
+                || *w == [0x03, 0x10, 0xed, 0x03]
+                || *w == [0x80, 0x10, 0xed, 0x03]
+            {
+                ed03_off = Some(i);
+                break;
+            }
+        }
+        let Some(ed03_i) = ed03_off else {
+            return;
+        };
+
+        let mut found: Option<([u8; 16], usize)> = None;
+        for i in 0..=data.len().saturating_sub(16) {
+            if data[i] == 0x83 && data[i + 1] == 0x66 && data[i + 2] == 0xcd {
+                if i > ed03_i {
+                    let mut b = [0u8; 16];
+                    b.copy_from_slice(&data[i..i + 16]);
+                    found = Some((b, i));
+                    break;
+                }
+            }
+        }
+        let Some((b, model_i)) = found else {
+            return;
+        };
+        self.last_ed03_echo_model = Some(b);
+        // Nouvel écho device : on repart de sa séquence pour les prochains OUT.
+        self.ed03_live_write_seq_sent = None;
+        eprintln!(
+            "[LiveWrite][echo-captured] len={} ed03_off={} model_off={} seq={:02x}",
+            data.len(),
+            ed03_i,
+            model_i,
+            b[4]
+        );
     }
 
     pub fn increase_session_quadruple_x11(&mut self) {

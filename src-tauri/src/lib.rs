@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::mpsc::TryRecvError;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
@@ -27,7 +28,12 @@ use serde_json::Value;
 use helix::HelixState;
 use helix::ModeRequest;
 use helix::KeepAliveCommand;
+use helix::{
+    set_preset_debug_verbose_enabled, set_usb_packet_trace_delta_only,
+    set_usb_packet_trace_enabled, usb_packet_trace_delta_only, usb_packet_trace_enabled,
+};
 use helix::packet::OutPacket;
+use helix::live_write::build_live_write_frames_from_state;
 use helix::keep_alive::KeepAliveManager;
 use helix::modes::connect::Connect;
 use helix::modes::request_preset_name::RequestPresetName;
@@ -46,7 +52,6 @@ const SUPPORTED_DEVICES: &[(&str, u16, u16)] = &[
 ];
 const EXPECTED_PRESET_COUNT: usize = 125;
 const WINDOW_LAYOUT_FILE: &str = "window-layout.json";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SavedWindowGeometry {
     x: i32,
@@ -331,6 +336,201 @@ fn activate_preset(
     Ok(())
 }
 
+/// Envoie un Control Change MIDI USB (endpoint 0x02).
+/// Nécessite un Controller Assign côté preset HX pour agir sur un paramètre.
+#[tauri::command]
+fn write_live_param_midi_cc(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_index: u32,
+    param_index: u32,
+    symbolic_id: String,
+    display_type: Option<String>,
+    raw_value: f64,
+    midi_channel: u8,
+    cc_number: u8,
+) -> Result<(), String> {
+    if slot_index >= 16 {
+        return Err("slotIndex hors plage (0..15)".to_string());
+    }
+    if !raw_value.is_finite() {
+        return Err("rawValue invalide".to_string());
+    }
+    if midi_channel > 15 {
+        return Err("midiChannel hors plage (0..15)".to_string());
+    }
+    if cc_number > 127 {
+        return Err("ccNumber hors plage (0..127)".to_string());
+    }
+
+    let handle = {
+        let app = state.lock().unwrap();
+        app.usb_handle.clone().ok_or("HX non connecté")?
+    };
+
+    let sid = symbolic_id.trim();
+    let raw = raw_value.clamp(0.0, 1.0);
+    let cc_value = ((raw * 127.0).round() as i64).clamp(0, 127) as u8;
+    // USB-MIDI Event Packet:
+    // CIN=0xB (Control Change), status 0xBn, controller, value.
+    let status = 0xB0u8 | midi_channel;
+    let packet = [0x0Bu8, status, cc_number, cc_value];
+    handle
+        .write_bulk(0x02, &packet, Duration::from_millis(1000))
+        .map_err(|e| format!("Erreur MIDI CC : {}", e))?;
+
+    eprintln!(
+        "[LiveWriteMidiCC][sent] slot={} param={} symbolicId={} displayType={} rawValue={} channel={} cc={} value={} packet={:02x} {:02x} {:02x} {:02x}",
+        slot_index,
+        param_index,
+        sid,
+        display_type.unwrap_or_default(),
+        raw,
+        midi_channel,
+        cc_number,
+        cc_value,
+        packet[0],
+        packet[1],
+        packet[2],
+        packet[3]
+    );
+    Ok(())
+}
+
+/// Sonde d'écriture live (expérimental, sans envoi USB pour l'instant).
+/// Déclenchée côté UI quand `localStorage.models_live_write_probe === "1"`.
+#[tauri::command]
+fn probe_live_param_write(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_index: u32,
+    param_index: u32,
+    symbolic_id: String,
+    display_type: Option<String>,
+    raw_value: f64,
+) -> Result<(), String> {
+    if slot_index >= 16 {
+        return Err("slotIndex hors plage (0..15)".to_string());
+    }
+    if !raw_value.is_finite() {
+        return Err("rawValue invalide".to_string());
+    }
+    let has_hx = {
+        let app = state.lock().unwrap();
+        app.helix_state.is_some()
+    };
+    if !has_hx {
+        return Err("HX non connecté".to_string());
+    }
+    // Étape A: instrumentation uniquement (pipeline UI -> backend).
+    // La synthèse/envoi du paquet live sera branchée après capture USB HX Edit.
+    eprintln!(
+        "[LiveWriteProbe] slot={} param={} symbolicId={} displayType={} rawValue={}",
+        slot_index,
+        param_index,
+        symbolic_id.trim(),
+        display_type.unwrap_or_default(),
+        raw_value
+    );
+    Ok(())
+}
+
+/// Écriture live (expérimental) : pipeline UI -> backend prêt pour la synthèse paquet USB.
+/// Actuellement, cette commande journalise les paramètres validés.
+#[tauri::command]
+fn write_live_param(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_index: u32,
+    param_index: u32,
+    symbolic_id: String,
+    display_type: Option<String>,
+    raw_value: f64,
+) -> Result<(), String> {
+    if slot_index >= 16 {
+        return Err("slotIndex hors plage (0..15)".to_string());
+    }
+    if !raw_value.is_finite() {
+        return Err("rawValue invalide".to_string());
+    }
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+
+    let sid = symbolic_id.trim();
+
+    // Utilise la valeur réelle du slider, bornée dans l'intervalle machine attendu.
+    let raw = raw_value.clamp(0.0, 1.0) as f32;
+    // Trames calquées sur capture USBPcap HX Edit.
+    // Cette construction est déléguée à `helix/live_write.rs` pour itérer
+    // rapidement sur le protocole reverse-engineered sans gonfler `lib.rs`.
+    let mut s = helix_arc.lock().unwrap();
+    let frames = build_live_write_frames_from_state(&mut s, raw, param_index, sid);
+
+    s.send(OutPacket::new(frames.pre_packet_x80.clone()));
+    s.send(OutPacket::with_delay(frames.pre_packet_x2.clone(), 4));
+    s.send(OutPacket::with_delay(frames.pre_packet_x80_sel.clone(), 8));
+    s.send(OutPacket::with_delay(frames.packet_27.clone(), 12));
+    // Deuxième jambe HX Edit (octet 11 = 0x0c), CTR/SEQ déjà avancés dans le builder.
+    s.send(OutPacket::with_delay(frames.packet_27_b.clone(), 8));
+    s.send(OutPacket::with_delay(frames.post_packet_x80_sel.clone(), 8));
+
+    drop(s);
+
+    eprintln!(
+        "[LiveWrite][sent] slot={} param={} symbolicId={} displayType={} rawValue={} sentRaw={} pp={:02x} ppSource={} pSel={:02x} pSelSource={} model_block={} frame27_diff={} pre_x80={} pre_x2={} pre_x80_sel={} frame27_a={} frame27_b={} post_x80_sel={}",
+        slot_index,
+        param_index,
+        sid,
+        display_type.unwrap_or_default(),
+        raw_value,
+        raw,
+        frames.pp,
+        frames.pp_source,
+        frames.param_selector,
+        frames.param_selector_source,
+        frames.model_block_kind,
+        frames.frame27_diff_vs_static,
+        frames.pre_packet_x80.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" "),
+        frames.pre_packet_x2.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" "),
+        frames.pre_packet_x80_sel.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" "),
+        frames.packet_27.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" "),
+        frames.packet_27_b.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" "),
+        frames.post_packet_x80_sel.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ")
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn set_usb_trace_enabled(enabled: bool) -> Result<(), String> {
+    set_usb_packet_trace_enabled(enabled);
+    eprintln!(
+        "[UsbTrace] packet tracing {} (delta_only={})",
+        if enabled { "enabled" } else { "disabled" },
+        usb_packet_trace_delta_only()
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn set_usb_trace_delta_only(enabled: bool) -> Result<(), String> {
+    set_usb_packet_trace_delta_only(enabled);
+    eprintln!(
+        "[UsbTrace] delta-only tracing {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn set_preset_debug_verbose(enabled: bool) -> Result<(), String> {
+    set_preset_debug_verbose_enabled(enabled);
+    eprintln!(
+        "[PresetDebug] verbose logging {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
+    Ok(())
+}
+
 /// Retourne les données brutes du dernier preset lu en hex (debug).
 #[tauri::command]
 fn get_preset_data_hex(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<String> {
@@ -361,7 +561,6 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
     };
     let mut s = helix_arc.lock().unwrap();
     if s.preset_content_only && !s.preset_data_ready {
-        eprintln!("[PresetDebug][request_preset_content] already in progress, skip");
         return Ok(());
     }
     // L'UI met à jour `active_preset` (ex. après `activate_preset` + MIDI PC) avant cette
@@ -369,21 +568,10 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
     // l'écoute MIDI — parfois après le dump, ou jamais si `RequestPresetName` est ignoré
     // pendant `preset_content_only`. Sans cette ligne, `get_active_preset_slots` reste à
     // None et la fenêtre models timeoute.
-    if s.preset_index != active_preset {
-        eprintln!(
-            "[PresetDebug][request_preset_content] sync helix preset_index {} -> app active_preset {}",
-            s.preset_index,
-            active_preset
-        );
-    }
     s.preset_index = active_preset;
     s.preset_data_ready = false;
     s.preset_data.clear();
     s.preset_content_only = true;
-    eprintln!(
-        "[PresetDebug][request_preset_content] trigger preset_index={} mode=RequestPreset",
-        s.preset_index
-    );
     s.switch_mode(ModeRequest::RequestPreset);
     Ok(())
 }
@@ -2025,7 +2213,7 @@ fn kempline_assignable_segment_bytes(data: &[u8], slot_index: usize) -> Option<&
 
 /// Grille fixe 8 + 8 emplacements (Kempline `preset_info_complete`) : None si le dump ne suit pas ce format.
 fn try_parse_preset_kempline_grid(data: &[u8]) -> Option<Vec<ParsedSlot>> {
-    let (start, segs_len) = kempline_grid_window_start_and_seg_count(data)?;
+    let (start, _segs_len) = kempline_grid_window_start_and_seg_count(data)?;
     let segs = split_preset_by_8213(data);
     let w = &segs[start..start + 20];
     let mut out: Vec<ParsedSlot> = Vec::with_capacity(16);
@@ -2044,10 +2232,6 @@ fn try_parse_preset_kempline_grid(data: &[u8]) -> Option<Vec<ParsedSlot>> {
         };
         out.push(cell);
     }
-    eprintln!(
-        "[PresetDebug][try_parse_preset_kempline_grid] ok: 16 assignable slots from {} segments",
-        segs_len
-    );
     Some(out)
 }
 
@@ -2123,6 +2307,12 @@ pub fn run() {
             rename_preset,
             activate_preset,
             request_preset_content,
+            probe_live_param_write,
+            write_live_param,
+            write_live_param_midi_cc,
+            set_usb_trace_enabled,
+            set_usb_trace_delta_only,
+            set_preset_debug_verbose,
             get_preset_slots,
             get_active_preset_slots,
             get_active_preset_slots_debug,
@@ -2322,9 +2512,45 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
         let state_midi   = Arc::clone(&state);
         thread::spawn(move || {
             let mut buf = vec![0u8; 64];
+            let mut seen_fingerprints: HashSet<Vec<u8>> = HashSet::new();
+            let mut suppressed_repeats: u64 = 0;
             loop {
                 match handle_midi.read_bulk(0x82, &mut buf, Duration::from_millis(500)) {
                     Ok(n) if n >= 4 => {
+                        {
+                            let mut s = state_midi.lock().unwrap();
+                            // Certains firmwares routent des paquets paramètre sur le flux MIDI USB (0x82).
+                            // On tente l'ingestion ED03 ici aussi pour alimenter le mode live `in_echo_strict`.
+                            s.ingest_ed03_param_echo(&buf[..n]);
+                        }
+                        if usb_packet_trace_enabled() {
+                            let delta_only = usb_packet_trace_delta_only();
+                            let data = buf[..n].to_vec();
+                            let fingerprint = helix::usb_trace_fingerprint(&data);
+                            if delta_only {
+                                if !seen_fingerprints.insert(fingerprint.clone()) {
+                                    suppressed_repeats = suppressed_repeats.saturating_add(1);
+                                    continue;
+                                } else if suppressed_repeats > 0 {
+                                    eprintln!(
+                                        "[UsbTrace][IN  0x82] known patterns suppressed total={}",
+                                        suppressed_repeats
+                                    );
+                                    suppressed_repeats = 0;
+                                }
+                            }
+                            if !delta_only || seen_fingerprints.contains(&fingerprint) {
+                                let hex = data
+                                    .iter()
+                                    .map(|b| format!("{:02x}", b))
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                eprintln!("[UsbTrace][IN  0x82][len={}] {}", n, hex);
+                            }
+                        } else {
+                            seen_fingerprints.clear();
+                            suppressed_repeats = 0;
+                        }
                         if buf[0] == 0x0C && (buf[1] & 0xF0) == 0xC0 {
                             let preset_no = buf[2] as usize;
                             {

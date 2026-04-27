@@ -12,22 +12,6 @@ import {
 } from "./hxModelCatalogMeta";
 import "./styles.css";
 
-let currentPresetIndex = -1;
-let loadedPresetIndex = -1;
-let loading = false;
-let pendingPresetIndex = -1;
-let lastRequestedPresetIndex = -1;
-const ENABLE_PRESET_CONTENT = true;
-const DEBUG_MODEL_ID_JOIN_FALLBACK =
-  localStorage.getItem("models_debug_id_join") === "1";
-let requestedPresetNameIndex = -1;
-let debugRoutingMode = localStorage.getItem("models_debug_routing") === "1";
-let connectedDeviceName: string | null = null;
-
-const statusEl = document.getElementById("status") as HTMLElement;
-const presetLabelEl = document.getElementById("preset-label") as HTMLElement;
-const contentEl = document.getElementById("content") as HTMLElement;
-
 type SlotDebug = {
   category: string;
   name: string;
@@ -47,6 +31,362 @@ type RoutingMarker = {
   moduleHex?: string;
 };
 
+let currentPresetIndex = -1;
+let loadedPresetIndex = -1;
+let loading = false;
+let pendingPresetIndex = -1;
+let lastRequestedPresetIndex = -1;
+const ENABLE_PRESET_CONTENT = true;
+const DEBUG_MODEL_ID_JOIN_FALLBACK =
+  localStorage.getItem("models_debug_id_join") === "1";
+let requestedPresetNameIndex = -1;
+let debugRoutingMode = localStorage.getItem("models_debug_routing") === "1";
+let connectedDeviceName: string | null = null;
+
+const statusEl = document.getElementById("status") as HTMLElement;
+const presetLabelEl = document.getElementById("preset-label") as HTMLElement;
+const contentEl = document.getElementById("content") as HTMLElement;
+const LIVE_WRITE_PROBE_FLAG = "models_live_write_probe";
+const LIVE_WRITE_ENABLED_FLAG = "models_live_write_enabled";
+const LIVE_WRITE_TRANSPORT_KEY = "models_live_write_transport";
+const LIVE_WRITE_MIDI_CC_KEY = "models_live_midi_cc";
+const LIVE_WRITE_MIDI_CHANNEL_KEY = "models_live_midi_channel";
+const LIVE_WRITE_SYNC_PAUSE_MS = 1200;
+const HW_SYNC_INTERVAL_MS_KEY = "models_hw_sync_interval_ms";
+const HW_SYNC_MIN_MS = 100;
+const HW_SYNC_MAX_MS = 5000;
+let lastHardwareSyncAt = 0;
+let hardwareSyncBusy = false;
+let lastLiveWriteAt = 0;
+let liveWriteUiInteractionUntil = 0;
+type PendingLiveWrite = {
+  slotIndex: number;
+  paramIndex: number;
+  symbolicId: string;
+  displayType: string | null;
+  rawValue: number;
+};
+const pendingLiveWrites = new Map<string, PendingLiveWrite>();
+/** Signature `category|name|moduleHex|…` par slot — stable si seuls les paramètres changent sur le HX. */
+let lastHwSyncChainSignature: string | null = null;
+/** Anti-flash: exige deux cycles consécutifs avant rerender complet si la signature change. */
+let pendingHwLayoutSignature: string | null = null;
+/** Snapshot liste presets + preset actif (device) pour éviter MAJ label inutiles. */
+let lastPresetNamesSig: string | null = null;
+
+function getHardwareSyncIntervalMs(): number {
+  const raw = (localStorage.getItem(HW_SYNC_INTERVAL_MS_KEY) ?? "").trim();
+  if (!raw) return 0;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.max(HW_SYNC_MIN_MS, Math.min(HW_SYNC_MAX_MS, parsed));
+}
+
+function delayMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function normalizeSlotsPayloadFromInvoke(
+  slots: [string, string][] | [string, string, string, string][] | [string, string, string, string, string][],
+): SlotDebug[] {
+  if (debugRoutingMode) {
+    return (slots as unknown as [string, string, string, string, string][]).map(
+      ([category, name, gridX, gridY, moduleHex]) => ({
+        category,
+        name,
+        gridX,
+        gridY,
+        moduleHex: moduleHex?.trim() || undefined,
+      }),
+    );
+  }
+  return (slots as unknown as [string, string, string][]).map(([category, name, moduleHex]) => ({
+    category,
+    name,
+    moduleHex: moduleHex?.trim() || undefined,
+  }));
+}
+
+function chainLayoutSignature(slots: SlotDebug[]): string {
+  return slots
+    .map((s, i) => {
+      // Signature volontairement "structurelle" pour éviter les faux positifs de rerender:
+      // on ignore le nom affiché (peut varier/bruiter selon parse) et on garde les clés slot.
+      const cat = s.category.trim().toLowerCase();
+      const hx = (s.moduleHex ?? "").trim().toLowerCase();
+      const gx = (s.gridX ?? "").trim();
+      const gy = (s.gridY ?? "").trim();
+      const st = (s.slotTypeHex ?? "").trim().toLowerCase();
+      return `${i}|${cat}|${hx}|${gx}|${gy}|${st}`;
+    })
+    .join("\x1e");
+}
+
+function rememberHwSyncChainLayout(slots: SlotDebug[]): void {
+  lastHwSyncChainSignature = chainLayoutSignature(slots);
+  pendingHwLayoutSignature = null;
+}
+
+function scheduleHardwareSyncPoll(): void {
+  // Boucle périodique "soft" : priorise les mises à jour incrémentales.
+  void runHardwareSyncSoftRefresh();
+}
+
+/**
+ * Sync matériel sans reconstruire toute l’UI si la disposition des blocs est inchangée
+ * (réduit le flash : seul le panneau paramètres du slot sélectionné est rechargé).
+ */
+async function runHardwareSyncSoftRefresh(): Promise<void> {
+  const syncMs = getHardwareSyncIntervalMs();
+  if (syncMs <= 0) return;
+  if (currentPresetIndex < 0) return;
+  if (loading || hardwareSyncBusy) return;
+  if (loadedPresetIndex !== currentPresetIndex) return;
+
+  const now = Date.now();
+  const wroteThisCycle = await flushPendingLiveWrites();
+  if (now < liveWriteUiInteractionUntil) return;
+  // Pendant une écriture live (ou juste après), éviter de forcer RequestPreset,
+  // sinon la machine d'état repasse en lecture et l'écriture peut être ignorée.
+  if (!wroteThisCycle && now - lastLiveWriteAt < LIVE_WRITE_SYNC_PAUSE_MS) return;
+  if (now - lastHardwareSyncAt < syncMs) return;
+  lastHardwareSyncAt = now;
+
+  const presetIdx = currentPresetIndex;
+  hardwareSyncBusy = true;
+  try {
+    await invoke("request_preset_content");
+
+    let normalized: SlotDebug[] | null = null;
+    for (let tries = 0; tries < 45; tries += 1) {
+      if (currentPresetIndex !== presetIdx) return;
+      try {
+        const slots = debugRoutingMode
+          ? await invoke<[string, string, string, string][] | null>("get_active_preset_slots_debug")
+          : await invoke<[string, string][] | null>("get_active_preset_slots");
+        if (slots !== null) {
+          normalized = normalizeSlotsPayloadFromInvoke(slots as never);
+          break;
+        }
+      } catch {
+        // transient
+      }
+      await delayMs(200);
+    }
+
+    if (!normalized || currentPresetIndex !== presetIdx) return;
+
+    const deviceActive = await invoke<number>("get_active_preset");
+    if (deviceActive !== presetIdx) {
+      const names = await invoke<string[]>("get_preset_names");
+      if (deviceActive >= 0 && deviceActive < names.length) {
+        currentPresetIndex = deviceActive;
+        loadedPresetIndex = -1;
+        requestedPresetNameIndex = -1;
+        clearSelectedParamsContext();
+        renderEmpty("Chargement des modeles...");
+        scheduleLoadForPreset(deviceActive, true);
+      }
+      return;
+    }
+
+    const names = await invoke<string[]>("get_preset_names");
+    const nameSig = `${deviceActive}\n${names.join("\n")}`;
+    if (nameSig !== lastPresetNamesSig) {
+      lastPresetNamesSig = nameSig;
+      if (deviceActive >= 0 && deviceActive < names.length) {
+        const displayName = isEmpty(names[deviceActive]) ? "empty" : names[deviceActive];
+        presetLabelEl.textContent = `${padNum(deviceActive)} ${displayName}`;
+      }
+    }
+
+    const sig = chainLayoutSignature(normalized);
+    // Layout inchangé => on évite `renderSlots` (flash) et on met à jour uniquement le panneau sélectionné.
+    if (lastHwSyncChainSignature !== null && sig === lastHwSyncChainSignature) {
+      pendingHwLayoutSignature = null;
+      await softRefreshParamsPaneFromSlots(normalized);
+      return;
+    }
+    // Anti-flash: un changement isolé/parsing transitoire ne doit pas reconstruire tout le haut.
+    // On ne rerender que si la nouvelle signature est observée 2 cycles d'affilée.
+    if (lastHwSyncChainSignature !== null && sig !== lastHwSyncChainSignature) {
+      if (pendingHwLayoutSignature !== sig) {
+        pendingHwLayoutSignature = sig;
+        await softRefreshParamsPaneFromSlots(normalized);
+        return;
+      }
+    }
+
+    rememberHwSyncChainLayout(normalized);
+    let routingFlow: RoutingMarker[] = [];
+    let stompLayout: ActivePresetStompLayout | null = null;
+    if (isKemplineGrid16(normalized)) {
+      try {
+        const r = await invoke<[string, string, string][] | null>("get_active_preset_routing_markers");
+        routingFlow =
+          r?.map(([category, name, moduleHex]) => ({
+            category,
+            name,
+            moduleHex: moduleHex?.trim() || undefined,
+          })) ?? [];
+      } catch {
+        console.warn("[PresetDebug][models] get_active_preset_routing_markers error (hw sync)");
+      }
+      try {
+        stompLayout = await invoke<ActivePresetStompLayout | null>("get_active_preset_stomp_layout");
+      } catch {
+        console.warn("[PresetDebug][models] get_active_preset_stomp_layout error (hw sync)");
+      }
+    }
+    if (currentPresetIndex !== presetIdx) return;
+    await renderSlots(normalized, routingFlow, stompLayout);
+    const realBlocks = countRealBlocks(normalized);
+    const singleDsp = isSingleDspDevice(connectedDeviceName);
+    const dspSuffix = singleDsp ? ` (${realBlocks}/8 max)` : "";
+    const overLimit =
+      singleDsp && realBlocks > 8 ? " - warning: parsed blocks exceed Stomp DSP budget" : "";
+    setStatus(
+      debugRoutingMode
+        ? `${realBlocks} blocks detected${dspSuffix} (debug routing ON)${overLimit}`
+        : `${realBlocks} blocks detected${dspSuffix}${overLimit}`,
+    );
+  } catch (e) {
+    console.warn("[PresetDebug][models] hardware sync soft refresh error", e);
+  } finally {
+    hardwareSyncBusy = false;
+  }
+}
+
+async function softRefreshParamsPaneFromSlots(slots: SlotDebug[]): Promise<void> {
+  if (!hasSelectedParamsContextForCurrentPreset()) return;
+  const idx = selectedParamsKemplineSlotIndex;
+  if (idx === null || idx < 0 || idx >= slots.length) return;
+  const slot = slots[idx];
+  if (!slot) return;
+  let chainValues: ChainParamValueJson[] | null = null;
+  try {
+    chainValues = await invoke<ChainParamValueJson[] | null>(
+      "get_active_preset_slot_chain_param_values",
+      { slotIndex: idx },
+    );
+  } catch {
+    chainValues = null;
+  }
+  const nextSig = `${currentPresetIndex}|${idx}|${chainValuesSignature(chainValues)}`;
+  if (selectedParamsValuesSig === nextSig) return;
+  const slotKey = makeSlotSelectionKey(slot, idx);
+  // Même slot + updater actif => patch des widgets in-place sans repasser par l'état "Chargement".
+  if (
+    selectedParamsInPlaceUpdater &&
+    selectedParamsInPlaceSlotKey &&
+    selectedParamsInPlaceSlotKey === slotKey
+  ) {
+    selectedParamsInPlaceUpdater(chainValues);
+    selectedParamsValuesSig = nextSig;
+    return;
+  }
+  selectedParamsValuesSig = nextSig;
+  await loadAndShowModelsParamsForSlot(slot, idx);
+}
+
+function liveWriteProbeEnabled(): boolean {
+  return localStorage.getItem(LIVE_WRITE_PROBE_FLAG) === "1";
+}
+
+function liveWriteEnabled(): boolean {
+  return localStorage.getItem(LIVE_WRITE_ENABLED_FLAG) === "1";
+}
+
+function markLiveWriteUiInteraction(): void {
+  const now = Date.now();
+  // Pause immédiate pour empêcher un poll hardware de partir entre deux events slider.
+  liveWriteUiInteractionUntil = now + 900;
+  lastLiveWriteAt = now;
+}
+
+function liveWriteTransport(): "usb_raw" | "midi_cc" {
+  return localStorage.getItem(LIVE_WRITE_TRANSPORT_KEY) === "midi_cc" ? "midi_cc" : "usb_raw";
+}
+
+function liveWriteMidiCcNumber(): number {
+  const raw = (localStorage.getItem(LIVE_WRITE_MIDI_CC_KEY) ?? "").trim();
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(127, parsed));
+}
+
+function liveWriteMidiChannel(): number {
+  const raw = (localStorage.getItem(LIVE_WRITE_MIDI_CHANNEL_KEY) ?? "").trim();
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(15, parsed));
+}
+
+function scheduleLiveParamWriteProbe(
+  slotIndex: number | undefined,
+  paramIndex: number,
+  p: ModelParamDefJson,
+  rawValue: number,
+): void {
+  if (!liveWriteProbeEnabled()) return;
+  if (slotIndex === undefined || !Number.isInteger(slotIndex)) return;
+  if (!Number.isFinite(rawValue)) return;
+  const symbolicId = (p.symbolicID ?? "").trim();
+  if (!symbolicId) return;
+  const key = `${slotIndex}:${symbolicId}:${paramIndex}`;
+  pendingLiveWrites.set(key, {
+    slotIndex,
+    paramIndex,
+    symbolicId,
+    displayType: (p.displayType ?? "").trim() || null,
+    rawValue,
+  });
+}
+
+async function flushPendingLiveWrites(): Promise<boolean> {
+  if (pendingLiveWrites.size === 0) return false;
+  const batch = [...pendingLiveWrites.values()];
+  pendingLiveWrites.clear();
+  const mode = liveWriteEnabled() ? liveWriteTransport() : "probe";
+  lastLiveWriteAt = Date.now();
+  for (const w of batch) {
+    try {
+      if (mode === "probe") {
+        await invoke("probe_live_param_write", {
+          slotIndex: w.slotIndex,
+          paramIndex: w.paramIndex,
+          symbolicId: w.symbolicId,
+          displayType: w.displayType,
+          rawValue: w.rawValue,
+        });
+      } else if (mode === "midi_cc") {
+        await invoke("write_live_param_midi_cc", {
+          slotIndex: w.slotIndex,
+          paramIndex: w.paramIndex,
+          symbolicId: w.symbolicId,
+          displayType: w.displayType,
+          rawValue: w.rawValue,
+          midiChannel: liveWriteMidiChannel(),
+          ccNumber: liveWriteMidiCcNumber(),
+        });
+      } else {
+        await invoke("write_live_param", {
+          slotIndex: w.slotIndex,
+          paramIndex: w.paramIndex,
+          symbolicId: w.symbolicId,
+          displayType: w.displayType,
+          rawValue: w.rawValue,
+        });
+      }
+    } catch {
+      // Mode expérimental : ne pas casser l'UI en cas d'erreur backend.
+    }
+  }
+  return true;
+}
+
 const MODELS_PARAMS_IDLE_PLACEHOLDER =
   "Les paramètres du bloc sélectionné s'afficheront ici.";
 
@@ -62,6 +402,10 @@ function getModelsParamsSubheadEl(): HTMLElement | null {
   return document.getElementById("models-params-pane-subhead");
 }
 
+function getModelsParamsBasedOnEl(): HTMLElement | null {
+  return document.getElementById("models-params-pane-basedon");
+}
+
 function getModelsParamsModelIconWrapEl(): HTMLElement | null {
   return document.getElementById("models-params-pane-model-icon-wrap");
 }
@@ -69,6 +413,11 @@ function getModelsParamsModelIconWrapEl(): HTMLElement | null {
 /** Vide le sous-titre modèle et l’icône sous le bandeau titre. */
 function clearModelsParamsSubheadAndIcon(): void {
   getModelsParamsSubheadEl()?.replaceChildren();
+  const basedOn = getModelsParamsBasedOnEl();
+  if (basedOn) {
+    basedOn.textContent = "";
+    basedOn.title = "";
+  }
   disposeModelsParamsIconLivePreview();
   hideModelsParamsIconPreviewPopover();
   getModelsParamsModelIconWrapEl()?.replaceChildren();
@@ -96,9 +445,9 @@ function setModelsParamsPaneCategory(
   const hexSpan = document.createElement("span");
   hexSpan.className = "models-params-pane-title-module-hex";
   if (hex) {
-    const hexUp = hex.toUpperCase();
-    hexSpan.textContent = `chainHex: ${hexUp}`;
-    hexSpan.title = `chainHex lu depuis le HX : ${hexUp}`;
+    const hexLower = hex.toLowerCase();
+    hexSpan.textContent = `chainHex: ${hexLower}`;
+    hexSpan.title = `chainHex lu depuis le HX : ${hexLower}`;
   } else {
     const st = (slotTypeHex ?? "").trim().toUpperCase();
     hexSpan.textContent = st ? `chainHex: — (slotType ${st})` : "chainHex: —";
@@ -110,12 +459,72 @@ function setModelsParamsPaneCategory(
 }
 
 let selectedParamsSlotEl: HTMLElement | null = null;
+let selectedParamsSlotKey: string | null = null;
+let selectedParamsPresetIndex = -1;
+let selectedParamsKemplineSlotIndex: number | null = null;
+let selectedParamsValuesSig: string | null = null;
+// Callback de patch in-place pour le panneau courant (même modèle, valeurs différentes).
+let selectedParamsInPlaceUpdater: ((rawChainValues: ChainParamValueJson[] | null) => void) | null = null;
+let selectedParamsInPlaceSlotKey: string | null = null;
+
+function makeSlotSelectionKey(slot: SlotDebug, kemplineSlotIndex?: number): string {
+  const k = Number.isInteger(kemplineSlotIndex) ? String(kemplineSlotIndex) : "";
+  return [
+    slot.category.trim().toLowerCase(),
+    slot.name.trim().toLowerCase(),
+    (slot.moduleHex ?? "").trim().toLowerCase(),
+    (slot.slotTypeHex ?? "").trim().toLowerCase(),
+    k,
+  ].join("|");
+}
+
+function clearSelectedParamsContext(): void {
+  selectedParamsSlotKey = null;
+  selectedParamsPresetIndex = -1;
+  selectedParamsKemplineSlotIndex = null;
+  selectedParamsValuesSig = null;
+  selectedParamsInPlaceUpdater = null;
+  selectedParamsInPlaceSlotKey = null;
+}
+
+function hasSelectedParamsContextForCurrentPreset(): boolean {
+  return (
+    selectedParamsPresetIndex === currentPresetIndex &&
+    (selectedParamsKemplineSlotIndex !== null || !!selectedParamsSlotKey)
+  );
+}
+
+function chainValuesSignature(values: ChainParamValueJson[] | null): string {
+  if (!values) return "null";
+  return JSON.stringify(values);
+}
 
 function clearSlotSelectionVisual() {
   if (selectedParamsSlotEl) {
     selectedParamsSlotEl.classList.remove("node--selected");
     selectedParamsSlotEl = null;
   }
+}
+
+function tryRestoreSelectedParamsPaneAfterRender(): boolean {
+  if (selectedParamsPresetIndex !== currentPresetIndex) return false;
+  if (selectedParamsKemplineSlotIndex !== null) {
+    const byIndex = contentEl.querySelector<HTMLElement>(
+      `[data-kempline-slot-index="${selectedParamsKemplineSlotIndex}"]`,
+    );
+    if (byIndex) {
+      byIndex.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      return true;
+    }
+  }
+  if (!selectedParamsSlotKey) return false;
+  const nodes = contentEl.querySelectorAll<HTMLElement>("[data-slot-selection-key]");
+  for (const node of nodes) {
+    if (node.dataset.slotSelectionKey !== selectedParamsSlotKey) continue;
+    node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    return true;
+  }
+  return false;
 }
 
 function resetModelsParamsIdleHint() {
@@ -147,9 +556,19 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
   el.classList.add("node--params-clickable");
   el.tabIndex = 0;
   el.setAttribute("role", "button");
+  if (slot !== null) {
+    const kRaw = el.dataset.kemplineSlotIndex;
+    const kemplineSlotIndex =
+      kRaw !== undefined && kRaw !== "" ? Number.parseInt(kRaw, 10) : undefined;
+    el.dataset.slotSelectionKey = makeSlotSelectionKey(
+      slot,
+      Number.isFinite(kemplineSlotIndex) ? kemplineSlotIndex : undefined,
+    );
+  }
   const activate = () => {
     if (slot === null) {
       clearSlotSelectionVisual();
+      clearSelectedParamsContext();
       clearModelsParamsPaneContent();
       return;
     }
@@ -159,6 +578,15 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
     const kRaw = el.dataset.kemplineSlotIndex;
     const kemplineSlotIndex =
       kRaw !== undefined && kRaw !== "" ? Number.parseInt(kRaw, 10) : undefined;
+    selectedParamsSlotKey = makeSlotSelectionKey(
+      slot,
+      Number.isFinite(kemplineSlotIndex) ? kemplineSlotIndex : undefined,
+    );
+    selectedParamsKemplineSlotIndex = Number.isFinite(kemplineSlotIndex)
+      ? (kemplineSlotIndex as number)
+      : null;
+    selectedParamsPresetIndex = currentPresetIndex;
+    selectedParamsValuesSig = null;
     void loadAndShowModelsParamsForSlot(
       slot,
       Number.isFinite(kemplineSlotIndex) ? kemplineSlotIndex : undefined,
@@ -191,6 +619,7 @@ function setStatus(text: string) {
 
 function renderEmpty(text: string) {
   clearSlotSelectionVisual();
+  clearSelectedParamsContext();
   resetModelsParamsIdleHint();
   contentEl.innerHTML = `<div class="empty">${text}</div>`;
 }
@@ -771,10 +1200,19 @@ function formatHelixFromControl(rawValue: number, control: HelixControlDefJson, 
   const formattedNumeric = formatTemplate?.numeric ?? null;
   const formattedFromFormat = formatTemplate?.rendered ?? null;
   if (formatUnits) {
-    if (formattedNumeric !== null && HELIX_PRINTF_TOKEN_RE.test(formatUnits)) {
-      return helixUnescapePercentMarks(
-        formatUnits.replace(HELIX_PRINTF_TOKEN_RE, formattedNumeric),
-      );
+    if (HELIX_PRINTF_TOKEN_RE.test(formatUnits)) {
+      // Le template `formatUnits` peut porter sa propre précision (ex. `%.1f kHz`)
+      // différente de `format` (ex. `%.0f`). On le formate donc directement avec `value`
+      // pour éviter une double étape qui arrondit trop tôt (cas 1.6 kHz -> 2 kHz).
+      const unitsTemplate = formatWithPrintfTemplate(value, formatUnits);
+      if (unitsTemplate?.rendered) {
+        return helixUnescapePercentMarks(unitsTemplate.rendered);
+      }
+      if (formattedNumeric !== null) {
+        return helixUnescapePercentMarks(
+          formatUnits.replace(HELIX_PRINTF_TOKEN_RE, formattedNumeric),
+        );
+      }
     }
     return helixUnescapePercentMarks(formatUnits);
   }
@@ -904,27 +1342,13 @@ function formatRawChainParamValueJson(v: ChainParamValueJson): string {
   return "—";
 }
 
-/** Infobulle ligne / slider : pour Split A/B et Split Y (0…1 sur fil), libellé Helix plutôt que la float brute. */
+/** Infobulle ligne / slider : toujours valeur brute (avant toute conversion d'affichage). */
 function paramSliderHoverTitle(
   cv: ChainParamValueJson | undefined,
-  p: ModelParamDefJson,
-  helixControlsMap?: Map<string, HelixControlDefJson>,
+  _p: ModelParamDefJson,
+  _helixControlsMap?: Map<string, HelixControlDefJson>,
 ): string {
   if (cv === undefined) return "—";
-  const dt = (p.displayType ?? "").trim();
-  if (
-    (dt === "split_ab_route_to" || dt === "split_balance" || dt === "pan") &&
-    typeof p.min === "number" &&
-    typeof p.max === "number" &&
-    Number.isFinite(p.min) &&
-    Number.isFinite(p.max) &&
-    p.min === 0 &&
-    p.max === 1 &&
-    typeof cv === "number" &&
-    Number.isFinite(cv)
-  ) {
-    return formatChainParamValueJson(cv, p, helixControlsMap);
-  }
   return formatRawChainParamValueJson(cv);
 }
 
@@ -1303,10 +1727,12 @@ function appendModelsParamRows(
   helixControlsMap?: Map<string, HelixControlDefJson>,
   catalogSignal?: string | null,
   ariaScopeLabel = "",
-): void {
+  liveWriteSlotIndex?: number,
+): (nextChainValues: Array<ChainParamValueJson | undefined> | null | undefined) => void {
   const eqIdx = modelsEqMasterIndex(params);
   const eqOn =
     eqIdx >= 0 ? eqSwitchDisplayedOn(chainValues?.[eqIdx], params[eqIdx]) : true;
+  const rowValueUpdaters: Array<(v: ChainParamValueJson | undefined) => void> = [];
   for (let j = 0; j < params.length; j += 1) {
     const pRaw = params[j];
     if (paramHiddenForMonoStereoOnly(pRaw, catalogSignal)) continue;
@@ -1385,6 +1811,16 @@ function appendModelsParamRows(
         micAria,
       );
       micTrigger.title = formatRawChainParamValueJson(current);
+      rowValueUpdaters[j] = (nextCv) => {
+        if (typeof nextCv !== "number" || !Number.isFinite(nextCv)) return;
+        const nextI = Math.max(minI, Math.min(maxI, Math.round(nextCv)));
+        const raw = formatRawChainParamValueJson(nextI);
+        chainEl.textContent = formatChainParamValueJson(nextI, p, helixControlsMap);
+        li.title = raw;
+        sliderCell.title = raw;
+        micTrigger.title = raw;
+        syncMicCombo(String(nextI));
+      };
     } else if (canSlider) {
       sliderCell.append(chainEl);
       const dt = (p.displayType ?? "").trim();
@@ -1433,8 +1869,23 @@ function appendModelsParamRows(
         li.title = s;
         sliderCell.title = s;
         input.title = s;
+        if (liveWriteProbeEnabled() && liveWriteEnabled()) {
+          markLiveWriteUiInteraction();
+        }
+        scheduleLiveParamWriteProbe(liveWriteSlotIndex, j, p, v);
       });
       sliderCell.append(input);
+      rowValueUpdaters[j] = (nextCv) => {
+        if (typeof nextCv !== "number" || !Number.isFinite(nextCv)) return;
+        let v = snapRawToIncrement(nextCv, minN, maxN, inc, p.valueType);
+        if (!Number.isFinite(v)) return;
+        if (Number(input.value) !== v) input.value = String(v);
+        chainEl.textContent = formatChainParamValueJson(v, p, helixControlsMap);
+        const s = paramSliderHoverTitle(v, p, helixControlsMap);
+        li.title = s;
+        sliderCell.title = s;
+        input.title = s;
+      };
     } else if (cv !== undefined && canModelsParamsBoolToggle(p, cv)) {
       sliderCell.append(chainEl);
       let currentB = chainValueAsBool(cv)!;
@@ -1483,11 +1934,40 @@ function appendModelsParamRows(
       syncButtons();
       rowWrap.append(bOff, bOn);
       sliderCell.append(rowWrap);
+      rowValueUpdaters[j] = (nextCv) => {
+        if (!canModelsParamsBoolToggle(p, nextCv)) return;
+        currentB = chainValueAsBool(nextCv)!;
+        const v: ChainParamValueJson = typeof nextCv === "boolean" ? currentB : currentB ? 1 : 0;
+        chainEl.textContent = formatChainParamValueJson(v, p, helixControlsMap);
+        const s = formatRawChainParamValueJson(v);
+        li.title = s;
+        sliderCell.title = s;
+        syncButtons();
+        if (isEqMaster) {
+          for (const node of list.querySelectorAll("li[data-models-eq-band]")) {
+            if (node instanceof HTMLLIElement) node.hidden = !currentB;
+          }
+        }
+      };
     } else {
       sliderCell.append(chainEl);
+      rowValueUpdaters[j] = (nextCv) => {
+        chainEl.textContent =
+          nextCv !== undefined ? formatChainParamValueJson(nextCv, p, helixControlsMap) : "—";
+        const s = paramSliderHoverTitle(nextCv, p, helixControlsMap);
+        li.title = s;
+        sliderCell.title = s;
+      };
     }
     list.appendChild(li);
   }
+  return (nextChainValues) => {
+    for (let i = 0; i < rowValueUpdaters.length; i += 1) {
+      const updater = rowValueUpdaters[i];
+      if (!updater) continue;
+      updater(nextChainValues?.[i]);
+    }
+  };
 }
 
 function pickCabIndexForLinkedCab(cabs: ModelDefinitionJson[], linkedCab: LinkedCabInfoJson | null): number {
@@ -1633,6 +2113,7 @@ function renderModelsParamsPane(
   catalogRoutingSignal?: string | null,
   helixControlsMap?: Map<string, HelixControlDefJson>,
   catalogModelImage?: string | null,
+  kemplineSlotIndex?: number,
 ) {
   setModelsParamsPaneCategory(slot.category, slot.moduleHex, slot.slotTypeHex);
   const inner = getModelsParamsInner();
@@ -1640,16 +2121,40 @@ function renderModelsParamsPane(
   inner.replaceChildren();
   const head = document.createElement("div");
   head.className = "models-params-model-head";
-  const title = document.createElement("div");
-  title.className = "models-params-model-title";
   const baseName = (resolvedCatalogModelName ?? slot.name).trim() || "—";
-  const parts: string[] = [baseName];
   const bo = (catalogBasedOn ?? "").trim();
   const sub = (catalogSubcategoryLabel ?? "").trim();
-  if (bo) parts.push(bo);
-  if (sub) parts.push(sub);
-  title.textContent = parts.join(" · ");
-  const lines: HTMLElement[] = [title];
+  const titleRow = document.createElement("div");
+  titleRow.className = "models-params-model-title-row";
+  const leftTitle = document.createElement("div");
+  leftTitle.className = "models-params-model-name-sub";
+  const title = document.createElement("div");
+  title.className = "models-params-model-title";
+  title.textContent = baseName;
+  leftTitle.appendChild(title);
+  if (sub) {
+    const subInline = document.createElement("div");
+    subInline.className = "models-params-model-sub-inline";
+    subInline.textContent = sub;
+    subInline.title = sub;
+    leftTitle.appendChild(subInline);
+  }
+  titleRow.appendChild(leftTitle);
+  const lines: HTMLElement[] = [titleRow];
+  const basedOnEl = getModelsParamsBasedOnEl();
+  if (basedOnEl) {
+    basedOnEl.replaceChildren();
+    basedOnEl.title = bo;
+    if (bo) {
+      const label = document.createElement("span");
+      label.className = "models-params-pane-basedon-label";
+      label.textContent = "Based on : ";
+      const value = document.createElement("span");
+      value.className = "models-params-pane-basedon-value";
+      value.textContent = bo;
+      basedOnEl.append(label, value);
+    }
+  }
   if (linkedCab && linkedCab[0] && linkedCab[2]) {
     const cab = document.createElement("div");
     cab.className = "models-params-model-sub";
@@ -1710,13 +2215,25 @@ function renderModelsParamsPane(
     catalogRoutingSignal,
     catalogParamOrder,
   );
-  appendModelsParamRows(
+  const updateAlignedValues = appendModelsParamRows(
     list,
     paramsForDisplay,
     chainAligned ?? null,
     helixControlsMap,
     catalogRoutingSignal,
+    "",
+    kemplineSlotIndex,
   );
+  const applyRawChainValuesInPlace = (rawChainValues: ChainParamValueJson[] | null): void => {
+    const aligned = alignChainValuesToModelParamOrder(
+      rawChainValues,
+      paramsForDisplay,
+      params,
+      catalogRoutingSignal,
+      catalogParamOrder,
+    );
+    updateAlignedValues(aligned ?? null);
+  };
   inner.appendChild(list);
   if (normalizeCategory(slot.category) === "amp+cab" && (allCabDefinitions?.length ?? 0) > 0) {
     renderCabSection(
@@ -1726,6 +2243,15 @@ function renderModelsParamsPane(
       linkedCabValues ?? null,
       helixControlsMap,
     );
+  }
+  const slotKeyForPane = makeSlotSelectionKey(slot, kemplineSlotIndex);
+  if (
+    selectedParamsPresetIndex === currentPresetIndex &&
+    selectedParamsSlotKey &&
+    selectedParamsSlotKey === slotKeyForPane
+  ) {
+    selectedParamsInPlaceUpdater = applyRawChainValuesInPlace;
+    selectedParamsInPlaceSlotKey = slotKeyForPane;
   }
 }
 
@@ -1924,7 +2450,7 @@ async function loadAndShowModelsParamsForSlot(
     ]);
     if (seq !== modelsParamsLoadSeq) return;
     const catalogBasedOn = pickBasedOn(meta);
-    const catalogSubcategoryLabel = formatSubCategoryForHeader(meta);
+    const catalogSubcategoryLabel = formatSubCategoryForHeader(meta, slot.moduleHex);
     const catalogRoutingSignal = pickSignal(meta, slot.moduleHex);
     if (nk === "amp+cab") {
       try {
@@ -1958,7 +2484,15 @@ async function loadAndShowModelsParamsForSlot(
       catalogRoutingSignal,
       helixControlsMap,
       catalogImage,
+      kemplineSlotIndex,
     );
+    if (
+      selectedParamsPresetIndex === currentPresetIndex &&
+      selectedParamsKemplineSlotIndex !== null &&
+      selectedParamsKemplineSlotIndex === kemplineSlotIndex
+    ) {
+      selectedParamsValuesSig = `${currentPresetIndex}|${kemplineSlotIndex}|${chainValuesSignature(chainValues)}`;
+    }
   } catch (e) {
     if (seq !== modelsParamsLoadSeq) return;
     showModelsParamsError(e instanceof Error ? e.message : String(e));
@@ -2937,7 +3471,10 @@ function renderGrid16(
   clearSlotSelectionVisual();
   contentEl.innerHTML = "";
   contentEl.appendChild(root);
-  resetModelsParamsIdleHint();
+  const hadSelectedContext = hasSelectedParamsContextForCurrentPreset();
+  if (!tryRestoreSelectedParamsPaneAfterRender() && !hadSelectedContext) {
+    resetModelsParamsIdleHint();
+  }
 }
 
 function buildFlowSections(slots: SlotDebug[]) {
@@ -3074,7 +3611,10 @@ async function renderSlots(
   clearSlotSelectionVisual();
   contentEl.innerHTML = "";
   contentEl.appendChild(root);
-  resetModelsParamsIdleHint();
+  const hadSelectedContext = hasSelectedParamsContextForCurrentPreset();
+  if (!tryRestoreSelectedParamsPaneAfterRender() && !hadSelectedContext) {
+    resetModelsParamsIdleHint();
+  }
   await refreshAllSlotTooltipsInContent();
 }
 
@@ -3136,21 +3676,7 @@ async function requestLoadForPreset(index: number) {
         window.clearInterval(timer);
         console.log(`[PresetDebug][models] slots ready preset=${index} count=${slots.length}`);
         loadedPresetIndex = index;
-        const normalizedSlots: SlotDebug[] = debugRoutingMode
-          ? (slots as unknown as [string, string, string, string, string][]).map(
-              ([category, name, gridX, gridY, moduleHex]) => ({
-                category,
-                name,
-                gridX,
-                gridY,
-                moduleHex: moduleHex?.trim() || undefined,
-              }),
-            )
-          : (slots as unknown as [string, string, string][]).map(([category, name, moduleHex]) => ({
-              category,
-              name,
-              moduleHex: moduleHex?.trim() || undefined,
-            }));
+        const normalizedSlots = normalizeSlotsPayloadFromInvoke(slots as never);
         // Evite d'afficher une vieille réponse si l'utilisateur a recliqué ailleurs.
         if (currentPresetIndex === index) {
           let routingFlow: RoutingMarker[] = [];
@@ -3174,6 +3700,7 @@ async function requestLoadForPreset(index: number) {
             }
           }
           await renderSlots(normalizedSlots, routingFlow, stompLayout);
+          rememberHwSyncChainLayout(normalizedSlots);
           const realBlocks = countRealBlocks(normalizedSlots);
           const singleDsp = isSingleDspDevice(connectedDeviceName);
           const dspSuffix = singleDsp ? ` (${realBlocks}/8 max)` : "";
@@ -3239,12 +3766,14 @@ async function refresh() {
 
     const displayName = isEmpty(names[active]) ? "empty" : names[active];
     presetLabelEl.textContent = `${padNum(active)} ${displayName}`;
+    lastPresetNamesSig = `${active}\n${names.join("\n")}`;
 
     if (active !== currentPresetIndex) {
       console.log(`[PresetDebug][models] active preset changed ${currentPresetIndex} -> ${active}`);
       currentPresetIndex = active;
       loadedPresetIndex = -1;
       requestedPresetNameIndex = -1;
+      clearSelectedParamsContext();
       renderEmpty("Chargement des modeles...");
       scheduleLoadForPreset(active, true);
     }
@@ -3277,9 +3806,17 @@ window.addEventListener("DOMContentLoaded", () => {
     const index = event.payload?.index;
     if (typeof index !== "number" || index < 0) return;
     console.log(`[PresetDebug][models] event models:load-preset index=${index}`);
+    if (index === currentPresetIndex) {
+      // Polling/sync backend: ne pas casser la sélection locale si le preset n'a pas changé.
+      if (!loading && loadedPresetIndex !== currentPresetIndex) {
+        scheduleLoadForPreset(currentPresetIndex, false);
+      }
+      return;
+    }
     currentPresetIndex = index;
     loadedPresetIndex = -1;
     requestedPresetNameIndex = -1;
+    clearSelectedParamsContext();
     renderEmpty("Chargement des modeles...");
     scheduleLoadForPreset(index, true);
   });
@@ -3288,4 +3825,7 @@ window.addEventListener("DOMContentLoaded", () => {
   window.setInterval(() => {
     void refresh();
   }, 300);
+  window.setInterval(() => {
+    scheduleHardwareSyncPoll();
+  }, 200);
 });
