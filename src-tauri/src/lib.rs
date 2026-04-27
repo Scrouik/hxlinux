@@ -464,7 +464,7 @@ fn write_live_param(
     // Cette construction est déléguée à `helix/live_write.rs` pour itérer
     // rapidement sur le protocole reverse-engineered sans gonfler `lib.rs`.
     let mut s = helix_arc.lock().unwrap();
-    let frames = build_live_write_frames_from_state(&mut s, raw, param_index, sid);
+    let frames = build_live_write_frames_from_state(&mut s, raw, slot_index, param_index, sid);
 
     s.send(OutPacket::new(frames.pre_packet_x80.clone()));
     s.send(OutPacket::with_delay(frames.pre_packet_x2.clone(), 4));
@@ -477,13 +477,14 @@ fn write_live_param(
     drop(s);
 
     eprintln!(
-        "[LiveWrite][sent] slot={} param={} symbolicId={} displayType={} rawValue={} sentRaw={} pp={:02x} ppSource={} pSel={:02x} pSelSource={} model_block={} frame27_diff={} pre_x80={} pre_x2={} pre_x80_sel={} frame27_a={} frame27_b={} post_x80_sel={}",
+        "[LiveWrite][sent] slot={} param={} symbolicId={} displayType={} rawValue={} sentRaw={} slotBus={:02x} pp={:02x} ppSource={} pSel={:02x} pSelSource={} model_block={} frame27_diff={} pre_x80={} pre_x2={} pre_x80_sel={} frame27_a={} frame27_b={} post_x80_sel={}",
         slot_index,
         param_index,
         sid,
         display_type.unwrap_or_default(),
         raw_value,
         raw,
+        frames.slot_bus,
         frames.pp,
         frames.pp_source,
         frames.param_selector,

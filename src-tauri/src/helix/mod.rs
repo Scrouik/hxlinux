@@ -103,6 +103,13 @@ pub struct HelixState {
     /// Compteurs dédiés au write live `27` (reverse-engineering HX Edit).
     pub live_write_ctr: u16,
     pub live_write_yy: u8,
+
+    /// Dernière paire **device → host** (IN `0x81`, 16 octets) « changement de slot » vue sur le bus.
+    /// Schéma documenté dans `Line6_HX_Stomp_USB_Protocol.md` (capture `Slot1 to slot2 hardware.json`).
+    pub hw_slot_notify_ed_in: Option<[u8; 16]>,
+    pub hw_slot_notify_ef_in: Option<[u8; 16]>,
+    /// +1 à chaque réception d’un EF03 court **alors qu’un** ED03 court était déjà mémorisé (cycle complet).
+    pub hw_slot_notify_sequence: u32,
 }
 
 // ===========================================================
@@ -186,6 +193,9 @@ impl HelixState {
             ed03_live_write_seq_sent: None,
             live_write_ctr: 0x6cbd,
             live_write_yy: 0x17,
+            hw_slot_notify_ed_in: None,
+            hw_slot_notify_ef_in: None,
+            hw_slot_notify_sequence: 0,
         }
     }
 
@@ -237,6 +247,47 @@ impl HelixState {
             model_i,
             b[4]
         );
+    }
+
+    /// Détecte les petites trames IN « slot » du Stomp (`ed 03 80 10` puis `ef 03 01 10` sur 16 octets).
+    pub fn ingest_hw_slot_notify_in(&mut self, data: &[u8]) {
+        if data.len() != 16 {
+            return;
+        }
+        if !data.starts_with(&[0x08, 0x00, 0x00, 0x18]) {
+            return;
+        }
+        let mut b = [0u8; 16];
+        b.copy_from_slice(data);
+
+        // Device IN : octets 4–7 = ed 03 80 10 (voir doc protocole)
+        if data[4] == 0xed && data[5] == 0x03 && data[6] == 0x80 && data[7] == 0x10 {
+            self.hw_slot_notify_ed_in = Some(b);
+            self.hw_slot_notify_ef_in = None;
+            return;
+        }
+        // Device IN : octets 4–7 = ef 03 01 10
+        if data[4] == 0xef && data[5] == 0x03 && data[6] == 0x01 && data[7] == 0x10 {
+            self.hw_slot_notify_ef_in = Some(b);
+            if self.hw_slot_notify_ed_in.is_some() {
+                self.hw_slot_notify_sequence = self.hw_slot_notify_sequence.wrapping_add(1);
+                if preset_debug_verbose_enabled() {
+                    let ed = self.hw_slot_notify_ed_in.unwrap();
+                    eprintln!(
+                        "[PresetDebug][slot_notify_in] pair_seq={} ed_tail={:02x}:{:02x}:{:02x}:{:02x} ef_tail={:02x}:{:02x}:{:02x}:{:02x}",
+                        self.hw_slot_notify_sequence,
+                        ed[12],
+                        ed[13],
+                        ed[14],
+                        ed[15],
+                        b[12],
+                        b[13],
+                        b[14],
+                        b[15],
+                    );
+                }
+            }
+        }
     }
 
     pub fn increase_session_quadruple_x11(&mut self) {

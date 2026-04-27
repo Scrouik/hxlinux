@@ -23,6 +23,23 @@ Rappels utiles :
 - Le polling hardware reste piloté par `localStorage.setItem("models_hw_sync_interval_ms", "200")` (100..5000).
 - Logs verbeux `PresetDebug` de polling (`request_preset_content`, `try_parse_preset_kempline_grid`) ont été réduits pour limiter le bruit console.
 
+**Fin de soirée 27 avril 2026 — panneau paramètres : problème encore présent (à traiter demain)**
+
+- **Symptôme** : dès qu’un paramètre est modifié **depuis l’UI** (slider / multi-état), au bout de **quelques secondes** l’écran se **vide** puis se **reconstruit** (flash / reload du panneau ou plus large), **sans** autre action de l’utilisateur.
+- Des correctifs ont été posés dans **`src/models.ts`** (sync in-place, clé de slot, signature `selectedParamsValuesSig` après load, pas avant ; rendu `renderModelsParamsPane` sans `inner.replaceChildren()` vide ; invalidation de l’updater au changement de slot) — **le comportement ci-dessus persiste** quand on touche un paramètre en UI.
+- **Piste pour la prochaine session** : interaction **live write** / `markLiveWriteUiInteraction` / `LIVE_WRITE_SYNC_PAUSE_MS` vs boucle **`runHardwareSyncSoftRefresh`** / `refresh()` ; ou rechargement preset déclenché par une écriture qui change la signature chaîne / layout perçu côté parseur. À isoler avec logs ciblés ou en coupant temporairement le write / le poll pour reproduire.
+
+### Note importante (fin de session) — captures JSON à refaire
+
+- Deux captures faites en fin de session (**`Slot2 Threshold -60 to -45.7 to -28.6.json`** et **`Slot8 Level 0 to 3.7 to 6.9.json`**) n’étaient pas exploitables pour le reverse write/focus.
+- Elles contiennent du trafic **`usb:usbhid`** (endpoint **`0x84`**) uniquement ; pas de trames ED03 bulk attendues (`27 ... 80 10 ed 03`, `08 ... 80 10 ed 03`).
+- Le hardware/câble était bien le bon (plus de trafic quand le HX est débranché), mais l’export JSON ne contient pas la bonne famille de paquets pour l’analyse write.
+- À la reprise : refaire une capture **courte (2–5 s)** avec un seul geste paramètre et filtrer avant export sur :
+  - `usb.capdata contains 27:00:00:18:80:10:ed:03`
+  - `or usb.capdata contains 08:00:00:18:80:10:ed:03`
+
+**Capture encore manquante (slot / preset)** : quand **HX Edit** (Line 6) **relit** un preset (ou se resynchronise), l’UI se **positionne sur le slot actif** du hardware — la **séquence USB** (host ↔ device) pour ce comportement **n’a pas encore** été exportée. À prévoir : une capture **courte** au moment où HX Edit affiche le preset et met en surbrillance le bon bloc (sans grands mouvements ailleurs), endpoint bulk **`0x01` / `0x81`**, même style d’export JSON que les autres paquets. Voir aussi `Line6_HX_Stomp_USB_Protocol.md` (section slot + « ce qui reste »).
+
 **26 avril 2026 (fin de soirée) — write live USB : ça marche sur le hardware**
 
 Source de vérité protocole : exports Wireshark JSON dans `src/Paquets Json/` + doc vivante `Line6_HX_Stomp_USB_Protocol.md` (corrigée après analyse des JSON : opcode **`80:10:ed:03`**, pas `03:10:ed:03` pour ce write 48 octets).
@@ -428,8 +445,7 @@ Todo :
 
 ## Todo à faire dans le Hardware avec capture WireShark
 
-1. Tester sur un autre slot. (Seul le slot 1 est pris en compte. il faut espérer que l'incrément de slot permettra d'identifier tous les slots)
-2. Tester un parametre tout au fond du model (il faut espérer que l'incrément de parametre permettra d'identifier toutes les positions de parametres)
+1. Exporter paquet lors de lecture de preset afin de voir comment l'UI se positionne sur le slot actif.
 3. Tester un changement de model dans un slot
 4. Tester une suppression de model dans un slot
 5. Tester un déplacement de model du path 1 au path 2 et inversement.

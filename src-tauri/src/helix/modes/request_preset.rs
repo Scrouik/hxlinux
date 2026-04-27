@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use crate::helix::{Mode, HelixState, ModeRequest};
+use crate::helix::{Mode, HelixState, ModeRequest, preset_debug_verbose_enabled};
 use crate::helix::packet::{OutPacket, byte_cmp};
 use crate::helix::modes::standard::Standard;
 use crate::pattern;
@@ -61,10 +61,12 @@ impl RequestPreset {
                         } else {
                             ModeRequest::RequestPresetNames
                         };
-                        eprintln!(
-                            "[PresetDebug][RequestPreset::watchdog] timeout -> switch {:?}",
-                            next_mode
-                        );
+                        if preset_debug_verbose_enabled() {
+                            eprintln!(
+                                "[PresetDebug][RequestPreset::watchdog] timeout -> switch {:?}",
+                                next_mode
+                            );
+                        }
                         let _ = mode_tx.send(next_mode);
                     }
                 }
@@ -87,10 +89,12 @@ impl RequestPreset {
                         } else {
                             ModeRequest::RequestPresetNames
                         };
-                        eprintln!(
-                            "[PresetDebug][RequestPreset::timer] timeout -> switch {:?}",
-                            next_mode
-                        );
+                        if preset_debug_verbose_enabled() {
+                            eprintln!(
+                                "[PresetDebug][RequestPreset::timer] timeout -> switch {:?}",
+                                next_mode
+                            );
+                        }
                         let _ = mode_tx.send(next_mode);
                     }
                 }
@@ -102,13 +106,15 @@ impl RequestPreset {
 impl Mode for RequestPreset {
 
     fn start(&mut self, state: &mut HelixState) {
-        eprintln!(
-            "[PresetDebug][RequestPreset::start] preset_index={} content_only={} pkt_counter={:#06x} session_id={:#04x}",
-            state.preset_index,
-            state.preset_content_only,
-            state.preset_pkt_counter,
-            state.request_preset_session_id
-        );
+        if preset_debug_verbose_enabled() {
+            eprintln!(
+                "[PresetDebug][RequestPreset::start] preset_index={} content_only={} pkt_counter={:#06x} session_id={:#04x}",
+                state.preset_index,
+                state.preset_content_only,
+                state.preset_pkt_counter,
+                state.request_preset_session_id
+            );
+        }
         self.preset_data.clear();
         self.in_transfer  = false;
         self.timer_cancel_tx = None;
@@ -158,11 +164,13 @@ impl Mode for RequestPreset {
 
         // Kempline : data_in[6] != 0x80 → paquet inattendu
         if data.len() > 6 && data[6] != 0x80 {
-            eprintln!(
-                "[PresetDebug][RequestPreset::data_in] ignored non-x80 packet len={} type={:#04x}",
-                data.len(),
-                data[6]
-            );
+            if preset_debug_verbose_enabled() {
+                eprintln!(
+                    "[PresetDebug][RequestPreset::data_in] ignored non-x80 packet len={} type={:#04x}",
+                    data.len(),
+                    data[6]
+                );
+            }
             return true;
         }
 
@@ -185,16 +193,20 @@ impl Mode for RequestPreset {
             // Accumuler les données à partir de byte[16]
             if data.len() > 16 {
                 self.preset_data.extend_from_slice(&data[16..]);
-                eprintln!(
-                    "[PresetDebug][RequestPreset::data_in] chunk len={} total={}",
-                    data.len() - 16,
-                    self.preset_data.len()
-                );
+                if preset_debug_verbose_enabled() {
+                    eprintln!(
+                        "[PresetDebug][RequestPreset::data_in] chunk len={} total={}",
+                        data.len() - 16,
+                        self.preset_data.len()
+                    );
+                }
             }
 
             if !reply_here {
                 // Premier paquet — on ne répond pas encore
-                eprintln!("[PresetDebug][RequestPreset::data_in] first chunk received");
+                if preset_debug_verbose_enabled() {
+                    eprintln!("[PresetDebug][RequestPreset::data_in] first chunk received");
+                }
                 return true;
             }
 
@@ -215,11 +227,13 @@ impl Mode for RequestPreset {
                 session, double[0], double[1], 0x00,
             ]);
             state.send(pkt);
-            eprintln!(
-                "[PresetDebug][RequestPreset::data_in] ack sent cnt={:#04x} session={:#04x}",
-                cnt,
-                session
-            );
+            if preset_debug_verbose_enabled() {
+                eprintln!(
+                    "[PresetDebug][RequestPreset::data_in] ack sent cnt={:#04x} session={:#04x}",
+                    cnt,
+                    session
+                );
+            }
 
             // Timer 20ms — si pas de nouveau paquet → fin
             self.arm_timer(state.mode_tx.clone(), state.preset_content_only);
@@ -248,13 +262,15 @@ impl Mode for RequestPreset {
             state.request_preset_session_id = 0xf4;
             request_state_reset = true;
         }
-        eprintln!(
-            "[PresetDebug][RequestPreset::shutdown] preset_data_ready={} bytes={} request_state_reset={} pkt_counter={:#06x} req_session_id={:#04x}",
-            state.preset_data_ready,
-            state.preset_data.len(),
-            request_state_reset,
-            state.preset_pkt_counter,
-            state.request_preset_session_id
-        );
+        if preset_debug_verbose_enabled() {
+            eprintln!(
+                "[PresetDebug][RequestPreset::shutdown] preset_data_ready={} bytes={} request_state_reset={} pkt_counter={:#06x} req_session_id={:#04x}",
+                state.preset_data_ready,
+                state.preset_data.len(),
+                request_state_reset,
+                state.preset_pkt_counter,
+                state.request_preset_session_id
+            );
+        }
     }
 }

@@ -303,8 +303,11 @@ export function pickSignal(meta: PresetMetaJson | null, moduleHex: string | unde
   return null;
 }
 
-/** Libellé unique pour l’en-tête du panneau (sous-catégorie Line 6). */
-export function formatSubCategoryForHeader(meta: PresetMetaJson | null): string | null {
+/** Libellé sous-catégorie pour l’en-tête, résolu sur la variante `chainHex` active si possible. */
+export function formatSubCategoryForHeader(
+  meta: PresetMetaJson | null,
+  moduleHex: string | undefined,
+): string | null {
   const sc = meta?.subCategory;
   if (sc === undefined || sc === null) return null;
   if (typeof sc === "string") {
@@ -312,9 +315,26 @@ export function formatSubCategoryForHeader(meta: PresetMetaJson | null): string 
     return t.length > 0 ? t : null;
   }
   if (!Array.isArray(sc)) return null;
-  const bits = sc.map((x) => (typeof x === "string" ? x.trim() : "")).filter(Boolean);
-  if (bits.length === 0) return null;
-  return bits.join(" · ");
+  const bits = sc.map((x) => (typeof x === "string" ? x.trim() : ""));
+  const nonEmpty = bits.filter(Boolean);
+  if (nonEmpty.length === 0) return null;
+
+  // Cas paires/parallèles: `chainHex: [..]` et `subCategory: [..]`.
+  // On choisit la valeur de même index que le `moduleHex` actif.
+  const hexNorm = (moduleHex ?? "").trim().toLowerCase();
+  const hexList = normalizeHexList(meta?.chainHex);
+  if (hexNorm && hexList.length > 0 && bits.length === hexList.length) {
+    for (const h of moduleHexCatalogLookupCandidates(hexNorm)) {
+      const idx = hexList.indexOf(h);
+      if (idx >= 0 && idx < bits.length) {
+        const resolved = bits[idx];
+        if (resolved) return resolved;
+      }
+    }
+  }
+
+  // Repli conservateur : garder la première valeur non vide, sans concaténer toutes les variantes.
+  return nonEmpty[0] ?? null;
 }
 
 /** Tests uniquement. */

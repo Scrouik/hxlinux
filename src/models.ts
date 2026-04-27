@@ -88,6 +88,32 @@ function delayMs(ms: number): Promise<void> {
   });
 }
 
+const SLOT_CHAIN_VALUES_RETRY_ATTEMPTS = 6;
+const SLOT_CHAIN_VALUES_RETRY_DELAY_MS = 90;
+
+/** Après `request_preset_content` / sync, l’invoke peut encore renvoyer `null` une ou deux fois : on réessaie avant d’afficher la grille sans sliders. */
+async function fetchSlotChainParamValuesReliable(
+  slotIndex: number,
+  abortIfLoadSeq: number | null,
+  opts?: { maxAttempts?: number },
+): Promise<ChainParamValueJson[] | null> {
+  const maxAttempts = Math.max(1, opts?.maxAttempts ?? SLOT_CHAIN_VALUES_RETRY_ATTEMPTS);
+  let last: ChainParamValueJson[] | null = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (abortIfLoadSeq !== null && abortIfLoadSeq !== modelsParamsLoadSeq) return last;
+    try {
+      last = await invoke<ChainParamValueJson[] | null>("get_active_preset_slot_chain_param_values", {
+        slotIndex,
+      });
+    } catch {
+      last = null;
+    }
+    if (last !== null) break;
+    if (attempt + 1 < maxAttempts) await delayMs(SLOT_CHAIN_VALUES_RETRY_DELAY_MS);
+  }
+  return last;
+}
+
 function normalizeSlotsPayloadFromInvoke(
   slots: [string, string][] | [string, string, string, string][] | [string, string, string, string, string][],
 ): SlotDebug[] {
@@ -265,15 +291,7 @@ async function softRefreshParamsPaneFromSlots(slots: SlotDebug[]): Promise<void>
   if (idx === null || idx < 0 || idx >= slots.length) return;
   const slot = slots[idx];
   if (!slot) return;
-  let chainValues: ChainParamValueJson[] | null = null;
-  try {
-    chainValues = await invoke<ChainParamValueJson[] | null>(
-      "get_active_preset_slot_chain_param_values",
-      { slotIndex: idx },
-    );
-  } catch {
-    chainValues = null;
-  }
+  const chainValues = await fetchSlotChainParamValuesReliable(idx, null, { maxAttempts: 3 });
   const nextSig = `${currentPresetIndex}|${idx}|${chainValuesSignature(chainValues)}`;
   if (selectedParamsValuesSig === nextSig) return;
   const slotKey = makeSlotSelectionKey(slot, idx);
@@ -287,8 +305,10 @@ async function softRefreshParamsPaneFromSlots(slots: SlotDebug[]): Promise<void>
     selectedParamsValuesSig = nextSig;
     return;
   }
-  selectedParamsValuesSig = nextSig;
+  // Ne pas mettre `selectedParamsValuesSig` avant la fin du load : sinon les polls suivants croient
+  // que l'UI est à jour alors que le panneau est encore sur « Chargement » → retour immédiat, chargement bloqué, flash vide.
   await loadAndShowModelsParamsForSlot(slot, idx);
+  selectedParamsValuesSig = `${currentPresetIndex}|${idx}|${chainValuesSignature(chainValues)}`;
 }
 
 function liveWriteProbeEnabled(): boolean {
@@ -466,15 +486,36 @@ let selectedParamsValuesSig: string | null = null;
 // Callback de patch in-place pour le panneau courant (même modèle, valeurs différentes).
 let selectedParamsInPlaceUpdater: ((rawChainValues: ChainParamValueJson[] | null) => void) | null = null;
 let selectedParamsInPlaceSlotKey: string | null = null;
+/** Id catalogue du dernier rendu par clé slot — détecte un changement de modèle au même index sans tout reconstruire inutilement. */
+const paramsPaneCatalogBySlotKey = new Map<string, string>();
 
+/** Index grille Kempline pour la clé de sélection (rejette non-entiers). */
+function kemplineIndexForSlotKey(kemplineSlotIndex?: number): number | undefined {
+  if (kemplineSlotIndex === undefined) return undefined;
+  const n = Number(kemplineSlotIndex);
+  if (!Number.isFinite(n)) return undefined;
+  const t = Math.trunc(n);
+  if (Math.abs(n - t) > 1e-9) return undefined;
+  return t;
+}
+
+/**
+ * Identité slot pour le panneau paramètres / sync in-place.
+ * Avec index Kempline (grille 0–15) : on n’inclut pas `name` ni `moduleHex` — le parseur peut les
+ * stabiliser après coup et provoquait des rechargements complets + `chainValues` encore `null` (UI sans sliders).
+ */
 function makeSlotSelectionKey(slot: SlotDebug, kemplineSlotIndex?: number): string {
-  const k = Number.isInteger(kemplineSlotIndex) ? String(kemplineSlotIndex) : "";
+  const cat = normalizeCategory(slot.category);
+  const ki = kemplineIndexForSlotKey(kemplineSlotIndex);
+  if (ki !== undefined) {
+    return `k|${ki}|${cat}`;
+  }
   return [
-    slot.category.trim().toLowerCase(),
+    cat,
     slot.name.trim().toLowerCase(),
     (slot.moduleHex ?? "").trim().toLowerCase(),
     (slot.slotTypeHex ?? "").trim().toLowerCase(),
-    k,
+    "",
   ].join("|");
 }
 
@@ -485,6 +526,7 @@ function clearSelectedParamsContext(): void {
   selectedParamsValuesSig = null;
   selectedParamsInPlaceUpdater = null;
   selectedParamsInPlaceSlotKey = null;
+  paramsPaneCatalogBySlotKey.clear();
 }
 
 function hasSelectedParamsContextForCurrentPreset(): boolean {
@@ -578,10 +620,15 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
     const kRaw = el.dataset.kemplineSlotIndex;
     const kemplineSlotIndex =
       kRaw !== undefined && kRaw !== "" ? Number.parseInt(kRaw, 10) : undefined;
-    selectedParamsSlotKey = makeSlotSelectionKey(
+    const nextSlotKey = makeSlotSelectionKey(
       slot,
       Number.isFinite(kemplineSlotIndex) ? kemplineSlotIndex : undefined,
     );
+    if (selectedParamsSlotKey !== nextSlotKey) {
+      selectedParamsInPlaceUpdater = null;
+      selectedParamsInPlaceSlotKey = null;
+    }
+    selectedParamsSlotKey = nextSlotKey;
     selectedParamsKemplineSlotIndex = Number.isFinite(kemplineSlotIndex)
       ? (kemplineSlotIndex as number)
       : null;
@@ -876,6 +923,20 @@ function formatParamBoundForDisplay(
 
 /** Valeurs `ChainParamValue` sérialisées (serde untagged). */
 type ChainParamValueJson = boolean | number | string;
+
+function chainParamValuesJsonEqual(
+  a: ChainParamValueJson | undefined,
+  b: ChainParamValueJson | undefined,
+): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return a === b;
+  if (typeof a === "number" && typeof b === "number") {
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return a === b;
+    const d = Math.abs(a - b);
+    return d <= 1e-9 * (1 + Math.max(Math.abs(a), Math.abs(b)));
+  }
+  return a === b;
+}
 type LinkedCabInfoJson = [string, string, string, string];
 type LinkedCabWithParamsJson = {
   cab: LinkedCabInfoJson;
@@ -1427,6 +1488,36 @@ function boolToggleLabels(
   return ["Off", "On"];
 }
 
+type TriToggleItem = { raw: number; label: string };
+
+function triToggleItems(
+  p: ModelParamDefJson,
+  cv: ChainParamValueJson | undefined,
+  helixControlsMap: Map<string, HelixControlDefJson> | undefined,
+  minN: number | boolean | undefined,
+  maxN: number | boolean | undefined,
+): TriToggleItem[] | null {
+  if (typeof cv !== "number" || !Number.isFinite(cv)) return null;
+  if (typeof minN !== "number" || typeof maxN !== "number") return null;
+  if (!Number.isFinite(minN) || !Number.isFinite(maxN) || maxN < minN) return null;
+  const minI = Math.round(minN);
+  const maxI = Math.round(maxN);
+  if (maxI - minI !== 2) return null;
+  // Tri-toggle réservé aux valeurs discrètes entières.
+  if (Math.abs(cv - Math.round(cv)) > 1e-6) return null;
+  const dt = (p.displayType ?? "").trim();
+  const def = dt ? helixControlsMap?.get(dt) : undefined;
+  const labels = helixStringFormatLabels(def);
+  const items: TriToggleItem[] = [];
+  for (let i = minI; i <= maxI; i += 1) {
+    const byRaw = labels?.[i];
+    const byOffset = labels?.[i - minI];
+    const label = typeof byRaw === "string" ? byRaw : typeof byOffset === "string" ? byOffset : String(i);
+    items.push({ raw: i, label });
+  }
+  return items;
+}
+
 function isPolarityDisplayType(displayType: string | undefined): boolean {
   return (displayType ?? "").trim().toLowerCase() === "polarity";
 }
@@ -1807,6 +1898,10 @@ function appendModelsParamRows(
           sliderCell.title = s;
           micTrigger.title = s;
           syncMicCombo(String(clamped));
+          if (liveWriteProbeEnabled() && liveWriteEnabled()) {
+            markLiveWriteUiInteraction();
+          }
+          scheduleLiveParamWriteProbe(liveWriteSlotIndex, j, p, clamped);
         },
         micAria,
       );
@@ -1821,7 +1916,61 @@ function appendModelsParamRows(
         micTrigger.title = raw;
         syncMicCombo(String(nextI));
       };
-    } else if (canSlider) {
+    } else {
+      const triItems = triToggleItems(p, cv, helixControlsMap, minN, maxN);
+      if (triItems !== null) {
+        sliderCell.classList.add("models-params-slider-cell--segment-only");
+        let current = Math.round(cv as number);
+        current = Math.max(triItems[0].raw, Math.min(triItems[triItems.length - 1].raw, current));
+        const rowWrap = document.createElement("div");
+        rowWrap.className = "models-params-bool-toggle";
+        const paramLabel = `${(p.name || p.symbolicID || "").trim()} — aperçu local${ariaScopeLabel}, non envoyé au Helix`;
+        const buttons: HTMLButtonElement[] = [];
+        const syncButtons = (): void => {
+          for (let i = 0; i < triItems.length; i += 1) {
+            const item = triItems[i];
+            buttons[i].classList.toggle("models-params-bool-btn--selected", item.raw === current);
+          }
+        };
+        const applyValue = (nextRaw: number): void => {
+          current = nextRaw;
+          chainEl.textContent = formatChainParamValueJson(current, p, helixControlsMap);
+          const s = formatRawChainParamValueJson(current);
+          li.title = s;
+          sliderCell.title = s;
+          syncButtons();
+          if (liveWriteProbeEnabled() && liveWriteEnabled()) {
+            markLiveWriteUiInteraction();
+          }
+          scheduleLiveParamWriteProbe(liveWriteSlotIndex, j, p, current);
+        };
+        for (const item of triItems) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "models-params-bool-btn";
+          btn.textContent = item.label;
+          btn.setAttribute("aria-label", `${paramLabel} : ${item.label}`);
+          btn.addEventListener("click", () => {
+            if (item.raw === current) return;
+            applyValue(item.raw);
+          });
+          buttons.push(btn);
+          rowWrap.appendChild(btn);
+        }
+        syncButtons();
+        sliderCell.append(rowWrap);
+        rowValueUpdaters[j] = (nextCv) => {
+          if (typeof nextCv !== "number" || !Number.isFinite(nextCv)) return;
+          const nextI = Math.round(nextCv);
+          if (nextI < triItems[0].raw || nextI > triItems[triItems.length - 1].raw) return;
+          current = nextI;
+          chainEl.textContent = formatChainParamValueJson(current, p, helixControlsMap);
+          const s = formatRawChainParamValueJson(current);
+          li.title = s;
+          sliderCell.title = s;
+          syncButtons();
+        };
+      } else if (canSlider) {
       sliderCell.append(chainEl);
       const dt = (p.displayType ?? "").trim();
       const helixDef =
@@ -1886,8 +2035,8 @@ function appendModelsParamRows(
         sliderCell.title = s;
         input.title = s;
       };
-    } else if (cv !== undefined && canModelsParamsBoolToggle(p, cv)) {
-      sliderCell.append(chainEl);
+      } else if (cv !== undefined && canModelsParamsBoolToggle(p, cv)) {
+      sliderCell.classList.add("models-params-slider-cell--segment-only");
       let currentB = chainValueAsBool(cv)!;
       const [labOff, labOn] = boolToggleLabels(p, helixControlsMap);
       const rowWrap = document.createElement("div");
@@ -1922,6 +2071,10 @@ function appendModelsParamRows(
             if (node instanceof HTMLLIElement) node.hidden = !nextB;
           }
         }
+        if (liveWriteProbeEnabled() && liveWriteEnabled()) {
+          markLiveWriteUiInteraction();
+        }
+        scheduleLiveParamWriteProbe(liveWriteSlotIndex, j, p, nextB ? 1 : 0);
       };
       bOff.addEventListener("click", () => {
         if (!currentB) return;
@@ -1949,7 +2102,7 @@ function appendModelsParamRows(
           }
         }
       };
-    } else {
+      } else {
       sliderCell.append(chainEl);
       rowValueUpdaters[j] = (nextCv) => {
         chainEl.textContent =
@@ -1958,15 +2111,28 @@ function appendModelsParamRows(
         li.title = s;
         sliderCell.title = s;
       };
+      }
     }
     list.appendChild(li);
   }
+  let previousAligned: Array<ChainParamValueJson | undefined> | undefined;
   return (nextChainValues) => {
+    if (nextChainValues == null) {
+      previousAligned = undefined;
+      for (let i = 0; i < rowValueUpdaters.length; i += 1) {
+        rowValueUpdaters[i]?.(undefined);
+      }
+      return;
+    }
+    const isFirst = previousAligned === undefined;
     for (let i = 0; i < rowValueUpdaters.length; i += 1) {
       const updater = rowValueUpdaters[i];
       if (!updater) continue;
-      updater(nextChainValues?.[i]);
+      const next = nextChainValues[i];
+      if (!isFirst && chainParamValuesJsonEqual(previousAligned![i], next)) continue;
+      updater(next);
     }
+    previousAligned = nextChainValues.slice() as Array<ChainParamValueJson | undefined>;
   };
 }
 
@@ -2090,6 +2256,8 @@ function renderCabSection(
 
 function showModelsParamsLoading() {
   clearModelsParamsSubheadAndIcon();
+  selectedParamsInPlaceUpdater = null;
+  selectedParamsInPlaceSlotKey = null;
   const inner = getModelsParamsInner();
   if (!inner) return;
   inner.replaceChildren();
@@ -2118,7 +2286,6 @@ function renderModelsParamsPane(
   setModelsParamsPaneCategory(slot.category, slot.moduleHex, slot.slotTypeHex);
   const inner = getModelsParamsInner();
   if (!inner) return;
-  inner.replaceChildren();
   const head = document.createElement("div");
   head.className = "models-params-model-head";
   const baseName = (resolvedCatalogModelName ?? slot.name).trim() || "—";
@@ -2176,8 +2343,6 @@ function renderModelsParamsPane(
   const subhead = getModelsParamsSubheadEl();
   if (subhead) {
     subhead.replaceChildren(head);
-  } else {
-    inner.appendChild(head);
   }
   setModelsParamsHeaderIcon(slot, catalogModelImage);
 
@@ -2234,7 +2399,11 @@ function renderModelsParamsPane(
     );
     updateAlignedValues(aligned ?? null);
   };
-  inner.appendChild(list);
+  if (subhead) {
+    inner.replaceChildren(list);
+  } else {
+    inner.replaceChildren(head, list);
+  }
   if (normalizeCategory(slot.category) === "amp+cab" && (allCabDefinitions?.length ?? 0) > 0) {
     renderCabSection(
       inner,
@@ -2245,13 +2414,18 @@ function renderModelsParamsPane(
     );
   }
   const slotKeyForPane = makeSlotSelectionKey(slot, kemplineSlotIndex);
+  const kempPaneMatches =
+    kemplineSlotIndex !== undefined &&
+    selectedParamsKemplineSlotIndex !== null &&
+    selectedParamsKemplineSlotIndex === kemplineSlotIndex;
   if (
     selectedParamsPresetIndex === currentPresetIndex &&
     selectedParamsSlotKey &&
-    selectedParamsSlotKey === slotKeyForPane
+    (selectedParamsSlotKey === slotKeyForPane || kempPaneMatches)
   ) {
     selectedParamsInPlaceUpdater = applyRawChainValuesInPlace;
     selectedParamsInPlaceSlotKey = slotKeyForPane;
+    selectedParamsSlotKey = slotKeyForPane;
   }
 }
 
@@ -2344,7 +2518,22 @@ async function loadAndShowModelsParamsForSlot(
 ) {
   const seq = ++modelsParamsLoadSeq;
   setModelsParamsPaneCategory(slot.category, slot.moduleHex, slot.slotTypeHex);
-  showModelsParamsLoading();
+  const slotKeyEarly = makeSlotSelectionKey(slot, kemplineSlotIndex);
+  const innerBefore = getModelsParamsInner();
+  const kempMatchesEarly =
+    kemplineSlotIndex === undefined ||
+    (selectedParamsKemplineSlotIndex !== null && selectedParamsKemplineSlotIndex === kemplineSlotIndex);
+  const preserveParamsChrome =
+    kempMatchesEarly &&
+    selectedParamsPresetIndex === currentPresetIndex &&
+    selectedParamsSlotKey === slotKeyEarly &&
+    selectedParamsInPlaceUpdater !== null &&
+    selectedParamsInPlaceSlotKey === slotKeyEarly &&
+    innerBefore !== null &&
+    innerBefore.querySelector("ul.models-params-list") !== null;
+  if (!preserveParamsChrome) {
+    showModelsParamsLoading();
+  }
   const nk = normalizeCategory(slot.category);
   if (nk === "routing" || nk === "none" || nk === "favorites") {
     if (seq === modelsParamsLoadSeq) showModelsParamsNotFound(slot, null);
@@ -2356,14 +2545,7 @@ async function loadAndShowModelsParamsForSlot(
     let linkedCabValues: ChainParamValueJson[] | null = null;
     let allCabDefinitions: ModelDefinitionJson[] | null = null;
     if (kemplineSlotIndex !== undefined && Number.isInteger(kemplineSlotIndex)) {
-      try {
-        chainValues = await invoke<ChainParamValueJson[] | null>(
-          "get_active_preset_slot_chain_param_values",
-          { slotIndex: kemplineSlotIndex },
-        );
-      } catch {
-        chainValues = null;
-      }
+      chainValues = await fetchSlotChainParamValuesReliable(kemplineSlotIndex, seq);
       try {
         const linkedCabFull = await invoke<LinkedCabWithParamsJson | null>(
           "get_active_preset_slot_linked_cab_with_params",
@@ -2470,6 +2652,35 @@ async function loadAndShowModelsParamsForSlot(
     }
     const helixControlsMap = await getHelixControlsMap();
     if (seq !== modelsParamsLoadSeq) return;
+    const slotKeyNow = makeSlotSelectionKey(slot, kemplineSlotIndex);
+    const prevCatalogId = paramsPaneCatalogBySlotKey.get(slotKeyNow);
+    const modelChangedAtSlot =
+      prevCatalogId !== undefined && prevCatalogId !== catalogModelIdTrimmed;
+    const kempMatchesNow =
+      kemplineSlotIndex === undefined ||
+      (selectedParamsKemplineSlotIndex !== null && selectedParamsKemplineSlotIndex === kemplineSlotIndex);
+    const canPatchValuesOnly =
+      !modelChangedAtSlot &&
+      kempMatchesNow &&
+      selectedParamsPresetIndex === currentPresetIndex &&
+      selectedParamsSlotKey === slotKeyNow &&
+      selectedParamsInPlaceUpdater !== null &&
+      selectedParamsInPlaceSlotKey === slotKeyNow;
+
+    if (canPatchValuesOnly) {
+      const patchFn = selectedParamsInPlaceUpdater;
+      if (patchFn) patchFn(chainValues);
+      paramsPaneCatalogBySlotKey.set(slotKeyNow, catalogModelIdTrimmed);
+      if (
+        selectedParamsPresetIndex === currentPresetIndex &&
+        selectedParamsKemplineSlotIndex !== null &&
+        selectedParamsKemplineSlotIndex === kemplineSlotIndex
+      ) {
+        selectedParamsValuesSig = `${currentPresetIndex}|${kemplineSlotIndex}|${chainValuesSignature(chainValues)}`;
+      }
+      return;
+    }
+
     renderModelsParamsPane(
       slot,
       found.entry.params ?? [],
@@ -2486,6 +2697,7 @@ async function loadAndShowModelsParamsForSlot(
       catalogImage,
       kemplineSlotIndex,
     );
+    paramsPaneCatalogBySlotKey.set(slotKeyNow, catalogModelIdTrimmed);
     if (
       selectedParamsPresetIndex === currentPresetIndex &&
       selectedParamsKemplineSlotIndex !== null &&
@@ -2884,8 +3096,8 @@ function makeNode(slot: SlotDebug, opts?: { showTypeAbbrev?: boolean }): HTMLEle
     img.className = "node-icon-img";
     img.src = iconPath;
     img.alt = "";
-    img.width = 22;
-    img.height = 22;
+    img.width = 56;
+    img.height = 56;
     iconWrap.appendChild(img);
   } else {
     const ph = document.createElement("div");
@@ -2935,13 +3147,39 @@ function isKemplineGrid16(slots: SlotDebug[]): boolean {
   });
 }
 
-function makeEmptySlotNode(): HTMLElement {
+/** Slot vide matrice : icône « empty » (path1 partout ; path2 seulement entre split/merge via `gridSlotNode`). */
+function makeEmptySlotNode(withIcon: boolean): HTMLElement {
   const item = document.createElement("div");
-  item.className = "node node-empty node--hx-slot node-empty-flat";
+  item.className =
+    "node node-empty node--hx-slot node-empty-flat" +
+    (withIcon ? " node-empty-slot-icon node--icon-only" : "");
   item.title = "Slot vide";
   item.setAttribute("aria-label", "Slot vide");
+  if (withIcon) {
+    const iconWrap = document.createElement("div");
+    iconWrap.className = "node-icon-wrap";
+    const img = document.createElement("img");
+    img.className = "node-icon-img";
+    img.src = MATRIX_EMPTY_SLOT_ICON;
+    img.alt = "";
+    img.width = 56;
+    img.height = 56;
+    img.decoding = "async";
+    iconWrap.appendChild(img);
+    item.appendChild(iconWrap);
+  }
   bindSlotParamsInteraction(item, null);
   return item;
+}
+
+/** Path2 slot row index 0..7 : entre split et merge (même logique que le trait L3 entre jonctions). */
+function path2SlotBetweenSplitAndMerge(
+  slotRowIndex: number,
+  splitCol: number,
+  mergeCol: number,
+): boolean {
+  const b = slotRowIndex + 1;
+  return b > splitCol && b < mergeCol;
 }
 
 const IO_INPUT_ICON = "/src-tauri/resources/icons_category/icon-input-category.png";
@@ -2952,6 +3190,8 @@ const MATRIX_PATH1_SPLIT_MERGE_ICON =
 const MATRIX_ICON_VERTICAL = "/src-tauri/resources/icons_category/Icons_vertical_line.png";
 const MATRIX_ICON_LINK_SPLIT = "/src-tauri/resources/icons_category/Icons_link_split.png";
 const MATRIX_ICON_LINK_MERGE = "/src-tauri/resources/icons_category/Icons_link_merge.png";
+const MATRIX_EMPTY_SLOT_ICON =
+  "/src-tauri/resources/icons_category/Icons_empty_slot.png";
 
 /** Nœuds d'extrémité façon HX Edit (icônes Input / Main L·R). */
 function makeIoNode(kind: "input" | "output"): HTMLElement {
@@ -3158,9 +3398,26 @@ function makePathRoutingNode(kind: "split" | "merge"): HTMLElement {
   return wrap;
 }
 
-function gridSlotNode(slot: SlotDebug, kemplineSlotIndex: number): HTMLElement {
-  if (!slot.category && slot.name === "<empty>") {
-    const n = makeEmptySlotNode();
+function gridSlotNode(
+  slot: SlotDebug,
+  kemplineSlotIndex: number,
+  opts?: {
+    path?: 1 | 2;
+    /** Index 0..7 sur la rangée path2 (ignoré si path !== 2). */
+    path2SlotRowIndex?: number;
+    splitCol?: number;
+    mergeCol?: number;
+  },
+): HTMLElement {
+  const empty = !slot.category && slot.name === "<empty>";
+  if (empty) {
+    const onPath2 = opts?.path === 2;
+    const i = opts?.path2SlotRowIndex ?? 0;
+    const sc = opts?.splitCol ?? 0;
+    const mc = opts?.mergeCol ?? 8;
+    const showIcon =
+      !onPath2 || (onPath2 && path2SlotBetweenSplitAndMerge(i, sc, mc));
+    const n = makeEmptySlotNode(showIcon);
     n.dataset.kemplineSlotIndex = String(kemplineSlotIndex);
     return n;
   }
@@ -3219,8 +3476,8 @@ function renderGrid16(
 ) {
   const lastB = lastFilledSlotRowIndex(slots, 8, 8);
   const hasBranchB = lastB >= 0;
-  /** Marqueurs routage affichés : API et/ou branche B réelle (sans quoi routingCols restait null). */
-  const showRoutingUi = routing.length > 0 || hasBranchB;
+  /** Split/merge path1, traits verticaux L2, path2 : seulement si au moins un bloc path2 (ignore Split/Merge parsés sans branche B). */
+  const showRoutingUi = hasBranchB;
 
   const routingCols =
     stompLayout != null && stompLayout.routing.kemplineGridOk === true
@@ -3390,10 +3647,16 @@ function renderGrid16(
       } else if (col >= 3 && col <= 17 && (col - 3) % 2 === 0) {
         const i = (col - 3) / 2;
         if (i >= 0 && i <= 7) {
-          if (row === LINE_PATH_1) inner = gridSlotNode(slots[i]!, i);
+          if (row === LINE_PATH_1)
+            inner = gridSlotNode(slots[i]!, i, { path: 1 });
           else if (row === LINE_DESC_PATH_1) inner = makeMatrixCategoryCell(slots[i]!);
-          else if (row === LINE_PATH_2 && showRoutingUi && hasBranchB)
-            inner = gridSlotNode(slots[8 + i]!, 8 + i);
+          else if (row === LINE_PATH_2 && hasBranchB)
+            inner = gridSlotNode(slots[8 + i]!, 8 + i, {
+              path: 2,
+              path2SlotRowIndex: i,
+              splitCol: routingCols.splitCol,
+              mergeCol: routingCols.mergeCol,
+            });
           else if (row === LINE_DESC_PATH_2) inner = makeMatrixCategoryCell(slots[8 + i]!);
         }
       } else if (col >= 4 && col <= 18 && (col - 4) % 2 === 0) {
@@ -3412,7 +3675,7 @@ function renderGrid16(
               rk === "split" ? splitEntry : rk === "merge" ? mergeEntry : undefined,
             ),
           );
-        } else if (row === LINE_PATH_2 && showRoutingUi && hasBranchB && j >= 0 && j <= 7) {
+        } else if (row === LINE_PATH_2 && hasBranchB && j >= 0 && j <= 7) {
           // Path 2 (L3): réafficher `Icons_line.png` entre split et merge.
           const boundary = j + 1;
           if (boundary > routingCols.splitCol && boundary < routingCols.mergeCol) {
@@ -3441,7 +3704,7 @@ function renderGrid16(
      * Mettre à `true` pour réactiver (REVERT visuel) ; avec 5 lignes séparateur, utiliser `grid-row` adapté.
      */
     const ENABLE_MATRIX_VSPAN_ON_PATH2 = false;
-    if (ENABLE_MATRIX_VSPAN_ON_PATH2) {
+    if (ENABLE_MATRIX_VSPAN_ON_PATH2 && hasBranchB) {
       for (const col of junctionDecoCols) {
         const v = makeMatrixVerticalSpanIcon();
         v.style.gridRow = "3 / 4";
@@ -3462,8 +3725,11 @@ function renderGrid16(
       el.style.pointerEvents = "none";
       grid.appendChild(el);
     }
-    if (splitG >= 2) placePath2Link(splitG, MATRIX_ICON_LINK_SPLIT);
-    if (mergeG >= 2) placePath2Link(mergeG, MATRIX_ICON_LINK_MERGE);
+    // Sans bloc sur le path 2, pas d’icônes split/merge sur L3 (évite split/merge « orphelins »).
+    if (hasBranchB) {
+      if (splitG >= 2) placePath2Link(splitG, MATRIX_ICON_LINK_SPLIT);
+      if (mergeG >= 2) placePath2Link(mergeG, MATRIX_ICON_LINK_MERGE);
+    }
   }
 
   root.appendChild(grid);

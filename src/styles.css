@@ -107,7 +107,7 @@ html, body {
 }
 
 .models-params-pane-title {
-  grid-column: 1 / -1;
+  grid-column: 1;
   grid-row: 1;
   display: flex;
   align-items: baseline;
@@ -146,11 +146,36 @@ html, body {
   min-width: 0;
 }
 
-.models-params-pane-model-icon-wrap {
+.models-params-pane-basedon {
   grid-column: 2;
   grid-row: 2;
   justify-self: end;
-  align-self: start;
+  text-align: right;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-dim);
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  max-width: none;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.models-params-pane-basedon-label {
+  color: var(--text-dim);
+}
+
+.models-params-pane-basedon-value {
+  color: var(--text);
+}
+
+.models-params-pane-model-icon-wrap {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+  align-self: center;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -243,6 +268,33 @@ html, body {
   font-weight: 600;
   color: var(--text);
   line-height: 1.3;
+}
+
+.models-params-model-title-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  grid-column: 1 / -1;
+}
+
+.models-params-model-name-sub {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.models-params-model-sub-inline {
+  flex: 0 1 auto;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45%;
 }
 
 .models-params-model-sub {
@@ -389,6 +441,13 @@ html, body {
 /* Ligne micro : uniquement le combobox, sans readout au-dessus */
 .models-params-slider-cell--combo-only {
   min-height: auto;
+}
+
+/* Segments 2 / 3 états : la valeur est dans le bouton actif — pas de readout ambre au-dessus. */
+.models-params-slider-cell.models-params-slider-cell--segment-only {
+  min-height: auto;
+  gap: 0;
+  justify-content: center;
 }
 
 /*
@@ -1078,7 +1137,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 64px;
+  min-height: 80px;
 }
 
 .models-pane .node {
@@ -1093,13 +1152,13 @@ html, body {
   gap: 5px;
 }
 
-/* Blocs FX grille / chaîne : icône catégorie 22×22 (même taille que Input / Main L·R) + diminutif optionnel. */
+/* Blocs FX grille / chaîne : icône catégorie 56×56 + diminutif optionnel. */
 .models-pane .node.node--hx-slot {
   width: var(--models-slot-node-w);
   min-width: var(--models-slot-node-w);
   max-width: var(--models-slot-node-w);
   box-sizing: border-box;
-  min-height: 52px;
+  min-height: 72px;
   padding: 6px 4px 8px;
   align-items: center;
   gap: 4px;
@@ -1125,9 +1184,9 @@ html, body {
   width: var(--models-slot-node-w);
   min-width: var(--models-slot-node-w);
   max-width: var(--models-slot-node-w);
-  height: var(--models-slot-node-w);
+  height: auto;
   min-height: var(--models-slot-node-w);
-  max-height: var(--models-slot-node-w);
+  max-height: none;
   box-sizing: border-box;
   overflow: hidden;
 }
@@ -1155,15 +1214,15 @@ html, body {
 }
 
 .models-pane .node-icon-img {
-  width: 22px;
-  height: 22px;
+  width: 56px;
+  height: 56px;
   object-fit: contain;
   display: block;
 }
 
 .models-pane .node-icon-fallback {
-  width: 22px;
-  height: 22px;
+  width: 56px;
+  height: 56px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1239,7 +1298,7 @@ html, body {
 .models-pane .placeholder {
   width: var(--models-slot-node-w);
   min-width: var(--models-slot-node-w);
-  min-height: 52px;
+  min-height: 72px;
   opacity: 0;
 }
 
@@ -1308,6 +1367,13 @@ html, body {
   align-items: center;
   background: var(--bg-base);
   opacity: 1;
+}
+
+/* Slot vide avec icône `Icons_empty_slot.png` : bordure pleine comme les autres blocs (pas de tirets `.node-empty`). */
+.models-pane .node-empty.node-empty-flat.node-empty-slot-icon {
+  border-style: solid;
+  border-color: var(--border);
+  border-width: 1px;
 }
 
 /* Matrice 4×20 : L1 Path 1, L2 Description Path 1, L3 Path 2, L4 Description Path 2 ; col 20 = n° ligne (debug). */
@@ -1451,7 +1517,7 @@ html, body {
  * }
  */
 
-/* Même gabarit que `.node.node--hx-slot` : l’icône est 22×22 dans les deux cas, ce n’est pas le PNG. */
+/* Même gabarit que `.node.node--hx-slot` : icône slot 56×56 (cellule matrice 56×56). */
 .models-pane .hx-matrix-cell .hx-io {
   box-sizing: border-box;
   width: 100%;
@@ -1490,12 +1556,11 @@ html, body {
   min-height: 0;
   height: 100%;
   max-height: 100%;
-  padding: 4px 2px 4px;
+  padding: 0;
 }
 
 .models-pane .hx-matrix-cell > .node.node--hx-slot.node--icon-only {
-  padding-top: 4px;
-  padding-bottom: 4px;
+  padding: 0;
 }
 
 /* Slot vide matrice : occupe toute la case pour hauteur identique aux blocs avec icône. */
@@ -1508,7 +1573,7 @@ html, body {
   max-height: 100%;
 }
 
-/* Colonnes paires (path 1) : décorations grille — pas les cartes slot (icônes catégorie 22×22). */
+/* Colonnes paires (path 1) : décorations grille — pas les cartes slot (icônes catégorie 56×56). */
 .models-pane .hx-matrix-junction-line {
   box-sizing: border-box;
   width: 100%;

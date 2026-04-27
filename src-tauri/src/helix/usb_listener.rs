@@ -7,12 +7,15 @@
 
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashSet;
 use std::thread;
 use std::time::Duration;
 use rusb::DeviceHandle;
 use rusb::GlobalContext;
 
-use crate::helix::{HelixState, Mode};
+use crate::helix::{
+    HelixState, Mode, usb_packet_trace_delta_only, usb_packet_trace_enabled, usb_trace_fingerprint,
+};
 
 const ENDPOINT_IN: u8 = 0x81;
 const READ_TIMEOUT_MS: u64 = 500;
@@ -26,6 +29,8 @@ pub fn start_listener(
 ) {
     thread::spawn(move || {
         let mut buf = vec![0u8; BUFFER_SIZE];
+        let mut seen_fingerprints: HashSet<Vec<u8>> = HashSet::new();
+        let mut suppressed_repeats: u64 = 0;
 
         loop {
             // Vérifier si on doit s'arrêter
@@ -41,10 +46,54 @@ pub fn start_listener(
             ) {
                 Ok(n) if n > 0 => {
                     let data = buf[..n].to_vec();
+                    if usb_packet_trace_enabled() {
+                        let delta_only = usb_packet_trace_delta_only();
+                        let fingerprint = usb_trace_fingerprint(&data);
+                        if delta_only {
+                            if !seen_fingerprints.insert(fingerprint.clone()) {
+                                suppressed_repeats = suppressed_repeats.saturating_add(1);
+                                if suppressed_repeats % 250 == 0 {
+                                    eprintln!(
+                                        "[UsbTrace][IN  0x81] known patterns suppressed={}",
+                                        suppressed_repeats
+                                    );
+                                }
+                                continue;
+                            } else if suppressed_repeats > 0 {
+                                eprintln!(
+                                    "[UsbTrace][IN  0x81] known patterns suppressed total={}",
+                                    suppressed_repeats
+                                );
+                                suppressed_repeats = 0;
+                            }
+                        }
+                        let hex = data
+                            .iter()
+                            .map(|b| format!("{:02x}", b))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        // Paquets courts 16o = souvent keep-alive / acquittements ; les changements
+                        // de paramètre matériel peuvent être des trames plus longues (ou sur 0x82).
+                        if data.len() != 16 {
+                            eprintln!(
+                                "[UsbTrace][IN  0x81][len={}][non-16 — possible param / UI]",
+                                data.len()
+                            );
+                        }
+                        eprintln!("[UsbTrace][IN  0x81][len={}] {}", data.len(), hex);
+                    } else {
+                        // Reset de l'état de dédup quand la trace est désactivée.
+                        seen_fingerprints.clear();
+                        suppressed_repeats = 0;
+                    }
 
                     // Dispatcher vers le mode actif
                     // On lock state et mode séparément pour éviter deadlock
                     let mut s = state.lock().unwrap();
+                    // Échos paramètre HX Edit / firmware : mémorisés pour aligner `write_live_param`.
+                    s.ingest_ed03_param_echo(&data);
+                    // Notification « slot hardware » (16+16 octets IN), voir Line6_HX_Stomp_USB_Protocol.md
+                    s.ingest_hw_slot_notify_in(&data);
                     let mut m = mode.lock().unwrap();
                     m.data_in(&data, &mut s);
                 }

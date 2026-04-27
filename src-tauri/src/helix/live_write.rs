@@ -2,6 +2,8 @@ use crate::helix::HelixState;
 
 pub struct LiveWriteFrames {
     pub model_block_kind: &'static str,
+    /// Octet sous `85:62:XX:1d` dans la trame `27` : captures Slot2 / Slot8 → `XX` = numéro de slot 1..16 (index Kempline 0..15 + 1).
+    pub slot_bus: u8,
     pub pp: u8,
     pub pp_source: &'static str,
     pub param_selector: u8,
@@ -41,6 +43,13 @@ fn param_selector_byte_from_index(param_index: u32) -> (u8, &'static str) {
     ((param_index.min(0xff)) as u8, "index_to_offset40")
 }
 
+/// Octet `XX` dans `… 85 62 XX 1d …` sur la trame write `27` (offset 34).
+/// Captures `Slot2 …` / `Slot8 …` : slot grille 2 → `0x02`, slot 8 → `0x08` (index Kempline 0..15 → bus 1..16).
+fn slot_bus_byte_from_kempline_index(slot_index: u32) -> u8 {
+    let idx = slot_index.min(15) as u8;
+    idx.saturating_add(1)
+}
+
 /// Assemble une trame write `27` opcode `80:10:ed:03` (48 octets).
 fn assemble_27_write(
     seq: u8,
@@ -49,6 +58,7 @@ fn assemble_27_write(
     yy: u8,
     pp: u8,
     param_selector: u8,
+    slot_bus: u8,
     float_be: [u8; 4],
 ) -> Vec<u8> {
     vec![
@@ -60,7 +70,7 @@ fn assemble_27_write(
         0x00,
         0x01, 0x00, 0x06, 0x00, 0x17, 0x00, 0x00, 0x00,
         0x83, 0x66, 0xcd, pp, yy, 0x64, 0x1e, 0x65,
-        0x85, 0x62, 0x01, 0x1d, 0xc3, 0x1a, 0x00, 0x1c,
+        0x85, 0x62, slot_bus, 0x1d, 0xc3, 0x1a, 0x00, 0x1c,
         param_selector, 0x77, 0xca, float_be[0], float_be[1], float_be[2], float_be[3], 0x00,
     ]
 }
@@ -88,10 +98,12 @@ fn apply_echo_model_block(
 pub fn build_live_write_frames_from_state(
     state: &mut HelixState,
     raw_value: f32,
+    slot_index: u32,
     param_index: u32,
     symbolic_id: &str,
 ) -> LiveWriteFrames {
     let float_be = raw_value.to_bits().to_be_bytes();
+    let slot_bus = slot_bus_byte_from_kempline_index(slot_index);
     let pre_cnt_x80 = state.next_x80_cnt();
     let pre_cnt_x2 = state.next_x2_cnt();
     let pre_session = state.session_no;
@@ -120,9 +132,11 @@ pub fn build_live_write_frames_from_state(
     let seq_a = state.next_x80_cnt();
     let yy_a = state.live_write_yy;
 
-    let mut packet_a = assemble_27_write(seq_a, 0x04, ctr_a, yy_a, pp, param_selector, float_be);
+    let mut packet_a = assemble_27_write(seq_a, 0x04, ctr_a, yy_a, pp, param_selector, slot_bus, float_be);
     let (model_block_kind, _) = if let Some(last_echo) = state.last_ed03_echo_model {
         apply_echo_model_block(&mut packet_a, state, last_echo);
+        // L'écho écrase l'octet slot (offset 34) : le réinjecter depuis la sélection UI.
+        packet_a[34] = slot_bus;
         ("in_echo_strict", ())
     } else {
         ("replay_static", ())
@@ -137,9 +151,10 @@ pub fn build_live_write_frames_from_state(
     let ctr_b = state.live_write_ctr;
     let yy_b = state.live_write_yy;
 
-    let mut packet_b = assemble_27_write(seq_b, 0x0c, ctr_b, yy_b, pp, param_selector, float_be);
+    let mut packet_b = assemble_27_write(seq_b, 0x0c, ctr_b, yy_b, pp, param_selector, slot_bus, float_be);
     if let Some(last_echo) = state.last_ed03_echo_model {
         apply_echo_model_block(&mut packet_b, state, last_echo);
+        packet_b[34] = slot_bus;
     }
     packet_b[43..47].copy_from_slice(&float_be);
 
@@ -154,11 +169,12 @@ pub fn build_live_write_frames_from_state(
         0x00, seq_post_sel, 0x00, 0x08, (ctr_post & 0xff) as u8, ((ctr_post >> 8) & 0xff) as u8, 0x00, 0x00,
     ];
 
-    let static_ref = assemble_27_write(0x8f, 0x04, 0x6cbd, 0x17, pp, param_selector, float_be);
+    let static_ref = assemble_27_write(0x8f, 0x04, 0x6cbd, 0x17, pp, param_selector, slot_bus, float_be);
     let frame27_diff_vs_static = diff_packet_hex(&static_ref, &packet_a);
 
     LiveWriteFrames {
         model_block_kind,
+        slot_bus,
         pp,
         pp_source,
         param_selector,
