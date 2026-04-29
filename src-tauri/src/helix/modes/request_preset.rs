@@ -46,7 +46,7 @@ impl RequestPreset {
         }
     }
 
-    fn arm_watchdog(&mut self, state_mode_tx: Option<mpsc::Sender<ModeRequest>>, content_only: bool) {
+    fn arm_watchdog(&mut self, state_mode_tx: Option<mpsc::Sender<ModeRequest>>, content_only: bool, generation: u64) {
         self.cancel_watchdog();
         if let Some(mode_tx) = state_mode_tx {
             let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
@@ -56,8 +56,10 @@ impl RequestPreset {
                 match cancel_rx.recv_timeout(Duration::from_millis(2000)) {
                     Ok(_) => {}
                     Err(_) => {
+                        // Envoyer StandardPresetRead(generation) : le mode loop vérifiera si
+                        // cette génération est toujours courante avant d'agir.
                         let next_mode = if content_only {
-                            ModeRequest::Standard
+                            ModeRequest::StandardPresetRead(generation)
                         } else {
                             ModeRequest::RequestPresetNames
                         };
@@ -75,7 +77,7 @@ impl RequestPreset {
     }
 
     /// Kempline : threading.Timer(0.02, self.parse_preset_data)
-    fn arm_timer(&mut self, state_mode_tx: Option<mpsc::Sender<ModeRequest>>, content_only: bool) {
+    fn arm_timer(&mut self, state_mode_tx: Option<mpsc::Sender<ModeRequest>>, content_only: bool, generation: u64) {
         self.cancel_timer();
         if let Some(mode_tx) = state_mode_tx {
             let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
@@ -85,7 +87,7 @@ impl RequestPreset {
                     Ok(_)  => {}
                     Err(_) => {
                         let next_mode = if content_only {
-                            ModeRequest::Standard
+                            ModeRequest::StandardPresetRead(generation)
                         } else {
                             ModeRequest::RequestPresetNames
                         };
@@ -145,7 +147,7 @@ impl Mode for RequestPreset {
             state.request_preset_session_id.wrapping_add(2);
 
         // Si aucun paquet n'arrive, on sort proprement.
-        self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only);
+        self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only, state.preset_read_generation);
     }
 
     fn data_in(&mut self, data: &[u8], state: &mut HelixState) -> bool {
@@ -155,9 +157,28 @@ impl Mode for RequestPreset {
             return false;
         }
 
-        // Paquets x2 (changement de preset) — déléguer à Standard
-        // Kempline : RequestPreset hérite de Standard, donc data_in de Standard est appelé
+        // Paquets x2 (changement de preset, keep-alive, etc.)
+        // Pendant content_only : on envoie seulement l'ACK x2 générique sans déléguer à
+        // Standard::data_in, car Standard peut modifier preset_index sur un PRESET SWITCH
+        // hardware mid-read, ce qui corromprait la cohérence index / données lues.
         if data.len() > 6 && data[6] == 0x02 {
+            if state.preset_content_only {
+                // ACK x2 minimal pour ne pas bloquer le device, sans toucher preset_index.
+                if byte_cmp(data, &pattern![
+                    XX, 0x00, 0x00, 0x18,
+                    0xf0, 0x03, 0x02, 0x10,
+                    0x00, XX, 0x00, 0x04
+                ], 12) {
+                    let cnt = state.next_x2_cnt();
+                    state.send(OutPacket::with_delay(vec![
+                        0x08, 0x00, 0x00, 0x18,
+                        0x02, 0x10, 0xf0, 0x03,
+                        0x00, cnt, 0x00, 0x08,
+                        0x74, 0x77, 0x00, 0x00,
+                    ], 10));
+                }
+                return false;
+            }
             let mut std = crate::helix::modes::standard::Standard;
             return std.data_in(data, state);
         }
@@ -183,7 +204,7 @@ impl Mode for RequestPreset {
             XX, XX, 0x00, 0x00
         ], 16) {
             // Un paquet valide arrive : on réarme le watchdog global.
-            self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only);
+            self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only, state.preset_read_generation);
             // Annuler le timer en cours
             self.cancel_timer();
             self.in_transfer = false;
@@ -236,7 +257,7 @@ impl Mode for RequestPreset {
             }
 
             // Timer 20ms — si pas de nouveau paquet → fin
-            self.arm_timer(state.mode_tx.clone(), state.preset_content_only);
+            self.arm_timer(state.mode_tx.clone(), state.preset_content_only, state.preset_read_generation);
             return true;
         }
 

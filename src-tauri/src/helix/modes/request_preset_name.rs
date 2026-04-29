@@ -120,7 +120,7 @@ impl Mode for RequestPresetName {
                 if state.got_preset_names {
                     state.switch_mode(ModeRequest::Standard);
                 } else {
-                    state.switch_mode(ModeRequest::RequestPreset);
+                    state.switch_mode(ModeRequest::RequestPreset(false));
                 }
             }
             return false;

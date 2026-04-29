@@ -4131,6 +4131,9 @@ async function requestLoadForPreset(index: number) {
   hardwareSyncPausedForPresetLoad = true;
   pendingPresetIndex = -1;
   lastRequestedPresetIndex = index;
+  // Forcer la détection du slot HW comme "nouveau" au prochain cycle soft refresh,
+  // même si le slot n'a pas changé depuis le dernier preset.
+  lastSeenHardwareSlotSequence = 0;
   startLoadingHeartbeat("Lecture du preset actif");
   console.log(`[PresetDebug][models] request_preset_content preset=${index}`);
 
@@ -4201,6 +4204,21 @@ async function requestLoadForPreset(index: number) {
               stompLayout = await invoke<ActivePresetStompLayout | null>("get_active_preset_stomp_layout");
             } catch {
               console.warn("[PresetDebug][models] get_active_preset_stomp_layout error");
+            }
+          }
+          // Snapshot du slot HW actif juste avant le rendu :
+          // renderSlots appelle consumePendingHardwareSlotSelection() en fin d'exécution.
+          // Si pendingHardwareSelectedKemplineSlotIndex est renseigné ici, le bon slot
+          // est sélectionné immédiatement sans passer par le fallback slot-1 à 240ms.
+          if (pendingHardwareSelectedKemplineSlotIndex === null) {
+            try {
+              const hwSnap = await invoke<HardwareActiveSlotState>("get_active_hardware_slot_state");
+              if (hwSnap && Number.isInteger(hwSnap.slotIndex) && (hwSnap.slotIndex as number) >= 0) {
+                pendingHardwareSelectedKemplineSlotIndex = hwSnap.slotIndex as number;
+                lastSeenHardwareSlotSequence = hwSnap.sequence;
+              }
+            } catch {
+              // best effort : si l'invoke échoue, le fallback 240ms prend le relais
             }
           }
           await renderSlots(normalizedSlots, routingFlow, stompLayout);

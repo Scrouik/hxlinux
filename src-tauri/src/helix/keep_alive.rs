@@ -98,6 +98,15 @@ impl KeepAliveManager {
             while !stop.load(Ordering::SeqCst) {
                 {
                     let mut s = state.lock().unwrap();
+                    // Pendant une lecture preset (`RequestPreset` / content_only),
+                    // éviter d'injecter des keepalive x80 concurrents.
+                    // Les captures montrent des timeouts OUT 0x01 majoritairement sur x80
+                    // dans cette fenêtre, ce qui peut perturber la progression de lecture.
+                    if s.preset_content_only {
+                        drop(s);
+                        thread::sleep(Duration::from_millis(KEEP_ALIVE_INTERVAL_MS));
+                        continue;
+                    }
                     let cnt = s.next_x80_cnt();
                     // Kempline : paquet keep-alive x80
                     // thread x80

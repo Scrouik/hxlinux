@@ -14,8 +14,10 @@ use rusb::DeviceHandle;
 use rusb::GlobalContext;
 
 use crate::helix::{
-    HelixState, Mode, usb_packet_trace_delta_only, usb_packet_trace_enabled, usb_trace_fingerprint,
+    HelixState, Mode, usb_io_diag_enabled, usb_packet_trace_delta_only, usb_packet_trace_enabled,
+    usb_trace_fingerprint,
 };
+use crate::helix::packet::{classify_in_packet, packet_counter};
 
 const ENDPOINT_IN: u8 = 0x81;
 const READ_TIMEOUT_MS: u64 = 500;
@@ -46,6 +48,16 @@ pub fn start_listener(
             ) {
                 Ok(n) if n > 0 => {
                     let data = buf[..n].to_vec();
+                    if usb_io_diag_enabled() {
+                        eprintln!(
+                            "[UsbIODiag][IN][recv] kind={} len={} cnt={}",
+                            classify_in_packet(&data),
+                            data.len(),
+                            packet_counter(&data)
+                                .map(|v| format!("{:02x}", v))
+                                .unwrap_or_else(|| "--".to_string())
+                        );
+                    }
                     if usb_packet_trace_enabled() {
                         let delta_only = usb_packet_trace_delta_only();
                         let fingerprint = usb_trace_fingerprint(&data);

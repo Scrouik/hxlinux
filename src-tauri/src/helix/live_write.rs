@@ -1,4 +1,4 @@
-use crate::helix::HelixState;
+use crate::helix::{kempline_index_to_slot_bus, HelixState};
 
 pub struct LiveWriteFrames {
     pub model_block_kind: &'static str,
@@ -46,8 +46,7 @@ fn param_selector_byte_from_index(param_index: u32) -> (u8, &'static str) {
 /// Octet `XX` dans `… 85 62 XX 1d …` sur la trame write `27` (offset 34).
 /// Captures `Slot2 …` / `Slot8 …` : slot grille 2 → `0x02`, slot 8 → `0x08` (index Kempline 0..15 → bus 1..16).
 fn slot_bus_byte_from_kempline_index(slot_index: u32) -> u8 {
-    let idx = slot_index.min(15) as u8;
-    idx.saturating_add(1)
+    kempline_index_to_slot_bus(slot_index.min(15) as usize).unwrap_or(1)
 }
 
 /// Assemble une trame write `27` opcode `80:10:ed:03` (48 octets).

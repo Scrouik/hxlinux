@@ -528,6 +528,35 @@ Todo :
   - sessions courtes (2–5 min), pas besoin de 50 changements preset,
   - objectif: comparer cinématique Line 6 vs HXLinux dans les mêmes moments de stress.
 
+## 29 avril 2026 (fin de soirée) — compteur de génération preset read
+
+### Problème traité
+
+Perte non-déterministe des trames USB après N lectures de presets (variable : 5 à 50).  
+Cause racine : les threads watchdog (2000 ms) et timer (20 ms) armés dans `RequestPreset` peuvent franchir leur `recv_timeout` **après** l'appel à `cancel_watchdog()` / `cancel_timer()`. Le message `Standard` orphelin arrivait dans le mode loop et appelait `shutdown()` sur la lecture **suivante** en cours, l'avortant en plein milieu.
+
+### Correctifs appliqués
+
+- **`src-tauri/src/helix/mod.rs`**
+  - Ajout de `pub preset_read_generation: u64` dans `HelixState` (init `0`).
+  - Ajout de `ModeRequest::StandardPresetRead(u64)` : variante émise par le timer/watchdog interne de `RequestPreset` à la place de `Standard` pour les lectures `content_only`.
+
+- **`src-tauri/src/helix/modes/request_preset.rs`**
+  - `arm_watchdog(…, generation: u64)` et `arm_timer(…, generation: u64)` capturent la génération au moment de l'armement.
+  - Sur timeout `content_only` : envoient `StandardPresetRead(generation)` au lieu de `Standard`.
+  - Tous les call sites passent `state.preset_read_generation`.
+
+- **`src-tauri/src/lib.rs`** (mode loop)
+  - Handler `RequestPreset` : incrémente `s.preset_read_generation` avant `m.start()` → invalide tous les messages en vol des lectures précédentes.
+  - Nouveau handler `StandardPresetRead(gen)` : si `gen != s.preset_read_generation` → log orphelin + `continue` (ignoré) ; sinon traitement identique à `Standard`.
+
+### Résultat observé
+
+- **Vitesse de traitement nettement améliorée** (effet secondaire positif inattendu).
+- La perte de trame persiste encore dans certains cas (investigation à poursuivre).
+
+---
+
 ## 29 avril 2026 (suite soirée) — anti-rafales USB, recover, logs `RequestPresetName`
 
 ### Travail effectué (code)

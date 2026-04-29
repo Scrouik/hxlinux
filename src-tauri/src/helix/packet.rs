@@ -22,6 +22,57 @@ impl OutPacket {
     }
 }
 
+pub fn packet_counter(data: &[u8]) -> Option<u8> {
+    if data.len() >= 10 && data.starts_with(&[0x08, 0x00, 0x00, 0x18]) {
+        return Some(data[9]);
+    }
+    if data.len() >= 10 && (data[0] == 0x1d || data[0] == 0x19 || data[0] == 0x21 || data[0] == 0x27) {
+        return Some(data[9]);
+    }
+    None
+}
+
+pub fn classify_out_packet(data: &[u8]) -> &'static str {
+    if data.len() >= 8 {
+        let op = &data[4..8];
+        if op == [0x01, 0x10, 0xef, 0x03] {
+            return "out_keepalive_x1";
+        }
+        if op == [0x02, 0x10, 0xf0, 0x03] {
+            return "out_keepalive_x2";
+        }
+        if op == [0x80, 0x10, 0xed, 0x03] {
+            if data.windows(4).any(|w| w == [0x82, 0x62, 0x00, 0x1a]) {
+                return "out_slot_switch";
+            }
+            if data.len() >= 48 && data[0] == 0x27 {
+                return "out_live_write_27";
+            }
+            return "out_keepalive_x80_or_ed03";
+        }
+        if op == [0xf0, 0x03, 0x02, 0x10] {
+            return "out_preset_or_routing";
+        }
+    }
+    "out_other"
+}
+
+pub fn classify_in_packet(data: &[u8]) -> &'static str {
+    if data.len() >= 8 {
+        let op = &data[4..8];
+        if op == [0xef, 0x03, 0x01, 0x10] {
+            return "in_ack_x1_or_slot";
+        }
+        if op == [0xed, 0x03, 0x80, 0x10] {
+            return "in_ack_x80_or_slot";
+        }
+        if op == [0xf0, 0x03, 0x02, 0x10] {
+            return "in_x2_stream";
+        }
+    }
+    "in_other"
+}
+
 /// Équivalent de my_byte_cmp dans kempline.
 ///
 /// Compare les `length` premiers bytes de `data` avec `pattern`.

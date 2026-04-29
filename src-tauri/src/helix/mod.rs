@@ -15,6 +15,30 @@ use std::sync::mpsc::Sender;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::helix::packet::OutPacket;
 
+/// Mapping index grille Kempline (0..15) -> slot bus observé en USB.
+/// Path 1: 0..7 -> 0x01..0x08
+/// Path 2: 8..15 -> 0x0b..0x12 (offset +0x03 observé dans les captures UI/HX Edit)
+pub fn kempline_index_to_slot_bus(slot_index: usize) -> Option<u8> {
+    if slot_index >= 16 {
+        return None;
+    }
+    let i = slot_index as u8;
+    if i < 8 {
+        Some(i + 1)
+    } else {
+        Some(i + 3)
+    }
+}
+
+/// Mapping slot bus USB -> index grille Kempline (0..15).
+pub fn slot_bus_to_kempline_index(slot_bus: u8) -> Option<usize> {
+    match slot_bus {
+        0x01..=0x08 => Some((slot_bus - 1) as usize),
+        0x0b..=0x12 => Some((slot_bus - 3) as usize),
+        _ => None,
+    }
+}
+
 // ===========================================================
 // Trait Mode
 // ===========================================================
@@ -36,7 +60,13 @@ pub enum ModeRequest {
     RequestPresetName,
     RequestPresetNames,
     Standard,
-    RequestPreset,
+    /// bool = content_only : true = lecture déclenchée par l'UI (revient à Standard),
+    /// false = flux de démarrage (revient à RequestPresetNames).
+    RequestPreset(bool),
+    /// Fin de lecture preset émise par le timer/watchdog interne de RequestPreset.
+    /// Le u64 est la génération de la lecture qui a armé le timer ; si elle ne correspond
+    /// plus à `HelixState::preset_read_generation`, le message est orphelin et ignoré.
+    StandardPresetRead(u64),
 }
 
 // ===========================================================
@@ -95,6 +125,11 @@ pub struct HelixState {
     // Si false : RequestPreset revient à RequestPresetNames (démarrage)
     pub preset_content_only: bool,
 
+    /// Génération courante de lecture preset. Incrémentée à chaque démarrage de
+    /// RequestPreset ; les StandardPresetRead(gen) avec gen != valeur courante sont
+    /// des orphelins issus d'un watchdog/timer d'une lecture précédente et sont ignorés.
+    pub preset_read_generation: u64,
+
     /// Dernier bloc `83 66 cd 05 … 1c` extrait d’un écho IN `27 … ed 03 03 10`
     /// (capture HX Edit). Sert à aligner les écritures live sur la session USB réelle.
     pub last_ed03_echo_model: Option<[u8; 16]>,
@@ -110,6 +145,10 @@ pub struct HelixState {
     pub hw_slot_notify_ef_in: Option<[u8; 16]>,
     /// +1 à chaque réception d’un EF03 court **alors qu’un** ED03 court était déjà mémorisé (cycle complet).
     pub hw_slot_notify_sequence: u32,
+    /// Slot actif observé côté hardware (index Kempline 0..15), déduit du flux IN `0x81`.
+    pub hw_active_slot_index: Option<usize>,
+    /// +1 à chaque changement détecté de `hw_active_slot_index`.
+    pub hw_active_slot_sequence: u32,
 }
 
 // ===========================================================
@@ -127,6 +166,7 @@ pub enum KeepAliveCommand {
 static USB_PACKET_TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
 static USB_PACKET_TRACE_DELTA_ONLY: AtomicBool = AtomicBool::new(true);
 static PRESET_DEBUG_VERBOSE_ENABLED: AtomicBool = AtomicBool::new(false);
+static USB_IO_DIAG_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn set_usb_packet_trace_enabled(enabled: bool) {
     USB_PACKET_TRACE_ENABLED.store(enabled, Ordering::Relaxed);
@@ -150,6 +190,14 @@ pub fn set_preset_debug_verbose_enabled(enabled: bool) {
 
 pub fn preset_debug_verbose_enabled() -> bool {
     PRESET_DEBUG_VERBOSE_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn set_usb_io_diag_enabled(enabled: bool) {
+    USB_IO_DIAG_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn usb_io_diag_enabled() -> bool {
+    USB_IO_DIAG_ENABLED.load(Ordering::Relaxed)
 }
 
 /// Construit une empreinte "stable" pour réduire le bruit de traces :
@@ -184,6 +232,7 @@ impl HelixState {
             preset_data:        Vec::new(),
             preset_data_ready:  false,
             preset_content_only: false,
+            preset_read_generation: 0,
             connecting:         true,
             got_preset:         false,
             preset_pkt_counter: 0x001e,
@@ -196,6 +245,8 @@ impl HelixState {
             hw_slot_notify_ed_in: None,
             hw_slot_notify_ef_in: None,
             hw_slot_notify_sequence: 0,
+            hw_active_slot_index: None,
+            hw_active_slot_sequence: 0,
         }
     }
 
@@ -251,6 +302,28 @@ impl HelixState {
 
     /// Détecte les petites trames IN « slot » du Stomp (`ed 03 80 10` puis `ef 03 01 10` sur 16 octets).
     pub fn ingest_hw_slot_notify_in(&mut self, data: &[u8]) {
+        // Keep-alive x2 long: recherche d'un marqueur `82 62 SS 1a`
+        // où SS semble porter le slot bus (1..16) dans nos captures.
+        for i in 0..=data.len().saturating_sub(4) {
+            if data[i] == 0x82 && data[i + 1] == 0x62 && data[i + 3] == 0x1a {
+                let slot_bus = data[i + 2];
+                if let Some(slot_index) = slot_bus_to_kempline_index(slot_bus) {
+                    if self.hw_active_slot_index != Some(slot_index) {
+                        self.hw_active_slot_index = Some(slot_index);
+                        self.hw_active_slot_sequence = self.hw_active_slot_sequence.wrapping_add(1);
+                        if preset_debug_verbose_enabled() {
+                            eprintln!(
+                                "[PresetDebug][slot_active_in] seq={} slot_bus={} slot_index={}",
+                                self.hw_active_slot_sequence,
+                                slot_bus,
+                                slot_index
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         if data.len() != 16 {
             return;
         }

@@ -685,7 +685,7 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
     s.preset_data_ready = false;
     s.preset_data.clear();
     s.preset_content_only = true;
-    s.switch_mode(ModeRequest::RequestPreset);
+    s.switch_mode(ModeRequest::RequestPreset(true));
     {
         let mut app = state.lock().unwrap();
         app.preset_recover_in_flight = false;
@@ -732,21 +732,26 @@ fn force_recover_preset_reader(state: tauri::State<Arc<Mutex<AppState>>>) -> Res
         eprintln!("[PresetDebug][recover] ignored: {}", reason);
         return Ok(());
     }
-    let mut s = helix_arc.lock().unwrap();
-    if !s.preset_content_only && s.preset_data_ready {
-        let mut app = state.lock().unwrap();
-        app.preset_recover_in_flight = false;
-        eprintln!("[PresetDebug][recover] ignored: no content_only session");
-        return Ok(());
+    {
+        let mut s = helix_arc.lock().unwrap();
+        if !s.preset_content_only && s.preset_data_ready {
+            drop(s);
+            let mut app = state.lock().unwrap();
+            app.preset_recover_in_flight = false;
+            eprintln!("[PresetDebug][recover] ignored: no content_only session");
+            return Ok(());
+        }
+        s.preset_content_only = false;
+        s.preset_data_ready = false;
+        s.preset_data.clear();
+        // Re-synchronise l'état de requête (mêmes valeurs de base que RequestPreset::shutdown no-data).
+        s.preset_pkt_counter = 0x001e;
+        s.request_preset_session_id = 0xf4;
+        s.new_session_no();
+        s.switch_mode(ModeRequest::Standard);
+        // Libérer le verrou helix AVANT de re-locker AppState pour éviter toute contention
+        // avec la boucle de modes qui tient les deux verrous dans le même ordre.
     }
-    s.preset_content_only = false;
-    s.preset_data_ready = false;
-    s.preset_data.clear();
-    // Re-synchronise l'état de requête (mêmes valeurs de base que RequestPreset::shutdown no-data).
-    s.preset_pkt_counter = 0x001e;
-    s.request_preset_session_id = 0xf4;
-    s.new_session_no();
-    s.switch_mode(ModeRequest::Standard);
     {
         let mut app = state.lock().unwrap();
         app.preset_recover_in_flight = false;
@@ -2753,12 +2758,17 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
     // -- Boucle principale : changements de mode --
     loop {
         match mode_rx.recv() {
-            Ok(ModeRequest::RequestPreset) => {
+            Ok(ModeRequest::RequestPreset(content_only)) => {
                 // Dédupliquer les RequestPreset consécutifs (course avec flux auto).
+                // On garde le content_only du DERNIER message (le plus récent = intention UI).
+                let mut effective_content_only = content_only;
                 let mut dropped = 0usize;
                 loop {
                     match mode_rx.try_recv() {
-                        Ok(ModeRequest::RequestPreset) => dropped += 1,
+                        Ok(ModeRequest::RequestPreset(co)) => {
+                            dropped += 1;
+                            effective_content_only = co;
+                        }
                         Ok(other) => {
                             // Remettre l'événement non-RequestPreset via un re-send local.
                             // Comme le receiver est unique et ce cas est rare, on le traite
@@ -2778,6 +2788,12 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
                 let mut s = state.lock().unwrap();
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
+                // Restaurer preset_content_only depuis l'intention du message, APRÈS shutdown()
+                // qui le remet toujours à false — c'est la correction de la race condition.
+                s.preset_content_only = effective_content_only;
+                // Incrémenter la génération : tout StandardPresetRead(gen) avec l'ancienne
+                // génération sera ignoré comme orphelin (watchdog/timer d'une lecture précédente).
+                s.preset_read_generation = s.preset_read_generation.wrapping_add(1);
                 *m = Box::new(RequestPreset::new());
                 m.start(&mut s);
             }
@@ -2830,6 +2846,35 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
                 {
                     let mut app = app_state.lock().unwrap();
                     // Ne jamais écraser la liste globale avec un état partiel.
+                    if s.just_fetched_preset_names && s.preset_names.len() >= EXPECTED_PRESET_COUNT {
+                        app.preset_names = s.preset_names.clone();
+                    }
+                    s.just_fetched_preset_names = false;
+                    s.got_preset = false;
+                    app.active_preset = s.preset_index;
+                    app.connection_issue_hint = None;
+                }
+                *m = Box::new(Standard);
+                m.start(&mut s);
+            }
+            Ok(ModeRequest::StandardPresetRead(gen)) => {
+                // Message émis par le timer (20ms) ou watchdog (2000ms) interne de RequestPreset.
+                // Si gen != génération courante, c'est un orphelin d'une lecture précédente → ignorer.
+                let mut s = state.lock().unwrap();
+                if gen != s.preset_read_generation {
+                    if helix::preset_debug_verbose_enabled() {
+                        eprintln!(
+                            "[PresetDebug][ModeLoop] StandardPresetRead(gen={}) orphelin (current={}), ignoré",
+                            gen,
+                            s.preset_read_generation
+                        );
+                    }
+                    continue;
+                }
+                let mut m = current_mode.lock().unwrap();
+                m.shutdown(&mut s);
+                {
+                    let mut app = app_state.lock().unwrap();
                     if s.just_fetched_preset_names && s.preset_names.len() >= EXPECTED_PRESET_COUNT {
                         app.preset_names = s.preset_names.clone();
                     }
