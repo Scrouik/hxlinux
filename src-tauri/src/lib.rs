@@ -29,8 +29,10 @@ use helix::HelixState;
 use helix::ModeRequest;
 use helix::KeepAliveCommand;
 use helix::{
+    kempline_index_to_slot_bus,
     set_preset_debug_verbose_enabled, set_usb_packet_trace_delta_only,
-    set_usb_packet_trace_enabled, usb_packet_trace_delta_only, usb_packet_trace_enabled,
+    set_usb_io_diag_enabled, set_usb_packet_trace_enabled, usb_packet_trace_delta_only,
+    usb_packet_trace_enabled,
 };
 use helix::packet::OutPacket;
 use helix::live_write::build_live_write_frames_from_state;
@@ -41,7 +43,7 @@ use helix::modes::request_preset_names::RequestPresetNames;
 use helix::modes::standard::Standard;
 use helix::modes::reconfigure_x1::ReconfigureX1;
 use helix::modes::request_preset::RequestPreset;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use lazy_static::lazy_static;
 
 const SUPPORTED_DEVICES: &[(&str, u16, u16)] = &[
@@ -52,6 +54,9 @@ const SUPPORTED_DEVICES: &[(&str, u16, u16)] = &[
 ];
 const EXPECTED_PRESET_COUNT: usize = 125;
 const WINDOW_LAYOUT_FILE: &str = "window-layout.json";
+const PRESET_RECOVER_COOLDOWN_MS: u64 = 1_500;
+const PRESET_RECOVER_MIN_REQUEST_AGE_MS: u64 = 700;
+const PRESET_REQUEST_MIN_GAP_MS: u64 = 260;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SavedWindowGeometry {
     x: i32,
@@ -131,6 +136,10 @@ struct AppState {
     helix_state:   Option<Arc<Mutex<HelixState>>>,
     // Handle USB pour les commandes directes (ex: MIDI Program Change sur 0x02)
     usb_handle:    Option<Arc<rusb::DeviceHandle<rusb::GlobalContext>>>,
+    // Garde-fous backend anti-spam de recovery preset.
+    preset_recover_in_flight: bool,
+    last_preset_recover_at: Option<Instant>,
+    last_preset_request_at: Option<Instant>,
 }
 
 enum UsbDiscovery {
@@ -199,6 +208,34 @@ fn get_preset_names(state: tauri::State<Arc<Mutex<AppState>>>) -> Vec<String> {
 #[tauri::command]
 fn get_active_preset(state: tauri::State<Arc<Mutex<AppState>>>) -> usize {
     state.lock().unwrap().active_preset
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HardwareActiveSlotState {
+    slot_index: Option<usize>,
+    sequence: u32,
+}
+
+#[tauri::command]
+fn get_active_hardware_slot_state(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> HardwareActiveSlotState {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let Some(helix_arc) = helix_arc else {
+        return HardwareActiveSlotState {
+            slot_index: None,
+            sequence: 0,
+        };
+    };
+    let s = helix_arc.lock().unwrap();
+    HardwareActiveSlotState {
+        slot_index: s.hw_active_slot_index,
+        sequence: s.hw_active_slot_sequence,
+    }
 }
 
 #[tauri::command]
@@ -333,6 +370,61 @@ fn activate_preset(
     // Mettre à jour l'état local
     state.lock().unwrap().active_preset = index;
 
+    Ok(())
+}
+
+/// Change le slot actif (focus UI matériel) via trame USB propriétaire.
+/// Reverse-engineering depuis capture Windows "Slot1 to Slot2 from UI.json".
+#[tauri::command]
+fn switch_active_hardware_slot(
+    slot_index: u32,
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Result<(), String> {
+    if slot_index >= 16 {
+        return Err("slotIndex hors plage (0..15)".to_string());
+    }
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+
+    let mut s = helix_arc.lock().unwrap();
+    // Garde-fou anti-embouteillage:
+    // pendant un `request_preset_content`, le mode RequestPreset monopolise la pile.
+    // Envoyer des commandes de switch slot dans cette fenêtre provoque des timeouts USB.
+    if s.preset_content_only || !s.connected {
+        return Err("switch slot ignoré pendant chargement preset".to_string());
+    }
+    let cnt = s.next_x80_cnt();
+    let session = s.session_no;
+    let double = s.preset_data_packet_double();
+    let slot_bus = kempline_index_to_slot_bus(slot_index as usize)
+        .ok_or("slotIndex hors plage (0..15)")?;
+    let packet = vec![
+        0x1d, 0x00, 0x00, 0x18,
+        0x80, 0x10, 0xed, 0x03,
+        0x00, cnt,  0x00, 0x04,
+        session, double[0], double[1], 0x00,
+        0x01, 0x00, 0x06, 0x00,
+        0x0d, 0x00, 0x00, 0x00,
+        0x83, 0x66, 0xcd, 0x03,
+        0xf9, 0x64, 0x4e, 0x65,
+        0x82, 0x62, slot_bus, 0x1a,
+        0x00, 0x00, 0x00, 0x00,
+    ];
+    s.send(OutPacket::new(packet.clone()));
+    // Optimiste: met à jour l'état "slot actif hardware" local en attendant la notif IN.
+    s.hw_active_slot_index = Some(slot_index as usize);
+    s.hw_active_slot_sequence = s.hw_active_slot_sequence.wrapping_add(1);
+    drop(s);
+
+    eprintln!(
+        "[HwSlotSwitch][sent] slot_index={} slot_bus={:02x} packet={}",
+        slot_index,
+        slot_bus,
+        packet.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ")
+    );
     Ok(())
 }
 
@@ -532,6 +624,16 @@ fn set_preset_debug_verbose(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn set_usb_io_diag(enabled: bool) -> Result<(), String> {
+    set_usb_io_diag_enabled(enabled);
+    eprintln!(
+        "[UsbIODiag] {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
+    Ok(())
+}
+
 /// Retourne les données brutes du dernier preset lu en hex (debug).
 #[tauri::command]
 fn get_preset_data_hex(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<String> {
@@ -554,14 +656,24 @@ fn get_preset_data_hex(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<Stri
 #[tauri::command]
 fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(), String> {
     let (active_preset, helix_arc) = {
-        let app = state.lock().unwrap();
+        let mut app = state.lock().unwrap();
+        let now = Instant::now();
+        if let Some(last) = app.last_preset_request_at {
+            let elapsed_ms = now.duration_since(last).as_millis() as u64;
+            if elapsed_ms < PRESET_REQUEST_MIN_GAP_MS {
+                if elapsed_ms >= PRESET_RECOVER_MIN_REQUEST_AGE_MS {
+                    app.preset_recover_in_flight = false;
+                }
+                return Ok(());
+            }
+        }
         (
             app.active_preset,
             app.helix_state.clone().ok_or("HX non connecté")?,
         )
     };
     let mut s = helix_arc.lock().unwrap();
-    if s.preset_content_only && !s.preset_data_ready {
+    if s.preset_content_only {
         return Ok(());
     }
     // L'UI met à jour `active_preset` (ex. après `activate_preset` + MIDI PC) avant cette
@@ -574,6 +686,72 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
     s.preset_data.clear();
     s.preset_content_only = true;
     s.switch_mode(ModeRequest::RequestPreset);
+    {
+        let mut app = state.lock().unwrap();
+        app.preset_recover_in_flight = false;
+        app.last_preset_request_at = Some(Instant::now());
+    }
+    Ok(())
+}
+
+/// Récupération "hard" quand la lecture preset reste bloquée trop longtemps.
+/// Force la sortie de `preset_content_only`, remet les compteurs de requête,
+/// puis revient en mode Standard pour permettre une relance propre côté front.
+#[tauri::command]
+fn force_recover_preset_reader(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(), String> {
+    let (helix_arc, skip_reason) = {
+        let mut app = state.lock().unwrap();
+        let now = Instant::now();
+        let mut skip_reason: Option<&'static str> = None;
+        if app.preset_recover_in_flight {
+            skip_reason = Some("recover already in flight");
+        } else if let Some(last) = app.last_preset_recover_at {
+            let elapsed_ms = now.duration_since(last).as_millis() as u64;
+            if elapsed_ms < PRESET_RECOVER_COOLDOWN_MS {
+                skip_reason = Some("recover cooldown active");
+            }
+        }
+        if skip_reason.is_none() {
+            if let Some(last_req) = app.last_preset_request_at {
+                let req_age_ms = now.duration_since(last_req).as_millis() as u64;
+                if req_age_ms < PRESET_RECOVER_MIN_REQUEST_AGE_MS {
+                    skip_reason = Some("request too recent");
+                }
+            }
+        }
+        if skip_reason.is_none() {
+            app.preset_recover_in_flight = true;
+            app.last_preset_recover_at = Some(now);
+        }
+        (
+            app.helix_state.clone().ok_or("HX non connecté")?,
+            skip_reason.map(str::to_string),
+        )
+    };
+    if let Some(reason) = skip_reason {
+        eprintln!("[PresetDebug][recover] ignored: {}", reason);
+        return Ok(());
+    }
+    let mut s = helix_arc.lock().unwrap();
+    if !s.preset_content_only && s.preset_data_ready {
+        let mut app = state.lock().unwrap();
+        app.preset_recover_in_flight = false;
+        eprintln!("[PresetDebug][recover] ignored: no content_only session");
+        return Ok(());
+    }
+    s.preset_content_only = false;
+    s.preset_data_ready = false;
+    s.preset_data.clear();
+    // Re-synchronise l'état de requête (mêmes valeurs de base que RequestPreset::shutdown no-data).
+    s.preset_pkt_counter = 0x001e;
+    s.request_preset_session_id = 0xf4;
+    s.new_session_no();
+    s.switch_mode(ModeRequest::Standard);
+    {
+        let mut app = state.lock().unwrap();
+        app.preset_recover_in_flight = false;
+    }
+    eprintln!("[PresetDebug][recover] force_recover_preset_reader applied");
     Ok(())
 }
 
@@ -2302,18 +2480,22 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_preset_names,
             get_active_preset,
+            get_active_hardware_slot_state,
             get_connected_device_name,
             get_connection_hint_text,
             request_active_preset_name,
             rename_preset,
             activate_preset,
+            switch_active_hardware_slot,
             request_preset_content,
+            force_recover_preset_reader,
             probe_live_param_write,
             write_live_param,
             write_live_param_midi_cc,
             set_usb_trace_enabled,
             set_usb_trace_delta_only,
             set_preset_debug_verbose,
+            set_usb_io_diag,
             get_preset_slots,
             get_active_preset_slots,
             get_active_preset_slots_debug,
@@ -2600,6 +2782,24 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
                 m.start(&mut s);
             }
             Ok(ModeRequest::RequestPresetName) => {
+                // Dédupliquer les RequestPresetName consécutifs (souvent émis en rafale
+                // par plusieurs chemins: sync front + événements async backend).
+                let mut dropped = 0usize;
+                loop {
+                    match mode_rx.try_recv() {
+                        Ok(ModeRequest::RequestPresetName) => dropped += 1,
+                        Ok(other) => {
+                            let s = state.lock().unwrap();
+                            s.switch_mode(other);
+                            break;
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => break,
+                    }
+                }
+                if dropped > 0 {
+                    eprintln!("[PresetDebug][ModeLoop] dropped duplicate RequestPresetName x{}", dropped);
+                }
                 let mut s = state.lock().unwrap();
                 // Pendant une lecture content_only, ignorer les changements de
                 // preset asynchrones pour ne pas interrompre RequestPreset.

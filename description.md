@@ -443,16 +443,129 @@ Todo :
 4. Pour protocole / parsing preset / valeurs chaîne : **`src-tauri/src/lib.rs`** + **`preset_chain_params.rs`** + **`stomp_layout.rs`** + modules **`helix/`**.
 
 
+## 28 avril 2026 (soir) — sync slot actif + stabilité changement preset
+
+### Ce qui a été implémenté
+
+- **Sync slot actif hardware -> UI** branché et validé:
+  - parsing côté Rust de `82 62 SS 1a` dans le flux IN (`helix/mod.rs`) avec mapping bus -> index UI,
+  - expose `get_active_hardware_slot_state`,
+  - côté front (`models.ts`), application de la sélection du slot quand un nouvel événement hardware est détecté.
+- **Sync slot UI -> hardware** ajouté via commande dédiée:
+  - `switch_active_hardware_slot` (`lib.rs`) envoie la trame `1d ... 80 10 ed 03 ... 83 66 cd 03 ... 82 62 SS 1a ...`,
+  - garde-fou pour ignorer pendant `preset_content_only` (lecture preset en cours).
+- **Mapping path 2 corrigé**:
+  - Path 1: index 0..7 -> bus `0x01..0x08`,
+  - Path 2: index 8..15 -> bus `0x0b..0x12`,
+  - appliqué en lecture et en écriture (`helix/mod.rs`, `lib.rs`, `helix/live_write.rs`).
+- **Diag USB enrichi**:
+  - commande `set_usb_io_diag` pour tracer OUT/IN, type de paquet, compteur, succès/erreur.
+
+### Problèmes observés pendant la session
+
+- Après plusieurs changements de preset, la lecture peut se bloquer.
+- Logs vus:
+  - `UsbWriter erreur écriture : Operation timed out`
+  - `ModeLoop ignore RequestPresetName while content_only`
+- Le blocage n'est pas lié à un mauvais layout du preset précédent, mais à un **embouteillage d'écritures** pendant les phases sensibles.
+
+### Ce qu'on a tenté pour stabiliser
+
+- Pause explicite de la boucle front 200 ms pendant `requestLoadForPreset` (reprise en fin de lecture preset).
+- Suppression du fallback "sélection auto du premier slot UI" (ça désynchronisait avec le hardware).
+- Désactivation des keepalive **x80** pendant `preset_content_only` (`helix/keep_alive.rs`) pour réduire les timeouts sur `out_keepalive_x80_or_ed03`.
+
+### Point important à vérifier à la reprise
+
+- Reproduire le scénario "enchaînement de changements de preset" avec `set_usb_io_diag` actif.
+- Confirmer si les `Operation timed out` diminuent après la désactivation x80 en `content_only`.
+- Si blocage persiste:
+  - ajouter un watchdog backend pour sortir de `preset_content_only` en timeout contrôlé,
+  - corréler la file OUT (id diag) avec les IN reçus pour identifier la famille exacte qui sature.
+
+## 29 avril 2026 — investigation timeouts preset + récupération UI/USB
+
+### Ce qui a été confirmé en logs
+
+- Les timeouts apparaissent surtout pendant la cinématique de lecture preset sur la famille **x80/ED03** (`out_keepalive_x80_or_ed03`), avec des trames **16** et **36 octets** (dont `19 ... 80 10 ed 03` = requête preset).
+- Dans certaines rafales, après un premier timeout x80/ED03, **x2** puis **x1** peuvent aussi timeout momentanément (effet "queue OUT saturée"), puis reprendre.
+- Le symptôme récurrent côté mode loop reste: **`ignore RequestPresetName while content_only`**.
+- Changement de câbles USB testé (plusieurs câbles, retour au câble habituel): **problème toujours présent** -> cause probablement majoritairement logicielle (la couche physique peut amplifier, mais n'explique pas tout).
+
+### Correctifs appliqués pendant cette session
+
+- `src/models.ts`:
+  - ajout d'un **cooldown** entre `request_preset_content` (`REQUEST_PRESET_MIN_GAP_MS`) + coalescing (`pendingPresetIndex`) pour limiter les rafales.
+  - ajout d'une **récupération temporisée** après échec/timeout (`REQUEST_PRESET_RECOVERY_DELAY_MS`, réglé à **800ms**).
+  - ajout d'un **soft-stall** avant timeout long (`REQUEST_PRESET_SOFT_STALL_TRIES`) pour déclencher la récupération plus tôt.
+  - ajout d'un **heartbeat UI** dans la barre de statut ("Lecture du preset actif..." / "Sablier: recuperation USB en cours...") pour éviter l'effet "appli figée" quand les logs backend se taisent.
+  - ajout d'une **escalade hard** après plusieurs récupérations (`REQUEST_PRESET_HARD_RECOVERY_AFTER`): appel backend de reset lecteur preset.
+- `src-tauri/src/lib.rs`:
+  - nouvelle commande **`force_recover_preset_reader`**:
+    - force sortie de `preset_content_only`,
+    - reset `preset_data`, `preset_data_ready`,
+    - reset compteurs de requête (`preset_pkt_counter`, `request_preset_session_id`) + `new_session_no()`,
+    - switch en `ModeRequest::Standard`.
+
+### État observé après patchs
+
+- Amélioration partielle: les crashs sont moins systématiques, mais des cas persistent.
+- Cas dur observé: boucle avec plusieurs logs **`[PresetDebug][recover] force_recover_preset_reader applied`** sans retour stable -> recovery encore insuffisante dans certains enchaînements.
+
+### Décision / suite de reprise
+
+- Garder l'UX actuelle (heartbeat + sablier), utile pour signaler que l'app n'est pas bloquée.
+- Prochaine itération prioritaire:
+  1. **(partiellement fait le 29 avril soir)** empêcher le **spam de recover** : cooldown + « en vol » + ignores sur requêtes trop rapprochées dans **`force_recover_preset_reader`** ; voir section **« 29 avril 2026 (suite soirée) »**. Reste à valider en stress test et affiner si des boucles persistent encore.
+  2. exposer un petit **état diag backend** (mode courant, `preset_content_only`, timestamp dernier recover) pour piloter la relance front sur état réel plutôt que timing seul,
+  3. si nécessaire, séquence de recovery backend plus stricte (stop/restart keepalive ciblé + transition mode contrôlée).
+
+### Capture Wireshark (rappel filtre utile)
+
+- Filtre validé pour réduire le bruit:
+  - `(usb.src == "1.1.1" || usb.dst == "1.1.1") && (usb.capdata contains 80:10:ed:03 || usb.capdata contains 02:10:f0:03 || usb.capdata contains 01:10:ef:03)`
+- Recommandation capture HX Edit:
+  - sessions courtes (2–5 min), pas besoin de 50 changements preset,
+  - objectif: comparer cinématique Line 6 vs HXLinux dans les mêmes moments de stress.
+
+## 29 avril 2026 (suite soirée) — anti-rafales USB, recover, logs `RequestPresetName`
+
+### Travail effectué (code)
+
+- **`src-tauri/src/lib.rs`**
+  - **`force_recover_preset_reader`** : garde-fous anti-spam (recover déjà en vol, **cooldown ~1,5 s**, requête preset trop récente ignorée, pas de recover si session `content_only` déjà terminée avec données prêtes).
+  - **`request_preset_content`** : **ne pas relancer** tant que `preset_content_only` est actif ; **throttle** entre deux invocations réelles (`PRESET_REQUEST_MIN_GAP_MS` ≈ **260 ms**) ; `last_preset_request_at` mis à jour seulement quand une lecture est réellement lancée.
+  - **Boucle modes** : **déduplication** des `ModeRequest::RequestPresetName` **consécutifs** (comme pour `RequestPreset`), log `dropped duplicate RequestPresetName xN` si rafale.
+- **`src/models.ts`**
+  - Suppression de l’invoke **`request_active_preset_name`** déclenché automatiquement après chaque chargement de preset (réduire la pression sur la file OUT pendant enchaînements rapides).
+  - **Fallback sélection panneau** si aucun contexte restauré : auto-sélection du premier slot non vide, avec **délai ~240 ms** pour laisser passer la synchro « slot actif hardware » avant de retomber sur un slot par défaut (évite en partie le flash immédiat sur slot 0).
+
+### Points encore ouverts (constat utilisateur / logs)
+
+1. **Flash de slot** : transition visible **slot 1 (ou premier slot « utile ») → slot actif réel** sur certains changements de preset.
+2. **Presets où le slot actif ne se positionne pas** : après chargement, aucune sélection cohérente avec le hardware (cas corrélé avec rafales / timeouts dans les logs).
+3. **Perte des échanges avec le hardware** après **x** changements de preset successifs : logs **`UsbWriter` erreur écriture : Operation timed out** puis comportement instable (`content_only`, ignores `RequestPresetName`, etc.).
+
+### Suite logique proposée
+
+- Throttle / file unique côté Rust pour **`RequestPresetName`** émis depuis **`Standard`** (pas seulement dédup consécutif sur la file de modes).
+- Corréler preset « problématique » avec capture Wireshark + `set_usb_io_diag` sur la fenêtre du timeout.
+- Poursuivre l’item « état diag backend » déjà listé au **29 avril (matinée)** pour piloter le front sur l’état réel plutôt que sur des timings.
+
 ## Todo à faire dans le Hardware avec capture WireShark
 
-1. Exporter paquet lors de lecture de preset afin de voir comment l'UI se positionne sur le slot actif.
-3. Tester un changement de model dans un slot
-4. Tester une suppression de model dans un slot
-5. Tester un déplacement de model du path 1 au path 2 et inversement.
-6. Tester une modification de parametre sur split et merge
-7. Tester un déplacement de split et merge
-8. Tester ce qu'il se passe quand on sauvegarde de preset
+1. Tester une suppression de model dans un slot
+2. Tester un déplacement de model du path 1 au path 2 et inversement.
+3. Tester une modification de parametre sur split et merge
+4. Tester un déplacement de split et merge
+5. Tester ce qu'il se passe quand on sauvegarde de preset
 
 ## Test
 
 1. Finir l'ensemble des tests des models. Seul les distortions mono ont été testé.
+await window.__TAURI__.core.invoke("set_usb_io_diag", { enabled: true })
+
+## Correction a effectuer
+1. Le slot vide sur patrh 2 juste avant le merge n'a pas son icone.
+2. Deplacement sur un slot vide ne fonctionne pas. coté UI et Hardware.
+3. il faut que le panneau module utilise toute la largeur. Peut être jouer sur la largeur de l'icone icons_line.png pour compler l'espace. Ou tracer une ligne... a voir

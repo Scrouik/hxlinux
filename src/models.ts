@@ -31,6 +31,11 @@ type RoutingMarker = {
   moduleHex?: string;
 };
 
+type HardwareActiveSlotState = {
+  slotIndex: number | null;
+  sequence: number;
+};
+
 let currentPresetIndex = -1;
 let loadedPresetIndex = -1;
 let loading = false;
@@ -39,7 +44,6 @@ let lastRequestedPresetIndex = -1;
 const ENABLE_PRESET_CONTENT = true;
 const DEBUG_MODEL_ID_JOIN_FALLBACK =
   localStorage.getItem("models_debug_id_join") === "1";
-let requestedPresetNameIndex = -1;
 let debugRoutingMode = localStorage.getItem("models_debug_routing") === "1";
 let connectedDeviceName: string | null = null;
 
@@ -53,12 +57,26 @@ const LIVE_WRITE_MIDI_CC_KEY = "models_live_midi_cc";
 const LIVE_WRITE_MIDI_CHANNEL_KEY = "models_live_midi_channel";
 const LIVE_WRITE_SYNC_PAUSE_MS = 1200;
 const HW_SYNC_INTERVAL_MS_KEY = "models_hw_sync_interval_ms";
+const DEBUG_HW_SLOT_SYNC_FLAG = "models_debug_hw_slot_sync";
 const HW_SYNC_MIN_MS = 100;
 const HW_SYNC_MAX_MS = 5000;
+const REQUEST_PRESET_MIN_GAP_MS = 320;
+const REQUEST_PRESET_RECOVERY_DELAY_MS = 800;
+const REQUEST_PRESET_SOFT_STALL_TRIES = 18;
+const REQUEST_PRESET_HARD_RECOVERY_AFTER = 4;
 let lastHardwareSyncAt = 0;
 let hardwareSyncBusy = false;
+let hardwareSyncPausedForPresetLoad = false;
 let lastLiveWriteAt = 0;
 let liveWriteUiInteractionUntil = 0;
+let lastRequestPresetInvokeAt = 0;
+let queuedPresetLoadTimer: number | null = null;
+let recoveryPresetLoadTimer: number | null = null;
+let recoveryAttemptCount = 0;
+let loadingHeartbeatTimer: number | null = null;
+let loadingHeartbeatBase = "";
+let loadingHeartbeatPhase = 0;
+let autoSelectFallbackTimer: number | null = null;
 type PendingLiveWrite = {
   slotIndex: number;
   paramIndex: number;
@@ -73,6 +91,23 @@ let lastHwSyncChainSignature: string | null = null;
 let pendingHwLayoutSignature: string | null = null;
 /** Snapshot liste presets + preset actif (device) pour éviter MAJ label inutiles. */
 let lastPresetNamesSig: string | null = null;
+/** Dernier événement "slot actif hardware" consommé côté UI. */
+let lastSeenHardwareSlotSequence = 0;
+/** Slot à appliquer après rendu / sync si un nouvel événement hardware est détecté. */
+let pendingHardwareSelectedKemplineSlotIndex: number | null = null;
+/** Évite de renvoyer un ordre hardware lors des clics programmatiques (restore/sync). */
+let suppressNextUiSlotHardwareSwitch = false;
+let lastUserHwSlotSwitchAt = 0;
+let lastUserHwSlotSwitchIndex: number | null = null;
+
+function hwSlotDebugEnabled(): boolean {
+  return localStorage.getItem(DEBUG_HW_SLOT_SYNC_FLAG) === "1";
+}
+
+function hwSlotDebugLog(message: string): void {
+  if (!hwSlotDebugEnabled()) return;
+  console.log(`[HwSlotSync] ${message}`);
+}
 
 function getHardwareSyncIntervalMs(): number {
   const raw = (localStorage.getItem(HW_SYNC_INTERVAL_MS_KEY) ?? "").trim();
@@ -157,7 +192,71 @@ function rememberHwSyncChainLayout(slots: SlotDebug[]): void {
 
 function scheduleHardwareSyncPoll(): void {
   // Boucle périodique "soft" : priorise les mises à jour incrémentales.
+  if (hardwareSyncPausedForPresetLoad) return;
   void runHardwareSyncSoftRefresh();
+}
+
+function requestPresetCooldownRemainingMs(now = Date.now()): number {
+  const elapsed = now - lastRequestPresetInvokeAt;
+  return Math.max(0, REQUEST_PRESET_MIN_GAP_MS - elapsed);
+}
+
+function stopLoadingHeartbeat(): void {
+  if (loadingHeartbeatTimer !== null) {
+    window.clearInterval(loadingHeartbeatTimer);
+    loadingHeartbeatTimer = null;
+  }
+}
+
+function startLoadingHeartbeat(baseText: string): void {
+  loadingHeartbeatBase = baseText;
+  loadingHeartbeatPhase = 0;
+  stopLoadingHeartbeat();
+  setStatus(`${loadingHeartbeatBase}.`);
+  loadingHeartbeatTimer = window.setInterval(() => {
+    const dots = ".".repeat((loadingHeartbeatPhase % 3) + 1);
+    setStatus(`${loadingHeartbeatBase}${dots}`);
+    loadingHeartbeatPhase += 1;
+  }, 350);
+}
+
+function armQueuedPresetLoadAfterCooldown(): void {
+  if (queuedPresetLoadTimer !== null) return;
+  const waitMs = requestPresetCooldownRemainingMs() + 5;
+  queuedPresetLoadTimer = window.setTimeout(() => {
+    queuedPresetLoadTimer = null;
+    if (loading) return;
+    if (pendingPresetIndex < 0) return;
+    const next = pendingPresetIndex;
+    pendingPresetIndex = -1;
+    void requestLoadForPreset(next);
+  }, waitMs);
+}
+
+function armRecoveryPresetLoad(reason: string): void {
+  if (recoveryPresetLoadTimer !== null) return;
+  recoveryAttemptCount += 1;
+  startLoadingHeartbeat(`Sablier: recuperation USB en cours (${reason})`);
+  recoveryPresetLoadTimer = window.setTimeout(() => {
+    recoveryPresetLoadTimer = null;
+    if (loading) return;
+    if (pendingPresetIndex < 0) return;
+    const next = pendingPresetIndex;
+    pendingPresetIndex = -1;
+    if (recoveryAttemptCount >= REQUEST_PRESET_HARD_RECOVERY_AFTER) {
+      setStatus("Sablier: reset communication USB en cours...");
+      void invoke("force_recover_preset_reader")
+        .catch(() => {
+          // Best effort: même en cas d'échec on tente une relance de lecture.
+        })
+        .finally(() => {
+          recoveryAttemptCount = 0;
+          void requestLoadForPreset(next);
+        });
+      return;
+    }
+    void requestLoadForPreset(next);
+  }, REQUEST_PRESET_RECOVERY_DELAY_MS);
 }
 
 /**
@@ -178,11 +277,13 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
   // sinon la machine d'état repasse en lecture et l'écriture peut être ignorée.
   if (!wroteThisCycle && now - lastLiveWriteAt < LIVE_WRITE_SYNC_PAUSE_MS) return;
   if (now - lastHardwareSyncAt < syncMs) return;
+  if (requestPresetCooldownRemainingMs(now) > 0) return;
   lastHardwareSyncAt = now;
 
   const presetIdx = currentPresetIndex;
   hardwareSyncBusy = true;
   try {
+    lastRequestPresetInvokeAt = Date.now();
     await invoke("request_preset_content");
 
     let normalized: SlotDebug[] | null = null;
@@ -210,7 +311,6 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
       if (deviceActive >= 0 && deviceActive < names.length) {
         currentPresetIndex = deviceActive;
         loadedPresetIndex = -1;
-        requestedPresetNameIndex = -1;
         clearSelectedParamsContext();
         renderEmpty("Chargement des modeles...");
         scheduleLoadForPreset(deviceActive, true);
@@ -228,10 +328,37 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
       }
     }
 
+    let hwSlotState: HardwareActiveSlotState | null = null;
+    try {
+      hwSlotState = await invoke<HardwareActiveSlotState>("get_active_hardware_slot_state");
+    } catch {
+      hwSlotState = null;
+    }
+    if (hwSlotState && Number.isFinite(hwSlotState.sequence)) {
+      if (hwSlotState.sequence < lastSeenHardwareSlotSequence) {
+        // Reconnexion/redémarrage backend: repartir du compteur actuel.
+        hwSlotDebugLog(
+          `reset sequence local=${lastSeenHardwareSlotSequence} backend=${hwSlotState.sequence}`,
+        );
+        lastSeenHardwareSlotSequence = hwSlotState.sequence;
+      } else if (hwSlotState.sequence > lastSeenHardwareSlotSequence) {
+        const nextIdx =
+          Number.isInteger(hwSlotState.slotIndex) && (hwSlotState.slotIndex as number) >= 0
+            ? (hwSlotState.slotIndex as number)
+            : null;
+        hwSlotDebugLog(
+          `event sequence ${lastSeenHardwareSlotSequence} -> ${hwSlotState.sequence}, slot=${nextIdx ?? "null"}`,
+        );
+        lastSeenHardwareSlotSequence = hwSlotState.sequence;
+        pendingHardwareSelectedKemplineSlotIndex = nextIdx;
+      }
+    }
+
     const sig = chainLayoutSignature(normalized);
     // Layout inchangé => on évite `renderSlots` (flash) et on met à jour uniquement le panneau sélectionné.
     if (lastHwSyncChainSignature !== null && sig === lastHwSyncChainSignature) {
       pendingHwLayoutSignature = null;
+      consumePendingHardwareSlotSelection();
       await softRefreshParamsPaneFromSlots(normalized);
       return;
     }
@@ -527,6 +654,11 @@ function clearSelectedParamsContext(): void {
   selectedParamsInPlaceUpdater = null;
   selectedParamsInPlaceSlotKey = null;
   paramsPaneCatalogBySlotKey.clear();
+  pendingHardwareSelectedKemplineSlotIndex = null;
+  if (autoSelectFallbackTimer !== null) {
+    window.clearTimeout(autoSelectFallbackTimer);
+    autoSelectFallbackTimer = null;
+  }
 }
 
 function hasSelectedParamsContextForCurrentPreset(): boolean {
@@ -555,6 +687,7 @@ function tryRestoreSelectedParamsPaneAfterRender(): boolean {
       `[data-kempline-slot-index="${selectedParamsKemplineSlotIndex}"]`,
     );
     if (byIndex) {
+      suppressNextUiSlotHardwareSwitch = true;
       byIndex.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       return true;
     }
@@ -563,10 +696,63 @@ function tryRestoreSelectedParamsPaneAfterRender(): boolean {
   const nodes = contentEl.querySelectorAll<HTMLElement>("[data-slot-selection-key]");
   for (const node of nodes) {
     if (node.dataset.slotSelectionKey !== selectedParamsSlotKey) continue;
+    suppressNextUiSlotHardwareSwitch = true;
     node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     return true;
   }
   return false;
+}
+
+function selectParamsPaneByKemplineIndex(kemplineSlotIndex: number): boolean {
+  if (!Number.isInteger(kemplineSlotIndex) || kemplineSlotIndex < 0 || kemplineSlotIndex > 15) {
+    return false;
+  }
+  const node = contentEl.querySelector<HTMLElement>(
+    `[data-kempline-slot-index="${kemplineSlotIndex}"]`,
+  );
+  if (!node) return false;
+  suppressNextUiSlotHardwareSwitch = true;
+  node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  return true;
+}
+
+function consumePendingHardwareSlotSelection(): void {
+  if (pendingHardwareSelectedKemplineSlotIndex === null) return;
+  const idx = pendingHardwareSelectedKemplineSlotIndex;
+  if (selectedParamsKemplineSlotIndex === idx) {
+    hwSlotDebugLog(`selection déjà active idx=${idx}`);
+    pendingHardwareSelectedKemplineSlotIndex = null;
+    return;
+  }
+  if (selectParamsPaneByKemplineIndex(idx)) {
+    hwSlotDebugLog(`selection appliquée idx=${idx}`);
+    pendingHardwareSelectedKemplineSlotIndex = null;
+  } else {
+    hwSlotDebugLog(`node introuvable pour idx=${idx} (nouvel essai prochain cycle)`);
+  }
+}
+
+function tryAutoSelectFallbackParamsPaneAfterRender(): boolean {
+  if (selectedParamsPresetIndex === currentPresetIndex) return false;
+  if (pendingHardwareSelectedKemplineSlotIndex !== null) return false;
+  const nodes = contentEl.querySelectorAll<HTMLElement>(
+    '.node--params-clickable[data-kempline-slot-index]:not(.node--empty)',
+  );
+  if (nodes.length === 0) return false;
+  const first = nodes[0];
+  suppressNextUiSlotHardwareSwitch = true;
+  first.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  return true;
+}
+
+function armAutoSelectFallbackParamsPaneAfterRender(): void {
+  if (autoSelectFallbackTimer !== null) return;
+  autoSelectFallbackTimer = window.setTimeout(() => {
+    autoSelectFallbackTimer = null;
+    if (selectedParamsPresetIndex === currentPresetIndex) return;
+    if (pendingHardwareSelectedKemplineSlotIndex !== null) return;
+    tryAutoSelectFallbackParamsPaneAfterRender();
+  }, 240);
 }
 
 function resetModelsParamsIdleHint() {
@@ -607,8 +793,13 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
       Number.isFinite(kemplineSlotIndex) ? kemplineSlotIndex : undefined,
     );
   }
-  const activate = () => {
+  const activate = (userInitiated: boolean) => {
+    if (autoSelectFallbackTimer !== null) {
+      window.clearTimeout(autoSelectFallbackTimer);
+      autoSelectFallbackTimer = null;
+    }
     if (slot === null) {
+      suppressNextUiSlotHardwareSwitch = false;
       clearSlotSelectionVisual();
       clearSelectedParamsContext();
       clearModelsParamsPaneContent();
@@ -634,6 +825,27 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
       : null;
     selectedParamsPresetIndex = currentPresetIndex;
     selectedParamsValuesSig = null;
+    const now = Date.now();
+    const nextSlotIdx = Number.isFinite(kemplineSlotIndex) ? (kemplineSlotIndex as number) : null;
+    const tooSoon = now - lastUserHwSlotSwitchAt < 120;
+    const duplicate = nextSlotIdx !== null && lastUserHwSlotSwitchIndex === nextSlotIdx && tooSoon;
+    const shouldSwitchHardware =
+      userInitiated &&
+      !suppressNextUiSlotHardwareSwitch &&
+      !loading &&
+      loadedPresetIndex === currentPresetIndex &&
+      nextSlotIdx !== null &&
+      !duplicate;
+    suppressNextUiSlotHardwareSwitch = false;
+    if (shouldSwitchHardware) {
+      lastUserHwSlotSwitchAt = now;
+      lastUserHwSlotSwitchIndex = nextSlotIdx;
+      void invoke("switch_active_hardware_slot", {
+        slotIndex: kemplineSlotIndex,
+      }).catch((e) => {
+        console.warn("[HwSlotSync] switch_active_hardware_slot error", e);
+      });
+    }
     void loadAndShowModelsParamsForSlot(
       slot,
       Number.isFinite(kemplineSlotIndex) ? kemplineSlotIndex : undefined,
@@ -642,12 +854,12 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
   el.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    activate();
+    activate(ev.isTrusted);
   });
   el.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter" || ev.key === " ") {
       ev.preventDefault();
-      activate();
+      activate(ev.isTrusted);
     }
   });
 }
@@ -3738,9 +3950,14 @@ function renderGrid16(
   contentEl.innerHTML = "";
   contentEl.appendChild(root);
   const hadSelectedContext = hasSelectedParamsContextForCurrentPreset();
-  if (!tryRestoreSelectedParamsPaneAfterRender() && !hadSelectedContext) {
+  if (
+    !tryRestoreSelectedParamsPaneAfterRender() &&
+    !hadSelectedContext
+  ) {
     resetModelsParamsIdleHint();
+    armAutoSelectFallbackParamsPaneAfterRender();
   }
+  consumePendingHardwareSlotSelection();
 }
 
 function buildFlowSections(slots: SlotDebug[]) {
@@ -3878,14 +4095,20 @@ async function renderSlots(
   contentEl.innerHTML = "";
   contentEl.appendChild(root);
   const hadSelectedContext = hasSelectedParamsContextForCurrentPreset();
-  if (!tryRestoreSelectedParamsPaneAfterRender() && !hadSelectedContext) {
+  if (
+    !tryRestoreSelectedParamsPaneAfterRender() &&
+    !hadSelectedContext
+  ) {
     resetModelsParamsIdleHint();
+    armAutoSelectFallbackParamsPaneAfterRender();
   }
+  consumePendingHardwareSlotSelection();
   await refreshAllSlotTooltipsInContent();
 }
 
 async function requestLoadForPreset(index: number) {
   if (!ENABLE_PRESET_CONTENT) {
+    hardwareSyncPausedForPresetLoad = false;
     loading = false;
     loadedPresetIndex = index;
     // On laisse la fenêtre models "inerte" mais on évite les appels backend.
@@ -3897,40 +4120,53 @@ async function requestLoadForPreset(index: number) {
     console.log(`[PresetDebug][models] queued preset=${index} while loading`);
     return;
   }
+  const cooldownRemainingMs = requestPresetCooldownRemainingMs();
+  if (cooldownRemainingMs > 0) {
+    pendingPresetIndex = index;
+    armQueuedPresetLoadAfterCooldown();
+    return;
+  }
 
   loading = true;
+  hardwareSyncPausedForPresetLoad = true;
   pendingPresetIndex = -1;
   lastRequestedPresetIndex = index;
-  setStatus("Lecture du preset actif...");
+  startLoadingHeartbeat("Lecture du preset actif");
   console.log(`[PresetDebug][models] request_preset_content preset=${index}`);
 
   try {
+    lastRequestPresetInvokeAt = Date.now();
     await invoke("request_preset_content");
   } catch (e) {
     console.error("[PresetDebug][models] request_preset_content error", e);
-    setStatus(`Erreur: ${e}`);
     loading = false;
-    if (pendingPresetIndex >= 0) {
-      const next = pendingPresetIndex;
-      pendingPresetIndex = -1;
-      void requestLoadForPreset(next);
-    }
+    pendingPresetIndex = currentPresetIndex >= 0 ? currentPresetIndex : index;
+    hardwareSyncPausedForPresetLoad = true;
+    armRecoveryPresetLoad("invoke request_preset_content");
     return;
   }
 
   let tries = 0;
   const timer = window.setInterval(async () => {
     tries += 1;
+    if (tries === REQUEST_PRESET_SOFT_STALL_TRIES) {
+      // Si la lecture n'a toujours pas livré de slots après plusieurs cycles,
+      // on anticipe la récupération pour éviter l'impression de "freeze".
+      window.clearInterval(timer);
+      console.warn(`[PresetDebug][models] soft-stall preset=${index}`);
+      loading = false;
+      pendingPresetIndex = currentPresetIndex >= 0 ? currentPresetIndex : index;
+      hardwareSyncPausedForPresetLoad = true;
+      armRecoveryPresetLoad("lecture en attente");
+      return;
+    }
     if (tries > 45) {
       window.clearInterval(timer);
       console.warn(`[PresetDebug][models] timeout preset=${index}`);
-      setStatus("Timeout lecture preset.");
       loading = false;
-      if (pendingPresetIndex >= 0) {
-        const next = pendingPresetIndex;
-        pendingPresetIndex = -1;
-        void requestLoadForPreset(next);
-      }
+      pendingPresetIndex = currentPresetIndex >= 0 ? currentPresetIndex : index;
+      hardwareSyncPausedForPresetLoad = true;
+      armRecoveryPresetLoad("timeout lecture preset");
       return;
     }
 
@@ -3941,6 +4177,8 @@ async function requestLoadForPreset(index: number) {
       if (slots !== null) {
         window.clearInterval(timer);
         console.log(`[PresetDebug][models] slots ready preset=${index} count=${slots.length}`);
+        recoveryAttemptCount = 0;
+        stopLoadingHeartbeat();
         loadedPresetIndex = index;
         const normalizedSlots = normalizeSlotsPayloadFromInvoke(slots as never);
         // Evite d'afficher une vieille réponse si l'utilisateur a recliqué ailleurs.
@@ -3980,18 +4218,12 @@ async function requestLoadForPreset(index: number) {
               : `${realBlocks} blocks detected${dspSuffix}${overLimit}`,
           );
 
-          // Corrige le nom affiché (liste et label) en demandant le nom réel du preset actif.
-          // Utile quand `get_preset_names()` peut être temporairement désaligné à cause de presets "vides".
-          if (requestedPresetNameIndex !== index) {
-            requestedPresetNameIndex = index;
-            try {
-              await invoke("request_active_preset_name");
-            } catch {
-              // Best-effort : l'UI sera corrigée au prochain refresh si possible.
-            }
-          }
+          // Le nom affiché est piloté par la liste presets backend (refresh global).
+          // On évite ici un invoke additionnel request_active_preset_name qui peut
+          // amplifier les rafales pendant les changements rapides de preset.
         }
         loading = false;
+        hardwareSyncPausedForPresetLoad = pendingPresetIndex >= 0;
         if (pendingPresetIndex >= 0 && pendingPresetIndex !== loadedPresetIndex) {
           const next = pendingPresetIndex;
           pendingPresetIndex = -1;
@@ -4024,6 +4256,7 @@ async function refresh() {
 
     if (active < 0 || active >= names.length) {
       console.warn("[PresetDebug][models] active preset out of range", active, names.length);
+      stopLoadingHeartbeat();
       presetLabelEl.textContent = "--";
       renderEmpty("Aucun preset actif.");
       setStatus("En attente...");
@@ -4038,7 +4271,6 @@ async function refresh() {
       console.log(`[PresetDebug][models] active preset changed ${currentPresetIndex} -> ${active}`);
       currentPresetIndex = active;
       loadedPresetIndex = -1;
-      requestedPresetNameIndex = -1;
       clearSelectedParamsContext();
       renderEmpty("Chargement des modeles...");
       scheduleLoadForPreset(active, true);
@@ -4048,6 +4280,7 @@ async function refresh() {
     }
   } catch {
     console.warn("[PresetDebug][models] refresh failed (HX disconnected?)");
+    stopLoadingHeartbeat();
     setStatus("HX non connecte.");
     presetLabelEl.textContent = "--";
     renderEmpty("En attente du HX...");
@@ -4081,7 +4314,6 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     currentPresetIndex = index;
     loadedPresetIndex = -1;
-    requestedPresetNameIndex = -1;
     clearSelectedParamsContext();
     renderEmpty("Chargement des modeles...");
     scheduleLoadForPreset(index, true);
