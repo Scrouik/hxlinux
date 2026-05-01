@@ -26676,7 +26676,7 @@
             "presetMeta": {
                 "categoryId": 15,
                 "categoryName": "Volume/Pan",
-                "chainHex": "",
+                "chainHex": ["cd0105", "cd0108"],
                 "basedOn": "Line 6 Original",
                 "subCategory": [
                     "Mono",

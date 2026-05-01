@@ -74,6 +74,26 @@ impl Mode for RequestPresetName {
             return false;
         }
 
+        // x2 PRESET SWITCH pendant la lecture du nom : ACK minimal, sans déclencher
+        // switch_mode. Chaque x2 non ACKé pendant ce mode remplit la file x2 du device
+        // et provoque des write timeouts après plusieurs changements consécutifs.
+        if data.len() > 6 && data[6] == 0x02 {
+            if byte_cmp(data, &pattern![
+                XX, 0x00, 0x00, 0x18,
+                0xf0, 0x03, 0x02, 0x10,
+                0x00, XX, 0x00, 0x04
+            ], 12) {
+                let cnt = state.next_x2_cnt();
+                state.send(OutPacket::with_delay(vec![
+                    0x08, 0x00, 0x00, 0x18,
+                    0x02, 0x10, 0xf0, 0x03,
+                    0x00, cnt, 0x00, 0x08,
+                    0x74, 0x77, 0x00, 0x00,
+                ], 10));
+            }
+            return false;
+        }
+
         if data.len() >= 39 && byte_cmp(&data[23..], &pattern![
             0x00, 0x83, 0x66, 0xcd, XX, XX,
             0x67, 0x00, 0x68, 0x86,

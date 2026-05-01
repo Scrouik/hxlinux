@@ -148,7 +148,10 @@ impl Mode for Standard {
             return true;
         }
 
-        // PRESET SWITCH — pattern secondaire
+        // PRESET SWITCH — pattern secondaire (pré-notification, arrive avant 0x04:6a)
+        // Ce paquet précède toujours le pattern principal (0x04:6a) qui porte preset_index
+        // et déclenche seul le read chain. ACK silencieux uniquement — déclencher
+        // RequestPresetName ici provoque une double interruption du RequestPreset en cours.
         if byte_cmp(data, &pattern![
             0x21, 0x00, 0x00, 0x18,
             0xf0, 0x03, 0x02, 0x10,
@@ -161,7 +164,6 @@ impl Mode for Standard {
             0x03, 0x79, 0x13, 0x6a,
             0x82, 0x62
         ], 38) {
-            state.switch_mode(ModeRequest::RequestPresetName);
             let cnt = state.next_x2_cnt();
             state.send(OutPacket::with_delay(vec![
                 0x08, 0x00, 0x00, 0x18,

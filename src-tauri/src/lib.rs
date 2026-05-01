@@ -2917,7 +2917,13 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
     thread::sleep(Duration::from_millis(1100));
     let _ = handle.release_interface(0);
     if let Err(e) = handle.attach_kernel_driver(0) {
-        eprintln!("[Helix] attach_kernel_driver : {}", e);
+        eprintln!("[Helix] attach_kernel_driver(0) : {}", e);
+    }
+    // Libérer aussi l'interface MIDI (4) réclamée à la connexion.
+    // Ne pas laisser l'interface réclamée sinon le hardware reste en mode éditeur.
+    let _ = handle.release_interface(4);
+    if let Err(e) = handle.attach_kernel_driver(4) {
+        eprintln!("[Helix] attach_kernel_driver(4) : {}", e);
     }
 
     // Effacer le HelixState de l'AppState à la déconnexion
