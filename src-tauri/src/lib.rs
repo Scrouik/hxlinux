@@ -375,6 +375,11 @@ fn activate_preset(
     if let Some(ref helix_arc) = app.helix_state {
         if let Ok(mut s) = helix_arc.lock() {
             s.want_content_only_after_x2 = true;
+            // Le MIDI PC ne génère pas de paquet x2 avec 82 62 XX 1a → le slot actif
+            // n'est jamais notifié. On remet à None pour éviter d'afficher le slot du
+            // preset précédent pendant et après le chargement.
+            s.hw_active_slot_index = None;
+            s.hw_active_slot_sequence = s.hw_active_slot_sequence.wrapping_add(1);
         }
     }
 
