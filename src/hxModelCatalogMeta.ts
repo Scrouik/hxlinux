@@ -82,7 +82,11 @@ async function loadCatalogModelIndexes(): Promise<CatalogIndexes> {
   const res = await fetch(url);
   if (!res.ok) {
     console.warn("HX_ModelCatalog.json : chargement presetMeta impossible.", res.status);
-    return { byCategoryAndName: new Map(), byHex: new Map(), byId: new Map() };
+    return {
+      byCategoryAndName: new Map(),
+      byHex: new Map(),
+      byId: new Map(),
+    };
   }
   const raw = await res.text();
   const data = JSON.parse(raw) as { models?: unknown[]; categories?: unknown[] };
@@ -340,4 +344,172 @@ export function formatSubCategoryForHeader(
 /** Tests uniquement. */
 export function resetHxCatalogMetaMapForTests(): void {
   catalogIndexesPromise = null;
+  catalogPickerDataPromise = null;
+}
+
+// --- Sélecteur visuel catégorie / sous-catégorie / modèle (aperçu, pas d’écriture USB) ---
+
+export type CatalogPickerModelRow = {
+  id: string;
+  name: string;
+};
+
+export type CatalogPickerData = {
+  /** Noms `presetMeta.categoryName` triés (hors « None »). */
+  categories: string[];
+  /** Sous-clés triées par catégorie (une entrée par valeur `subCategory`, tableaux explosés). */
+  subcategoriesByCategory: Map<string, string[]>;
+  /** Clé = `catalogPickerRowKey(cat, sub)` → modèles triés par nom (id unique). */
+  modelsByCategoryAndSub: Map<string, CatalogPickerModelRow[]>;
+};
+
+let catalogPickerDataPromise: Promise<CatalogPickerData> | null = null;
+
+/**
+ * Valeurs distinctes de `presetMeta.subCategory` pour le picker :
+ * chaîne seule → un élément ; tableau (ex. Mono/Stéréo, Single/Dual) → **une entrée par cellule**, pas une concaténation.
+ */
+export function presetMetaSubCategoryPickerKeys(
+  meta: PresetMetaJson | null | undefined,
+): string[] {
+  const sc = meta?.subCategory;
+  if (sc === undefined || sc === null) return ["—"];
+  if (typeof sc === "string") {
+    const t = sc.trim();
+    return [t.length > 0 ? t : "—"];
+  }
+  if (Array.isArray(sc)) {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const x of sc) {
+      if (typeof x !== "string") continue;
+      const t = x.trim();
+      if (!t) continue;
+      const low = t.toLowerCase();
+      if (seen.has(low)) continue;
+      seen.add(low);
+      out.push(t);
+    }
+    return out.length > 0 ? out : ["—"];
+  }
+  return ["—"];
+}
+
+export function catalogPickerRowKey(category: string, subKey: string): string {
+  return `${category.trim()}\0${subKey}`;
+}
+
+async function loadCatalogPickerDataFromJson(): Promise<CatalogPickerData> {
+  const url = "/src-tauri/resources/HX_ModelCatalog.json";
+  const res = await fetch(url);
+  if (!res.ok) {
+    console.warn("HX_ModelCatalog.json : chargement picker impossible.", res.status);
+    return {
+      categories: [],
+      subcategoriesByCategory: new Map(),
+      modelsByCategoryAndSub: new Map(),
+    };
+  }
+  const raw = await res.text();
+  const data = JSON.parse(raw) as { models?: unknown[]; categories?: unknown[] };
+
+  const rows: { id: string; name: string; category: string; subKey: string }[] = [];
+
+  const pushModel = (catName: string, m: unknown) => {
+    if (!m || typeof m !== "object") return;
+    const mo = m as {
+      id?: string | number;
+      name?: string;
+      presetMeta?: PresetMetaJson;
+    };
+    const idRaw = mo.id;
+    const id =
+      typeof idRaw === "string"
+        ? idRaw.trim()
+        : typeof idRaw === "number"
+          ? String(idRaw)
+          : "";
+    if (!id || id === "None") return;
+    const name = typeof mo.name === "string" ? mo.name.trim() : "";
+    if (!name) return;
+    const cat = catName.trim() || "Unknown";
+    if (cat.toLowerCase() === "none") return;
+    for (const subKey of presetMetaSubCategoryPickerKeys(mo.presetMeta)) {
+      rows.push({ id, name, category: cat, subKey });
+    }
+  };
+
+  if (Array.isArray(data.models) && data.models.length > 0) {
+    for (const m of data.models) {
+      const mo = m as { presetMeta?: PresetMetaJson };
+      const cn = mo.presetMeta?.categoryName;
+      const catName =
+        typeof cn === "string" && cn.trim().length > 0 ? cn.trim() : "Unknown";
+      pushModel(catName, m);
+    }
+  } else {
+    for (const cat of data.categories ?? []) {
+      if (!cat || typeof cat !== "object") continue;
+      const c = cat as { name?: string; models?: unknown; subcategories?: unknown[] };
+      const cn = typeof c.name === "string" ? c.name.trim() : "";
+      if (!cn) continue;
+      if (Array.isArray(c.models)) {
+        for (const m of c.models) pushModel(cn, m);
+      }
+      for (const sub of c.subcategories ?? []) {
+        if (!sub || typeof sub !== "object") continue;
+        const models = (sub as { models?: unknown }).models;
+        if (Array.isArray(models)) {
+          for (const m of models) pushModel(cn, m);
+        }
+      }
+    }
+  }
+
+  const byCat = new Map<string, Map<string, CatalogPickerModelRow[]>>();
+  for (const r of rows) {
+    if (!byCat.has(r.category)) byCat.set(r.category, new Map());
+    const mSub = byCat.get(r.category)!;
+    if (!mSub.has(r.subKey)) mSub.set(r.subKey, []);
+    mSub.get(r.subKey)!.push({ id: r.id, name: r.name });
+  }
+
+  const modelsByCategoryAndSub = new Map<string, CatalogPickerModelRow[]>();
+  const subcategoriesByCategory = new Map<string, string[]>();
+  const categorySet = new Set<string>();
+
+  for (const [cat, subMap] of byCat) {
+    categorySet.add(cat);
+    const subs = [...subMap.keys()].sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: "base" }),
+    );
+    subcategoriesByCategory.set(cat, subs);
+    for (const sub of subs) {
+      const list = subMap.get(sub) ?? [];
+      const dedup = new Map<string, string>();
+      for (const { id, name } of list) {
+        if (!dedup.has(id)) dedup.set(id, name);
+      }
+      const sorted = [...dedup.entries()]
+        .map(([id, name]) => ({ id, name }))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+      modelsByCategoryAndSub.set(catalogPickerRowKey(cat, sub), sorted);
+    }
+  }
+
+  const categories = [...categorySet].sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: "base" }),
+  );
+
+  return { categories, subcategoriesByCategory, modelsByCategoryAndSub };
+}
+
+export async function getCatalogPickerData(): Promise<CatalogPickerData> {
+  if (!catalogPickerDataPromise) {
+    catalogPickerDataPromise = loadCatalogPickerDataFromJson().catch((e) => {
+      catalogPickerDataPromise = null;
+      throw e;
+    });
+  }
+  return catalogPickerDataPromise;
 }

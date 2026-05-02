@@ -16332,7 +16332,7 @@
             ],
             "presetMeta": {
                 "categoryId": 11,
-                "categoryName": "Amp",
+                "categoryName": ["Amp", "Amp+Cab"],
                 "chainHex": [
                     "cd0207"
                 ],

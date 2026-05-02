@@ -88,10 +88,153 @@ html, body {
 .models-params-pane {
   flex: 1 1 0;
   min-height: 120px;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 0;
   border-top: 1px solid var(--border);
   background: var(--bg-raised);
+}
+
+.models-params-pane-body {
+  display: flex;
+  flex-direction: row;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.models-params-slot-picker {
+  flex: 0 0 min(260px, 32vw);
+  min-width: 180px;
+  max-width: 320px;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  padding: 8px 10px 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* Même fond que le panneau paramètres (`.models-params-pane`). */
+  background: var(--bg-raised);
+}
+
+/* Aligné sur `.models-params-combo-trigger` (panneau paramètres). */
+.models-params-slot-picker-select {
+  flex-shrink: 0;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 26px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--amber);
+  background: var(--bg-base);
+  border: 1px solid var(--amber-dim);
+  border-radius: 3px;
+  color-scheme: dark;
+  cursor: pointer;
+}
+
+.models-params-slot-picker-select:hover:not(:disabled) {
+  border-color: var(--amber);
+  background: var(--bg-raised);
+}
+
+.models-params-slot-picker-select:focus {
+  outline: none;
+  border-color: var(--amber);
+  box-shadow: 0 0 0 1px var(--amber-glow);
+}
+
+.models-params-slot-picker-select:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Aligné sur `.models-params-combo-panel` + scrollbars. */
+.models-params-slot-picker-list-wrap {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-color: var(--green) var(--bg-base);
+  scrollbar-gutter: stable;
+  background: var(--bg-surface);
+  border: 1px solid var(--amber-dim);
+  border-radius: 3px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+.models-params-slot-picker-list-wrap::-webkit-scrollbar {
+  width: 8px;
+}
+
+.models-params-slot-picker-list-wrap::-webkit-scrollbar-track {
+  background: var(--bg-base);
+  border-radius: 0 3px 3px 0;
+}
+
+.models-params-slot-picker-list-wrap::-webkit-scrollbar-thumb {
+  background: var(--green);
+  border-radius: 4px;
+}
+
+.models-params-slot-picker-list-wrap::-webkit-scrollbar-thumb:hover {
+  filter: brightness(1.12);
+}
+
+.models-slot-picker-model-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Aligné sur `.models-params-combo-option`. */
+.models-slot-picker-model-item {
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.35;
+  cursor: default;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+}
+
+.models-slot-picker-model-item:last-child {
+  border-bottom: none;
+}
+
+.models-slot-picker-model-item:hover {
+  background: var(--bg-hover);
+  color: var(--amber);
+}
+
+.models-slot-picker-model-item--active {
+  background: var(--bg-raised);
+  color: var(--amber);
+  font-weight: 600;
+}
+
+.models-params-params-column {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.models-params-params-column .models-params-pane-header {
+  border-bottom: 1px solid var(--border);
+}
+
+.models-params-params-column .models-params-inner {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
 .models-params-pane-header {
@@ -101,7 +244,7 @@ html, body {
   column-gap: 12px;
   row-gap: 6px;
   align-items: start;
-  padding: 8px 14px 0;
+  padding: 8px 14px 8px;
   flex-shrink: 0;
   min-width: 0;
 }

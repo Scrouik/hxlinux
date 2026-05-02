@@ -2,6 +2,8 @@
 
 Ce fichier sert de **mémo locale** quand l’historique de chat ou le contexte IDE est perdu après un redémarrage. Il complète le `README.md` (objectifs produit et commandes de base).
 
+**2 mai 2026 — protocole ED03 stabilisé, blocs spéciaux (Input/Output/Split/Merge) détectés comme slot actif. Voir section « 30 avril – 2 mai 2026 » ci-dessous.**
+
 **27 avril 2026 (après-midi) — write USB en pause, priorité stabilité UI (anti-flash)**
 
 État session du jour :
@@ -581,13 +583,122 @@ Cause racine : les threads watchdog (2000 ms) et timer (20 ms) armés dans `Requ
 - Corréler preset « problématique » avec capture Wireshark + `set_usb_io_diag` sur la fenêtre du timeout.
 - Poursuivre l’item « état diag backend » déjà listé au **29 avril (matinée)** pour piloter le front sur l’état réel plutôt que sur des timings.
 
+## 30 avril – 2 mai 2026 — stabilisation protocole ED03, slot actif hardware (blocs spéciaux)
+
+### Bug 1 — Réponse Phase 1 rejetée à 64 octets (✅ résolu)
+
+**Symptôme** : environ 1 lecture de preset sur 50 échouait, le watchdog expirait, boucle en `StandardPresetRead` avec `bytes=0`.  
+**Cause racine** : `request_preset.rs` testait `data.len() == 68` pour détecter la réponse Phase 1. Le device envoie parfois **64 octets** (HX Edit aussi, comme confirmé sur les captures `Preset1 to 8 from HXEdit.json` vs `HXLinux.json`). La condition rejetait donc ces réponses valides.  
+**Correctif** (`src-tauri/src/helix/modes/request_preset.rs`) :
+```rust
+// AVANT
+if data.len() == 68 && sub == 0x04 {
+// APRÈS
+if sub == 0x04 && data.len() >= 36 {
+```
+**Validation** : plus de 50 changements de preset enchaînés sans watchdog.
+
+---
+
+### Bug 2 — ACK starvation LED-change après ~50 changements (✅ résolu)
+
+**Symptôme** : après ~50 changements de preset, le device cessait complètement de répondre à la Phase 1.  
+**Cause racine** : le device envoie des notifications **LED color change** (ED03, sub=`0x04`, 16 octets) en continu. Le mode `Standard` les ACKait, mais `RequestPreset::data_in()` les ignorait silencieusement. Après ~50 notifications sans ACK, le device saturait et bloquait Phase 1.  
+**Correctif** — ajout dans `RequestPreset::data_in()`, avant le bloc `waiting_phase1_response`, après validation du header ED03 :
+```rust
+if sub == 0x04 && data.len() == 16 {
+    state.increase_session_quadruple_x11();
+    let sq = state.session_quadruple;
+    let cnt = state.next_x80_cnt();
+    state.send(OutPacket::with_delay(vec![
+        0x08, 0x00, 0x00, 0x18,
+        0x80, 0x10, 0xed, 0x03,
+        0x00, cnt, 0x00, 0x08,
+        sq[0], sq[1], sq[2], sq[3],
+    ], 0));
+    return true;
+}
+```
+**Règle générale** : tout mode qui traite des paquets ED03 doit ACKer les notifications LED-change 16 octets, sinon starvation garantie sur usage intensif.
+
+---
+
+### Bug 3 — Slot actif non mis à jour après MIDI PC (✅ résolu)
+
+**Symptôme** : après un changement de preset via MIDI Program Change, le panneau restait sélectionné sur le slot du preset précédent pendant et après le chargement.  
+**Cause racine** : le MIDI PC ne génère pas de paquet x2 `82 62 XX 1a` depuis le device → `hw_active_slot_index` jamais réinitialisé.  
+**Correctif** (`src-tauri/src/lib.rs`, fonction `activate_preset`) :
+```rust
+s.hw_active_slot_index = None;
+s.hw_active_slot_bus = None;
+s.hw_active_slot_sequence = s.hw_active_slot_sequence.wrapping_add(1);
+```
+
+---
+
+### Découverte — valeurs `slot_bus` pour les blocs structurels (✅ confirmé par captures)
+
+Captures réalisées : `Input HXEdit.json`, `Split HXEDit.json`, `Merge HXEdit.json`, `OutPut HXEdit.json`.  
+Marqueur recherché : `82 62 XX 1a` dans les paquets x2 longs.
+
+| Bloc | slot_bus |
+|------|----------|
+| Input | `0x00` |
+| Output | `0x09` |
+| Split | `0x0a` |
+| Merge | `0x13` |
+
+Les slots effet restent : Path 1 `0x01–0x08` → index 0–7 ; Path 2 `0x0b–0x12` → index 8–15.
+
+---
+
+### Implémentation — détection et sélection UI des blocs spéciaux (✅ résolu)
+
+**Problème** : `slot_bus_to_kempline_index()` retournait `None` pour les 4 blocs structurels → `hw_active_slot_index` inchangé, pas de mise à jour UI.
+
+**Backend (`src-tauri/src/helix/mod.rs`)** :
+- `is_special_slot_bus(slot_bus: u8) -> bool` : reconnaît `0x00 | 0x09 | 0x0a | 0x13`.
+- Nouveau champ `hw_active_slot_bus: Option<u8>` dans `HelixState`.
+- `ingest_hw_slot_notify_in` : compare par `slot_bus` (plus fiable que `slot_index`) ; pour les blocs spéciaux : `hw_active_slot_index = None`, `hw_active_slot_bus = Some(bus)`, sequence++.
+
+**Backend (`src-tauri/src/lib.rs`)** :
+- `HardwareActiveSlotState` : nouveau champ `slot_bus: Option<u8>` → `slotBus` en JSON.
+- `switch_active_hardware_slot` : mise à jour optimiste de `hw_active_slot_bus`.
+
+**Frontend (`src/models.ts`)** :
+- `pendingHardwareSelectedSlotBus: number | null` parallèle à `pendingHardwareSelectedKemplineSlotIndex`.
+- `selectParamsPaneByHwSlotBus(bus)` : requête `[data-hw-slot-bus="${bus}"]`.
+- `consumePendingHardwareSlotSelection` : tente kempline index en premier, puis slot bus.
+- Guards anti-fallback mis à jour dans `tryAutoSelectFallbackParamsPaneAfterRender` et `armAutoSelectFallbackParamsPaneAfterRender`.
+- `clearSelectedParamsContext` : remet aussi `pendingHardwareSelectedSlotBus = null`.
+- Attributs `data-hw-slot-bus` ajoutés au rendu : Input (col=1) → `"0"`, Output (col=19) → `"9"`, Split → `"10"`, Merge → `"19"` (sur tous les séparateurs de frontière, col=2 et col=4..18).
+
+---
+
+### Prochaine étape convenue
+
+- Captures Wireshark pour les opérations d'**édition de preset** (insert model dans slot vide, change model, save preset) avant toute implémentation.
+- UI : sélecteur modèle en deux niveaux (`categoryName` → `subCategory`) à développer en parallèle des captures.
+
+---
+
 ## Todo à faire dans le Hardware avec capture WireShark
 
-1. Tester une suppression de model dans un slot
-2. Tester un déplacement de model du path 1 au path 2 et inversement.
-3. Tester une modification de parametre sur split et merge
-4. Tester un déplacement de split et merge
-5. Tester ce qu'il se passe quand on sauvegarde de preset
+### Priorité — édition preset (prochaine étape)
+1. ⬜ Capturer **changement de model** dans un slot existant (HX Edit → sélectionner un autre modèle dans la liste)
+2. ⬜ Capturer **insertion d'un model** dans un slot vide
+3. ⬜ Capturer **sauvegarde d'un preset** (bouton Save dans HX Edit)
+
+### Suite
+4. ⬜ Tester une suppression de model dans un slot
+5. ⬜ Tester un déplacement de model du path 1 au path 2 et inversement.
+6. ⬜ Tester une modification de parametre sur split et merge
+7. ⬜ Tester un déplacement de split et merge
+
+### Déjà capturé / analysé
+- ✅ Slot actif : blocs spéciaux Input/Output/Split/Merge (`slot_bus` identifiés, voir section **30 avril – 2 mai 2026**)
+- ✅ Changement de preset hardware → UI (captures `Preset1 to 8`, `Preset1 to 2`)
+- ✅ Changement de slot hardware → UI (captures `Slot1 to slot2 hardware`)
 
 ## Test
 

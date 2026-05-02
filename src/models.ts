@@ -2,13 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import {
+  catalogPickerRowKey,
   formatSubCategoryForHeader,
   getCatalogModelIdForHex,
   getCatalogModelImageForId,
   getCatalogParamOrderForId,
+  getCatalogPickerData,
   getPresetMetaForId,
   pickBasedOn,
   pickSignal,
+  presetMetaSubCategoryPickerKeys,
+  type CatalogPickerData,
+  type PresetMetaJson,
 } from "./hxModelCatalogMeta";
 import "./styles.css";
 
@@ -543,7 +548,176 @@ const MODELS_PARAMS_IDLE_PLACEHOLDER =
   "Les paramètres du bloc sélectionné s'afficheront ici.";
 
 function getModelsParamsInner(): HTMLElement | null {
-  return document.querySelector("#models-params-pane .models-params-inner");
+  return document.getElementById("models-params-inner");
+}
+
+// --- Sélecteur catalogue (gauche) : catégorie → sous-catégorie → liste modèles (aperçu uniquement) ---
+
+let catalogPickerDataCache: CatalogPickerData | null = null;
+let slotPickerCategoryEl: HTMLSelectElement | null = null;
+let slotPickerSubEl: HTMLSelectElement | null = null;
+let slotPickerListEl: HTMLUListElement | null = null;
+let slotPickerMountPromise: Promise<void> | null = null;
+
+function refillSlotPickerSubcategories(): void {
+  if (!slotPickerCategoryEl || !slotPickerSubEl || !catalogPickerDataCache) return;
+  const cat = slotPickerCategoryEl.value.trim();
+  slotPickerSubEl.replaceChildren();
+  const emptyOpt = document.createElement("option");
+  emptyOpt.value = "";
+  emptyOpt.textContent = "—";
+  slotPickerSubEl.appendChild(emptyOpt);
+  if (!cat) {
+    slotPickerSubEl.disabled = true;
+    slotPickerSubEl.value = "";
+    return;
+  }
+  const subs = catalogPickerDataCache.subcategoriesByCategory.get(cat) ?? [];
+  for (const s of subs) {
+    const o = document.createElement("option");
+    o.value = s;
+    o.textContent = s;
+    slotPickerSubEl.appendChild(o);
+  }
+  slotPickerSubEl.disabled = subs.length === 0;
+  slotPickerSubEl.value = "";
+}
+
+function refillSlotPickerModelList(highlightModelId: string | null | undefined): void {
+  if (!slotPickerListEl || !catalogPickerDataCache || !slotPickerCategoryEl || !slotPickerSubEl) return;
+  const cat = slotPickerCategoryEl.value.trim();
+  const sub = slotPickerSubEl.value;
+  slotPickerListEl.replaceChildren();
+  if (!cat || !sub) return;
+  const key = catalogPickerRowKey(cat, sub);
+  const rows = catalogPickerDataCache.modelsByCategoryAndSub.get(key) ?? [];
+  if (rows.length === 0) return;
+  const hi = (highlightModelId ?? "").trim();
+  for (const row of rows) {
+    const li = document.createElement("li");
+    li.className = "models-slot-picker-model-item";
+    li.textContent = row.name;
+    li.title = row.id;
+    li.dataset.modelId = row.id;
+    if (hi && row.id === hi) li.classList.add("models-slot-picker-model-item--active");
+    li.addEventListener("click", () => {
+      slotPickerListEl
+        ?.querySelectorAll(".models-slot-picker-model-item")
+        .forEach((n) => n.classList.remove("models-slot-picker-model-item--active"));
+      li.classList.add("models-slot-picker-model-item--active");
+    });
+    slotPickerListEl.appendChild(li);
+  }
+}
+
+function resetSlotPickerToIdle(): void {
+  if (!slotPickerCategoryEl || !slotPickerSubEl || !slotPickerListEl) return;
+  slotPickerCategoryEl.value = "";
+  refillSlotPickerSubcategories();
+  slotPickerSubEl.value = "";
+  refillSlotPickerModelList(null);
+}
+
+/**
+ * Aligne les combos + liste sur le modèle catalogue courant (slot chargé).
+ * Repli si catégorie / sous-clé absentes du jeu construit depuis le JSON.
+ */
+function applySlotPickerFromCatalogSelection(
+  categoryName: string,
+  subKey: string,
+  highlightModelId: string | null,
+): void {
+  if (!slotPickerCategoryEl || !slotPickerSubEl || !catalogPickerDataCache) return;
+  const cats = catalogPickerDataCache.categories;
+  if (cats.length === 0) return;
+  let cat = categoryName.trim();
+  if (!cat || !cats.includes(cat)) cat = cats[0] ?? "";
+  slotPickerCategoryEl.value = cat;
+  refillSlotPickerSubcategories();
+  const subs = catalogPickerDataCache.subcategoriesByCategory.get(cat) ?? [];
+  let sub = subKey;
+  if (!subs.includes(sub)) sub = subs[0] ?? "";
+  slotPickerSubEl.value = sub;
+  refillSlotPickerModelList(highlightModelId);
+}
+
+function syncModelsSlotPickerFromLoadedModel(
+  catalogModelId: string,
+  meta: PresetMetaJson | null,
+  moduleHex?: string,
+): void {
+  const cat = (meta?.categoryName ?? "").trim();
+  const keys = meta ? presetMetaSubCategoryPickerKeys(meta) : ["—"];
+  const resolved = (formatSubCategoryForHeader(meta, moduleHex)?.trim()) ?? "";
+  const subKey =
+    resolved && keys.includes(resolved) ? resolved : (keys[0] ?? "—");
+  applySlotPickerFromCatalogSelection(cat, subKey, catalogModelId);
+}
+
+async function mountModelsSlotPicker(): Promise<void> {
+  if (slotPickerMountPromise) return slotPickerMountPromise;
+  const root = document.getElementById("models-params-slot-picker");
+  if (!root) return;
+  slotPickerMountPromise = (async () => {
+    if (slotPickerCategoryEl) return;
+    try {
+      catalogPickerDataCache = await getCatalogPickerData();
+    } catch (e) {
+      console.warn("[models] getCatalogPickerData", e);
+      catalogPickerDataCache = {
+        categories: [],
+        subcategoriesByCategory: new Map(),
+        modelsByCategoryAndSub: new Map(),
+      };
+    }
+    root.replaceChildren();
+
+    const catSel = document.createElement("select");
+    catSel.id = "models-slot-picker-category";
+    catSel.className = "models-params-slot-picker-select";
+    catSel.setAttribute("aria-label", "Catégorie");
+    const catEmpty = document.createElement("option");
+    catEmpty.value = "";
+    catEmpty.textContent = "—";
+    catSel.appendChild(catEmpty);
+    for (const c of catalogPickerDataCache.categories) {
+      const o = document.createElement("option");
+      o.value = c;
+      o.textContent = c;
+      catSel.appendChild(o);
+    }
+    root.appendChild(catSel);
+    slotPickerCategoryEl = catSel;
+
+    const subSel = document.createElement("select");
+    subSel.id = "models-slot-picker-subcategory";
+    subSel.className = "models-params-slot-picker-select";
+    subSel.setAttribute("aria-label", "Sous-catégorie");
+    subSel.disabled = true;
+    root.appendChild(subSel);
+    slotPickerSubEl = subSel;
+
+    const listWrap = document.createElement("div");
+    listWrap.className = "models-params-slot-picker-list-wrap";
+    const ul = document.createElement("ul");
+    ul.className = "models-slot-picker-model-list";
+    ul.id = "models-slot-picker-model-list";
+    ul.setAttribute("aria-label", "Modèles");
+    listWrap.appendChild(ul);
+    root.appendChild(listWrap);
+    slotPickerListEl = ul;
+
+    catSel.addEventListener("change", () => {
+      refillSlotPickerSubcategories();
+      refillSlotPickerModelList(null);
+    });
+    subSel.addEventListener("change", () => {
+      refillSlotPickerModelList(null);
+    });
+
+    resetSlotPickerToIdle();
+  })();
+  return slotPickerMountPromise;
 }
 
 function getModelsParamsPaneTitleEl(): HTMLElement | null {
@@ -790,6 +964,7 @@ function resetModelsParamsIdleHint() {
   const inner = getModelsParamsInner();
   if (!inner) return;
   inner.replaceChildren();
+  resetSlotPickerToIdle();
   const p = document.createElement("p");
   p.className = "models-params-placeholder";
   p.textContent = MODELS_PARAMS_IDLE_PLACEHOLDER;
@@ -803,6 +978,7 @@ function clearModelsParamsPaneContent() {
   const inner = getModelsParamsInner();
   if (!inner) return;
   inner.replaceChildren();
+  resetSlotPickerToIdle();
 }
 
 /**
@@ -2502,6 +2678,7 @@ function showModelsParamsLoading() {
   const inner = getModelsParamsInner();
   if (!inner) return;
   inner.replaceChildren();
+  resetSlotPickerToIdle();
   const p = document.createElement("p");
   p.className = "models-params-placeholder";
   p.textContent = "Chargement des paramètres…";
@@ -2673,6 +2850,7 @@ function renderModelsParamsPane(
 function showModelsParamsNotFound(slot: SlotDebug, resolvedCatalogId?: string | null) {
   setModelsParamsPaneCategory(slot.category, slot.moduleHex, slot.slotTypeHex);
   clearModelsParamsSubheadAndIcon();
+  resetSlotPickerToIdle();
   const inner = getModelsParamsInner();
   if (!inner) return;
   inner.replaceChildren();
@@ -2689,6 +2867,7 @@ function showModelsParamsNotFound(slot: SlotDebug, resolvedCatalogId?: string | 
 function showModelsParamsError(message: string) {
   setModelsParamsPaneCategory("");
   clearModelsParamsSubheadAndIcon();
+  resetSlotPickerToIdle();
   const inner = getModelsParamsInner();
   if (!inner) return;
   inner.replaceChildren();
@@ -2704,6 +2883,7 @@ function showModelsParamsRawFallback(
 ) {
   setModelsParamsPaneCategory(slot.category || "Unknown", slot.moduleHex, slot.slotTypeHex);
   clearModelsParamsSubheadAndIcon();
+  resetSlotPickerToIdle();
   setModelsParamsHeaderIcon(slot, null);
   const inner = getModelsParamsInner();
   if (!inner) return;
@@ -2938,6 +3118,9 @@ async function loadAndShowModelsParamsForSlot(
       catalogImage,
       kemplineSlotIndex,
     );
+    void mountModelsSlotPicker().then(() => {
+      syncModelsSlotPickerFromLoadedModel(catalogModelIdTrimmed, meta, slot.moduleHex);
+    });
     paramsPaneCatalogBySlotKey.set(slotKeyNow, catalogModelIdTrimmed);
     if (
       selectedParamsPresetIndex === currentPresetIndex &&
@@ -3420,7 +3603,10 @@ function path2SlotBetweenSplitAndMerge(
   mergeCol: number,
 ): boolean {
   const b = slotRowIndex + 1;
-  return b > splitCol && b < mergeCol;
+  // `merge_after_col` est la frontière où se dessine le merge : le dernier slot path2 *avant*
+  // cette frontière a `b === mergeCol` (ex. merge en 7 → slot vide en 6 avec b=7). Un `<` strict
+  // masquait l’icône `Icons_empty_slot.png` sur ce slot.
+  return b > splitCol && b <= mergeCol;
 }
 
 const IO_INPUT_ICON = "/src-tauri/resources/icons_category/icon-input-category.png";
@@ -4344,6 +4530,8 @@ async function refresh() {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  void mountModelsSlotPicker();
+
   window.addEventListener("keydown", (e) => {
     if (e.ctrlKey && e.altKey && (e.key === "d" || e.key === "D")) {
       debugRoutingMode = !debugRoutingMode;
