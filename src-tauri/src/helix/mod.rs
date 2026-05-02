@@ -39,6 +39,11 @@ pub fn slot_bus_to_kempline_index(slot_bus: u8) -> Option<usize> {
     }
 }
 
+/// Renvoie true si slot_bus correspond à un bloc structurel (Input/Output/Split/Merge).
+pub fn is_special_slot_bus(slot_bus: u8) -> bool {
+    matches!(slot_bus, 0x00 | 0x09 | 0x0a | 0x13)
+}
+
 // ===========================================================
 // Trait Mode
 // ===========================================================
@@ -154,8 +159,11 @@ pub struct HelixState {
     /// +1 à chaque réception d’un EF03 court **alors qu’un** ED03 court était déjà mémorisé (cycle complet).
     pub hw_slot_notify_sequence: u32,
     /// Slot actif observé côté hardware (index Kempline 0..15), déduit du flux IN `0x81`.
+    /// None pour les blocs structurels (Input/Output/Split/Merge).
     pub hw_active_slot_index: Option<usize>,
-    /// +1 à chaque changement détecté de `hw_active_slot_index`.
+    /// Slot bus brut du dernier slot actif détecté (couvre les blocs structurels).
+    pub hw_active_slot_bus: Option<u8>,
+    /// +1 à chaque changement détecté de slot actif.
     pub hw_active_slot_sequence: u32,
 }
 
@@ -256,6 +264,7 @@ impl HelixState {
             hw_slot_notify_ef_in: None,
             hw_slot_notify_sequence: 0,
             hw_active_slot_index: None,
+            hw_active_slot_bus: None,
             hw_active_slot_sequence: 0,
         }
     }
@@ -313,20 +322,24 @@ impl HelixState {
     /// Détecte les petites trames IN « slot » du Stomp (`ed 03 80 10` puis `ef 03 01 10` sur 16 octets).
     pub fn ingest_hw_slot_notify_in(&mut self, data: &[u8]) {
         // Keep-alive x2 long: recherche d'un marqueur `82 62 SS 1a`
-        // où SS semble porter le slot bus (1..16) dans nos captures.
+        // SS = slot bus ; couvre les slots effet (0x01–0x12) et les blocs structurels
+        // Input(0x00), Output(0x09), Split(0x0a), Merge(0x13).
         for i in 0..=data.len().saturating_sub(4) {
             if data[i] == 0x82 && data[i + 1] == 0x62 && data[i + 3] == 0x1a {
                 let slot_bus = data[i + 2];
-                if let Some(slot_index) = slot_bus_to_kempline_index(slot_bus) {
-                    if self.hw_active_slot_index != Some(slot_index) {
-                        self.hw_active_slot_index = Some(slot_index);
+                let slot_index = slot_bus_to_kempline_index(slot_bus);
+                let is_special = is_special_slot_bus(slot_bus);
+                if slot_index.is_some() || is_special {
+                    if self.hw_active_slot_bus != Some(slot_bus) {
+                        self.hw_active_slot_index = slot_index;
+                        self.hw_active_slot_bus = Some(slot_bus);
                         self.hw_active_slot_sequence = self.hw_active_slot_sequence.wrapping_add(1);
                         if preset_debug_verbose_enabled() {
                             eprintln!(
-                                "[PresetDebug][slot_active_in] seq={} slot_bus={} slot_index={}",
+                                "[PresetDebug][slot_active_in] seq={} slot_bus={:#04x} slot_index={:?}",
                                 self.hw_active_slot_sequence,
                                 slot_bus,
-                                slot_index
+                                slot_index,
                             );
                         }
                     }

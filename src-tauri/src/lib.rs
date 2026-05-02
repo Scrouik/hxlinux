@@ -214,6 +214,7 @@ fn get_active_preset(state: tauri::State<Arc<Mutex<AppState>>>) -> usize {
 #[serde(rename_all = "camelCase")]
 struct HardwareActiveSlotState {
     slot_index: Option<usize>,
+    slot_bus: Option<u8>,
     sequence: u32,
 }
 
@@ -228,12 +229,14 @@ fn get_active_hardware_slot_state(
     let Some(helix_arc) = helix_arc else {
         return HardwareActiveSlotState {
             slot_index: None,
+            slot_bus: None,
             sequence: 0,
         };
     };
     let s = helix_arc.lock().unwrap();
     HardwareActiveSlotState {
         slot_index: s.hw_active_slot_index,
+        slot_bus: s.hw_active_slot_bus,
         sequence: s.hw_active_slot_sequence,
     }
 }
@@ -379,6 +382,7 @@ fn activate_preset(
             // n'est jamais notifié. On remet à None pour éviter d'afficher le slot du
             // preset précédent pendant et après le chargement.
             s.hw_active_slot_index = None;
+            s.hw_active_slot_bus = None;
             s.hw_active_slot_sequence = s.hw_active_slot_sequence.wrapping_add(1);
         }
     }
@@ -429,6 +433,7 @@ fn switch_active_hardware_slot(
     s.send(OutPacket::new(packet.clone()));
     // Optimiste: met à jour l'état "slot actif hardware" local en attendant la notif IN.
     s.hw_active_slot_index = Some(slot_index as usize);
+    s.hw_active_slot_bus = Some(slot_bus);
     s.hw_active_slot_sequence = s.hw_active_slot_sequence.wrapping_add(1);
     drop(s);
 

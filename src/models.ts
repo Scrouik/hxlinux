@@ -33,6 +33,7 @@ type RoutingMarker = {
 
 type HardwareActiveSlotState = {
   slotIndex: number | null;
+  slotBus: number | null;
   sequence: number;
 };
 
@@ -95,6 +96,8 @@ let lastPresetNamesSig: string | null = null;
 let lastSeenHardwareSlotSequence = 0;
 /** Slot à appliquer après rendu / sync si un nouvel événement hardware est détecté. */
 let pendingHardwareSelectedKemplineSlotIndex: number | null = null;
+/** Bus slot_bus pour les blocs spéciaux (Input/Output/Split/Merge) sans kempline index. */
+let pendingHardwareSelectedSlotBus: number | null = null;
 /** Évite de renvoyer un ordre hardware lors des clics programmatiques (restore/sync). */
 let suppressNextUiSlotHardwareSwitch = false;
 let lastUserHwSlotSwitchAt = 0;
@@ -346,11 +349,13 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
           Number.isInteger(hwSlotState.slotIndex) && (hwSlotState.slotIndex as number) >= 0
             ? (hwSlotState.slotIndex as number)
             : null;
+        const nextBus = Number.isInteger(hwSlotState.slotBus) ? (hwSlotState.slotBus as number) : null;
         hwSlotDebugLog(
-          `event sequence ${lastSeenHardwareSlotSequence} -> ${hwSlotState.sequence}, slot=${nextIdx ?? "null"}`,
+          `event sequence ${lastSeenHardwareSlotSequence} -> ${hwSlotState.sequence}, slot=${nextIdx ?? "null"}, bus=${nextBus ?? "null"}`,
         );
         lastSeenHardwareSlotSequence = hwSlotState.sequence;
         pendingHardwareSelectedKemplineSlotIndex = nextIdx;
+        pendingHardwareSelectedSlotBus = nextBus;
       }
     }
 
@@ -655,6 +660,7 @@ function clearSelectedParamsContext(): void {
   selectedParamsInPlaceSlotKey = null;
   paramsPaneCatalogBySlotKey.clear();
   pendingHardwareSelectedKemplineSlotIndex = null;
+  pendingHardwareSelectedSlotBus = null;
   if (autoSelectFallbackTimer !== null) {
     window.clearTimeout(autoSelectFallbackTimer);
     autoSelectFallbackTimer = null;
@@ -716,25 +722,47 @@ function selectParamsPaneByKemplineIndex(kemplineSlotIndex: number): boolean {
   return true;
 }
 
+function selectParamsPaneByHwSlotBus(slotBus: number): boolean {
+  const node = contentEl.querySelector<HTMLElement>(`[data-hw-slot-bus="${slotBus}"]`);
+  if (!node) return false;
+  suppressNextUiSlotHardwareSwitch = true;
+  node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  return true;
+}
+
 function consumePendingHardwareSlotSelection(): void {
-  if (pendingHardwareSelectedKemplineSlotIndex === null) return;
-  const idx = pendingHardwareSelectedKemplineSlotIndex;
-  if (selectedParamsKemplineSlotIndex === idx) {
-    hwSlotDebugLog(`selection déjà active idx=${idx}`);
-    pendingHardwareSelectedKemplineSlotIndex = null;
+  if (pendingHardwareSelectedKemplineSlotIndex !== null) {
+    const idx = pendingHardwareSelectedKemplineSlotIndex;
+    if (selectedParamsKemplineSlotIndex === idx) {
+      hwSlotDebugLog(`selection déjà active idx=${idx}`);
+      pendingHardwareSelectedKemplineSlotIndex = null;
+      pendingHardwareSelectedSlotBus = null;
+      return;
+    }
+    if (selectParamsPaneByKemplineIndex(idx)) {
+      hwSlotDebugLog(`selection appliquée idx=${idx}`);
+      pendingHardwareSelectedKemplineSlotIndex = null;
+      pendingHardwareSelectedSlotBus = null;
+      return;
+    }
+    hwSlotDebugLog(`node introuvable pour idx=${idx} (nouvel essai prochain cycle)`);
     return;
   }
-  if (selectParamsPaneByKemplineIndex(idx)) {
-    hwSlotDebugLog(`selection appliquée idx=${idx}`);
-    pendingHardwareSelectedKemplineSlotIndex = null;
-  } else {
-    hwSlotDebugLog(`node introuvable pour idx=${idx} (nouvel essai prochain cycle)`);
+  if (pendingHardwareSelectedSlotBus !== null) {
+    const bus = pendingHardwareSelectedSlotBus;
+    if (selectParamsPaneByHwSlotBus(bus)) {
+      hwSlotDebugLog(`selection appliquée slot_bus=${bus}`);
+      pendingHardwareSelectedSlotBus = null;
+      return;
+    }
+    hwSlotDebugLog(`node introuvable pour slot_bus=${bus} (nouvel essai prochain cycle)`);
   }
 }
 
 function tryAutoSelectFallbackParamsPaneAfterRender(): boolean {
   if (selectedParamsPresetIndex === currentPresetIndex) return false;
   if (pendingHardwareSelectedKemplineSlotIndex !== null) return false;
+  if (pendingHardwareSelectedSlotBus !== null) return false;
   const nodes = contentEl.querySelectorAll<HTMLElement>(
     '.node--params-clickable[data-kempline-slot-index]:not(.node--empty)',
   );
@@ -751,6 +779,7 @@ function armAutoSelectFallbackParamsPaneAfterRender(): void {
     autoSelectFallbackTimer = null;
     if (selectedParamsPresetIndex === currentPresetIndex) return;
     if (pendingHardwareSelectedKemplineSlotIndex !== null) return;
+    if (pendingHardwareSelectedSlotBus !== null) return;
     tryAutoSelectFallbackParamsPaneAfterRender();
   }, 240);
 }
@@ -3840,6 +3869,7 @@ function renderGrid16(
       } else if (col === 1) {
         if (row === LINE_PATH_1) {
           inner = makeIoNode("input");
+          inner.dataset.hwSlotBus = "0";
           bindSlotParamsInteraction(inner, path1IoSlot("input"));
         }
       } else if (col === 2) {
@@ -3848,12 +3878,15 @@ function renderGrid16(
             showRoutingUi && routingCols.splitCol === 0 ? "split" : null;
           if (rk === "split") inner = makePathRoutingNode("split");
           else inner = makeMatrixPath1LineIcon();
+          if (rk === "split") inner.dataset.hwSlotBus = "10";
+          else if (rk === "merge") inner.dataset.hwSlotBus = "19";
           // Frontière 0: séparateur immédiatement après l'Input (Path 1).
           bindSlotParamsInteraction(inner, path1SeparatorSlot(0, rk, rk === "split" ? splitEntry : undefined));
         }
       } else if (col === 19) {
         if (row === LINE_PATH_1) {
           inner = makeIoNode("output");
+          inner.dataset.hwSlotBus = "9";
           bindSlotParamsInteraction(inner, path1IoSlot("output"));
         }
       } else if (col >= 3 && col <= 17 && (col - 3) % 2 === 0) {
@@ -3878,6 +3911,8 @@ function renderGrid16(
           const rk = routingKindAtBoundary(boundary);
           inner = routingAtBoundary(boundary);
           if (inner === null) inner = makeMatrixPath1LineIcon();
+          if (rk === "split") inner.dataset.hwSlotBus = "10";
+          else if (rk === "merge") inner.dataset.hwSlotBus = "19";
           // Étape 1 UX: tous les séparateurs Path 1 sont cliquables comme les slots.
           bindSlotParamsInteraction(
             inner,
@@ -4210,11 +4245,14 @@ async function requestLoadForPreset(index: number) {
           // renderSlots appelle consumePendingHardwareSlotSelection() en fin d'exécution.
           // Si pendingHardwareSelectedKemplineSlotIndex est renseigné ici, le bon slot
           // est sélectionné immédiatement sans passer par le fallback slot-1 à 240ms.
-          if (pendingHardwareSelectedKemplineSlotIndex === null) {
+          if (pendingHardwareSelectedKemplineSlotIndex === null && pendingHardwareSelectedSlotBus === null) {
             try {
               const hwSnap = await invoke<HardwareActiveSlotState>("get_active_hardware_slot_state");
               if (hwSnap && Number.isInteger(hwSnap.slotIndex) && (hwSnap.slotIndex as number) >= 0) {
                 pendingHardwareSelectedKemplineSlotIndex = hwSnap.slotIndex as number;
+                lastSeenHardwareSlotSequence = hwSnap.sequence;
+              } else if (hwSnap && Number.isInteger(hwSnap.slotBus)) {
+                pendingHardwareSelectedSlotBus = hwSnap.slotBus as number;
                 lastSeenHardwareSlotSequence = hwSnap.sequence;
               }
             } catch {
