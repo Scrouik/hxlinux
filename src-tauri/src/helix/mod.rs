@@ -78,6 +78,9 @@ pub struct HelixState {
 
     pub got_preset: bool,
     pub request_preset_session_id: u8,
+    /// Compteur cd:XX dans les ouvertures de session ED03 (bytes[27]).
+    /// Initialisé à 0x01, incrémenté à chaque fin de RequestPreset.
+    pub ed03_cmd_type: u8,
 
     pub connecting: bool,
 
@@ -129,6 +132,11 @@ pub struct HelixState {
     /// RequestPreset ; les StandardPresetRead(gen) avec gen != valeur courante sont
     /// des orphelins issus d'un watchdog/timer d'une lecture précédente et sont ignorés.
     pub preset_read_generation: u64,
+
+    /// Si true : le prochain x2 (0x04:6a) déclenche RequestPreset(content_only=true)
+    /// au lieu de RequestPresetName. Mis par `activate_preset` après le MIDI PC ;
+    /// effacé par Standard::data_in quand le x2 arrive.
+    pub want_content_only_after_x2: bool,
 
     /// Dernier bloc `83 66 cd 05 … 1c` extrait d’un écho IN `27 … ed 03 03 10`
     /// (capture HX Edit). Sert à aligner les écritures live sur la session USB réelle.
@@ -237,11 +245,13 @@ impl HelixState {
             got_preset:         false,
             preset_pkt_counter: 0x001e,
             request_preset_session_id: 0xf4,
+            ed03_cmd_type:      0x01,
             session_quadruple: [0xf4, 0x1e, 0x00, 0x00],
             last_ed03_echo_model: None,
             ed03_live_write_seq_sent: None,
             live_write_ctr: 0x6cbd,
             live_write_yy: 0x17,
+            want_content_only_after_x2: false,
             hw_slot_notify_ed_in: None,
             hw_slot_notify_ef_in: None,
             hw_slot_notify_sequence: 0,

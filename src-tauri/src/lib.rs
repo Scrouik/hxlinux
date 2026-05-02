@@ -367,8 +367,16 @@ fn activate_preset(
         .write_bulk(0x02, &packet, Duration::from_millis(1000))
         .map_err(|e| format!("Erreur MIDI Program Change : {}", e))?;
 
-    // Mettre à jour l'état local
-    state.lock().unwrap().active_preset = index;
+    // Mettre à jour l'état local + signaler qu'on attend le x2 de confirmation
+    // avant de lancer la lecture content_only (évite la race condition où cd:03
+    // part avant que les x2 du hardware soient reçus et ACKés).
+    let mut app = state.lock().unwrap();
+    app.active_preset = index;
+    if let Some(ref helix_arc) = app.helix_state {
+        if let Ok(mut s) = helix_arc.lock() {
+            s.want_content_only_after_x2 = true;
+        }
+    }
 
     Ok(())
 }
@@ -684,8 +692,17 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
     s.preset_index = active_preset;
     s.preset_data_ready = false;
     s.preset_data.clear();
+    // preset_content_only=true dans les deux cas : bloque les RequestPresetName
+    // déclenchés par le MIDI listener pendant qu'on attend le x2 de confirmation.
     s.preset_content_only = true;
-    s.switch_mode(ModeRequest::RequestPreset(true));
+    if s.want_content_only_after_x2 {
+        // activate_preset a envoyé le MIDI PC et posé le flag.
+        // On attend le x2 du hardware pour lancer cd:03 — garantit que tous
+        // les x2 sont ACKés avant la lecture (même séquence que HXEdit).
+    } else {
+        // Appel direct sans activate_preset (ex: force-recover) → déclenchement immédiat.
+        s.switch_mode(ModeRequest::RequestPreset(true));
+    }
     {
         let mut app = state.lock().unwrap();
         app.preset_recover_in_flight = false;
@@ -2466,6 +2483,17 @@ fn parse_preset_slots_debug(data: &[u8]) -> Vec<[String; 5]> {
 // ===========================================================
 
 pub fn run() {
+    // Lire les flags de debug depuis l'environnement au démarrage.
+    if std::env::var("PRESET_DEBUG_VERBOSE").map(|v| v == "1").unwrap_or(false) {
+        set_preset_debug_verbose_enabled(true);
+    }
+    if std::env::var("USB_PACKET_TRACE").map(|v| v == "1").unwrap_or(false) {
+        set_usb_packet_trace_enabled(true);
+    }
+    if std::env::var("USB_IO_DIAG").map(|v| v == "1").unwrap_or(false) {
+        set_usb_io_diag_enabled(true);
+    }
+
     let app_state = Arc::new(Mutex::new(AppState::default()));
     let app_state_clone = Arc::clone(&app_state);
 
@@ -2741,11 +2769,27 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
                         }
                         if buf[0] == 0x0C && (buf[1] & 0xF0) == 0xC0 {
                             let preset_no = buf[2] as usize;
-                            {
+                            // Si activate_preset a posé le flag, cet écho MIDI est la
+                            // confirmation que le hardware a appliqué le MIDI PC.
+                            // Le hardware ne génère pas de x2 0x04:6a pour un MIDI PC
+                            // (uniquement pour les boutons hardware) — l'écho MIDI est
+                            // le seul signal fiable pour déclencher la lecture content_only.
+                            let want_content = {
                                 let mut s = state_midi.lock().unwrap();
                                 s.preset_index = preset_no;
+                                if s.want_content_only_after_x2 {
+                                    s.want_content_only_after_x2 = false;
+                                    s.preset_content_only = true;
+                                    true
+                                } else {
+                                    false
+                                }
+                            };
+                            if want_content {
+                                let _ = mode_tx_midi.send(ModeRequest::RequestPreset(true));
+                            } else {
+                                let _ = mode_tx_midi.send(ModeRequest::RequestPresetName);
                             }
-                            let _ = mode_tx_midi.send(ModeRequest::RequestPresetName);
                         }
                     }
                     Ok(_) => {}
@@ -2817,10 +2861,15 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
                     eprintln!("[PresetDebug][ModeLoop] dropped duplicate RequestPresetName x{}", dropped);
                 }
                 let mut s = state.lock().unwrap();
-                // Pendant une lecture content_only, ignorer les changements de
-                // preset asynchrones pour ne pas interrompre RequestPreset.
-                if s.preset_content_only {
-                    eprintln!("[PresetDebug][ModeLoop] ignore RequestPresetName while content_only");
+                // Bloquer RequestPresetName si on attend le x2 de confirmation
+                // (want_content_only_after_x2) OU si un RequestPreset est en cours
+                // (preset_content_only). Sans ce guard, le MIDI listener peut envoyer
+                // RequestPresetName avant que request_preset_content() ait posé
+                // preset_content_only=true, et RequestPresetName consomme le x2 0x04:6a
+                // avant que Standard::data_in puisse déclencher RequestPreset(true).
+                if s.preset_content_only || s.want_content_only_after_x2 {
+                    eprintln!("[PresetDebug][ModeLoop] ignore RequestPresetName while content_only={} want_x2={}",
+                        s.preset_content_only, s.want_content_only_after_x2);
                     continue;
                 }
                 let mut m = current_mode.lock().unwrap();

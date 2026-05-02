@@ -144,7 +144,16 @@ impl Mode for Standard {
             if data.len() > 40 {
                 state.preset_index = data[40] as usize;
             }
-            state.switch_mode(ModeRequest::RequestPresetName);
+            // Si activate_preset a posé le flag, c'est ce x2 de confirmation qu'on
+            // attendait : on lance la lecture content_only maintenant que tous les x2
+            // sont ACKés. Sinon, comportement normal : lire le nom du preset.
+            if state.want_content_only_after_x2 {
+                state.want_content_only_after_x2 = false;
+                state.preset_content_only = true;
+                state.switch_mode(ModeRequest::RequestPreset(true));
+            } else {
+                state.switch_mode(ModeRequest::RequestPresetName);
+            }
             return true;
         }
 
