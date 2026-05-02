@@ -24975,9 +24975,9 @@
             "presetMeta": {
                 "categoryId": 13,
                 "categoryName": "Cab",
-                "chainHex": "3b",
+                "chainHex": ["cd02cb", "cd02e5"],
                 "basedOn": "2x15\" MESA/Boogie 2x15 EV",
-                "subCategory": "Legacy"
+                "subCategory": ["Mono","Stereo"]
             }
         },
         {
