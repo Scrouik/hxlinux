@@ -3,15 +3,16 @@ import { listen } from "@tauri-apps/api/event";
 
 import {
   catalogPickerRowKey,
+  findUsbAssignPickerLocation,
   formatSubCategoryForHeader,
   getCatalogModelIdForHex,
   getCatalogModelImageForId,
   getCatalogParamOrderForId,
-  getCatalogPickerData,
+  getUsbAssignPickerData,
   getPresetMetaForId,
   pickBasedOn,
   pickSignal,
-  presetMetaSubCategoryPickerKeys,
+  usbAssignVariantFromPresetMeta,
   type CatalogPickerData,
   type PresetMetaJson,
 } from "./hxModelCatalogMeta";
@@ -597,7 +598,8 @@ function refillSlotPickerModelList(highlightModelId: string | null | undefined):
     const li = document.createElement("li");
     li.className = "models-slot-picker-model-item";
     li.textContent = row.name;
-    li.title = row.id;
+    li.title =
+      row.assignVariant !== undefined ? `${row.id} · ${row.assignVariant}` : row.id;
     li.dataset.modelId = row.id;
     if (hi && row.id === hi) li.classList.add("models-slot-picker-model-item--active");
     li.addEventListener("click", () => {
@@ -605,6 +607,7 @@ function refillSlotPickerModelList(highlightModelId: string | null | undefined):
         ?.querySelectorAll(".models-slot-picker-model-item")
         .forEach((n) => n.classList.remove("models-slot-picker-model-item--active"));
       li.classList.add("models-slot-picker-model-item--active");
+      void applySlotModelFromPickerListClick(row.id, row.name, row.assignVariant);
     });
     slotPickerListEl.appendChild(li);
   }
@@ -616,6 +619,52 @@ function resetSlotPickerToIdle(): void {
   refillSlotPickerSubcategories();
   slotPickerSubEl.value = "";
   refillSlotPickerModelList(null);
+}
+
+/** Variante USB pour `HX_ModelUsbAssign.json` : alignée sur la sous-catégorie du picker (Mono / Stereo / Legacy). */
+function usbAssignVariantFromPickerSub(sub: string): string {
+  const t = sub.trim().toLowerCase();
+  if (t.includes("legacy")) return "legacy";
+  if (t.includes("stereo") || t.includes("stéréo")) return "stereo";
+  if (t.includes("mono")) return "mono";
+  return "mono";
+}
+
+/**
+ * Clic sur une ligne du picker : sonde USB assignation modèle.
+ * Slot occupé : `replace` ; slot vide : `add`.
+ */
+async function applySlotModelFromPickerListClick(
+  catalogModelId: string,
+  displayName: string,
+  assignVariantFromRow?: string,
+): Promise<void> {
+  const ki = selectedParamsKemplineSlotIndex;
+  if (ki === null || ki < 0 || ki > 15) {
+    console.warn(
+      "[SlotModelProbe] aucun slot grille sélectionné — cliquez d’abord un slot sur la matrice.",
+    );
+    return;
+  }
+  if (selectedParamsPresetIndex !== currentPresetIndex) return;
+  const occupied =
+    selectedParamsSlotEl !== null &&
+    !selectedParamsSlotEl.classList.contains("node-empty");
+  const op = occupied ? "replace" : "add";
+  const assignVariant =
+    (assignVariantFromRow ?? "").trim().toLowerCase() ||
+    usbAssignVariantFromPickerSub(slotPickerSubEl?.value ?? "");
+  try {
+    const out = await invoke<string>("probe_slot_model_usb", {
+      op,
+      slotIndex: ki,
+      catalogModelId,
+      assignVariant,
+    });
+    console.info("[SlotModelProbe]", op, displayName, catalogModelId, out);
+  } catch (e) {
+    console.warn("[SlotModelProbe]", e);
+  }
 }
 
 /**
@@ -646,11 +695,17 @@ function syncModelsSlotPickerFromLoadedModel(
   meta: PresetMetaJson | null,
   moduleHex?: string,
 ): void {
-  const cat = (meta?.categoryName ?? "").trim();
-  const keys = meta ? presetMetaSubCategoryPickerKeys(meta) : ["—"];
-  const resolved = (formatSubCategoryForHeader(meta, moduleHex)?.trim()) ?? "";
-  const subKey =
-    resolved && keys.includes(resolved) ? resolved : (keys[0] ?? "—");
+  if (!catalogPickerDataCache) return;
+  const assignVariant = usbAssignVariantFromPresetMeta(meta, moduleHex);
+  const loc = findUsbAssignPickerLocation(catalogPickerDataCache, catalogModelId, assignVariant);
+  if (!loc) {
+    const catFallback = catalogPickerDataCache.categories[0] ?? "";
+    const subFallback = catalogPickerDataCache.subcategoriesByCategory.get(catFallback)?.[0] ?? "";
+    applySlotPickerFromCatalogSelection(catFallback, subFallback, null);
+    return;
+  }
+  const cat = loc.category;
+  const subKey = loc.subKey;
   applySlotPickerFromCatalogSelection(cat, subKey, catalogModelId);
 }
 
@@ -661,9 +716,9 @@ async function mountModelsSlotPicker(): Promise<void> {
   slotPickerMountPromise = (async () => {
     if (slotPickerCategoryEl) return;
     try {
-      catalogPickerDataCache = await getCatalogPickerData();
+      catalogPickerDataCache = await getUsbAssignPickerData();
     } catch (e) {
-      console.warn("[models] getCatalogPickerData", e);
+      console.warn("[models] getUsbAssignPickerData", e);
       catalogPickerDataCache = {
         categories: [],
         subcategoriesByCategory: new Map(),

@@ -36,6 +36,11 @@ use helix::{
 };
 use helix::packet::OutPacket;
 use helix::live_write::build_live_write_frames_from_state;
+use helix::edit_slot_model::{
+    build_slot_model_probe_packets, change_model_hxedit_replace_test_bulk,
+    resolve_catalog_model_chain_bytes, resolve_usb_assign_bulk, slot_probe_use_change_model_test_bulk,
+    SlotModelProbeOp,
+};
 use helix::keep_alive::KeepAliveManager;
 use helix::modes::connect::Connect;
 use helix::modes::request_preset_name::RequestPresetName;
@@ -446,6 +451,124 @@ fn switch_active_hardware_slot(
     Ok(())
 }
 
+/// Sonde USB « assignation de modèle dans un slot » (captures HX Edit, best-effort).
+/// `op` : `add` (slot vide, bulk 56 o ancienne capture) ou `replace` (slot occupé, bulk **48 o**
+/// `83:66:cd:04` + courts `80:10`, voir Preset33 mai 2026 — `slot_bus` + octet voie `2*slotIndex`).
+/// `catalogModelId` + `assignVariant` (`mono` | `stereo` | `legacy`) : si une entrée existe dans
+/// `HX_ModelUsbAssign.json`, le bulk capturé est utilisé (courts ED alignés sur le bulk).
+/// **Test historique** : `HX_SLOT_PROBE_USE_CHANGE_MODEL_TEST_BULK=1` force le bulk unique issu de
+/// `src/Paquets Json/Change Model HXEdit.json` (même comportement que les premiers tests UI).
+/// Sinon `catalogModelId` sert à la fusion **chainHex long** (`83 66 cd …`) comme avant.
+/// Sans `catalogModelId` en **replace**, le bulk reste le template embarqué (sonde seule).
+/// Avec `catalogModelId` en **replace**, une entrée JSON est **requise** (plus de repli sur le
+/// template unique type `cd01fe` pour tout le catalogue), sauf si la variable de test ci-dessus est active.
+#[tauri::command]
+fn probe_slot_model_usb(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    op: String,
+    slot_index: u32,
+    catalog_model_id: Option<String>,
+    assign_variant: Option<String>,
+) -> Result<String, String> {
+    if slot_index >= 16 {
+        return Err("slotIndex hors plage (0..15)".to_string());
+    }
+    let slot_bus = kempline_index_to_slot_bus(slot_index as usize)
+        .ok_or_else(|| "slotIndex invalide".to_string())?;
+    let probe_op = match op.trim().to_ascii_lowercase().as_str() {
+        "add" | "empty" => SlotModelProbeOp::AddToEmpty,
+        "replace" | "change" => SlotModelProbeOp::ReplaceOccupied,
+        other => {
+            return Err(format!("op inconnu: {other} (attendu: add | replace)"));
+        }
+    };
+    let id_for_log = catalog_model_id
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let variant_raw = assign_variant
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "mono".to_string());
+    let variant_lc = variant_raw.to_ascii_lowercase();
+    let use_change_model_test_bulk = matches!(probe_op, SlotModelProbeOp::ReplaceOccupied)
+        && slot_probe_use_change_model_test_bulk();
+    let usb_bulk_from_json: Option<Vec<u8>> = if use_change_model_test_bulk {
+        Some(change_model_hxedit_replace_test_bulk())
+    } else {
+        id_for_log
+            .as_deref()
+            .and_then(|id| resolve_usb_assign_bulk(id, &variant_lc))
+    };
+
+    // Ne plus envoyer le template fixe (ex. `cd01fe`) pour tout le catalogue : si l’utilisateur
+    // choisit un modèle (`replace` + id) sans entrée `HX_ModelUsbAssign.json`, on refuse.
+    if matches!(probe_op, SlotModelProbeOp::ReplaceOccupied)
+        && id_for_log.is_some()
+        && usb_bulk_from_json.is_none()
+        && !use_change_model_test_bulk
+    {
+        return Err(format!(
+            "Pas d'entrée dans HX_ModelUsbAssign.json pour id {:?} et variant {:?} — l'ancien template unique de test n'est plus envoyé.",
+            id_for_log,
+            variant_lc
+        ));
+    }
+
+    let chain_bytes: Option<Vec<u8>> = if usb_bulk_from_json.is_some() {
+        None
+    } else {
+        id_for_log
+            .as_deref()
+            .and_then(resolve_catalog_model_chain_bytes)
+    };
+
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    }
+    .ok_or_else(|| "HX non connecté".to_string())?;
+
+    let mut s = helix_arc.lock().unwrap();
+    if !s.connected || s.preset_content_only {
+        return Err(
+            "probe_slot_model_usb ignoré (HX non prêt ou lecture preset en cours)".to_string(),
+        );
+    }
+    let packs = build_slot_model_probe_packets(
+        &mut s,
+        probe_op,
+        slot_index as usize,
+        slot_bus,
+        chain_bytes.as_deref(),
+        usb_bulk_from_json.as_deref(),
+    );
+
+    let mut lines: Vec<String> = Vec::new();
+    for (i, p) in packs.iter().enumerate() {
+        let delay = if i == 0 { 0u64 } else { 8u64 };
+        s.send(OutPacket::with_delay(p.clone(), delay));
+        let hx: String = p.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+        lines.push(format!("#{i} len={} delay_ms={} {}", p.len(), delay, hx));
+    }
+    drop(s);
+
+    let summary = lines.join(" | ");
+    eprintln!(
+        "[SlotModelProbe] op={:?} slot_index={} slot_bus={:#04x} catalog_id={:?} variant={} usb_json={} change_model_test_bulk={} {}",
+        probe_op,
+        slot_index,
+        slot_bus,
+        id_for_log,
+        variant_lc,
+        usb_bulk_from_json.is_some(),
+        use_change_model_test_bulk,
+        summary
+    );
+    Ok(summary)
+}
+
 /// Envoie un Control Change MIDI USB (endpoint 0x02).
 /// Nécessite un Controller Assign côté preset HX pour agir sur un paramètre.
 #[tauri::command]
@@ -649,6 +772,17 @@ fn set_usb_io_diag(enabled: bool) -> Result<(), String> {
         "[UsbIODiag] {}",
         if enabled { "enabled" } else { "disabled" }
     );
+    Ok(())
+}
+
+/// Relais de log frontend -> terminal Rust (`cargo tauri dev`).
+#[tauri::command]
+fn log_frontend_message(message: String) -> Result<(), String> {
+    let m = message.trim();
+    if m.is_empty() {
+        return Ok(());
+    }
+    eprintln!("{m}");
     Ok(())
 }
 
@@ -2533,12 +2667,14 @@ pub fn run() {
             request_preset_content,
             force_recover_preset_reader,
             probe_live_param_write,
+            probe_slot_model_usb,
             write_live_param,
             write_live_param_midi_cc,
             set_usb_trace_enabled,
             set_usb_trace_delta_only,
             set_preset_debug_verbose,
             set_usb_io_diag,
+            log_frontend_message,
             get_preset_slots,
             get_active_preset_slots,
             get_active_preset_slots_debug,

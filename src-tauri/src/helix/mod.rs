@@ -10,6 +10,7 @@ pub mod usb_writer;
 pub mod keep_alive;
 pub mod modes;
 pub mod live_write;
+pub mod edit_slot_model;
 
 use std::sync::mpsc::Sender;
 use std::sync::atomic::{AtomicBool, Ordering};

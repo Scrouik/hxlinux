@@ -29,6 +29,7 @@
     "targets": "all",
     "resources": {
       "resources/HX_ModelCatalog.json": "resources/HX_ModelCatalog.json",
+      "resources/HX_ModelUsbAssign.json": "resources/HX_ModelUsbAssign.json",
       "resources/icons_models/*": "resources/icons_models/",
       "resources/icons_category/*": "resources/icons_category/",
       "resources/models/*": "resources/models/"

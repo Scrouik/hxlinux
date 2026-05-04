@@ -14,6 +14,7 @@ export type PresetMetaJson = {
 
 type CatalogModelEntry = {
   id: string | null;
+  name: string;
   presetMeta: PresetMetaJson | null;
   /** Fichier PNG sous `icons_models/` (ex. `FX_HX_EQ_SimpleTilt.png`). */
   image: string | null;
@@ -119,6 +120,7 @@ async function loadCatalogModelIndexes(): Promise<CatalogIndexes> {
         typeof imgRaw === "string" && imgRaw.trim().length > 0 ? imgRaw.trim() : null;
       const entry: CatalogModelEntry = {
         id,
+        name,
         presetMeta: mo.presetMeta ? { ...mo.presetMeta } : null,
         image,
         catalogParamOrder: extractCatalogParamOrder(mo.params),
@@ -227,6 +229,15 @@ export async function getCatalogModelImageForId(modelId: string | null | undefin
   return idx.byId.get(id)?.image ?? null;
 }
 
+export async function getCatalogModelNameForId(modelId: string | null | undefined): Promise<string | null> {
+  const id = (modelId ?? "").trim();
+  if (!id) return null;
+  const idx = await getCatalogIndexes();
+  const name = idx.byId.get(id)?.name ?? "";
+  const t = name.trim();
+  return t.length > 0 ? t : null;
+}
+
 export async function getCatalogParamOrderForId(
   modelId: string | null | undefined,
 ): Promise<string[] | null> {
@@ -308,6 +319,43 @@ export function pickSignal(meta: PresetMetaJson | null, moduleHex: string | unde
 }
 
 /** Libellé sous-catégorie pour l’en-tête, résolu sur la variante `chainHex` active si possible. */
+/**
+ * Variante pour `HX_ModelUsbAssign.json` / sonde USB : `legacy` si le preset l'indique,
+ * sinon `pickSignal` (mono/stereo), repli `mono`.
+ */
+/** `chainHex` catalogue à afficher / joindre pour une variante USB (mono = [0], stéréo = [1] si pair). */
+export function moduleHexFromCatalogForUsbVariant(
+  meta: PresetMetaJson | null,
+  assignVariant: string,
+): string | null {
+  if (!meta) return null;
+  const v = assignVariant.trim().toLowerCase();
+  const hexList = normalizeHexList(meta.chainHex);
+  if (hexList.length === 0) return null;
+  if (v === "stereo" && hexList.length >= 2) return hexList[1] ?? null;
+  return hexList[0] ?? null;
+}
+
+export function usbAssignVariantFromPresetMeta(
+  meta: PresetMetaJson | null,
+  moduleHex: string | undefined,
+): "mono" | "stereo" | "legacy" {
+  const sc = meta?.subCategory;
+  const bits: string[] = [];
+  if (typeof sc === "string") bits.push(sc);
+  else if (Array.isArray(sc)) {
+    for (const x of sc) {
+      if (typeof x === "string") bits.push(x);
+    }
+  }
+  const joined = bits.join(" ").toLowerCase();
+  if (joined.includes("legacy")) return "legacy";
+  const sig = pickSignal(meta, moduleHex);
+  if (sig === "stereo") return "stereo";
+  if (sig === "mono") return "mono";
+  return "mono";
+}
+
 export function formatSubCategoryForHeader(
   meta: PresetMetaJson | null,
   moduleHex: string | undefined,
@@ -345,6 +393,7 @@ export function formatSubCategoryForHeader(
 export function resetHxCatalogMetaMapForTests(): void {
   catalogIndexesPromise = null;
   catalogPickerDataPromise = null;
+  usbAssignPickerDataPromise = null;
 }
 
 // --- Sélecteur visuel catégorie / sous-catégorie / modèle (aperçu, pas d’écriture USB) ---
@@ -352,14 +401,16 @@ export function resetHxCatalogMetaMapForTests(): void {
 export type CatalogPickerModelRow = {
   id: string;
   name: string;
+  /** Ligne `HX_ModelUsbAssign.json` : `mono` | `stereo` | `legacy` (pour l’invoke sonde). */
+  assignVariant?: string;
 };
 
 export type CatalogPickerData = {
-  /** Noms `presetMeta.categoryName` triés (hors « None »). */
+  /** Catégories (ordre catalogue trié, ou ordre fichier pour le picker USB). */
   categories: string[];
-  /** Sous-clés triées par catégorie (une entrée par valeur `subCategory`, tableaux explosés). */
+  /** Sous-clés par catégorie (triées pour le catalogue ; ordre d’apparition pour le picker USB). */
   subcategoriesByCategory: Map<string, string[]>;
-  /** Clé = `catalogPickerRowKey(cat, sub)` → modèles triés par nom (id unique). */
+  /** Clé = `catalogPickerRowKey(cat, sub)` → liste de modèles (tri par nom catalogue, ou ordre fichier USB). */
   modelsByCategoryAndSub: Map<string, CatalogPickerModelRow[]>;
 };
 
@@ -512,4 +563,101 @@ export async function getCatalogPickerData(): Promise<CatalogPickerData> {
     });
   }
   return catalogPickerDataPromise;
+}
+
+// --- Picker slot : uniquement les modèles présents dans HX_ModelUsbAssign.json (ordre hardware) ---
+
+let usbAssignPickerDataPromise: Promise<CatalogPickerData> | null = null;
+
+type UsbAssignFileEntry = {
+  id?: string;
+  variant?: string;
+  name?: string;
+  category?: string;
+  subCategory?: string;
+};
+
+async function loadUsbAssignPickerDataFromJson(): Promise<CatalogPickerData> {
+  const url = "/src-tauri/resources/HX_ModelUsbAssign.json";
+  const res = await fetch(url);
+  if (!res.ok) {
+    console.warn("HX_ModelUsbAssign.json : chargement picker impossible.", res.status);
+    return {
+      categories: [],
+      subcategoriesByCategory: new Map(),
+      modelsByCategoryAndSub: new Map(),
+    };
+  }
+  const data = JSON.parse(await res.text()) as { entries?: UsbAssignFileEntry[] };
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+
+  const categories: string[] = [];
+  const seenCat = new Set<string>();
+  const subcategoriesByCategory = new Map<string, string[]>();
+  const seenSubByCat = new Map<string, Set<string>>();
+  const modelsByCategoryAndSub = new Map<string, CatalogPickerModelRow[]>();
+
+  const pushSub = (cat: string, sub: string) => {
+    if (!seenSubByCat.has(cat)) seenSubByCat.set(cat, new Set());
+    const st = seenSubByCat.get(cat)!;
+    if (st.has(sub)) return;
+    st.add(sub);
+    const arr = subcategoriesByCategory.get(cat) ?? [];
+    arr.push(sub);
+    subcategoriesByCategory.set(cat, arr);
+  };
+
+  for (const e of entries) {
+    const id = (e.id ?? "").trim();
+    if (!id) continue;
+    const cat = (e.category ?? "Unknown").trim() || "Unknown";
+    const sub = (e.subCategory ?? "Mono").trim() || "Mono";
+    const name = (e.name ?? id).trim() || id;
+    const assignVariant = (e.variant ?? "mono").trim().toLowerCase();
+    if (!seenCat.has(cat)) {
+      seenCat.add(cat);
+      categories.push(cat);
+    }
+    pushSub(cat, sub);
+    const key = catalogPickerRowKey(cat, sub);
+    const list = modelsByCategoryAndSub.get(key) ?? [];
+    list.push({ id, name, assignVariant });
+    modelsByCategoryAndSub.set(key, list);
+  }
+
+  return { categories, subcategoriesByCategory, modelsByCategoryAndSub };
+}
+
+/** Données picker slot : catégories / sous-catégories / modèles issus de `HX_ModelUsbAssign.json` (ordre fichier). */
+export async function getUsbAssignPickerData(): Promise<CatalogPickerData> {
+  if (!usbAssignPickerDataPromise) {
+    usbAssignPickerDataPromise = loadUsbAssignPickerDataFromJson().catch((e) => {
+      usbAssignPickerDataPromise = null;
+      throw e;
+    });
+  }
+  return usbAssignPickerDataPromise;
+}
+
+/** Repère la combinaison catégorie + sous-clé pour un `id` + variante USB (sync depuis le slot chargé). */
+export function findUsbAssignPickerLocation(
+  data: CatalogPickerData,
+  catalogModelId: string,
+  assignVariant: string,
+): { category: string; subKey: string } | null {
+  const id = catalogModelId.trim();
+  const vid = assignVariant.trim().toLowerCase();
+  if (!id) return null;
+  for (const cat of data.categories) {
+    const subs = data.subcategoriesByCategory.get(cat) ?? [];
+    for (const sub of subs) {
+      const key = catalogPickerRowKey(cat, sub);
+      const rows = data.modelsByCategoryAndSub.get(key) ?? [];
+      const hit = rows.some(
+        (r) => r.id === id && (r.assignVariant ?? "").toLowerCase() === vid,
+      );
+      if (hit) return { category: cat, subKey: sub };
+    }
+  }
+  return null;
 }
