@@ -152,6 +152,9 @@ pub struct HelixState {
     /// Compteurs dédiés au write live `27` (reverse-engineering HX Edit).
     pub live_write_ctr: u16,
     pub live_write_yy: u8,
+    /// Compteur de session pour l'octet juste après `83 66 cd 03|04` sur
+    /// l'assignation modèle de slot (profil 03:10 observé).
+    pub slot_model_lane_seq: Option<u8>,
 
     /// Dernière paire **device → host** (IN `0x81`, 16 octets) « changement de slot » vue sur le bus.
     /// Schéma documenté dans `Line6_HX_Stomp_USB_Protocol.md` (capture `Slot1 to slot2 hardware.json`).
@@ -260,6 +263,7 @@ impl HelixState {
             ed03_live_write_seq_sent: None,
             live_write_ctr: 0x6cbd,
             live_write_yy: 0x17,
+            slot_model_lane_seq: None,
             want_content_only_after_x2: false,
             hw_slot_notify_ed_in: None,
             hw_slot_notify_ef_in: None,

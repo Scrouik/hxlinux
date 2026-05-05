@@ -110,17 +110,6 @@ fn patch_bulk_header_counters(buf: &mut [u8], seq_x80: u8, ctr: u16) {
     }
 }
 
-fn build_pre_context_slot_focus_f0_long(state: &mut super::HelixState, slot_bus: u8) -> [u8; 40] {
-    let seq = state.next_x2_cnt();
-    [
-        0x1d, 0x00, 0x00, 0x18, 0xf0, 0x03, 0x05, 0x10,
-        0x00, seq, 0x00, 0x04, 0x09, 0x02, 0x00, 0x00,
-        0x00, 0x00, 0x04, 0x00, 0x0d, 0x00, 0x00, 0x00,
-        0x82, 0x69, 0x16, 0x6a, 0x84, 0x52, 0x00, 0x44,
-        0x0a, 0x79, 0x1b, 0x6a, 0xc0, 0x62, slot_bus, 0x1a,
-    ]
-}
-
 /// Octet du bus slot dans le segment `82 62 **slot** …` (même convention que `live_write`).
 fn patch_slot_bus_in_bulk(buf: &mut [u8], slot_bus: u8) {
     for i in 0..buf.len().saturating_sub(2) {
@@ -148,6 +137,19 @@ fn patch_kempline_lane_after_cd03_or_cd04(bulk: &mut [u8], kempline_index: usize
             return;
         }
     }
+}
+
+fn cd_lane_offset_after_cd03_or_cd04(bulk: &[u8]) -> Option<usize> {
+    for i in 0..bulk.len().saturating_sub(5) {
+        if bulk[i] == 0x83
+            && bulk[i + 1] == 0x66
+            && bulk[i + 2] == 0xcd
+            && (bulk[i + 3] == 0x04 || bulk[i + 3] == 0x03)
+        {
+            return Some(i + 4);
+        }
+    }
+    None
 }
 
 /// Opcode ED03 des courts 16 o dérivé du bulk assignation.
@@ -374,6 +376,22 @@ pub fn build_slot_model_probe_packets(
     catalog_chain_bytes: Option<&[u8]>,
     usb_assign_full_bulk: Option<&[u8]>,
 ) -> Vec<Vec<u8>> {
+    // -------------------------------------------------------------------------
+    // NOTE MAINTENANCE (importante)
+    //
+    // Cette fonction ne doit PAS router selon `category` / `subCategory` métier.
+    // Le routage doit rester basé sur le profil TRANSPORT USB observé dans les
+    // captures (opcode ED03 + gabarit bulk), sinon on introduit des règles UI
+    // arbitraires qui cassent à la moindre variation catalogue.
+    //
+    // Ici, les deux profils principaux vus en captures:
+    // - 80:10:ed:03  -> flux "classique" (stereo/legacy majoritairement).
+    // - 03:10:ed:03  -> flux alternatif (notamment Distortion mono observé).
+    //
+    // Le choix de séquence (pré-contexte, patch compteurs, etc.) doit donc
+    // dépendre des octets du bulk transporté (ou d'un champ structuré équivalent
+    // comme `edOpcode`/`bulkKind`), jamais du nom de modèle.
+    // -------------------------------------------------------------------------
     let mut packets: Vec<Vec<u8>> = Vec::new();
 
     let (_op_short, bulk_template): ([u8; 4], Cow<'_, [u8]>) = match (op, usb_assign_full_bulk) {
@@ -395,18 +413,52 @@ pub fn build_slot_model_probe_packets(
         (SlotModelProbeOp::ReplaceOccupied, Some(b)) if b.len() >= 32
     );
 
+    // Plus de routage conditionnel par opcode ED03 (0310/8010) sur le chemin JSON:
+    // on garde une seule cinématique de sonde pour éviter les faux diagnostics.
+    //
+    // Préambule unifié: deux courts de contexte (ef puis f0) avant le bulk.
+    // Cela évite les transitions de session "bloquées" après un envoi 0310 qui
+    // peuvent ensuite faire ignorer les bulks 8010 (et inversement).
     if use_json_replace {
-        // Contexte slot-focus observé juste avant le bulk assignation mono (captures HX Edit).
-        packets.push(build_pre_context_slot_focus_f0_long(state, slot_bus).to_vec());
+        let mut pre_ef = [0u8; 16];
+        let mut pre_f0 = [0u8; 16];
+        let ctr0 = state.live_write_ctr;
+        let ctr1 = ctr0.wrapping_add(0x1f);
+        patch_short_ed03_16(
+            &mut pre_ef,
+            // Windows capture: ef packet appears as `... ef 03 01 10 ...`
+            [0xef, 0x03, 0x01, 0x10],
+            // Windows capture: byte11 is 0x10 for this ef preamble.
+            0x10,
+            state.next_x2_cnt(),
+            ctr0,
+        );
+        patch_short_ed03_16(
+            &mut pre_f0,
+            [0x02, 0x10, 0xf0, 0x03],
+            0x10,
+            state.next_x2_cnt(),
+            ctr1,
+        );
+        packets.push(pre_ef.to_vec());
+        packets.push(pre_f0.to_vec());
     }
 
     // 1) Bulk (mode "replay strict" pour les captures JSON: pas d'enveloppe courte ajoutée).
     let mut bulk = bulk_template.to_vec();
     if use_json_replace {
-        // Garder le payload capturé, mais aligner les compteurs de session sur l'état courant.
+        // Chemin JSON unifié:
+        // - patch runtime seq/ctr pour éviter les compteurs figés de capture,
+        // - lane séquentiel quand un marqueur `83 66 cd 03|04` est présent.
         let bulk_seq_used = state.next_x80_cnt();
         let bulk_ctr_used = state.live_write_ctr;
         patch_bulk_header_counters(&mut bulk, bulk_seq_used, bulk_ctr_used);
+
+        if let Some(off) = cd_lane_offset_after_cd03_or_cd04(&bulk) {
+            let next_lane = state.slot_model_lane_seq.unwrap_or(bulk[off]);
+            bulk[off] = next_lane;
+            state.slot_model_lane_seq = Some(next_lane.wrapping_add(1));
+        }
     } else {
         let ctr0 = state.live_write_ctr;
         let seq2 = state.next_x80_cnt();
