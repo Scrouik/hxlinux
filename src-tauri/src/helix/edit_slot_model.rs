@@ -110,6 +110,17 @@ fn patch_bulk_header_counters(buf: &mut [u8], seq_x80: u8, ctr: u16) {
     }
 }
 
+fn build_pre_context_slot_focus_f0_long(state: &mut super::HelixState, slot_bus: u8) -> [u8; 40] {
+    let seq = state.next_x2_cnt();
+    [
+        0x1d, 0x00, 0x00, 0x18, 0xf0, 0x03, 0x05, 0x10,
+        0x00, seq, 0x00, 0x04, 0x09, 0x02, 0x00, 0x00,
+        0x00, 0x00, 0x04, 0x00, 0x0d, 0x00, 0x00, 0x00,
+        0x82, 0x69, 0x16, 0x6a, 0x84, 0x52, 0x00, 0x44,
+        0x0a, 0x79, 0x1b, 0x6a, 0xc0, 0x62, slot_bus, 0x1a,
+    ]
+}
+
 /// Octet du bus slot dans le segment `82 62 **slot** …` (même convention que `live_write`).
 fn patch_slot_bus_in_bulk(buf: &mut [u8], slot_bus: u8) {
     for i in 0..buf.len().saturating_sub(2) {
@@ -124,8 +135,7 @@ fn patch_slot_bus_in_bulk(buf: &mut [u8], slot_bus: u8) {
     }
 }
 
-/// Octet après `83 66 cd 04` ou `83 66 cd 03` : sur les captures Preset33, **`2 * index_kempline`**.
-/// Même formule pour les indices 8–15 (path 2) tant qu’on n’a pas de contre-exemple USB.
+/// Octet après `83 66 cd 04` ou `83 66 cd 03` : chemins catalogue / template hérités.
 fn patch_kempline_lane_after_cd03_or_cd04(bulk: &mut [u8], kempline_index: usize) {
     let lane = (kempline_index as u8).saturating_mul(2);
     for i in 0..bulk.len().saturating_sub(5) {
@@ -140,12 +150,16 @@ fn patch_kempline_lane_after_cd03_or_cd04(bulk: &mut [u8], kempline_index: usize
     }
 }
 
-/// Octets `… ed 03` dans les courts 16 o (indices 4..8 du bulk assignation : `80 10` ou `03 10`).
+/// Opcode ED03 des courts 16 o dérivé du bulk assignation.
+///
+/// Captures:
+/// - bulk `80 10 ed 03` -> short `ed 03 80 10`
+/// - bulk `03 10 ed 03` -> short `ed 03 03 10`
 fn ed_op_from_assign_bulk_prefix(bulk: &[u8]) -> [u8; 4] {
-    if bulk.len() >= 8 {
-        return [bulk[4], bulk[5], bulk[6], bulk[7]];
+    if bulk.len() >= 6 {
+        return [0xed, 0x03, bulk[4], bulk[5]];
     }
-    [0x80, 0x10, 0xed, 0x03]
+    [0xed, 0x03, 0x80, 0x10]
 }
 
 #[derive(Debug, Clone)]
@@ -360,10 +374,9 @@ pub fn build_slot_model_probe_packets(
     catalog_chain_bytes: Option<&[u8]>,
     usb_assign_full_bulk: Option<&[u8]>,
 ) -> Vec<Vec<u8>> {
-    let ctr0 = state.live_write_ctr;
     let mut packets: Vec<Vec<u8>> = Vec::new();
 
-    let (op_short, bulk_template): ([u8; 4], Cow<'_, [u8]>) = match (op, usb_assign_full_bulk) {
+    let (_op_short, bulk_template): ([u8; 4], Cow<'_, [u8]>) = match (op, usb_assign_full_bulk) {
         (SlotModelProbeOp::ReplaceOccupied, Some(b)) if b.len() >= 32 => {
             (ed_op_from_assign_bulk_prefix(b), Cow::Borrowed(b))
         }
@@ -382,19 +395,30 @@ pub fn build_slot_model_probe_packets(
         (SlotModelProbeOp::ReplaceOccupied, Some(b)) if b.len() >= 32
     );
 
-    // 1) Short 16 — byte11 = 0x10
-    let seq1 = state.next_x80_cnt();
-    let mut short1 = [0u8; 16];
-    patch_short_ed03_16(&mut short1, op_short, 0x10, seq1, ctr0);
-    packets.push(short1.to_vec());
+    if use_json_replace {
+        // Contexte slot-focus observé juste avant le bulk assignation mono (captures HX Edit).
+        packets.push(build_pre_context_slot_focus_f0_long(state, slot_bus).to_vec());
+    }
 
-    // 2) Bulk
-    let seq2 = state.next_x80_cnt();
+    // 1) Bulk (mode "replay strict" pour les captures JSON: pas d'enveloppe courte ajoutée).
     let mut bulk = bulk_template.to_vec();
-    patch_bulk_header_counters(&mut bulk, seq2, ctr0);
+    if use_json_replace {
+        // Garder le payload capturé, mais aligner les compteurs de session sur l'état courant.
+        let bulk_seq_used = state.next_x80_cnt();
+        let bulk_ctr_used = state.live_write_ctr;
+        patch_bulk_header_counters(&mut bulk, bulk_seq_used, bulk_ctr_used);
+    } else {
+        let ctr0 = state.live_write_ctr;
+        let seq2 = state.next_x80_cnt();
+        patch_bulk_header_counters(&mut bulk, seq2, ctr0);
+    }
     patch_slot_bus_in_bulk(&mut bulk, slot_bus);
     if use_json_replace {
-        patch_kempline_lane_after_cd03_or_cd04(&mut bulk, kempline_index);
+        // IMPORTANT: pour un bulk capturé depuis `HX_ModelUsbAssign.json`, on ne doit PAS
+        // réécrire l'octet qui suit `83 66 cd 04`.
+        // Sur les captures mono complètes, cet octet suit une progression de session
+        // (ex. 0x26, 0x27, …), pas un simple `2 * slotIndex`. L'écraser casse la trame.
+        // On ne patche donc ici que le `slot_bus`.
         patch_slot_bus_in_bulk(&mut bulk, slot_bus);
     } else if let Some(ch) = catalog_chain_bytes {
         if !patch_catalog_chain_into_bulk(&mut bulk, ch) {
@@ -413,16 +437,37 @@ pub fn build_slot_model_probe_packets(
         patch_slot_bus_in_bulk(&mut bulk, slot_bus);
     }
     packets.push(bulk);
-
-    // 3) Short 16 — byte11 = 0x08 (clôture post-bulk sur les captures).
-    // CTR +0x1f : même pas qu’entre deux jambes `27` dans `live_write.rs` (comportement historique stable).
-    let ctr1 = ctr0.wrapping_add(0x1f);
-    let seq3 = state.next_x80_cnt();
-    let mut short2 = [0u8; 16];
-    patch_short_ed03_16(&mut short2, op_short, 0x08, seq3, ctr1);
-    packets.push(short2.to_vec());
-
-    state.live_write_ctr = state.live_write_ctr.wrapping_add(0x1f);
+    if !use_json_replace {
+        // 2) Short 16 — byte11 = 0x08 (clôture post-bulk sur le chemin template historique).
+        let ctr0 = state.live_write_ctr;
+        let bulk_len = packets.first().map(|p| p.len()).unwrap_or(0);
+        let ctr_delta = if matches!(op, SlotModelProbeOp::ReplaceOccupied) {
+            match bulk_len {
+                44 => 0x44u16,
+                48 => 0x3eu16,
+                _ => 0x1fu16,
+            }
+        } else {
+            0x1f
+        };
+        let ctr1 = ctr0.wrapping_add(ctr_delta);
+        let seq3 = state.next_x80_cnt();
+        let mut short2 = [0u8; 16];
+        let op_short = ed_op_from_assign_bulk_prefix(packets.first().map(Vec::as_slice).unwrap_or(&[]));
+        patch_short_ed03_16(&mut short2, op_short, 0x08, seq3, ctr1);
+        packets.push(short2.to_vec());
+        state.live_write_ctr = state.live_write_ctr.wrapping_add(ctr_delta);
+    } else if let Some(b) = packets.first() {
+        // Chemin JSON capturé: rejouer le bulk seul (compteurs dynamiques déjà patchés).
+        // Les captures ne montrent pas une clôture ED03 immédiate de façon fiable pour tous
+        // les modèles; l'ajouter systématiquement peut invalider l'assignation.
+        let ctr_delta = match b.len() {
+            44 => 0x44u16,
+            48 => 0x3eu16,
+            _ => 0x1fu16,
+        };
+        state.live_write_ctr = state.live_write_ctr.wrapping_add(ctr_delta);
+    }
 
     packets
 }
