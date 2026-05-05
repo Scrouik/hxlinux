@@ -544,10 +544,19 @@ fn probe_slot_model_usb(
         chain_bytes.as_deref(),
         usb_bulk_from_json.as_deref(),
     );
+    let mono_0310_json_timing_strict = usb_bulk_from_json
+        .as_deref()
+        .is_some_and(|b| b.len() >= 8 && b[4] == 0x03 && b[5] == 0x10 && b[6] == 0xed && b[7] == 0x03);
 
     let mut lines: Vec<String> = Vec::new();
     for (i, p) in packs.iter().enumerate() {
-        let delay = if i == 0 { 0u64 } else { 8u64 };
+        let delay = if mono_0310_json_timing_strict {
+            0u64
+        } else if i == 0 {
+            0u64
+        } else {
+            8u64
+        };
         s.send(OutPacket::with_delay(p.clone(), delay));
         let hx: String = p.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
         lines.push(format!("#{i} len={} delay_ms={} {}", p.len(), delay, hx));
