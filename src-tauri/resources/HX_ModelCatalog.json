@@ -514,7 +514,7 @@
             "presetMeta": {
                 "categoryId": 1,
                 "categoryName": "Distortion",
-                "chainHex": "cd02a7",
+                "chainHex": ["cd02a7", "cd02a8"],
                 "basedOn": "Earthquaker Devices Plumes distortion",
                 "subCategory": [
                     "Mono",
@@ -5570,10 +5570,11 @@
                 "categoryName": "Delay",
                 "chainHex": [
                     "51",
-                    "5d"
+                    "5d",
+                    "cd019b"
                 ],
                 "basedOn": "Line 6 Original",
-                "subCategory": "Legacy"
+                "subCategory": ["Mono", "Stereo", "Legacy"]
             }
         },
         {
@@ -6327,7 +6328,7 @@
         },
         {
             "id": "L6SPB_InfSustain",
-            "name": "Poly Sustain",
+            "name": "Poly Sustain A vérifier",
             "image": "FX_HX_DELAY_PolySustain.png",
             "hidden": true,
             "params": [
@@ -6378,7 +6379,7 @@
             "presetMeta": {
                 "categoryId": 5,
                 "categoryName": "Delay",
-                "chainHex": "",
+                "chainHex": "cd0243",
                 "basedOn": "Line 6 Original",
                 "subCategory": "Mono"
             }
@@ -6441,7 +6442,7 @@
             "presetMeta": {
                 "categoryId": 5,
                 "categoryName": "Delay",
-                "chainHex": "cd0243",
+                "chainHex": "cd0265",
                 "basedOn": "Line 6 Original",
                 "subCategory": "Mono"
             }
@@ -7149,9 +7150,9 @@
             "presetMeta": {
                 "categoryId": 5,
                 "categoryName": "Delay",
-                "chainHex": "cd0198",
+                "chainHex": ["5b", "cd0198"],
                 "basedOn": "Line 6 Original",
-                "subCategory": "Legacy"
+                "subCategory": ["Stereo", "Legacy"]
             }
         },
         {
@@ -7499,7 +7500,7 @@
             "presetMeta": {
                 "categoryId": 5,
                 "categoryName": "Delay",
-                "chainHex": "cd011e",
+                "chainHex": "cd0199",
                 "basedOn": "Line 6 Original",
                 "subCategory": "Legacy"
             }
@@ -8001,7 +8002,7 @@
             "presetMeta": {
                 "categoryId": 6,
                 "categoryName": "Reverb",
-                "chainHex": "",
+                "chainHex": ["cd0263", "cd0262"],
                 "basedOn": "Line 6 Original",
                 "subCategory": [
                     "Mono",
@@ -8054,7 +8055,7 @@
             "presetMeta": {
                 "categoryId": 6,
                 "categoryName": "Reverb",
-                "chainHex": "",
+                "chainHex": ["cd027b" , "cd027c"],
                 "basedOn": "Line 6 Original",
                 "subCategory": [
                     "Mono",
@@ -8110,7 +8111,7 @@
             "presetMeta": {
                 "categoryId": 6,
                 "categoryName": "Reverb",
-                "chainHex": "",
+                "chainHex": ["cd0290" , "cd0291"],
                 "basedOn": "Line 6 Original",
                 "subCategory": [
                     "Mono",
@@ -8157,7 +8158,7 @@
             "presetMeta": {
                 "categoryId": 6,
                 "categoryName": "Reverb",
-                "chainHex": "",
+                "chainHex": ["cd02c8" , "cd02c9"],
                 "basedOn": "Line 6 Original",
                 "subCategory": [
                     "Mono",
@@ -8210,7 +8211,7 @@
             "presetMeta": {
                 "categoryId": 6,
                 "categoryName": "Reverb",
-                "chainHex": "",
+                "chainHex": ["cd030c", "cd030d"],
                 "basedOn": "Line 6 Original",
                 "subCategory": [
                     "Mono",
@@ -8278,7 +8279,7 @@
             "presetMeta": {
                 "categoryId": 6,
                 "categoryName": "Reverb",
-                "chainHex": "",
+                "chainHex": ["cd027d", "cd027e"],
                 "basedOn": "Line 6 Original",
                 "subCategory": [
                     "Mono",
@@ -8319,7 +8320,7 @@
             "presetMeta": {
                 "categoryId": 6,
                 "categoryName": "Reverb",
-                "chainHex": "",
+                "chainHex": ["cd025f", "cd0260"],
                 "basedOn": "Line 6 Original",
                 "subCategory": [
                     "Mono",
@@ -8383,7 +8384,7 @@
             "presetMeta": {
                 "categoryId": 6,
                 "categoryName": "Reverb",
-                "chainHex": "",
+                "chainHex": ["cd02fe" , "cd02ff"],
                 "basedOn": "Line 6 Original",
                 "subCategory": [
                     "Mono",
@@ -8994,7 +8995,7 @@
             "presetMeta": {
                 "categoryId": 6,
                 "categoryName": "Reverb",
-                "chainHex": "",
+                "chainHex": "ccee",
                 "basedOn": "Line 6 Original",
                 "subCategory": "Legacy"
             }
@@ -16332,7 +16333,7 @@
             ],
             "presetMeta": {
                 "categoryId": 11,
-                "categoryName": ["Amp", "Amp+Cab"],
+                "categoryName": "Amp",
                 "chainHex": [
                     "cd0207"
                 ],
@@ -16512,7 +16513,7 @@
                 "categoryId": 11,
                 "categoryName": "Amp",
                 "chainHex": [
-                    "cd01e7"
+                    "cd01e6"
                 ],
                 "basedOn": "Aguilar® DB51",
                 "subCategory": "Bass"

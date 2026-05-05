@@ -750,13 +750,13 @@
       "id": "HD2_DistDerangedMaster",
       "variant": "mono",
       "chainHexHint": "cd01fe",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300450004272c000001000600150000008366cd0327642865826201648317c219cd01fe1aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300450004272c000001000600150000008366cd0327642865826201648317c219cd01fe1aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Deranged Master",
       "name": "Deranged Master",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistMinotaur",
@@ -774,493 +774,493 @@
       "id": "HD2_DistTeemah",
       "variant": "mono",
       "chainHexHint": "cd012e",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed03004c0004b62c000001000600150000008366cd0329642865826201648317c219cd012e1aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed03004c0004b62c000001000600150000008366cd0329642865826201648317c219cd012e1aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Teemah!",
       "name": "Teemah!",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistHeirApparent",
       "variant": "mono",
       "chainHexHint": "cd0223",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300500004022d000001000600150000008366cd032a642865826201648317c219cd02231aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300500004022d000001000600150000008366cd032a642865826201648317c219cd02231aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Heir Apparent",
       "name": "Heir Apparent",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistToneSovereign",
       "variant": "mono",
       "chainHexHint": "cd0225",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300540004502d000001000600150000008366cd032b642865826201648317c219cd02251aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300540004502d000001000600150000008366cd032b642865826201648317c219cd02251aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Tone Sovereign",
       "name": "Tone Sovereign",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistAlpacaRouge",
       "variant": "mono",
       "chainHexHint": "cd0229",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300580004b42d000001000600150000008366cd032c642865826201648317c219cd02291aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300580004b42d000001000600150000008366cd032c642865826201648317c219cd02291aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Alpaca Rouge",
       "name": "Alpaca Rouge",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistCompulsiveDrive",
       "variant": "mono",
       "chainHexHint": "60",
-      "bulkKind": "assign44_cd03_0310ed03",
-      "bulkHex": "230000180310ed03005c0004fa2d000001000600130000008366cd032d642865826201648317c219601aff00",
+      "bulkKind": "assign44_cd03_8010ed03",
+      "bulkHex": "230000188010ed03005c0004fa2d000001000600130000008366cd032d642865826201648317c219601aff00",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Compulsive Drive",
       "name": "Compulsive Drive",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistDhyanaDrive",
       "variant": "mono",
       "chainHexHint": "cd020d",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300600004402e000001000600150000008366cd032e642865826201648317c219cd020d1aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300600004402e000001000600150000008366cd032e642865826201648317c219cd020d1aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Dhyana Drive",
       "name": "Dhyana Drive",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistHorizonDrive",
       "variant": "mono",
       "chainHexHint": "cd0246",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed03006400048b2e000001000600150000008366cd032f642865826201648317c219cd02461aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed03006400048b2e000001000600150000008366cd032f642865826201648317c219cd02461aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Horizon Drive",
       "name": "Horizon Drive",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistValveDriver",
       "variant": "mono",
       "chainHexHint": "69",
-      "bulkKind": "assign44_cd03_0310ed03",
-      "bulkHex": "230000180310ed0300680004d82e000001000600130000008366cd0330642865826201648317c219691aff00",
+      "bulkKind": "assign44_cd03_8010ed03",
+      "bulkHex": "230000188010ed0300680004d82e000001000600130000008366cd0330642865826201648317c219691aff00",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Valve Driver",
       "name": "Valve Driver",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistTopSecretOD",
       "variant": "mono",
       "chainHexHint": "66",
-      "bulkKind": "assign44_cd03_0310ed03",
-      "bulkHex": "230000180310ed03006c0004212f000001000600130000008366cd0331642865826201648317c219661aff00",
+      "bulkKind": "assign44_cd03_8010ed03",
+      "bulkHex": "230000188010ed03006c0004212f000001000600130000008366cd0331642865826201648317c219661aff00",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Top Secret OD",
       "name": "Top Secret OD",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistPrizeDrive",
       "variant": "mono",
       "chainHexHint": "cd030e",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300700004602f000001000600150000008366cd0332642865826201648317c219cd030e1aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300700004602f000001000600150000008366cd0332642865826201648317c219cd030e1aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Prize Drive",
       "name": "Prize Drive",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistScream808",
       "variant": "mono",
       "chainHexHint": "65",
-      "bulkKind": "assign44_cd03_0310ed03",
-      "bulkHex": "230000180310ed0300740004a82f000001000600130000008366cd0333642865826201648317c219651aff00",
+      "bulkKind": "assign44_cd03_8010ed03",
+      "bulkHex": "230000188010ed0300740004a82f000001000600130000008366cd0333642865826201648317c219651aff00",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Scream 808",
       "name": "Scream 808",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistPillars",
       "variant": "mono",
       "chainHexHint": "cd02a7",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300780004ec2f000001000600150000008366cd0334642865826201648317c219cd02a71aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300780004ec2f000001000600150000008366cd0334642865826201648317c219cd02a71aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Pillars",
       "name": "Pillars",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistHedgehogD9",
       "variant": "mono",
       "chainHexHint": "61",
-      "bulkKind": "assign44_cd03_0310ed03",
-      "bulkHex": "230000180310ed03007c00043330000001000600130000008366cd0335642865826201648317c219611aff00",
+      "bulkKind": "assign44_cd03_8010ed03",
+      "bulkHex": "230000188010ed03007c00043330000001000600130000008366cd0335642865826201648317c219611aff00",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Hedgehog D9",
       "name": "Hedgehog D9",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistStuporOD",
       "variant": "mono",
       "chainHexHint": "cd0154",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed03007f00047730000001000600150000008366cd0336642865826201648317c219cd01541aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed03007f00047730000001000600150000008366cd0336642865826201648317c219cd01541aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Stupor OD",
       "name": "Stupor OD",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistDeezOneVintage",
       "variant": "mono",
       "chainHexHint": "cd01fc",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300830004bd30000001000600150000008366cd0337642865826201648317c219cd01fc1aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300830004bd30000001000600150000008366cd0337642865826201648317c219cd01fc1aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Deez One Vintage",
       "name": "Deez One Vintage",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistDeezOneMod",
       "variant": "mono",
       "chainHexHint": "cd01fa",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed03008700040331000001000600150000008366cd0338642865826201648317c219cd01fa1aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed03008700040331000001000600150000008366cd0338642865826201648317c219cd01fa1aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Deez One Mod",
       "name": "Deez One Mod",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistRatatouilleDist",
       "variant": "mono",
       "chainHexHint": "cd026d",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed03008a00044a31000001000600150000008366cd0339642865826201648317c219cd026d1aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed03008a00044a31000001000600150000008366cd0339642865826201648317c219cd026d1aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Ratatouille Dist",
       "name": "Ratatouille Dist",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistVerminDist",
       "variant": "mono",
       "chainHexHint": "6a",
-      "bulkKind": "assign44_cd03_0310ed03",
-      "bulkHex": "230000180310ed03008e00049031000001000600130000008366cd033a642865826201648317c2196a1aff00",
+      "bulkKind": "assign44_cd03_8010ed03",
+      "bulkHex": "230000188010ed03008e00049031000001000600130000008366cd033a642865826201648317c2196a1aff00",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Vermin Dist",
       "name": "Vermin Dist",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistVitalDist",
       "variant": "mono",
       "chainHexHint": "cd02a3",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300910004d431000001000600150000008366cd033b642865826201648317c219cd02a31aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300910004d431000001000600150000008366cd033b642865826201648317c219cd02a31aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Vital Dist",
       "name": "Vital Dist",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistVitalBoost",
       "variant": "mono",
       "chainHexHint": "cd02a5",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed03009500042032000001000600150000008366cd033c642865826201648317c219cd02a51aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed03009500042032000001000600150000008366cd033c642865826201648317c219cd02a51aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Vital Boost",
       "name": "Vital Boost",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistKWB",
       "variant": "mono",
       "chainHexHint": "cd0120",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed03009900045c32000001000600150000008366cd033d642865826201648317c219cd01201aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed03009900045c32000001000600150000008366cd033d642865826201648317c219cd01201aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=KWB",
       "name": "KWB",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistLegendaryDrive",
       "variant": "mono",
       "chainHexHint": "cd0234",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed03009d0004ae32000001000600150000008366cd033e642865826201648317c219cd02341aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed03009d0004ae32000001000600150000008366cd033e642865826201648317c219cd02341aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Legendary Drive",
       "name": "Legendary Drive",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistSwedishChainsaw",
       "variant": "mono",
       "chainHexHint": "cd0248",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300a100040333000001000600150000008366cd033f642865826201648317c219cd02481aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300a100040333000001000600150000008366cd033f642865826201648317c219cd02481aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Swedish Chainsaw",
       "name": "Swedish Chainsaw",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistArbitratorFuzz",
       "variant": "mono",
       "chainHexHint": "5f",
-      "bulkKind": "assign44_cd03_0310ed03",
-      "bulkHex": "230000180310ed0300a500044e33000001000600130000008366cd0340642865826201648317c2195f1aff00",
+      "bulkKind": "assign44_cd03_8010ed03",
+      "bulkHex": "230000188010ed0300a500044e33000001000600130000008366cd0340642865826201648317c2195f1aff00",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Arbitrator Fuzz",
       "name": "Arbitrator Fuzz",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistPocketFuzz",
       "variant": "mono",
       "chainHexHint": "cd0253",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300a900048d33000001000600150000008366cd0341642865826201648317c219cd02531aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300a900048d33000001000600150000008366cd0341642865826201648317c219cd02531aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Pocket Fuzz",
       "name": "Pocket Fuzz",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistRamsHead",
       "variant": "mono",
       "chainHexHint": "cd0236",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300ad0004ce33000001000600150000008366cd0342642865826201648317c219cd02361aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300ad0004ce33000001000600150000008366cd0342642865826201648317c219cd02361aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Bighorn Fuzz",
       "name": "Bighorn Fuzz",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistTriangleFuzz",
       "variant": "mono",
       "chainHexHint": "67",
-      "bulkKind": "assign44_cd03_0310ed03",
-      "bulkHex": "230000180310ed0300b100041434000001000600130000008366cd0343642865826201648317c219671aff00",
+      "bulkKind": "assign44_cd03_8010ed03",
+      "bulkHex": "230000188010ed0300b100041434000001000600130000008366cd0343642865826201648317c219671aff00",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Triangle Fuzz",
       "name": "Triangle Fuzz",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistDarkDoveFuzz",
       "variant": "mono",
       "chainHexHint": "cd02ec",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300b400045834000001000600150000008366cd0344642865826201648317c219cd02ec1aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300b400045834000001000600150000008366cd0344642865826201648317c219cd02ec1aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Dark Dove Fuzz",
       "name": "Dark Dove Fuzz",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistBallisticFuzz",
       "variant": "mono",
       "chainHexHint": "cd0251",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300b800049e34000001000600150000008366cd0345642865826201648317c219cd02511aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300b800049e34000001000600150000008366cd0345642865826201648317c219cd02511aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Ballistic Fuzz",
       "name": "Ballistic Fuzz",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistIndustrialFuzz",
       "variant": "mono",
       "chainHexHint": "62",
-      "bulkKind": "assign44_cd03_0310ed03",
-      "bulkHex": "230000180310ed0300bc0004e434000001000600130000008366cd0346642865826201648317c219621aff00",
+      "bulkKind": "assign44_cd03_8010ed03",
+      "bulkHex": "230000188010ed0300bc0004e434000001000600130000008366cd0346642865826201648317c219621aff00",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Industrial Fuzz",
       "name": "Industrial Fuzz",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistTycoctaviaFuzz",
       "variant": "mono",
       "chainHexHint": "68",
-      "bulkKind": "assign44_cd03_0310ed03",
-      "bulkHex": "230000180310ed0300c000043335000001000600130000008366cd0347642865826201648317c219681aff00",
+      "bulkKind": "assign44_cd03_8010ed03",
+      "bulkHex": "230000188010ed0300c000043335000001000600130000008366cd0347642865826201648317c219681aff00",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Tycoctavia Fuzz",
       "name": "Tycoctavia Fuzz",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistWringerFuzz",
       "variant": "mono",
       "chainHexHint": "cd0140",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300c400047235000001000600150000008366cd0348642865826201648317c219cd01401aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300c400047235000001000600150000008366cd0348642865826201648317c219cd01401aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Wringer Fuzz",
       "name": "Wringer Fuzz",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistThrifterFuzz",
       "variant": "mono",
       "chainHexHint": "cd0182",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300c80004be35000001000600150000008366cd0349642865826201648317c219cd01821aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300c80004be35000001000600150000008366cd0349642865826201648317c219cd01821aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Thrifter Fuzz",
       "name": "Thrifter Fuzz",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistXenomorphFuzz",
       "variant": "mono",
       "chainHexHint": "cd022b",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300cc00040f36000001000600150000008366cd034a642865826201648317c219cd022b1aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300cc00040f36000001000600150000008366cd034a642865826201648317c219cd022b1aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Xenomorph Fuzz",
       "name": "Xenomorph Fuzz",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistMegaphone",
       "variant": "mono",
       "chainHexHint": "63",
-      "bulkKind": "assign44_cd03_0310ed03",
-      "bulkHex": "230000180310ed0300d000047036000001000600130000008366cd034b642865826201648317c219631aff00",
+      "bulkKind": "assign44_cd03_8010ed03",
+      "bulkHex": "230000188010ed0300d000047036000001000600130000008366cd034b642865826201648317c219631aff00",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Megaphone",
       "name": "Megaphone",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistBitcrusher",
       "variant": "mono",
       "chainHexHint": "cd0122",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300d40004c336000001000600150000008366cd034c642865826201648317c219cd01221aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300d40004c336000001000600150000008366cd034c642865826201648317c219cd01221aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Bitcrusher",
       "name": "Bitcrusher",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistAmpegScramblerOD",
       "variant": "mono",
       "chainHexHint": "cd0209",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300d800043137000001000600150000008366cd034d642865826201648317c219cd02091aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300d800043137000001000600150000008366cd034d642865826201648317c219cd02091aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Ampeg Scrambler",
       "name": "Ampeg Scrambler",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistZeroAmpBassDI",
       "variant": "mono",
       "chainHexHint": "cd020b",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300dc00047c37000001000600150000008366cd034e642865826201648317c219cd020b1aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300dc00047c37000001000600150000008366cd034e642865826201648317c219cd020b1aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=ZeroAmp Bass DI",
       "name": "ZeroAmp Bass DI",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistRegalBassDI",
       "variant": "mono",
       "chainHexHint": "cd031f",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300e00004d137000001000600150000008366cd034f642865826201648317c219cd031f1aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300e00004d137000001000600150000008366cd034f642865826201648317c219cd031f1aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Regal Bass DI",
       "name": "Regal Bass DI",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistObsidian7000",
       "variant": "mono",
       "chainHexHint": "cd015f",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300e400041838000001000600150000008366cd0350642865826201648317c219cd015f1aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300e400041838000001000600150000008366cd0350642865826201648317c219cd015f1aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Obsidian 7000",
       "name": "Obsidian 7000",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_DistClawthornDrive",
       "variant": "mono",
       "chainHexHint": "cd0171",
-      "bulkKind": "assign48_cd03_0310ed03",
-      "bulkHex": "250000180310ed0300e800047c38000001000600150000008366cd0351642865826201648317c219cd01711aff000000",
+      "bulkKind": "assign48_cd03_8010ed03",
+      "bulkHex": "250000188010ed0300e800047c38000001000600150000008366cd0351642865826201648317c219cd01711aff000000",
       "notes": "Distortions mono recapture 2026-05-04 (03:10:ed:03); name=Clawthorn Drive",
       "name": "Clawthorn Drive",
       "category": "Distortion",
       "subCategory": "Mono",
-      "edOpcode": "0310ed03"
+      "edOpcode": "8010ed03"
     },
     {
       "id": "HD2_CompressorDeluxeComp",
