@@ -478,8 +478,9 @@ fn probe_slot_model_usb(
     let probe_op = match op.trim().to_ascii_lowercase().as_str() {
         "add" | "empty" => SlotModelProbeOp::AddToEmpty,
         "replace" | "change" => SlotModelProbeOp::ReplaceOccupied,
+        "remove" | "delete" | "clear" => SlotModelProbeOp::RemoveFromOccupied,
         other => {
-            return Err(format!("op inconnu: {other} (attendu: add | replace)"));
+            return Err(format!("op inconnu: {other} (attendu: add | replace | remove)"));
         }
     };
     let id_for_log = catalog_model_id

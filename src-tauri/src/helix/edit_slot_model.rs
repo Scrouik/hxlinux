@@ -65,6 +65,8 @@ pub enum SlotModelProbeOp {
     AddToEmpty,
     /// Slot occupé : séquence **`80:10`** + bulk **48 o** `83:66:cd:04` (captures Preset33, mai 2026).
     ReplaceOccupied,
+    /// Slot occupé : suppression du modèle (capture `Delete Model HXEdit.json`, bulk 36 o).
+    RemoveFromOccupied,
 }
 
 /// Bulk « add » 56 octets — `src/Paquets Json/Add model HXEdit.json` frame host #25.
@@ -81,6 +83,13 @@ const REPLACE_MODEL_BULK48_CD04_TEMPLATE: [u8; 48] = [
     0x25, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, 0xd1, 0x00, 0x04, 0x8f, 0x35, 0x00, 0x00,
     0x01, 0x00, 0x06, 0x00, 0x15, 0x00, 0x00, 0x00, 0x83, 0x66, 0xcd, 0x04, 0x00, 0x64, 0x28, 0x65,
     0x82, 0x62, 0x01, 0x64, 0x83, 0x17, 0xc2, 0x19, 0xcd, 0x01, 0xfe, 0x1a, 0xff, 0x00, 0x00, 0x00,
+];
+
+/// Bulk « remove » 36 octets — `Delete Model HXEdit.json` (host OUT, frame 637).
+const REMOVE_MODEL_BULK36_CD03_TEMPLATE: [u8; 36] = [
+    0x1b, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, 0x5c, 0x00, 0x04, 0xbb, 0x2a, 0x00, 0x00,
+    0x01, 0x00, 0x06, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x83, 0x66, 0xcd, 0x03, 0xfa, 0x64, 0x1c, 0x65,
+    0x81, 0x62, 0x04, 0x00,
 ];
 
 fn patch_short_ed03_16(
@@ -113,7 +122,7 @@ fn patch_bulk_header_counters(buf: &mut [u8], seq_x80: u8, ctr: u16) {
 /// Octet du bus slot dans le segment `82 62 **slot** …` (même convention que `live_write`).
 fn patch_slot_bus_in_bulk(buf: &mut [u8], slot_bus: u8) {
     for i in 0..buf.len().saturating_sub(2) {
-        if buf[i] == 0x82 && buf[i + 1] == 0x62 {
+        if (buf[i] == 0x82 || buf[i] == 0x81) && buf[i + 1] == 0x62 {
             buf[i + 2] = slot_bus;
             return;
         }
@@ -400,6 +409,10 @@ pub fn build_slot_model_probe_packets(
             [0x80, 0x10, 0xed, 0x03],
             Cow::Borrowed(&ADD_MODEL_BULK_TEMPLATE[..]),
         ),
+        (SlotModelProbeOp::RemoveFromOccupied, _) => (
+            [0x80, 0x10, 0xed, 0x03],
+            Cow::Borrowed(&REMOVE_MODEL_BULK36_CD03_TEMPLATE[..]),
+        ),
         _ => (
             [0x80, 0x10, 0xed, 0x03],
             Cow::Borrowed(&REPLACE_MODEL_BULK48_CD04_TEMPLATE[..]),
@@ -437,6 +450,14 @@ pub fn build_slot_model_probe_packets(
         );
         packets.push(pre_ef.to_vec());
         packets.push(pre_f0.to_vec());
+    }
+    if !use_json_bulk && matches!(op, SlotModelProbeOp::RemoveFromOccupied) {
+        // Capture remove HX Edit: court `... 00 10 ...` juste avant le bulk.
+        let mut short1 = [0u8; 16];
+        let seq1 = state.next_x80_cnt();
+        let ctr0 = state.live_write_ctr;
+        patch_short_ed03_16(&mut short1, _op_short, 0x10, seq1, ctr0);
+        packets.push(short1.to_vec());
     }
 
     // 1) Bulk (mode "replay strict" pour les captures JSON: pas d'enveloppe courte ajoutée).
@@ -483,25 +504,27 @@ pub fn build_slot_model_probe_packets(
         patch_kempline_lane_after_cd03_or_cd04(&mut bulk, kempline_index);
         patch_slot_bus_in_bulk(&mut bulk, slot_bus);
     }
+    let bulk_len = bulk.len();
     packets.push(bulk);
     if !use_json_bulk {
         // 2) Short 16 — byte11 = 0x08 (clôture post-bulk sur le chemin template historique).
         let ctr0 = state.live_write_ctr;
-        let bulk_len = packets.first().map(|p| p.len()).unwrap_or(0);
         let ctr_delta = if matches!(op, SlotModelProbeOp::ReplaceOccupied) {
             match bulk_len {
                 44 => 0x44u16,
                 48 => 0x3eu16,
                 _ => 0x1fu16,
             }
+        } else if matches!(op, SlotModelProbeOp::RemoveFromOccupied) {
+            // Capture `Delete Model HXEdit.json`: 0x2abb -> 0x2acc (+0x11) entre bulk et court de clôture.
+            0x11u16
         } else {
             0x1f
         };
         let ctr1 = ctr0.wrapping_add(ctr_delta);
         let seq3 = state.next_x80_cnt();
         let mut short2 = [0u8; 16];
-        let op_short = ed_op_from_assign_bulk_prefix(packets.first().map(Vec::as_slice).unwrap_or(&[]));
-        patch_short_ed03_16(&mut short2, op_short, 0x08, seq3, ctr1);
+        patch_short_ed03_16(&mut short2, _op_short, 0x08, seq3, ctr1);
         packets.push(short2.to_vec());
         state.live_write_ctr = state.live_write_ctr.wrapping_add(ctr_delta);
     } else if let Some(b) = packets.first() {

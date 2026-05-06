@@ -976,9 +976,40 @@ function chainValuesSignature(values: ChainParamValueJson[] | null): string {
 
 function clearSlotSelectionVisual() {
   if (selectedParamsSlotEl) {
+    selectedParamsSlotEl
+      .querySelectorAll(".models-slot-remove-btn")
+      .forEach((n) => n.remove());
     selectedParamsSlotEl.classList.remove("node--selected");
     selectedParamsSlotEl = null;
   }
+}
+
+function attachSelectedSlotRemoveButton(el: HTMLElement, slotIndex: number): void {
+  if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex > 15) return;
+  el.querySelectorAll(".models-slot-remove-btn").forEach((n) => n.remove());
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "models-slot-remove-btn";
+  btn.textContent = "×";
+  btn.title = "Supprimer le modèle du slot";
+  btn.setAttribute("aria-label", "Supprimer le modèle du slot");
+  btn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    void (async () => {
+      try {
+        const out = await invoke<string>("probe_slot_model_usb", {
+          op: "remove",
+          slotIndex,
+        });
+        console.info("[SlotModelProbe]", "remove", `slot=${slotIndex}`, out);
+        selectedParamsValuesSig = null;
+      } catch (e) {
+        console.warn("[SlotModelProbe][remove]", e);
+      }
+    })();
+  });
+  el.appendChild(btn);
 }
 
 function tryRestoreSelectedParamsPaneAfterRender(): boolean {
@@ -1139,6 +1170,9 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
     clearSlotSelectionVisual();
     selectedParamsSlotEl = el;
     el.classList.add("node--selected");
+    if (slot !== null && nextSlotIdx !== null) {
+      attachSelectedSlotRemoveButton(el, nextSlotIdx);
+    }
     if (selectedParamsSlotKey !== nextSlotKey) {
       selectedParamsInPlaceUpdater = null;
       selectedParamsInPlaceSlotKey = null;
