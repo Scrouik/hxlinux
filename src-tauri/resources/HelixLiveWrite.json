@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "comment": "Routage write USB live. discrete23DisplayTypes = nombre d’entrées HelixControls.format (captures Ratio, Clipping.json).",
+  "ppDefault": 3,
+  "boolMarkOff": 194,
+  "boolMarkOn": 195,
+  "boolDisplayTypes": ["off_on", "polarity"],
+  "discrete23DisplayTypes": {
+    "comp_ratio": 6,
+    "comp_ratio_3band": 7,
+    "clipping_dist": 3,
+    "clipping_dist_xenofuzz": 2,
+    "clipping_sym": 2,
+    "gain_mod": 2
+  },
+  "allowedFloatValueTypes": [0, 1]
+}

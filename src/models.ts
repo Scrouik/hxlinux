@@ -92,9 +92,31 @@ type PendingLiveWrite = {
   paramIndex: number;
   symbolicId: string;
   displayType: string | null;
+  /** Line 6 `.models` : 2 = booléen (route write `23` côté Rust). */
+  valueType: number | null;
+  /** Valeur chaîne / slider (ex. Ratio 0..5), avant normalisation USB. */
   rawValue: number;
+  /** Si définis et max > min, `write_live_param` / MIDI reçoivent (raw-min)/(max-min) borné à 0..1. */
+  rawMin: number | null;
+  rawMax: number | null;
 };
 const pendingLiveWrites = new Map<string, PendingLiveWrite>();
+
+function liveWriteUsbNormalized01(w: PendingLiveWrite): number {
+  const lo = w.rawMin;
+  const hi = w.rawMax;
+  const v = w.rawValue;
+  if (
+    lo !== null &&
+    hi !== null &&
+    Number.isFinite(lo) &&
+    Number.isFinite(hi) &&
+    hi > lo
+  ) {
+    return Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
+  }
+  return Math.max(0, Math.min(1, v));
+}
 /** Signature `category|name|moduleHex|…` par slot — stable si seuls les paramètres changent sur le HX. */
 let lastHwSyncChainSignature: string | null = null;
 /** Anti-flash: exige deux cycles consécutifs avant rerender complet si la signature change. */
@@ -556,12 +578,22 @@ function scheduleLiveParamWriteProbe(
   const symbolicId = (p.symbolicID ?? "").trim();
   if (!symbolicId) return;
   const key = `${slotIndex}:${symbolicId}:${paramIndex}`;
+  const vtRaw = p.valueType;
+  const valueType =
+    vtRaw !== undefined && vtRaw !== null && Number.isFinite(Number(vtRaw))
+      ? Number(vtRaw)
+      : null;
+  const rawMin = typeof p.min === "number" && Number.isFinite(p.min) ? p.min : null;
+  const rawMax = typeof p.max === "number" && Number.isFinite(p.max) ? p.max : null;
   pendingLiveWrites.set(key, {
     slotIndex,
     paramIndex,
     symbolicId,
     displayType: (p.displayType ?? "").trim() || null,
+    valueType,
     rawValue,
+    rawMin,
+    rawMax,
   });
 }
 
@@ -587,7 +619,7 @@ async function flushPendingLiveWrites(): Promise<boolean> {
           paramIndex: w.paramIndex,
           symbolicId: w.symbolicId,
           displayType: w.displayType,
-          rawValue: w.rawValue,
+          rawValue: liveWriteUsbNormalized01(w),
           midiChannel: liveWriteMidiChannel(),
           ccNumber: liveWriteMidiCcNumber(),
         });
@@ -597,11 +629,15 @@ async function flushPendingLiveWrites(): Promise<boolean> {
           paramIndex: w.paramIndex,
           symbolicId: w.symbolicId,
           displayType: w.displayType,
-          rawValue: w.rawValue,
+          valueType: w.valueType,
+          rawValue: liveWriteUsbNormalized01(w),
+          chainMin: w.rawMin ?? undefined,
+          chainMax: w.rawMax ?? undefined,
         });
       }
-    } catch {
-      // Mode expérimental : ne pas casser l'UI en cas d'erreur backend.
+    } catch (e) {
+      // Mode expérimental : ne pas casser l'UI ; journaliser refus sécurité (ex. valueType non géré USB).
+      console.warn("[LiveWrite]", e);
     }
   }
   return true;
@@ -2049,49 +2085,6 @@ function isOffOnDisplayType(displayType: string | undefined): boolean {
   return t === "off_on";
 }
 
-function boolToggleLabels(
-  p: ModelParamDefJson,
-  helixControlsMap?: Map<string, HelixControlDefJson>,
-): [string, string] {
-  const dt = (p.displayType ?? "").trim();
-  const def = dt ? helixControlsMap?.get(dt) : undefined;
-  const fmt = def?.format;
-  if (Array.isArray(fmt) && fmt.length >= 2 && typeof fmt[0] === "string" && typeof fmt[1] === "string") {
-    return [fmt[0] as string, fmt[1] as string];
-  }
-  return ["Off", "On"];
-}
-
-type TriToggleItem = { raw: number; label: string };
-
-function triToggleItems(
-  p: ModelParamDefJson,
-  cv: ChainParamValueJson | undefined,
-  helixControlsMap: Map<string, HelixControlDefJson> | undefined,
-  minN: number | boolean | undefined,
-  maxN: number | boolean | undefined,
-): TriToggleItem[] | null {
-  if (typeof cv !== "number" || !Number.isFinite(cv)) return null;
-  if (typeof minN !== "number" || typeof maxN !== "number") return null;
-  if (!Number.isFinite(minN) || !Number.isFinite(maxN) || maxN < minN) return null;
-  const minI = Math.round(minN);
-  const maxI = Math.round(maxN);
-  if (maxI - minI !== 2) return null;
-  // Tri-toggle réservé aux valeurs discrètes entières.
-  if (Math.abs(cv - Math.round(cv)) > 1e-6) return null;
-  const dt = (p.displayType ?? "").trim();
-  const def = dt ? helixControlsMap?.get(dt) : undefined;
-  const labels = helixStringFormatLabels(def);
-  const items: TriToggleItem[] = [];
-  for (let i = minI; i <= maxI; i += 1) {
-    const byRaw = labels?.[i];
-    const byOffset = labels?.[i - minI];
-    const label = typeof byRaw === "string" ? byRaw : typeof byOffset === "string" ? byOffset : String(i);
-    items.push({ raw: i, label });
-  }
-  return items;
-}
-
 function isPolarityDisplayType(displayType: string | undefined): boolean {
   return (displayType ?? "").trim().toLowerCase() === "polarity";
 }
@@ -2447,60 +2440,7 @@ function appendModelsParamRows(
         syncMicCombo(String(nextI));
       };
     } else {
-      const triItems = triToggleItems(p, cv, helixControlsMap, minN, maxN);
-      if (triItems !== null) {
-        sliderCell.classList.add("models-params-slider-cell--segment-only");
-        let current = Math.round(cv as number);
-        current = Math.max(triItems[0].raw, Math.min(triItems[triItems.length - 1].raw, current));
-        const rowWrap = document.createElement("div");
-        rowWrap.className = "models-params-bool-toggle";
-        const paramLabel = `${(p.name || p.symbolicID || "").trim()} — aperçu local${ariaScopeLabel}, non envoyé au Helix`;
-        const buttons: HTMLButtonElement[] = [];
-        const syncButtons = (): void => {
-          for (let i = 0; i < triItems.length; i += 1) {
-            const item = triItems[i];
-            buttons[i].classList.toggle("models-params-bool-btn--selected", item.raw === current);
-          }
-        };
-        const applyValue = (nextRaw: number): void => {
-          current = nextRaw;
-          chainEl.textContent = formatChainParamValueJson(current, p, helixControlsMap);
-          const s = formatRawChainParamValueJson(current);
-          li.title = s;
-          sliderCell.title = s;
-          syncButtons();
-          if (liveWriteProbeEnabled() && liveWriteEnabled()) {
-            markLiveWriteUiInteraction();
-          }
-          scheduleLiveParamWriteProbe(liveWriteSlotIndex, j, p, current);
-        };
-        for (const item of triItems) {
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = "models-params-bool-btn";
-          btn.textContent = item.label;
-          btn.setAttribute("aria-label", `${paramLabel} : ${item.label}`);
-          btn.addEventListener("click", () => {
-            if (item.raw === current) return;
-            applyValue(item.raw);
-          });
-          buttons.push(btn);
-          rowWrap.appendChild(btn);
-        }
-        syncButtons();
-        sliderCell.append(rowWrap);
-        rowValueUpdaters[j] = (nextCv) => {
-          if (typeof nextCv !== "number" || !Number.isFinite(nextCv)) return;
-          const nextI = Math.round(nextCv);
-          if (nextI < triItems[0].raw || nextI > triItems[triItems.length - 1].raw) return;
-          current = nextI;
-          chainEl.textContent = formatChainParamValueJson(current, p, helixControlsMap);
-          const s = formatRawChainParamValueJson(current);
-          li.title = s;
-          sliderCell.title = s;
-          syncButtons();
-        };
-      } else if (canSlider) {
+      if (canSlider) {
       sliderCell.append(chainEl);
       const dt = (p.displayType ?? "").trim();
       const helixDef =
@@ -2508,6 +2448,9 @@ function appendModelsParamRows(
       let inc = helixDef ? helixRawIncrementFromStep(cv, helixDef) : null;
       if (inc === null || !Number.isFinite(inc) || inc <= 0) {
         inc = fallbackRawIncrement(p, minN, maxN);
+      }
+      if (p.valueType === 0) {
+        inc = Math.max(1, Math.round(inc));
       }
       if (
         (dt === "split_ab_route_to" || dt === "split_balance" || dt === "pan") &&
@@ -2566,66 +2509,55 @@ function appendModelsParamRows(
         input.title = s;
       };
       } else if (cv !== undefined && canModelsParamsBoolToggle(p, cv)) {
-      sliderCell.classList.add("models-params-slider-cell--segment-only");
+      sliderCell.append(chainEl);
       let currentB = chainValueAsBool(cv)!;
-      const [labOff, labOn] = boolToggleLabels(p, helixControlsMap);
-      const rowWrap = document.createElement("div");
-      rowWrap.className = "models-params-bool-toggle";
-      const bOff = document.createElement("button");
-      bOff.type = "button";
-      bOff.className = "models-params-bool-btn";
-      bOff.textContent = labOff;
-      const bOn = document.createElement("button");
-      bOn.type = "button";
-      bOn.className = "models-params-bool-btn";
-      bOn.textContent = labOn;
-      const paramLabel = `${(p.name || p.symbolicID || "").trim()} — aperçu local${ariaScopeLabel}, non envoyé au Helix`;
-      bOff.setAttribute("aria-label", `${paramLabel} : ${labOff}`);
-      bOn.setAttribute("aria-label", `${paramLabel} : ${labOn}`);
-      const syncButtons = (): void => {
-        bOff.classList.toggle("models-params-bool-btn--selected", !currentB);
-        bOn.classList.toggle("models-params-bool-btn--selected", currentB);
-      };
+      const input = document.createElement("input");
+      input.type = "range";
+      input.className = "models-params-slider";
+      input.min = "0";
+      input.max = "1";
+      input.step = "1";
+      input.value = currentB ? "1" : "0";
+      input.title = hoverTitleStr;
+      input.setAttribute(
+        "aria-label",
+        `${(p.name || p.symbolicID || "").trim()} — aperçu local${ariaScopeLabel}, non envoyé au Helix`,
+      );
       const isEqMaster = (p.symbolicID ?? "").trim() === "EQ";
-      const applyBool = (nextB: boolean): void => {
+      /** Sync hardware / in-place uniquement : ne pas ré-enfiler de write USB. */
+      const applyBool = (nextB: boolean, syncInput = true): void => {
         currentB = nextB;
         const v: ChainParamValueJson = typeof cv === "boolean" ? nextB : nextB ? 1 : 0;
+        if (syncInput) input.value = nextB ? "1" : "0";
         chainEl.textContent = formatChainParamValueJson(v, p, helixControlsMap);
-        const s = formatRawChainParamValueJson(v);
+        const s = paramSliderHoverTitle(v, p, helixControlsMap);
         li.title = s;
         sliderCell.title = s;
-        syncButtons();
+        input.title = s;
         // Même contrainte CSS que pour `li.hidden` à l’init (docblock `eqSwitchDisplayedOn`).
         if (isEqMaster) {
           for (const node of list.querySelectorAll("li[data-models-eq-band]")) {
             if (node instanceof HTMLLIElement) node.hidden = !nextB;
           }
         }
+      };
+      /** Write live seulement depuis le geste utilisateur (comme les sliders float). */
+      const applyBoolFromUserInput = (nextB: boolean): void => {
+        applyBool(nextB, false);
         if (liveWriteProbeEnabled() && liveWriteEnabled()) {
           markLiveWriteUiInteraction();
         }
         scheduleLiveParamWriteProbe(liveWriteSlotIndex, j, p, nextB ? 1 : 0);
       };
-      bOff.addEventListener("click", () => {
-        if (!currentB) return;
-        applyBool(false);
+      input.addEventListener("input", () => {
+        const nextB = Number(input.value) >= 0.5;
+        if (nextB === currentB) return;
+        applyBoolFromUserInput(nextB);
       });
-      bOn.addEventListener("click", () => {
-        if (currentB) return;
-        applyBool(true);
-      });
-      syncButtons();
-      rowWrap.append(bOff, bOn);
-      sliderCell.append(rowWrap);
+      sliderCell.append(input);
       rowValueUpdaters[j] = (nextCv) => {
         if (!canModelsParamsBoolToggle(p, nextCv)) return;
-        currentB = chainValueAsBool(nextCv)!;
-        const v: ChainParamValueJson = typeof nextCv === "boolean" ? currentB : currentB ? 1 : 0;
-        chainEl.textContent = formatChainParamValueJson(v, p, helixControlsMap);
-        const s = formatRawChainParamValueJson(v);
-        li.title = s;
-        sliderCell.title = s;
-        syncButtons();
+        applyBool(chainValueAsBool(nextCv)!, true);
         if (isEqMaster) {
           for (const node of list.querySelectorAll("li[data-models-eq-band]")) {
             if (node instanceof HTMLLIElement) node.hidden = !currentB;

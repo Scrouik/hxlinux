@@ -36,6 +36,7 @@ use helix::{
 };
 use helix::packet::OutPacket;
 use helix::live_write::build_live_write_frames_from_state;
+use helix::live_write_config::validate_usb_live_write_metadata;
 use helix::edit_slot_model::{
     build_slot_model_probe_packets, change_model_hxedit_replace_test_bulk,
     resolve_catalog_model_chain_bytes, resolve_usb_assign_bulk, slot_probe_use_change_model_test_bulk,
@@ -638,8 +639,8 @@ fn write_live_param_midi_cc(
     Ok(())
 }
 
-/// Sonde d'écriture live (expérimental, sans envoi USB pour l'instant).
-/// Déclenchée côté UI quand `localStorage.models_live_write_probe === "1"`.
+/// Sonde d'écriture live : **log uniquement**, aucun paquet USB (contraste avec `write_live_param`).
+/// Déclenchée côté UI quand `models_live_write_probe === "1"` et write non activé.
 #[tauri::command]
 fn probe_live_param_write(
     state: tauri::State<Arc<Mutex<AppState>>>,
@@ -662,8 +663,6 @@ fn probe_live_param_write(
     if !has_hx {
         return Err("HX non connecté".to_string());
     }
-    // Étape A: instrumentation uniquement (pipeline UI -> backend).
-    // La synthèse/envoi du paquet live sera branchée après capture USB HX Edit.
     eprintln!(
         "[LiveWriteProbe] slot={} param={} symbolicId={} displayType={} rawValue={}",
         slot_index,
@@ -675,8 +674,11 @@ fn probe_live_param_write(
     Ok(())
 }
 
-/// Écriture live (expérimental) : pipeline UI -> backend prêt pour la synthèse paquet USB.
-/// Actuellement, cette commande journalise les paramètres validés.
+/// Écriture live USB paramètre : **seul** chemin d’envoi « valeur bloc » depuis le panneau models
+/// (bool → trame `23`, float → `27` ; voir `helix/live_write.rs` + `HelixLiveWrite.json`).
+/// Alternative : `write_live_param_midi_cc` si transport `midi_cc`. **Ne pas** dupliquer d’envoi ED03 ailleurs pour ce cas d’usage.
+/// `value_type` : Line 6 `.models` (ex. 2 = bool) — route `23` vs `27`.
+/// `chain_min` / `chain_max` : `.models` min/max ; 2ᵉ jambe float `27` = valeur physique (ex. dB) si les deux sont fournis et max > min.
 #[tauri::command]
 fn write_live_param(
     state: tauri::State<Arc<Mutex<AppState>>>,
@@ -684,7 +686,10 @@ fn write_live_param(
     param_index: u32,
     symbolic_id: String,
     display_type: Option<String>,
+    value_type: Option<i32>,
     raw_value: f64,
+    chain_min: Option<f64>,
+    chain_max: Option<f64>,
 ) -> Result<(), String> {
     if slot_index >= 16 {
         return Err("slotIndex hors plage (0..15)".to_string());
@@ -699,6 +704,10 @@ fn write_live_param(
     let helix_arc = helix_arc.ok_or("HX non connecté")?;
 
     let sid = symbolic_id.trim();
+    let dt = display_type.as_deref().map(str::trim);
+    let vt = value_type;
+
+    validate_usb_live_write_metadata(dt, vt)?;
 
     // Utilise la valeur réelle du slider, bornée dans l'intervalle machine attendu.
     let raw = raw_value.clamp(0.0, 1.0) as f32;
@@ -706,7 +715,17 @@ fn write_live_param(
     // Cette construction est déléguée à `helix/live_write.rs` pour itérer
     // rapidement sur le protocole reverse-engineered sans gonfler `lib.rs`.
     let mut s = helix_arc.lock().unwrap();
-    let frames = build_live_write_frames_from_state(&mut s, raw, slot_index, param_index, sid);
+    let frames = build_live_write_frames_from_state(
+        &mut s,
+        raw,
+        slot_index,
+        param_index,
+        sid,
+        dt,
+        vt,
+        chain_min,
+        chain_max,
+    );
 
     s.send(OutPacket::new(frames.pre_packet_x80.clone()));
     s.send(OutPacket::with_delay(frames.pre_packet_x2.clone(), 4));
@@ -718,14 +737,25 @@ fn write_live_param(
 
     drop(s);
 
+    let leg_b = match (chain_min, chain_max) {
+        (Some(lo), Some(hi)) if hi > lo && lo.is_finite() && hi.is_finite() => {
+            lo + f64::from(raw) * (hi - lo)
+        }
+        _ => f64::from(raw),
+    };
     eprintln!(
-        "[LiveWrite][sent] slot={} param={} symbolicId={} displayType={} rawValue={} sentRaw={} slotBus={:02x} pp={:02x} ppSource={} pSel={:02x} pSelSource={} model_block={} frame27_diff={} pre_x80={} pre_x2={} pre_x80_sel={} frame27_a={} frame27_b={} post_x80_sel={}",
+        "[LiveWrite][sent] slot={} param={} symbolicId={} displayType={} valueType={:?} opcode={:02x} rawValue={} sentRaw={} legBChain={} chainMin={:?} chainMax={:?} slotBus={:02x} pp={:02x} ppSource={} pSel={:02x} pSelSource={} model_block={} frame_diff={} pre_x80={} pre_x2={} pre_x80_sel={} frame_a={} frame_b={} post_x80_sel={}",
         slot_index,
         param_index,
         sid,
         display_type.unwrap_or_default(),
+        value_type,
+        frames.primary_opcode,
         raw_value,
         raw,
+        leg_b,
+        chain_min,
+        chain_max,
         frames.slot_bus,
         frames.pp,
         frames.pp_source,
