@@ -365,7 +365,7 @@ fn patch_catalog_chain_into_bulk(bulk: &mut [u8], chain: &[u8]) -> bool {
 /// 2. Bulk modèle (template capture + `slot_bus` + compteurs).
 /// 3. ED03 court `… 00 08 …` (clôture observée après le bulk).
 ///
-/// Si `usb_assign_full_bulk` est fourni (**Replace** uniquement), les courts 16 o reprennent les
+/// Si `usb_assign_full_bulk` est fourni (Add ou Replace), les courts 16 o reprennent les
 /// octets ED du bulk (`80 10` vs `03 10`) et le corps est celui du JSON (captures Preset33) —
 /// pas de fusion `chainHex` court catalogue.
 pub fn build_slot_model_probe_packets(
@@ -395,9 +395,7 @@ pub fn build_slot_model_probe_packets(
     let mut packets: Vec<Vec<u8>> = Vec::new();
 
     let (_op_short, bulk_template): ([u8; 4], Cow<'_, [u8]>) = match (op, usb_assign_full_bulk) {
-        (SlotModelProbeOp::ReplaceOccupied, Some(b)) if b.len() >= 32 => {
-            (ed_op_from_assign_bulk_prefix(b), Cow::Borrowed(b))
-        }
+        (_, Some(b)) if b.len() >= 32 => (ed_op_from_assign_bulk_prefix(b), Cow::Borrowed(b)),
         (SlotModelProbeOp::AddToEmpty, _) => (
             [0x80, 0x10, 0xed, 0x03],
             Cow::Borrowed(&ADD_MODEL_BULK_TEMPLATE[..]),
@@ -408,10 +406,7 @@ pub fn build_slot_model_probe_packets(
         ),
     };
 
-    let use_json_replace = matches!(
-        (op, usb_assign_full_bulk),
-        (SlotModelProbeOp::ReplaceOccupied, Some(b)) if b.len() >= 32
-    );
+    let use_json_bulk = matches!(usb_assign_full_bulk, Some(b) if b.len() >= 32);
 
     // Plus de routage conditionnel par opcode ED03 (0310/8010) sur le chemin JSON:
     // on garde une seule cinématique de sonde pour éviter les faux diagnostics.
@@ -419,7 +414,7 @@ pub fn build_slot_model_probe_packets(
     // Préambule unifié: deux courts de contexte (ef puis f0) avant le bulk.
     // Cela évite les transitions de session "bloquées" après un envoi 0310 qui
     // peuvent ensuite faire ignorer les bulks 8010 (et inversement).
-    if use_json_replace {
+    if use_json_bulk {
         let mut pre_ef = [0u8; 16];
         let mut pre_f0 = [0u8; 16];
         let ctr0 = state.live_write_ctr;
@@ -446,7 +441,7 @@ pub fn build_slot_model_probe_packets(
 
     // 1) Bulk (mode "replay strict" pour les captures JSON: pas d'enveloppe courte ajoutée).
     let mut bulk = bulk_template.to_vec();
-    if use_json_replace {
+    if use_json_bulk {
         // Chemin JSON unifié:
         // - patch runtime seq/ctr pour éviter les compteurs figés de capture,
         // - lane séquentiel quand un marqueur `83 66 cd 03|04` est présent.
@@ -465,7 +460,7 @@ pub fn build_slot_model_probe_packets(
         patch_bulk_header_counters(&mut bulk, seq2, ctr0);
     }
     patch_slot_bus_in_bulk(&mut bulk, slot_bus);
-    if use_json_replace {
+    if use_json_bulk {
         // IMPORTANT: pour un bulk capturé depuis `HX_ModelUsbAssign.json`, on ne doit PAS
         // réécrire l'octet qui suit `83 66 cd 04`.
         // Sur les captures mono complètes, cet octet suit une progression de session
@@ -489,7 +484,7 @@ pub fn build_slot_model_probe_packets(
         patch_slot_bus_in_bulk(&mut bulk, slot_bus);
     }
     packets.push(bulk);
-    if !use_json_replace {
+    if !use_json_bulk {
         // 2) Short 16 — byte11 = 0x08 (clôture post-bulk sur le chemin template historique).
         let ctr0 = state.live_write_ctr;
         let bulk_len = packets.first().map(|p| p.len()).unwrap_or(0);

@@ -7,6 +7,7 @@ import {
   formatSubCategoryForHeader,
   getCatalogModelIdForHex,
   getCatalogModelImageForId,
+  getCatalogModelNameForId,
   getCatalogParamOrderForId,
   getUsbAssignPickerData,
   getPresetMetaForId,
@@ -65,6 +66,8 @@ const LIVE_WRITE_MIDI_CHANNEL_KEY = "models_live_midi_channel";
 const LIVE_WRITE_SYNC_PAUSE_MS = 1200;
 const HW_SYNC_INTERVAL_MS_KEY = "models_hw_sync_interval_ms";
 const DEBUG_HW_SLOT_SYNC_FLAG = "models_debug_hw_slot_sync";
+/** Log console lorsque le `moduleHex` d’un slot change après sync USB (jointure catalogue). */
+const DEBUG_CATALOG_CHAINHEX_FLAG = "models_debug_catalog_chainhex";
 const HW_SYNC_MIN_MS = 100;
 const HW_SYNC_MAX_MS = 5000;
 const REQUEST_PRESET_MIN_GAP_MS = 320;
@@ -108,6 +111,8 @@ let pendingHardwareSelectedSlotBus: number | null = null;
 let suppressNextUiSlotHardwareSwitch = false;
 let lastUserHwSlotSwitchAt = 0;
 let lastUserHwSlotSwitchIndex: number | null = null;
+let lastCatalogChainHexSnapshotPresetIndex = -1;
+let lastCatalogChainHexBySlot: string[] | null = null;
 
 function hwSlotDebugEnabled(): boolean {
   return localStorage.getItem(DEBUG_HW_SLOT_SYNC_FLAG) === "1";
@@ -116,6 +121,52 @@ function hwSlotDebugEnabled(): boolean {
 function hwSlotDebugLog(message: string): void {
   if (!hwSlotDebugEnabled()) return;
   console.log(`[HwSlotSync] ${message}`);
+}
+
+function catalogChainHexLogEnabled(): boolean {
+  return localStorage.getItem(DEBUG_CATALOG_CHAINHEX_FLAG) === "1";
+}
+
+/** Même texte que l’ancien `console.log` : le backend le réaffiche via `eprintln!` (terminal `tauri dev`). */
+async function emitCatalogChainHexToTerminal(line: string): Promise<void> {
+  try {
+    await invoke("log_frontend_message", { message: line });
+  } catch {
+    console.log(line);
+  }
+}
+
+/**
+ * Quand le matériel change de modèle dans un slot, le prochain `request_preset_content` + parse
+ * met à jour `moduleHex`. On journalise `chainHex` (hardware) et `Name` (entrée HX_ModelCatalog.json via byHex).
+ */
+async function logCatalogChainHexDiffIfNeeded(slots: SlotDebug[], presetIndex: number): Promise<void> {
+  if (!catalogChainHexLogEnabled()) return;
+  const next = slots.map((s) => (s.moduleHex ?? "").trim().toLowerCase());
+  if (presetIndex !== lastCatalogChainHexSnapshotPresetIndex) {
+    lastCatalogChainHexSnapshotPresetIndex = presetIndex;
+    lastCatalogChainHexBySlot = next;
+    return;
+  }
+  const prev = lastCatalogChainHexBySlot;
+  lastCatalogChainHexBySlot = next;
+  if (prev === null) return;
+  const max = Math.max(prev.length, next.length);
+  for (let i = 0; i < max; i += 1) {
+    const chainHex = next[i] ?? "";
+    const was = prev[i] ?? "";
+    if (chainHex === was) continue;
+    let name = "";
+    if (chainHex) {
+      const id = await getCatalogModelIdForHex(chainHex);
+      if (id) {
+        const nm = await getCatalogModelNameForId(id);
+        name = (nm ?? "").trim();
+      }
+    }
+    const line = `[CatalogChainHex] preset=${presetIndex} kemplineSlot=${i} chainHex = "${chainHex}" - Name = "${name}"`;
+    await emitCatalogChainHexToTerminal(line);
+  }
 }
 
 function getHardwareSyncIntervalMs(): number {
@@ -336,6 +387,8 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
         presetLabelEl.textContent = `${padNum(deviceActive)} ${displayName}`;
       }
     }
+
+    await logCatalogChainHexDiffIfNeeded(normalized, presetIdx);
 
     let hwSlotState: HardwareActiveSlotState | null = null;
     try {
@@ -1061,7 +1114,18 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
     if (slot === null) {
       suppressNextUiSlotHardwareSwitch = false;
       clearSlotSelectionVisual();
-      clearSelectedParamsContext();
+      selectedParamsSlotEl = el;
+      el.classList.add("node--selected");
+      const kRaw = el.dataset.kemplineSlotIndex;
+      const kemplineSlotIndex =
+        kRaw !== undefined && kRaw !== "" ? Number.parseInt(kRaw, 10) : undefined;
+      const ki = Number.isFinite(kemplineSlotIndex) ? (kemplineSlotIndex as number) : null;
+      selectedParamsSlotKey = ki !== null ? `empty|${ki}` : "empty";
+      selectedParamsKemplineSlotIndex = ki;
+      selectedParamsPresetIndex = currentPresetIndex;
+      selectedParamsValuesSig = null;
+      selectedParamsInPlaceUpdater = null;
+      selectedParamsInPlaceSlotKey = null;
       clearModelsParamsPaneContent();
       return;
     }
@@ -3915,8 +3979,8 @@ function makeMatrixCategoryCell(slot: SlotDebug): HTMLElement {
   el.className = "hx-matrix-category";
   const empty = !slot.category && slot.name === "<empty>";
   if (empty) {
-    el.textContent = "empty";
-    el.title = "empty";
+    el.textContent = "";
+    el.removeAttribute("title");
     return el;
   }
   const cat = slot.category.trim();
@@ -4500,6 +4564,7 @@ async function requestLoadForPreset(index: number) {
               // best effort : si l'invoke échoue, le fallback 240ms prend le relais
             }
           }
+          await logCatalogChainHexDiffIfNeeded(normalizedSlots, index);
           await renderSlots(normalizedSlots, routingFlow, stompLayout);
           rememberHwSyncChainLayout(normalizedSlots);
           const realBlocks = countRealBlocks(normalizedSlots);

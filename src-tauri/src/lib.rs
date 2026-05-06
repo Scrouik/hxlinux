@@ -460,7 +460,7 @@ fn switch_active_hardware_slot(
 /// `src/Paquets Json/Change Model HXEdit.json` (même comportement que les premiers tests UI).
 /// Sinon `catalogModelId` sert à la fusion **chainHex long** (`83 66 cd …`) comme avant.
 /// Sans `catalogModelId` en **replace**, le bulk reste le template embarqué (sonde seule).
-/// Avec `catalogModelId` en **replace**, une entrée JSON est **requise** (plus de repli sur le
+/// Avec `catalogModelId`, une entrée JSON est **requise** (plus de repli sur le
 /// template unique type `cd01fe` pour tout le catalogue), sauf si la variable de test ci-dessus est active.
 #[tauri::command]
 fn probe_slot_model_usb(
@@ -503,9 +503,8 @@ fn probe_slot_model_usb(
     };
 
     // Ne plus envoyer le template fixe (ex. `cd01fe`) pour tout le catalogue : si l’utilisateur
-    // choisit un modèle (`replace` + id) sans entrée `HX_ModelUsbAssign.json`, on refuse.
-    if matches!(probe_op, SlotModelProbeOp::ReplaceOccupied)
-        && id_for_log.is_some()
+    // choisit un modèle (add/replace + id) sans entrée `HX_ModelUsbAssign.json`, on refuse.
+    if id_for_log.is_some()
         && usb_bulk_from_json.is_none()
         && !use_change_model_test_bulk
     {
