@@ -1519,6 +1519,14 @@ html, body {
   border-width: 1px;
 }
 
+/* Slot vide sélectionné: forcer un cadre orange visible, icône ou non. */
+.models-pane .hx-matrix-cell > .node.node--hx-slot.node-empty.node--selected {
+  border-color: var(--amber) !important;
+  border-style: solid;
+  border-width: 1px;
+  box-shadow: inset 0 0 0 2px var(--amber), 0 0 0 1px var(--amber);
+}
+
 /* Matrice 4×20 : L1 Path 1, L2 Description Path 1, L3 Path 2, L4 Description Path 2 ; col 20 = n° ligne (debug). */
 .models-pane .hx-matrix-grid {
   --hx-matrix-cell: 56px;
@@ -1704,6 +1712,12 @@ html, body {
 
 .models-pane .hx-matrix-cell > .node.node--hx-slot.node--icon-only {
   padding: 0;
+}
+
+/* Highlight de sélection robuste pour toute cellule slot en matrice (vide ou non). */
+.models-pane .hx-matrix-cell > .node.node--hx-slot.node--selected {
+  outline: 2px solid var(--amber) !important;
+  outline-offset: -2px;
 }
 
 /* Slot vide matrice : occupe toute la case pour hauteur identique aux blocs avec icône. */

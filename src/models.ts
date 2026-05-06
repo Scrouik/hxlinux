@@ -482,6 +482,15 @@ async function softRefreshParamsPaneFromSlots(slots: SlotDebug[]): Promise<void>
   if (idx === null || idx < 0 || idx >= slots.length) return;
   const slot = slots[idx];
   if (!slot) return;
+  if (isEmptyGridCell(slot)) {
+    const nextSig = `${currentPresetIndex}|${idx}|empty`;
+    if (selectedParamsValuesSig === nextSig) return;
+    selectedParamsInPlaceUpdater = null;
+    selectedParamsInPlaceSlotKey = null;
+    clearModelsParamsPaneContent();
+    selectedParamsValuesSig = nextSig;
+    return;
+  }
   const chainValues = await fetchSlotChainParamValuesReliable(idx, null, { maxAttempts: 3 });
   const nextSig = `${currentPresetIndex}|${idx}|${chainValuesSignature(chainValues)}`;
   if (selectedParamsValuesSig === nextSig) return;
@@ -700,7 +709,11 @@ async function applySlotModelFromPickerListClick(
     return;
   }
   if (selectedParamsPresetIndex !== currentPresetIndex) return;
+  const selectedKey = selectedParamsSlotKey ?? "";
+  const selectedEmptyKey = `empty|${ki}`;
+  const isExplicitEmptySelection = selectedKey === selectedEmptyKey;
   const occupied =
+    !isExplicitEmptySelection &&
     selectedParamsSlotEl !== null &&
     !selectedParamsSlotEl.classList.contains("node-empty");
   const op = occupied ? "replace" : "add";
@@ -1111,34 +1124,21 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
       window.clearTimeout(autoSelectFallbackTimer);
       autoSelectFallbackTimer = null;
     }
-    if (slot === null) {
-      suppressNextUiSlotHardwareSwitch = false;
-      clearSlotSelectionVisual();
-      selectedParamsSlotEl = el;
-      el.classList.add("node--selected");
-      const kRaw = el.dataset.kemplineSlotIndex;
-      const kemplineSlotIndex =
-        kRaw !== undefined && kRaw !== "" ? Number.parseInt(kRaw, 10) : undefined;
-      const ki = Number.isFinite(kemplineSlotIndex) ? (kemplineSlotIndex as number) : null;
-      selectedParamsSlotKey = ki !== null ? `empty|${ki}` : "empty";
-      selectedParamsKemplineSlotIndex = ki;
-      selectedParamsPresetIndex = currentPresetIndex;
-      selectedParamsValuesSig = null;
-      selectedParamsInPlaceUpdater = null;
-      selectedParamsInPlaceSlotKey = null;
-      clearModelsParamsPaneContent();
-      return;
-    }
-    clearSlotSelectionVisual();
-    selectedParamsSlotEl = el;
-    el.classList.add("node--selected");
     const kRaw = el.dataset.kemplineSlotIndex;
     const kemplineSlotIndex =
       kRaw !== undefined && kRaw !== "" ? Number.parseInt(kRaw, 10) : undefined;
-    const nextSlotKey = makeSlotSelectionKey(
-      slot,
-      Number.isFinite(kemplineSlotIndex) ? kemplineSlotIndex : undefined,
-    );
+    const nextSlotIdx = Number.isFinite(kemplineSlotIndex) ? (kemplineSlotIndex as number) : null;
+    const nextSlotKey =
+      slot === null
+        ? (nextSlotIdx !== null ? `empty|${nextSlotIdx}` : "empty")
+        : makeSlotSelectionKey(
+            slot,
+            Number.isFinite(kemplineSlotIndex) ? kemplineSlotIndex : undefined,
+          );
+
+    clearSlotSelectionVisual();
+    selectedParamsSlotEl = el;
+    el.classList.add("node--selected");
     if (selectedParamsSlotKey !== nextSlotKey) {
       selectedParamsInPlaceUpdater = null;
       selectedParamsInPlaceSlotKey = null;
@@ -1150,7 +1150,6 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
     selectedParamsPresetIndex = currentPresetIndex;
     selectedParamsValuesSig = null;
     const now = Date.now();
-    const nextSlotIdx = Number.isFinite(kemplineSlotIndex) ? (kemplineSlotIndex as number) : null;
     const tooSoon = now - lastUserHwSlotSwitchAt < 120;
     const duplicate = nextSlotIdx !== null && lastUserHwSlotSwitchIndex === nextSlotIdx && tooSoon;
     const shouldSwitchHardware =
@@ -1169,6 +1168,11 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
       }).catch((e) => {
         console.warn("[HwSlotSync] switch_active_hardware_slot error", e);
       });
+    }
+    if (slot === null) {
+      suppressNextUiSlotHardwareSwitch = false;
+      clearModelsParamsPaneContent();
+      return;
     }
     void loadAndShowModelsParamsForSlot(
       slot,
@@ -4186,7 +4190,10 @@ function renderGrid16(
           if (rk === "split") inner.dataset.hwSlotBus = "10";
           else if (rk === "merge") inner.dataset.hwSlotBus = "19";
           // Frontière 0: séparateur immédiatement après l'Input (Path 1).
-          bindSlotParamsInteraction(inner, path1SeparatorSlot(0, rk, rk === "split" ? splitEntry : undefined));
+          bindSlotParamsInteraction(
+            inner,
+            rk === null ? null : path1SeparatorSlot(0, rk, rk === "split" ? splitEntry : undefined),
+          );
         }
       } else if (col === 19) {
         if (row === LINE_PATH_1) {
@@ -4221,11 +4228,13 @@ function renderGrid16(
           // Étape 1 UX: tous les séparateurs Path 1 sont cliquables comme les slots.
           bindSlotParamsInteraction(
             inner,
-            path1SeparatorSlot(
-              boundary,
-              rk,
-              rk === "split" ? splitEntry : rk === "merge" ? mergeEntry : undefined,
-            ),
+            rk === null
+              ? null
+              : path1SeparatorSlot(
+                  boundary,
+                  rk,
+                  rk === "split" ? splitEntry : rk === "merge" ? mergeEntry : undefined,
+                ),
           );
         } else if (row === LINE_PATH_2 && hasBranchB && j >= 0 && j <= 7) {
           // Path 2 (L3): réafficher `Icons_line.png` entre split et merge.
