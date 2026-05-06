@@ -2152,10 +2152,9 @@ function filterParamsByCatalogOrder(
   params: ModelParamDefJson[],
   catalogParamOrder: string[] | null | undefined,
 ): ModelParamDefJson[] {
-  const order = catalogParamOrder ?? [];
-  if (order.length === 0) return params;
-  const allowed = new Set(order.map((x) => x.trim()).filter(Boolean));
-  return params.filter((p) => allowed.has((p.symbolicID ?? "").trim()));
+  void catalogParamOrder;
+  // Source de vérité UI: le fichier `.models`.
+  return params;
 }
 
 /**
@@ -2172,6 +2171,7 @@ function alignChainValuesToModelParamOrder(
   catalogParamOrder?: string[] | null,
 ): Array<ChainParamValueJson | undefined> | null | undefined {
   if (chainValues == null) return chainValues;
+  void catalogParamOrder;
   const signal = normalizeCatalogSignal(catalogSignal);
 
   const stereoOnlyById = new Map<string, boolean>();
@@ -2181,69 +2181,25 @@ function alignChainValuesToModelParamOrder(
     stereoOnlyById.set(sid, p["stereo-only"] === true);
   }
 
-  const buildSourceOrderIdsFromCatalog = (includeStereoOnly: boolean): string[] => {
-    const out: string[] = [];
-    const seen = new Set<string>();
-    for (const raw of catalogParamOrder ?? []) {
-      const sid = raw.trim();
-      if (!sid || seen.has(sid)) continue;
-      const isStereoOnly = stereoOnlyById.get(sid) === true;
-      if (!includeStereoOnly && isStereoOnly) continue;
-      out.push(sid);
-      seen.add(sid);
-    }
-    return out;
-  };
-
   const buildSourceOrderIdsFromModels = (includeStereoOnly: boolean): string[] => {
-    const withAssign: { sid: string; assign: number; idx: number }[] = [];
-    const withoutAssign: { sid: string; idx: number }[] = [];
+    const out: string[] = [];
     for (let i = 0; i < allModelParams.length; i += 1) {
       const p = allModelParams[i];
       if (!includeStereoOnly && p["stereo-only"] === true) continue;
       const sid = (p.symbolicID ?? "").trim();
       if (!sid) continue;
-      const a = p.assign;
-      if (typeof a === "number" && Number.isFinite(a)) {
-        withAssign.push({ sid, assign: a, idx: i });
-      } else {
-        withoutAssign.push({ sid, idx: i });
-      }
+      out.push(sid);
     }
-    withAssign.sort((x, y) => (x.assign !== y.assign ? x.assign - y.assign : x.idx - y.idx));
-    return [...withAssign.map((x) => x.sid), ...withoutAssign.map((x) => x.sid)];
+    return out;
   };
 
   const fullAll = buildSourceOrderIdsFromModels(true);
   const fullMono = buildSourceOrderIdsFromModels(false);
-  const catalogAll =
-    (catalogParamOrder?.length ?? 0) > 0 ? buildSourceOrderIdsFromCatalog(true) : null;
-  const catalogMono =
-    (catalogParamOrder?.length ?? 0) > 0 ? buildSourceOrderIdsFromCatalog(false) : null;
-
-  let sourceAll = catalogAll ?? fullAll;
-  // Catalogue HX ne liste souvent qu'un sous-ensemble (`params`) alors que le segment flow renvoie
-  // toute la séquence `read_params` du `.models` (ex. Split A/B : bypass / RouteTo / @enabled…).
-  // Si on zip uniquement sur le catalogue, la 1ʳᵉ valeur binaire (ex. bypass = 0) est erronément
-  // mappée sur `RouteTo` → affichage « Even Split » alors que RouteTo est à -100 (A 100).
-  if (
-    catalogAll !== null &&
-    chainValues.length > catalogAll.length &&
-    chainValues.length === fullAll.length
-  ) {
-    sourceAll = fullAll;
-  }
+  const sourceAll = fullAll;
 
   let source = sourceAll;
   if (signal === "mono") {
-    let sourceMono = catalogMono ?? fullMono;
-    if (
-      catalogMono !== null &&
-      chainValues.length > catalogMono.length &&
-      chainValues.length === fullMono.length
-    ) {
-      sourceMono = fullMono;
-    }
+    const sourceMono = fullMono;
     const diffAll = Math.abs(sourceAll.length - chainValues.length);
     const diffMono = Math.abs(sourceMono.length - chainValues.length);
     if (diffMono < diffAll) source = sourceMono;
@@ -2931,10 +2887,7 @@ function renderModelsParamsPane(
     (!chainForAlign || chainForAlign.length === 0) &&
     params.length > 0
   ) {
-    const order: string[] =
-      catalogParamOrder != null && catalogParamOrder.length > 0
-        ? catalogParamOrder
-        : params.map((p) => (p.symbolicID ?? "").trim()).filter(Boolean);
+    const order: string[] = params.map((p) => (p.symbolicID ?? "").trim()).filter(Boolean);
     const bySid = new Map(
       params
         .map((p) => [(p.symbolicID ?? "").trim(), p] as const)

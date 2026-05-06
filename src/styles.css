@@ -583,14 +583,20 @@ html, body {
 
 /* Ligne micro : uniquement le combobox, sans readout au-dessus */
 .models-params-slider-cell--combo-only {
-  min-height: auto;
+  min-height: var(--models-params-slider-cell-min-h);
+  /* Réserve la place de la ligne readout absente pour garder le même rythme vertical. */
+  padding-top: calc(12px * 1.2 + 2px);
+  box-sizing: border-box;
 }
 
 /* Segments 2 / 3 états : la valeur est dans le bouton actif — pas de readout ambre au-dessus. */
 .models-params-slider-cell.models-params-slider-cell--segment-only {
-  min-height: auto;
+  min-height: var(--models-params-slider-cell-min-h);
+  /* Même compensation que combo-only: espace équivalent au readout au-dessus. */
+  padding-top: calc(12px * 1.2 + 2px);
   gap: 0;
-  justify-content: center;
+  justify-content: flex-end;
+  box-sizing: border-box;
 }
 
 /*
