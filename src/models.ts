@@ -597,6 +597,21 @@ function scheduleLiveParamWriteProbe(
   });
 }
 
+function liveWriteParamIndexForRow(
+  paramsForDisplay: ModelParamDefJson[],
+  rowIndex: number,
+  catalogSignal: string | null | undefined,
+): number {
+  const target = paramsForDisplay[rowIndex];
+  if (!target) return rowIndex;
+  // Le write suit la variante signal (mono/stereo) : en mono, les `stereo-only`
+  // ne doivent pas compter dans l'index envoyé.
+  const writeOrder = paramsVisibleForSignal(paramsForDisplay, catalogSignal);
+  const idxByRef = writeOrder.indexOf(target);
+  if (idxByRef >= 0) return idxByRef;
+  return rowIndex;
+}
+
 async function flushPendingLiveWrites(): Promise<boolean> {
   if (pendingLiveWrites.size === 0) return false;
   const batch = [...pendingLiveWrites.values()];
@@ -2424,7 +2439,12 @@ function appendModelsParamRows(
           if (liveWriteProbeEnabled() && liveWriteEnabled()) {
             markLiveWriteUiInteraction();
           }
-          scheduleLiveParamWriteProbe(liveWriteSlotIndex, j, p, clamped);
+          const writeParamIndex = liveWriteParamIndexForRow(
+            params,
+            j,
+            catalogSignal,
+          );
+          scheduleLiveParamWriteProbe(liveWriteSlotIndex, writeParamIndex, p, clamped);
         },
         micAria,
       );
@@ -2494,7 +2514,12 @@ function appendModelsParamRows(
         if (liveWriteProbeEnabled() && liveWriteEnabled()) {
           markLiveWriteUiInteraction();
         }
-        scheduleLiveParamWriteProbe(liveWriteSlotIndex, j, p, v);
+        const writeParamIndex = liveWriteParamIndexForRow(
+          params,
+          j,
+          catalogSignal,
+        );
+        scheduleLiveParamWriteProbe(liveWriteSlotIndex, writeParamIndex, p, v);
       });
       sliderCell.append(input);
       rowValueUpdaters[j] = (nextCv) => {
@@ -2547,7 +2572,12 @@ function appendModelsParamRows(
         if (liveWriteProbeEnabled() && liveWriteEnabled()) {
           markLiveWriteUiInteraction();
         }
-        scheduleLiveParamWriteProbe(liveWriteSlotIndex, j, p, nextB ? 1 : 0);
+        const writeParamIndex = liveWriteParamIndexForRow(
+          params,
+          j,
+          catalogSignal,
+        );
+        scheduleLiveParamWriteProbe(liveWriteSlotIndex, writeParamIndex, p, nextB ? 1 : 0);
       };
       input.addEventListener("input", () => {
         const nextB = Number(input.value) >= 0.5;

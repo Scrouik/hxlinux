@@ -27,6 +27,30 @@ Travail validé sur hardware : bools, **Ratio** (discret), **Level** (float 2 ja
 
 **Suite possible** : autres `displayType` segmentés non encore listés ; affiner jambe B si une capture contredit `min+norm×span` pour un bloc précis.
 
+**7 mai 2026 (soir) — correction `pSel` mono/stéréo + incident UI**
+
+Contexte : sur un modèle modulation, des writes UI ne ciblaient pas le bon paramètre en **mono** alors que le même modèle en **stéréo** fonctionnait.
+
+Découverte clé validée par captures HX Edit :
+- En stéréo, l’ordre `pSel` suit bien la séquence visible (`Rate..Headroom`).
+- En mono, le paramètre **`Spread`** (`"stereo-only": true`) est masqué et ne doit **pas** compter dans l’index write.
+- Exemples confirmés dans les captures :
+  - `src/Paquets Json/Mix.json` : `... 1c:05:77 ...` => **Mix** en `pSel=05`
+  - `src/Paquets Json/headroom.json` : `... 1c:07:77 ...` => **Headroom** en `pSel=07`
+
+Pourquoi :
+- Le write USB utilisait l’index de ligne UI brute ; après une entrée `stereo-only`, les paramètres suivants étaient décalés en mono.
+
+Correctif appliqué :
+- `src/models.ts` : ajout de `liveWriteParamIndexForRow(...)`.
+- Le calcul de `paramIndex` envoyé au backend passe par l’ordre visible **selon signal** (`paramsVisibleForSignal`), donc en mono les `stereo-only` sont retirés du comptage.
+- Branché sur les trois chemins d’envoi live : slider continu, bool, combo discret.
+
+Incident pendant la session (corrigé) :
+- Un refactor intermédiaire a cassé l’UI (`ReferenceError: paramsForDisplay`).
+- Fix : retour au scope correct (`params`) dans `appendModelsParamRows`.
+- Vérifications après fix : `cargo check` OK, logs `[LiveWrite][sent]` à nouveau visibles.
+
 **27 avril 2026 (après-midi) — write USB en pause, priorité stabilité UI (anti-flash)**
 
 État session du jour :
