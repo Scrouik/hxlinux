@@ -51,6 +51,26 @@ Incident pendant la session (corrigé) :
 - Fix : retour au scope correct (`params`) dans `appendModelsParamRows`.
 - Vérifications après fix : `cargo check` OK, logs `[LiveWrite][sent]` à nouveau visibles.
 
+**7 mai 2026 (nuit) — règle générique sélecteurs discrets + override `PP`**
+
+Constat pendant tests terrain : plusieurs sélecteurs (`valueType=0`) ne passaient pas sans mapping explicite `displayType -> N`, alors que la règle est souvent déductible depuis le `.models`.
+
+Règles appliquées :
+- **Fallback générique discret** (`src-tauri/src/helix/live_write.rs`) :
+  - si `valueType == 0`
+  - et `chainMin/chainMax` sont des entiers valides
+  - alors `N = max - min + 1`, routage en **`0x23`** discret avec index `0..N-1`.
+- La table **`discrete23DisplayTypes`** reste prioritaire pour les cas explicitement capturés.
+- Ajout d’un override **`PP` par `displayType`** (`ppByDisplayType`) dans `HelixLiveWrite.json` + support Rust (`live_write_config.rs`, `live_write.rs`).
+
+Découvertes captures HX Edit (exemples validés) :
+- `wave_shape` : discret `0x23`, **7** positions (`77 00..06`), **PP=04**.
+- `delay_heads` : discret `0x23`, **6** positions (`77 00..05`), **PP=04**.
+
+Pourquoi certains sélecteurs “semblables” ne marchaient pas :
+- ce n’est pas seulement la valeur (`N`) ; il faut le triplet **opcode + PP + index**.
+- une règle unique “tous les sélecteurs = PP par défaut” est insuffisante ; d’où `ppByDisplayType`.
+
 **27 avril 2026 (après-midi) — write USB en pause, priorité stabilité UI (anti-flash)**
 
 État session du jour :
@@ -756,3 +776,4 @@ await window.__TAURI__.core.invoke("set_usb_io_diag", { enabled: true })
 1. Le slot vide sur patrh 2 juste avant le merge n'a pas son icone.
 2. Deplacement sur un slot vide ne fonctionne pas. coté UI et Hardware.
 3. il faut que le panneau module utilise toute la largeur. Peut être jouer sur la largeur de l'icone icons_line.png pour compler l'espace. Ou tracer une ligne... a voir
+4. Pour les slider de type selecteur,  ne pas mettre la valeur mini et maxi. Cela n'a pas de sens.

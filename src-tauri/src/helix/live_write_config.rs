@@ -21,6 +21,10 @@ pub struct HelixLiveWriteCfg {
     /// `displayType` → nombre de positions (HelixControls `format` / segmented) ; trame `23` avec octet après `77` = index 0..n-1 (captures HX Edit, ex. comp_ratio).
     #[serde(default)]
     pub discrete_23_display_types: HashMap<String, u8>,
+    /// Overrides `PP` par `displayType` (octet après `83:66:cd`), utile pour les familles
+    /// qui ne suivent pas `ppDefault` (ex. `wave_shape` capturé en `0x04`).
+    #[serde(default)]
+    pub pp_by_display_type: HashMap<String, u8>,
 }
 
 fn default_pp() -> u8 {
@@ -52,6 +56,7 @@ impl Default for HelixLiveWriteCfg {
             bool_display_types: default_bool_display_types(),
             allowed_float_value_types: default_allowed_float_value_types(),
             discrete_23_display_types: HashMap::new(),
+            pp_by_display_type: HashMap::new(),
         }
     }
 }
@@ -101,6 +106,19 @@ pub fn discrete_23_step_count(display_type: Option<&str>) -> Option<u8> {
     } else {
         None
     }
+}
+
+pub fn pp_override_for_display_type(display_type: Option<&str>) -> Option<u8> {
+    let dt = display_type.map(str::trim).unwrap_or("");
+    if dt.is_empty() {
+        return None;
+    }
+    let key = dt.to_ascii_lowercase();
+    let cfg = live_write_cfg();
+    cfg.pp_by_display_type
+        .iter()
+        .find(|(k, _)| k.to_ascii_lowercase() == key)
+        .map(|(_, &v)| v)
 }
 
 /// Refuse l’envoi USB si le couple métadonnées ne correspond pas à un chemin protocolaire connu

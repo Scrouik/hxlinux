@@ -12,7 +12,7 @@
 //!   et `max > min`, valeur physique `min + norm×(max−min)` (captures HX Level : ~0,32 norm ↔ ~−37 dB).
 
 use crate::helix::live_write_config::{
-    discrete_23_step_count, infer_bool_wire_payload, live_write_cfg,
+    discrete_23_step_count, infer_bool_wire_payload, live_write_cfg, pp_override_for_display_type,
 };
 use crate::helix::{kempline_index_to_slot_bus, HelixState};
 
@@ -37,7 +37,10 @@ pub struct LiveWriteFrames {
     pub frame27_diff_vs_static: String,
 }
 
-fn pp_for_live_write() -> (u8, &'static str) {
+fn pp_for_live_write(display_type: Option<&str>) -> (u8, &'static str) {
+    if let Some(p) = pp_override_for_display_type(display_type) {
+        return (p, "config:HelixLiveWrite.ppByDisplayType");
+    }
     let p = live_write_cfg().pp_default;
     (p, "config:HelixLiveWrite.ppDefault")
 }
@@ -167,6 +170,33 @@ fn raw_to_discrete_index(raw: f32, steps: u8) -> u8 {
     i.clamp(0, max_i as i32) as u8
 }
 
+/// Règle générique discrète: pour `valueType=0` avec bornes entières (`min..max`),
+/// on déduit `N = max - min + 1` positions (ex. 0..5 => 6).
+/// Utilisée en fallback quand `displayType` n'est pas explicitement mappé.
+fn inferred_discrete_steps_from_bounds(
+    value_type: Option<i32>,
+    chain_min: Option<f64>,
+    chain_max: Option<f64>,
+) -> Option<u8> {
+    if !matches!(value_type, Some(0)) {
+        return None;
+    }
+    let (lo, hi) = match (chain_min, chain_max) {
+        (Some(lo), Some(hi)) if lo.is_finite() && hi.is_finite() && hi >= lo => (lo, hi),
+        _ => return None,
+    };
+    let lo_i = lo.round();
+    let hi_i = hi.round();
+    if (lo - lo_i).abs() > 1e-6 || (hi - hi_i).abs() > 1e-6 {
+        return None;
+    }
+    let span = (hi_i as i64) - (lo_i as i64);
+    if span < 1 || span > 254 {
+        return None;
+    }
+    Some((span + 1) as u8)
+}
+
 /// Construit les trames de write live (paire `04` / `0c`, pré/post `08` comme les captures HX Edit).
 pub fn build_live_write_frames_from_state(
     state: &mut HelixState,
@@ -181,7 +211,8 @@ pub fn build_live_write_frames_from_state(
 ) -> LiveWriteFrames {
     let cfg = live_write_cfg();
     let bool_23 = infer_bool_wire_payload(display_type, value_type);
-    let disc_steps = discrete_23_step_count(display_type);
+    let disc_steps = discrete_23_step_count(display_type)
+        .or_else(|| inferred_discrete_steps_from_bounds(value_type, chain_min, chain_max));
     let wire_23 = bool_23 || disc_steps.is_some();
     let mark_23: u8 = if bool_23 {
         if raw_value >= 0.5 {
@@ -213,7 +244,7 @@ pub fn build_live_write_frames_from_state(
         0x00, pre_cnt_x2, 0x00, 0x10, 0x09, 0x10, 0x00, 0x00,
     ];
 
-    let (pp, pp_source) = pp_for_live_write();
+    let (pp, pp_source) = pp_for_live_write(display_type);
     let (param_selector, param_selector_source) = param_selector_byte_from_index(param_index);
 
     let seq_sel = state.next_x80_cnt();

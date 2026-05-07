@@ -11,7 +11,13 @@
     "clipping_dist": 3,
     "clipping_dist_xenofuzz": 2,
     "clipping_sym": 2,
-    "gain_mod": 2
+    "gain_mod": 2,
+    "wave_shape": 7,
+    "delay_heads": 6
+  },
+  "ppByDisplayType": {
+    "wave_shape": 4,
+    "delay_heads": 4
   },
   "allowedFloatValueTypes": [0, 1]
 }
