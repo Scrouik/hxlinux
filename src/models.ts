@@ -612,6 +612,36 @@ function liveWriteParamIndexForRow(
   return rowIndex;
 }
 
+function discreteSliderTickCount(
+  valueType: number | undefined,
+  minN: number,
+  maxN: number,
+): number | null {
+  if (valueType !== 0) return null;
+  if (!Number.isFinite(minN) || !Number.isFinite(maxN) || maxN <= minN) return null;
+  const lo = Math.round(minN);
+  const hi = Math.round(maxN);
+  if (Math.abs(minN - lo) > 1e-6 || Math.abs(maxN - hi) > 1e-6) return null;
+  const n = hi - lo + 1;
+  // Au-delà, les repères se chevauchent visuellement et n'apportent plus grand-chose.
+  if (n < 2 || n > 16) return null;
+  return n;
+}
+
+function setSliderFillVisual(
+  input: HTMLInputElement,
+  value: number,
+  minN: number,
+  maxN: number,
+): void {
+  if (!Number.isFinite(value) || !Number.isFinite(minN) || !Number.isFinite(maxN) || maxN <= minN) {
+    return;
+  }
+  const pct = ((value - minN) / (maxN - minN)) * 100;
+  const clamped = Math.max(0, Math.min(100, pct));
+  input.style.setProperty("--slider-fill-pct", `${clamped}%`);
+}
+
 async function flushPendingLiveWrites(): Promise<boolean> {
   if (pendingLiveWrites.size === 0) return false;
   const batch = [...pendingLiveWrites.values()];
@@ -2483,6 +2513,9 @@ function appendModelsParamRows(
       const input = document.createElement("input");
       input.type = "range";
       input.className = "models-params-slider";
+      if (p.valueType !== 0) {
+        input.classList.add("models-params-slider--filled");
+      }
       input.min = String(minN);
       input.max = String(maxN);
       if (inc >= 1e-9) {
@@ -2495,6 +2528,9 @@ function appendModelsParamRows(
         if (!Number.isFinite(v)) v = init;
         v = snapRawToIncrement(v, minN, maxN, inc, p.valueType);
         if (Number(input.value) !== v) input.value = String(v);
+        if (p.valueType !== 0) {
+          setSliderFillVisual(input, v, minN, maxN);
+        }
       }
       input.title = hoverTitleStr;
       input.setAttribute(
@@ -2506,6 +2542,9 @@ function appendModelsParamRows(
         if (!Number.isFinite(v)) return;
         v = snapRawToIncrement(v, minN, maxN, inc, p.valueType);
         if (Number(input.value) !== v) input.value = String(v);
+        if (p.valueType !== 0) {
+          setSliderFillVisual(input, v, minN, maxN);
+        }
         chainEl.textContent = formatChainParamValueJson(v, p, helixControlsMap);
         const s = paramSliderHoverTitle(v, p, helixControlsMap);
         li.title = s;
@@ -2522,11 +2561,26 @@ function appendModelsParamRows(
         scheduleLiveParamWriteProbe(liveWriteSlotIndex, writeParamIndex, p, v);
       });
       sliderCell.append(input);
+      const tickCount = discreteSliderTickCount(p.valueType, minN, maxN);
+      if (tickCount !== null) {
+        const ticks = document.createElement("div");
+        ticks.className = "models-params-slider-ticks";
+        for (let i = 0; i < tickCount; i += 1) {
+          const tick = document.createElement("span");
+          tick.className = "models-params-slider-tick";
+          tick.style.left = `${(i * 100) / (tickCount - 1)}%`;
+          ticks.appendChild(tick);
+        }
+        sliderCell.append(ticks);
+      }
       rowValueUpdaters[j] = (nextCv) => {
         if (typeof nextCv !== "number" || !Number.isFinite(nextCv)) return;
         let v = snapRawToIncrement(nextCv, minN, maxN, inc, p.valueType);
         if (!Number.isFinite(v)) return;
         if (Number(input.value) !== v) input.value = String(v);
+        if (p.valueType !== 0) {
+          setSliderFillVisual(input, v, minN, maxN);
+        }
         chainEl.textContent = formatChainParamValueJson(v, p, helixControlsMap);
         const s = paramSliderHoverTitle(v, p, helixControlsMap);
         li.title = s;

@@ -712,6 +712,7 @@ html, body {
   min-height: var(--models-params-slider-cell-min-h);
   width: 100%;
   box-sizing: border-box;
+  position: relative;
 }
 
 .models-params-slider-cell > .models-params-row-chain {
@@ -763,13 +764,47 @@ html, body {
   box-sizing: border-box;
   cursor: pointer;
   accent-color: var(--amber);
+  position: relative;
+  z-index: 2; /* couche 2: slider (piste + thumb natif) */
+  --slider-fill-pct: 50%;
+}
+
+.models-params-slider-ticks {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 4px;
+  height: 8px;
+  z-index: 1; /* couche 1: ticks (derrière le slider) */
+  pointer-events: none;
+}
+
+.models-params-slider-tick {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 8px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
+  transform: translateX(-1px);
+  pointer-events: none;
 }
 
 /* Piste en ambre ; pouce clair (hors ambre) pour rester lisible. */
 .models-params-slider::-webkit-slider-runnable-track {
   height: 5px;
   border-radius: 3px;
-  background: var(--amber);
+  background: rgba(232, 160, 32, 0.56);
+}
+
+.models-params-slider.models-params-slider--filled::-webkit-slider-runnable-track {
+  background: linear-gradient(
+    to right,
+    rgba(232, 160, 32, 0.9) 0%,
+    rgba(232, 160, 32, 0.9) var(--slider-fill-pct),
+    rgba(76, 52, 14, 0.9) var(--slider-fill-pct),
+    rgba(76, 52, 14, 0.9) 100%
+  );
 }
 .models-params-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -781,16 +816,24 @@ html, body {
   background: var(--text-primary);
   border: 1px solid var(--amber-dim);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  position: relative;
+  z-index: 3; /* couche 3: bouton/thumb */
 }
 .models-params-slider::-moz-range-track {
   height: 5px;
   border-radius: 3px;
-  background: var(--amber-dim);
+  background: rgba(184, 122, 24, 0.52);
 }
 .models-params-slider::-moz-range-progress {
   height: 5px;
   border-radius: 3px 0 0 3px;
-  background: var(--amber);
+  background: rgba(232, 160, 32, 0.66);
+}
+.models-params-slider.models-params-slider--filled::-moz-range-track {
+  background: rgba(76, 52, 14, 0.9);
+}
+.models-params-slider.models-params-slider--filled::-moz-range-progress {
+  background: rgba(232, 160, 32, 0.9);
 }
 .models-params-slider::-moz-range-thumb {
   width: 14px;
@@ -799,6 +842,8 @@ html, body {
   background: var(--text-primary);
   border: 1px solid var(--amber-dim);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  position: relative;
+  z-index: 3; /* couche 3: bouton/thumb */
 }
 
 .models-params-row-name {
