@@ -65,6 +65,17 @@ const LIVE_WRITE_MIDI_CC_KEY = "models_live_midi_cc";
 const LIVE_WRITE_MIDI_CHANNEL_KEY = "models_live_midi_channel";
 const LIVE_WRITE_SYNC_PAUSE_MS = 1200;
 const HW_SYNC_INTERVAL_MS_KEY = "models_hw_sync_interval_ms";
+/**
+ * Intervalle minimum entre deux lectures preset USB complètes déclenchées par le soft-sync.
+ * `models_hw_sync_interval_ms` pilote la fréquence des cycles UI (slot actif, panneau) ;
+ * sans cette séparation, chaque cycle appelait `request_preset_content` → rafales de trames `19`
+ * et instabilité device. Défaut 4000 ms ; `0` = jamais de re-dump USB depuis le soft-sync
+ * (valeurs chaîne / grille figées jusqu’à un chargement explicite).
+ */
+const HW_USB_PRESET_POLL_MS_KEY = "models_hw_usb_preset_poll_ms";
+const HW_USB_PRESET_POLL_DEFAULT_MS = 4000;
+const HW_USB_PRESET_POLL_MIN_MS = 500;
+const HW_USB_PRESET_POLL_MAX_MS = 120000;
 const DEBUG_HW_SLOT_SYNC_FLAG = "models_debug_hw_slot_sync";
 /** Log console lorsque le `moduleHex` d’un slot change après sync USB (jointure catalogue). */
 const DEBUG_CATALOG_CHAINHEX_FLAG = "models_debug_catalog_chainhex";
@@ -75,6 +86,8 @@ const REQUEST_PRESET_RECOVERY_DELAY_MS = 800;
 const REQUEST_PRESET_SOFT_STALL_TRIES = 18;
 const REQUEST_PRESET_HARD_RECOVERY_AFTER = 4;
 let lastHardwareSyncAt = 0;
+/** Dernier `request_preset_content` réussi déclenché par le soft-sync (pas les chargements utilisateur). */
+let lastSoftUsbPresetReadAt = 0;
 let hardwareSyncBusy = false;
 let hardwareSyncPausedForPresetLoad = false;
 let lastLiveWriteAt = 0;
@@ -197,6 +210,16 @@ function getHardwareSyncIntervalMs(): number {
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return 0;
   return Math.max(HW_SYNC_MIN_MS, Math.min(HW_SYNC_MAX_MS, parsed));
+}
+
+function getHardwareUsbPresetPollMs(): number {
+  const raw = (localStorage.getItem(HW_USB_PRESET_POLL_MS_KEY) ?? "").trim();
+  if (raw === "0") return 0;
+  if (!raw) return HW_USB_PRESET_POLL_DEFAULT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return HW_USB_PRESET_POLL_DEFAULT_MS;
+  if (parsed === 0) return 0;
+  return Math.max(HW_USB_PRESET_POLL_MIN_MS, Math.min(HW_USB_PRESET_POLL_MAX_MS, parsed));
 }
 
 function delayMs(ms: number): Promise<void> {
@@ -359,30 +382,56 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
   // sinon la machine d'état repasse en lecture et l'écriture peut être ignorée.
   if (!wroteThisCycle && now - lastLiveWriteAt < LIVE_WRITE_SYNC_PAUSE_MS) return;
   if (now - lastHardwareSyncAt < syncMs) return;
-  if (requestPresetCooldownRemainingMs(now) > 0) return;
+
+  const usbPresetPollMs = getHardwareUsbPresetPollMs();
+  const wantUsbPresetDump =
+    usbPresetPollMs > 0 && now - lastSoftUsbPresetReadAt >= usbPresetPollMs;
+  if (wantUsbPresetDump && requestPresetCooldownRemainingMs(now) > 0) return;
   lastHardwareSyncAt = now;
 
   const presetIdx = currentPresetIndex;
   hardwareSyncBusy = true;
   try {
-    lastRequestPresetInvokeAt = Date.now();
-    await invoke("request_preset_content");
-
     let normalized: SlotDebug[] | null = null;
-    for (let tries = 0; tries < 45; tries += 1) {
-      if (currentPresetIndex !== presetIdx) return;
-      try {
-        const slots = debugRoutingMode
-          ? await invoke<[string, string, string, string][] | null>("get_active_preset_slots_debug")
-          : await invoke<[string, string][] | null>("get_active_preset_slots");
-        if (slots !== null) {
-          normalized = normalizeSlotsPayloadFromInvoke(slots as never);
-          break;
+
+    if (wantUsbPresetDump) {
+      lastRequestPresetInvokeAt = Date.now();
+      await invoke("request_preset_content");
+
+      for (let tries = 0; tries < 45; tries += 1) {
+        if (currentPresetIndex !== presetIdx) return;
+        try {
+          const slots = debugRoutingMode
+            ? await invoke<[string, string, string, string][] | null>("get_active_preset_slots_debug")
+            : await invoke<[string, string][] | null>("get_active_preset_slots");
+          if (slots !== null) {
+            normalized = normalizeSlotsPayloadFromInvoke(slots as never);
+            break;
+          }
+        } catch {
+          // transient
         }
-      } catch {
-        // transient
+        await delayMs(200);
       }
-      await delayMs(200);
+      if (normalized) {
+        lastSoftUsbPresetReadAt = Date.now();
+      }
+    } else {
+      for (let tries = 0; tries < 6; tries += 1) {
+        if (currentPresetIndex !== presetIdx) return;
+        try {
+          const slots = debugRoutingMode
+            ? await invoke<[string, string, string, string][] | null>("get_active_preset_slots_debug")
+            : await invoke<[string, string][] | null>("get_active_preset_slots");
+          if (slots !== null) {
+            normalized = normalizeSlotsPayloadFromInvoke(slots as never);
+            break;
+          }
+        } catch {
+          // transient
+        }
+        await delayMs(80);
+      }
     }
 
     if (!normalized || currentPresetIndex !== presetIdx) return;
@@ -4535,6 +4584,7 @@ async function requestLoadForPreset(index: number) {
         recoveryAttemptCount = 0;
         stopLoadingHeartbeat();
         loadedPresetIndex = index;
+        lastSoftUsbPresetReadAt = Date.now();
         const normalizedSlots = normalizeSlotsPayloadFromInvoke(slots as never);
         // Evite d'afficher une vieille réponse si l'utilisateur a recliqué ailleurs.
         if (currentPresetIndex === index) {
