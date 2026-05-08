@@ -16,6 +16,7 @@ use std::sync::mpsc::TryRecvError;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Write as _;
+use std::io::{self, Write as IoWrite};
 use std::fs;
 use std::path::PathBuf;
 use std::thread;
@@ -814,7 +815,7 @@ fn set_usb_io_diag(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Relais de log frontend -> terminal Rust (`cargo tauri dev`).
+/// Relais de log frontend -> terminal Rust (`cargo tauri dev`, stderr).
 #[tauri::command]
 fn log_frontend_message(message: String) -> Result<(), String> {
     let m = message.trim();
@@ -822,6 +823,7 @@ fn log_frontend_message(message: String) -> Result<(), String> {
         return Ok(());
     }
     eprintln!("{m}");
+    let _ = io::stderr().flush();
     Ok(())
 }
 

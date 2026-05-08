@@ -4,6 +4,35 @@ Ce fichier sert de **mémo locale** quand l’historique de chat ou le contexte 
 
 **2 mai 2026 — protocole ED03 stabilisé, blocs spéciaux (Input/Output/Split/Merge) détectés comme slot actif. Voir section « 30 avril – 2 mai 2026 » ci-dessous.**
 
+**8 mai 2026 — anti-flash matrice, picker optimiste, parse preset transitoire, traces ModelsSync**
+
+Symptômes traités : flash plein écran / grille vidée après **poll USB** ou après **changement de modèle** (`hw_notify_force` → `request_preset_content`) quand le backend renvoie un instant **`get_active_preset_slots` → `[]`** ou liste vide ; en JS **`[]` est truthy**, donc l’ancien code croyait à tort avoir des slots valides et appelait **`renderEmpty`** (« Aucun bloc détecté »).
+
+**`src/models.ts` — soft-sync (`runHardwareSyncSoftRefresh`)**
+
+- Après **`request_preset_content`** : attente **~120 ms** avant la première lecture des slots ; boucles d’attente : ne **valider** le résultat que si **`normalizeSlotsPayloadFromInvoke(…).length > 0`** (sinon on continue à poller). Même logique pour la branche **sans** dump USB.
+- Si après attente il n’y a **toujours pas** de slots : **`normalized = null`**, plus de log factice « usbDump ok » avec 0 slot.
+- **Abort** : si `normalized` absent ou **longueur 0**, ne pas détruire la grille quand **`lastHwSyncNormalizedSlots`** contient encore un snapshot utile → **`softRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots)`** + log `emptyParse keepExistingGrid`.
+- **Debounce layout** : dump USB déclenché **uniquement** par **`poll_interval`** (pas **`hw_notify_force`**) → même **passage 1 / 2** anti-flash que sans USB (`usbDumpIsPollOnly`), pour éviter un **`renderGrid16` complet** sur un simple pic de signature après re-parse.
+- **Cache grille** : **`lastHwSyncNormalizedSlots`** (copie des 16 `SlotDebug`) rempli dans **`rememberHwSyncChainLayout`** ; sert au rollback / cohérence signature et à l’UI optimiste.
+
+**`src/models.ts` — picker changement de modèle (optimiste)**
+
+- Ordre : **MAJ pastille + ligne catégorie** (`patchMatrixSlotVisualFromSlot`, `patchMatrixCategoryDescFromSlot`) + **`loadAndShowModelsParamsFromCatalogDefaults`** (défauts **`.models`** via **`buildDefaultChainValuesForSourceOrder`**, pas de lecture chaîne USB) **puis** **`probe_slot_model_usb`**.
+- **`data-kempline-slot-desc-index`** sur les cellules **L2/L4** (`makeMatrixCategoryCell`) pour cibler la ligne catégorie sous le slot.
+- **`slotModelUsbProbeInFlight`** : pendant probe + chargement catalogue, **soft-sync ignorée** (évite course avec d’anciens slots).
+- Après **succès** USB : **`pendingForceUsbPresetContent = true`** pour réaligner sur le matériel au prochain cycle.
+- **Erreur USB** : restauration depuis snapshot + **`loadAndShowModelsParamsForSlot`**, ou **`scheduleLoadForPreset(..., true)`** si pas de snapshot.
+
+**`src/models.ts` — autres garde-fous**
+
+- **`renderSlots([])`** : si **`lastHwSyncNormalizedSlots`** est non vide, **ne pas** appeler **`renderEmpty`** (évite flash si un chemin passe encore un tableau vide).
+- **`requestLoadForPreset`** : si `slots !== null` mais normalisé **vide**, **continuer à poller** au lieu de rendre.
+
+**Traces diagnostic**
+
+- **`localStorage.setItem("models_debug_sync_trace", "1")`** (fenêtre **Models**) : lignes **`[ModelsSync][timestamp] …`** en **`console.info`** + relais **`invoke("log_frontend_message")`** → terminal **`cargo tauri dev`** (`eprintln!` + flush stderr dans **`src-tauri/src/lib.rs`**).
+
 **6 mai 2026 — changement de référentiel pour les paramètres de modèle (IMPORTANT)**
 
 - **Source des paramètres d’un modèle** : désormais, le référentiel est le fichier **`src-tauri/resources/models/<category>.models`** (ex. modèle de catégorie **modulation** → **`src-tauri/resources/models/modulation.models`**).
@@ -353,6 +382,8 @@ Le **slider d’aperçu** du panneau paramètres garde **`min` 0** et **`max` 1*
 
 ### Flags front utiles (session actuelle)
 
+- **Trace sync UI / flash** : `localStorage.setItem("models_debug_sync_trace", "1")` dans la fenêtre **Models** → **`[ModelsSync]`** dans la console Web **et** le terminal Tauri (`log_frontend_message` → `eprintln!`).
+- **Re-dump preset USB depuis soft-sync** : `localStorage.setItem("models_hw_usb_preset_poll_ms", "2500")` (bornes typiques **500..120000** ; **`0`** = jamais de `request_preset_content` déclenché par le seul poll — jusqu’à un chargement explicite ou `hw_notify_force`).
 - **Sync matériel périodique (front)** : `localStorage.setItem("models_hw_sync_interval_ms", "200")` (borne code : **100..5000 ms**).  
   - `0` ou clé absente = désactivé ; recommandé : **200 ms**.
 - **Write live (expérimental)** : `localStorage.setItem("models_live_write_probe", "1")`  

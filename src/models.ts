@@ -11,6 +11,7 @@ import {
   getCatalogParamOrderForId,
   getUsbAssignPickerData,
   getPresetMetaForId,
+  moduleHexFromCatalogForUsbVariant,
   pickBasedOn,
   pickSignal,
   usbAssignVariantFromPresetMeta,
@@ -80,6 +81,8 @@ const HW_USB_PRESET_POLL_MAX_MS = 120000;
 const DEBUG_HW_SLOT_SYNC_FLAG = "models_debug_hw_slot_sync";
 /** Log console lorsque le `moduleHex` d’un slot change après sync USB (jointure catalogue). */
 const DEBUG_CATALOG_CHAINHEX_FLAG = "models_debug_catalog_chainhex";
+/** `localStorage.setItem("models_debug_sync_trace", "1")` → logs `[ModelsSync]…` dans le terminal (`cargo tauri dev`) pour diagnostiquer flash / reload. */
+const MODELS_SYNC_TRACE_FLAG = "models_debug_sync_trace";
 const HW_SYNC_MIN_MS = 100;
 const HW_SYNC_MAX_MS = 5000;
 const REQUEST_PRESET_MIN_GAP_MS = 320;
@@ -92,6 +95,8 @@ let lastSoftUsbPresetReadAt = 0;
 /** Quand le Helix notifie un nouveau slot actif, on veut un dump preset tout de suite (pas attendre le poll périodique). */
 let pendingForceUsbPresetContent = false;
 let hardwareSyncBusy = false;
+/** Pendant `probe_slot_model_usb` (MAJ optimiste) : pas de soft-sync qui relirait d’anciens slots. */
+let slotModelUsbProbeInFlight: number | null = null;
 let hardwareSyncPausedForPresetLoad = false;
 let lastLiveWriteAt = 0;
 let liveWriteUiInteractionUntil = 0;
@@ -135,6 +140,8 @@ function liveWriteUsbNormalized01(w: PendingLiveWrite): number {
 }
 /** Signature `category|name|moduleHex|…` par slot — stable si seuls les paramètres changent sur le HX. */
 let lastHwSyncChainSignature: string | null = null;
+/** Copie des 16 slots grille (soft-sync / chargement) pour MAJ optimiste pastille + signature sans re-parse. */
+let lastHwSyncNormalizedSlots: SlotDebug[] | null = null;
 /** Anti-flash: exige deux cycles consécutifs avant rerender complet si la signature change. */
 let pendingHwLayoutSignature: string | null = null;
 /** Snapshot liste presets + preset actif (device) pour éviter MAJ label inutiles. */
@@ -193,6 +200,9 @@ function applyHardwareSlotStateFromBackend(hw: HardwareActiveSlotState | null): 
     lastSeenHardwareSlotSequence = hw.sequence;
   } else if (hw.sequence > lastSeenHardwareSlotSequence) {
     forceUsb = true;
+    emitModelsSyncTrace(
+      `hw_slot_notify forceUsb seq ${lastSeenHardwareSlotSequence}->${hw.sequence} slotIdx=${hw.slotIndex} slotBus=${hw.slotBus}`,
+    );
     const nextIdx =
       Number.isInteger(hw.slotIndex) && (hw.slotIndex as number) >= 0
         ? (hw.slotIndex as number)
@@ -210,6 +220,24 @@ function applyHardwareSlotStateFromBackend(hw: HardwareActiveSlotState | null): 
 
 function catalogChainHexLogEnabled(): boolean {
   return localStorage.getItem(DEBUG_CATALOG_CHAINHEX_FLAG) === "1";
+}
+
+function modelsSyncTraceEnabled(): boolean {
+  return localStorage.getItem(MODELS_SYNC_TRACE_FLAG) === "1";
+}
+
+/**
+ * Trace sync UI : `console.info` (DevTools fenêtre Models) + `eprintln!` côté Rust (terminal `cargo tauri dev`).
+ * Active avec `localStorage.setItem("models_debug_sync_trace", "1")` dans la **fenêtre Models**.
+ */
+function emitModelsSyncTrace(line: string): void {
+  if (!modelsSyncTraceEnabled()) return;
+  const ts = new Date().toISOString();
+  const msg = `[ModelsSync][${ts}] ${line}`;
+  console.info(msg);
+  void invoke("log_frontend_message", { message: msg }).catch(() => {
+    console.warn("[ModelsSync] log_frontend_message invoke failed — trace déjà ci-dessus (console)");
+  });
 }
 
 /** Même texte que l’ancien `console.log` : le backend le réaffiche via `eprintln!` (terminal `tauri dev`). */
@@ -342,6 +370,8 @@ function chainLayoutSignature(slots: SlotDebug[]): string {
 
 function rememberHwSyncChainLayout(slots: SlotDebug[]): void {
   lastHwSyncChainSignature = chainLayoutSignature(slots);
+  lastHwSyncNormalizedSlots =
+    slots.length === 16 ? slots.map((s) => ({ ...s })) : null;
   pendingHwLayoutSignature = null;
 }
 
@@ -391,6 +421,9 @@ function armQueuedPresetLoadAfterCooldown(): void {
 function armRecoveryPresetLoad(reason: string): void {
   if (recoveryPresetLoadTimer !== null) return;
   recoveryAttemptCount += 1;
+  emitModelsSyncTrace(
+    `armRecovery reason=${JSON.stringify(reason)} attempt=${recoveryAttemptCount}/${REQUEST_PRESET_HARD_RECOVERY_AFTER} pendingPreset=${pendingPresetIndex}`,
+  );
   startLoadingHeartbeat(`Sablier: recuperation USB en cours (${reason})`);
   recoveryPresetLoadTimer = window.setTimeout(() => {
     recoveryPresetLoadTimer = null;
@@ -400,6 +433,9 @@ function armRecoveryPresetLoad(reason: string): void {
     pendingPresetIndex = -1;
     if (recoveryAttemptCount >= REQUEST_PRESET_HARD_RECOVERY_AFTER) {
       setStatus("Sablier: reset communication USB en cours...");
+      emitModelsSyncTrace(
+        `force_recover_preset_reader invoke attempts=${recoveryAttemptCount} nextPreset=${next}`,
+      );
       void invoke("force_recover_preset_reader")
         .catch(() => {
           // Best effort: même en cas d'échec on tente une relance de lecture.
@@ -423,6 +459,7 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
   if (syncMs <= 0) return;
   if (currentPresetIndex < 0) return;
   if (loading || hardwareSyncBusy) return;
+  if (slotModelUsbProbeInFlight !== null) return;
   if (loadedPresetIndex !== currentPresetIndex) return;
 
   const now = Date.now();
@@ -444,10 +481,14 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
   }
 
   const usbPresetPollMs = getHardwareUsbPresetPollMs();
+  const forceUsbPending = pendingForceUsbPresetContent;
   const wantUsbPresetDump =
     pendingForceUsbPresetContent ||
     (usbPresetPollMs > 0 && now - lastSoftUsbPresetReadAt >= usbPresetPollMs);
   if (wantUsbPresetDump && requestPresetCooldownRemainingMs(now) > 0 && !pendingForceUsbPresetContent) {
+    emitModelsSyncTrace(
+      `softSync skip cooldown wantUsb pollMs=${usbPresetPollMs} lastUsbReadAge=${now - lastSoftUsbPresetReadAt}ms`,
+    );
     return;
   }
   lastHardwareSyncAt = now;
@@ -462,7 +503,12 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
       pendingForceUsbPresetContent = false;
       didUsbPresetDumpThisCycle = true;
       lastRequestPresetInvokeAt = Date.now();
+      emitModelsSyncTrace(
+        `request_preset_content (softSync) reason=${forceUsbPending ? "hw_notify_force" : "poll_interval"} pollMs=${usbPresetPollMs} preset=${presetIdx}`,
+      );
       await invoke("request_preset_content");
+      // Le parse preset peut livrer `[]` une ou deux lectures trop tôt → ne jamais traiter comme « ok ».
+      await delayMs(120);
 
       for (let tries = 0; tries < 45; tries += 1) {
         if (currentPresetIndex !== presetIdx) return;
@@ -471,16 +517,25 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
             ? await invoke<[string, string, string, string][] | null>("get_active_preset_slots_debug")
             : await invoke<[string, string][] | null>("get_active_preset_slots");
           if (slots !== null) {
-            normalized = normalizeSlotsPayloadFromInvoke(slots as never);
-            break;
+            const candidate = normalizeSlotsPayloadFromInvoke(slots as never);
+            if (candidate.length > 0) {
+              normalized = candidate;
+              break;
+            }
           }
         } catch {
           // transient
         }
         await delayMs(200);
       }
-      if (normalized) {
+      if (normalized && normalized.length > 0) {
         lastSoftUsbPresetReadAt = Date.now();
+        emitModelsSyncTrace(
+          `softSync usbDump ok preset=${presetIdx} slots=${normalized.length} (wait loop)`,
+        );
+      } else {
+        normalized = null;
+        emitModelsSyncTrace(`softSync usbDump NO_SLOTS after wait preset=${presetIdx}`);
       }
     } else {
       for (let tries = 0; tries < 6; tries += 1) {
@@ -490,8 +545,11 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
             ? await invoke<[string, string, string, string][] | null>("get_active_preset_slots_debug")
             : await invoke<[string, string][] | null>("get_active_preset_slots");
           if (slots !== null) {
-            normalized = normalizeSlotsPayloadFromInvoke(slots as never);
-            break;
+            const candidate = normalizeSlotsPayloadFromInvoke(slots as never);
+            if (candidate.length > 0) {
+              normalized = candidate;
+              break;
+            }
           }
         } catch {
           // transient
@@ -500,15 +558,35 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
       }
     }
 
-    if (!normalized || currentPresetIndex !== presetIdx) return;
+    if (!normalized || normalized.length === 0 || currentPresetIndex !== presetIdx) {
+      if (
+        lastHwSyncNormalizedSlots &&
+        lastHwSyncNormalizedSlots.length > 0 &&
+        currentPresetIndex === presetIdx
+      ) {
+        emitModelsSyncTrace(
+          `softSync abort emptyParse keepExistingGrid preset=${presetIdx} snapSlots=${lastHwSyncNormalizedSlots.length}`,
+        );
+        await softRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
+      } else {
+        emitModelsSyncTrace(
+          `softSync abort noNormalized=${!normalized || normalized.length === 0} presetChanged=${currentPresetIndex !== presetIdx} cur=${currentPresetIndex} snap=${presetIdx}`,
+        );
+      }
+      return;
+    }
 
     const deviceActive = await invoke<number>("get_active_preset");
     if (deviceActive !== presetIdx) {
       devicePresetMismatchStreak += 1;
+      emitModelsSyncTrace(
+        `deviceActive mismatch backend=${deviceActive} modelsUi=${presetIdx} streak=${devicePresetMismatchStreak}/2`,
+      );
       if (devicePresetMismatchStreak < 2) {
         return;
       }
       devicePresetMismatchStreak = 0;
+      emitModelsSyncTrace(`deviceActive mismatch CONFIRMED -> full reload preset ${deviceActive}`);
       const names = await invoke<string[]>("get_preset_names");
       if (deviceActive >= 0 && deviceActive < names.length) {
         currentPresetIndex = deviceActive;
@@ -539,21 +617,31 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
       pendingHwLayoutSignature = null;
       consumePendingHardwareSlotSelection();
       await softRefreshParamsPaneFromSlots(normalized);
+      emitModelsSyncTrace(`softSync layout unchanged -> paramsPane only preset=${presetIdx}`);
       return;
     }
     // Anti-flash: un changement isolé/parsing transitoire ne doit pas reconstruire tout le haut.
-    // Après un dump USB frais dans ce cycle, on applique tout de suite la grille (évite état bancal :
-    // panneau params sur nouveau modèle mais pastilles encore à l’ancien).
+    // Dump USB après `hw_slot_notify` : re-render grille tout de suite (évite panneau params neuf + pastilles anciennes).
+    // Dump USB seulement `poll_interval` : même debounce que sans USB — le poll peut faire varier la signature
+    // un tick alors que la chaîne est identique (voir flash utilisateur + logs ModelsSync).
+    const usbDumpIsPollOnly = didUsbPresetDumpThisCycle && !forceUsbPending;
     if (lastHwSyncChainSignature !== null && sig !== lastHwSyncChainSignature) {
-      if (!didUsbPresetDumpThisCycle && pendingHwLayoutSignature !== sig) {
+      const allowLayoutDebounce = !didUsbPresetDumpThisCycle || usbDumpIsPollOnly;
+      if (allowLayoutDebounce && pendingHwLayoutSignature !== sig) {
         pendingHwLayoutSignature = sig;
         await softRefreshParamsPaneFromSlots(normalized);
+        emitModelsSyncTrace(
+          `softSync layout debounce pass1 -> paramsPane only (sig changed usbPollOnly=${usbDumpIsPollOnly})`,
+        );
         return;
       }
       pendingHwLayoutSignature = null;
     }
 
     rememberHwSyncChainLayout(normalized);
+    emitModelsSyncTrace(
+      `softSync -> renderSlots FULL preset=${presetIdx} didUsb=${didUsbPresetDumpThisCycle} usbPollOnly=${usbDumpIsPollOnly} sigLen=${sig.length}`,
+    );
     let routingFlow: RoutingMarker[] = [];
     let stompLayout: ActivePresetStompLayout | null = null;
     if (isKemplineGrid16(normalized)) {
@@ -868,9 +956,32 @@ function usbAssignVariantFromPickerSub(sub: string): string {
   return "mono";
 }
 
+function patchMatrixSlotVisualFromSlot(ki: number, slot: SlotDebug): void {
+  const nodes = contentEl.querySelectorAll<HTMLElement>(`[data-kempline-slot-index="${ki}"]`);
+  for (const old of nodes) {
+    const inner = gridSlotNode(slot, ki, { path: ki >= 8 ? 2 : 1 });
+    old.replaceWith(inner);
+  }
+}
+
+function patchMatrixCategoryDescFromSlot(ki: number, slot: SlotDebug): void {
+  const el = contentEl.querySelector<HTMLElement>(`[data-kempline-slot-desc-index="${ki}"]`);
+  if (!el) return;
+  const empty = !slot.category && slot.name === "<empty>";
+  if (empty) {
+    el.textContent = "";
+    el.removeAttribute("title");
+    return;
+  }
+  const cat = slot.category.trim();
+  el.textContent = cat;
+  if (cat) el.title = cat;
+  else el.removeAttribute("title");
+}
+
 /**
- * Clic sur une ligne du picker : sonde USB assignation modèle.
- * Slot occupé : `replace` ; slot vide : `add`.
+ * Clic sur une ligne du picker : MAJ immédiate pastille + paramètres (catalogue / défauts `.models`),
+ * puis ordre USB `probe_slot_model_usb`.
  */
 async function applySlotModelFromPickerListClick(
   catalogModelId: string,
@@ -896,16 +1007,82 @@ async function applySlotModelFromPickerListClick(
   const assignVariant =
     (assignVariantFromRow ?? "").trim().toLowerCase() ||
     usbAssignVariantFromPickerSub(slotPickerSubEl?.value ?? "");
+  const categoryName = (slotPickerCategoryEl?.value ?? "").trim();
+  if (!categoryName) {
+    console.warn("[SlotModelProbe] catégorie picker vide — impossible MAJ optimiste.");
+    try {
+      const out = await invoke<string>("probe_slot_model_usb", {
+        op,
+        slotIndex: ki,
+        catalogModelId,
+        assignVariant,
+      });
+      console.info("[SlotModelProbe]", op, displayName, catalogModelId, out);
+    } catch (e) {
+      console.warn("[SlotModelProbe]", e);
+    }
+    return;
+  }
+
+  const idTrim = catalogModelId.trim();
+  const metaEarly = await getPresetMetaForId(idTrim);
+  const moduleHexOpt =
+    (moduleHexFromCatalogForUsbVariant(metaEarly, assignVariant) ?? "").trim() || undefined;
+  const optimisticSlot: SlotDebug = {
+    category: categoryName,
+    name: displayName.trim(),
+    catalogModelId: idTrim,
+    moduleHex: moduleHexOpt,
+  };
+
+  const prevSnapshot =
+    lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16
+      ? lastHwSyncNormalizedSlots.map((s) => ({ ...s }))
+      : null;
+
+  if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16) {
+    const next = lastHwSyncNormalizedSlots.map((s, i) =>
+      i === ki ? { ...optimisticSlot } : { ...s },
+    );
+    lastHwSyncNormalizedSlots = next;
+    lastHwSyncChainSignature = chainLayoutSignature(next);
+  }
+
+  patchMatrixSlotVisualFromSlot(ki, optimisticSlot);
+  patchMatrixCategoryDescFromSlot(ki, optimisticSlot);
+  if (selectedParamsKemplineSlotIndex === ki) {
+    selectParamsPaneByKemplineIndex(ki);
+  }
+  markLiveWriteUiInteraction();
+  slotModelUsbProbeInFlight = ki;
   try {
+    await loadAndShowModelsParamsFromCatalogDefaults(optimisticSlot, idTrim, ki);
+
     const out = await invoke<string>("probe_slot_model_usb", {
       op,
       slotIndex: ki,
-      catalogModelId,
+      catalogModelId: idTrim,
       assignVariant,
     });
     console.info("[SlotModelProbe]", op, displayName, catalogModelId, out);
+    pendingForceUsbPresetContent = true;
   } catch (e) {
     console.warn("[SlotModelProbe]", e);
+    if (prevSnapshot) {
+      const old = prevSnapshot[ki]!;
+      patchMatrixSlotVisualFromSlot(ki, old);
+      patchMatrixCategoryDescFromSlot(ki, old);
+      lastHwSyncNormalizedSlots = prevSnapshot.map((s) => ({ ...s }));
+      lastHwSyncChainSignature = chainLayoutSignature(lastHwSyncNormalizedSlots);
+      if (selectedParamsKemplineSlotIndex === ki) {
+        selectParamsPaneByKemplineIndex(ki);
+      }
+      await loadAndShowModelsParamsForSlot(old, ki);
+    } else {
+      scheduleLoadForPreset(currentPresetIndex, true);
+    }
+  } finally {
+    slotModelUsbProbeInFlight = null;
   }
 }
 
@@ -1415,6 +1592,13 @@ function setStatus(text: string) {
 }
 
 function renderEmpty(text: string) {
+  if (modelsSyncTraceEnabled()) {
+    const st =
+      new Error().stack?.split("\n").slice(2, 7).map((s) => s.trim()).join(" <= ") ?? "";
+    emitModelsSyncTrace(
+      `renderEmpty text=${JSON.stringify(text)} preset=${currentPresetIndex} loaded=${loadedPresetIndex} loading=${loading} | ${st}`,
+    );
+  }
   clearSlotSelectionVisual();
   clearSelectedParamsContext();
   resetModelsParamsIdleHint();
@@ -2279,6 +2463,52 @@ function chainValueFromParamDefault(p: ModelParamDefJson): ChainParamValueJson |
   const d = p.default;
   if (typeof d === "boolean" || typeof d === "number" || typeof d === "string") return d;
   return undefined;
+}
+
+/** Valeurs chaîne « comme device » dérivées des défauts `.models` (ordre source mono/stéréo aligné sur `alignChainValuesToModelParamOrder`). */
+function buildDefaultChainValuesForSourceOrder(
+  allModelParams: ModelParamDefJson[],
+  catalogSignal: string | null | undefined,
+): ChainParamValueJson[] {
+  const signal = normalizeCatalogSignal(catalogSignal);
+  const buildSourceOrderIdsFromModels = (includeStereoOnly: boolean): string[] => {
+    const out: string[] = [];
+    for (let i = 0; i < allModelParams.length; i += 1) {
+      const p = allModelParams[i];
+      if (!includeStereoOnly && p["stereo-only"] === true) continue;
+      const sid = (p.symbolicID ?? "").trim();
+      if (!sid) continue;
+      out.push(sid);
+    }
+    return out;
+  };
+  const sourceAll = buildSourceOrderIdsFromModels(true);
+  const sourceMono = buildSourceOrderIdsFromModels(false);
+  let source = sourceAll;
+  if (signal === "mono") {
+    const diffAll = Math.abs(sourceAll.length);
+    const diffMono = Math.abs(sourceMono.length);
+    if (diffMono < diffAll) source = sourceMono;
+  }
+  const byId = new Map(
+    allModelParams
+      .map((p) => [(p.symbolicID ?? "").trim(), p] as const)
+      .filter(([k]) => Boolean(k)),
+  );
+  const out: ChainParamValueJson[] = [];
+  for (const sid of source) {
+    const p = byId.get(sid);
+    let v: ChainParamValueJson | undefined = p ? chainValueFromParamDefault(p) : undefined;
+    if (v === undefined && p) {
+      if (typeof p.min === "number" && Number.isFinite(p.min)) v = p.min;
+      else if (typeof p.default === "boolean") v = p.default;
+      else v = 0;
+    } else if (v === undefined) {
+      v = 0;
+    }
+    out.push(v);
+  }
+  return out;
 }
 
 function filterParamsByCatalogOrder(
@@ -3356,6 +3586,101 @@ async function loadAndShowModelsParamsForSlot(
   }
 }
 
+/** Panneau paramètres depuis le catalogue / `.models` uniquement (défauts), sans lecture chaîne USB. */
+async function loadAndShowModelsParamsFromCatalogDefaults(
+  slot: SlotDebug,
+  catalogModelIdTrimmed: string,
+  kemplineSlotIndex: number,
+): Promise<void> {
+  const seq = ++modelsParamsLoadSeq;
+  setModelsParamsPaneCategory(slot.category, slot.moduleHex, slot.slotTypeHex);
+  const nk = normalizeCategory(slot.category);
+  if (nk === "routing" || nk === "none" || nk === "favorites") {
+    if (seq === modelsParamsLoadSeq) showModelsParamsNotFound(slot, null);
+    return;
+  }
+  try {
+    const presetMetaForFiles = await getPresetMetaForId(catalogModelIdTrimmed);
+    const catalogPresetCategoryName = presetMetaForFiles?.categoryName ?? null;
+    const found = await findModelDefinitionForSlot(
+      slot,
+      catalogModelIdTrimmed,
+      catalogPresetCategoryName,
+    );
+    if (seq !== modelsParamsLoadSeq) return;
+    if (!found) {
+      showModelsParamsNotFound(slot, catalogModelIdTrimmed);
+      return;
+    }
+    const short = found.entry.name.trim();
+    kemplineTooltipCache.set(tooltipCacheKey(slot), short);
+    applyShortNameToSlotNodes(slot, short);
+    const meta = presetMetaForFiles;
+    const [catalogImage, catalogParamOrder] = await Promise.all([
+      getCatalogModelImageForId(catalogModelIdTrimmed),
+      getCatalogParamOrderForId(catalogModelIdTrimmed),
+    ]);
+    if (seq !== modelsParamsLoadSeq) return;
+    const catalogBasedOn = pickBasedOn(meta);
+    const catalogSubcategoryLabel = formatSubCategoryForHeader(meta, slot.moduleHex);
+    const catalogRoutingSignal = pickSignal(meta, slot.moduleHex);
+    let allCabDefinitions: ModelDefinitionJson[] | null = null;
+    if (nk === "amp+cab") {
+      try {
+        const byId = new Map<string, ModelDefinitionJson>();
+        for (const base of CAB_MODEL_DEFINITION_BASES) {
+          const defs = await loadModelsDefinitionArray(base);
+          for (const d of defs) {
+            const sid = (d.symbolicID ?? "").trim();
+            if (!sid || byId.has(sid)) continue;
+            byId.set(sid, d);
+          }
+        }
+        allCabDefinitions = [...byId.values()];
+      } catch {
+        allCabDefinitions = null;
+      }
+    }
+    const helixControlsMap = await getHelixControlsMap();
+    if (seq !== modelsParamsLoadSeq) return;
+    const defaultChain = buildDefaultChainValuesForSourceOrder(
+      found.entry.params ?? [],
+      catalogRoutingSignal,
+    );
+    renderModelsParamsPane(
+      slot,
+      found.entry.params ?? [],
+      catalogParamOrder,
+      short,
+      defaultChain,
+      null,
+      null,
+      allCabDefinitions,
+      catalogBasedOn,
+      catalogSubcategoryLabel,
+      catalogRoutingSignal,
+      helixControlsMap,
+      catalogImage,
+      kemplineSlotIndex,
+    );
+    void mountModelsSlotPicker().then(() => {
+      syncModelsSlotPickerFromLoadedModel(catalogModelIdTrimmed, meta, slot.moduleHex);
+    });
+    const slotKeyNow = makeSlotSelectionKey(slot, kemplineSlotIndex);
+    paramsPaneCatalogBySlotKey.set(slotKeyNow, catalogModelIdTrimmed);
+    if (
+      selectedParamsPresetIndex === currentPresetIndex &&
+      selectedParamsKemplineSlotIndex !== null &&
+      selectedParamsKemplineSlotIndex === kemplineSlotIndex
+    ) {
+      selectedParamsValuesSig = `${currentPresetIndex}|${kemplineSlotIndex}|${chainValuesSignature(defaultChain)}`;
+    }
+  } catch (e) {
+    if (seq !== modelsParamsLoadSeq) return;
+    showModelsParamsError(e instanceof Error ? e.message : String(e));
+  }
+}
+
 /** Même clé que pour le cache des infobulles (catégorie normalisée + nom Kempline brut). */
 function tooltipCacheKey(slot: SlotDebug): string {
   return JSON.stringify([normalizeCategory(slot.category), slot.name.trim()]);
@@ -4076,9 +4401,10 @@ function gridSlotNode(
 }
 
 /** Libellé catégorie : « Description Path 1 » (L2) ou « Description Path 2 » (L4) sous un slot. */
-function makeMatrixCategoryCell(slot: SlotDebug): HTMLElement {
+function makeMatrixCategoryCell(slot: SlotDebug, kemplineDescIndex: number): HTMLElement {
   const el = document.createElement("div");
   el.className = "hx-matrix-category";
+  el.dataset.kemplineSlotDescIndex = String(kemplineDescIndex);
   const empty = !slot.category && slot.name === "<empty>";
   if (empty) {
     el.textContent = "";
@@ -4304,7 +4630,7 @@ function renderGrid16(
         if (i >= 0 && i <= 7) {
           if (row === LINE_PATH_1)
             inner = gridSlotNode(slots[i]!, i, { path: 1 });
-          else if (row === LINE_DESC_PATH_1) inner = makeMatrixCategoryCell(slots[i]!);
+          else if (row === LINE_DESC_PATH_1) inner = makeMatrixCategoryCell(slots[i]!, i);
           else if (row === LINE_PATH_2 && hasBranchB)
             inner = gridSlotNode(slots[8 + i]!, 8 + i, {
               path: 2,
@@ -4312,7 +4638,7 @@ function renderGrid16(
               splitCol: routingCols.splitCol,
               mergeCol: routingCols.mergeCol,
             });
-          else if (row === LINE_DESC_PATH_2) inner = makeMatrixCategoryCell(slots[8 + i]!);
+          else if (row === LINE_DESC_PATH_2) inner = makeMatrixCategoryCell(slots[8 + i]!, 8 + i);
         }
       } else if (col >= 4 && col <= 18 && (col - 4) % 2 === 0) {
         const j = (col - 4) / 2;
@@ -4394,6 +4720,9 @@ function renderGrid16(
   root.appendChild(grid);
 
   clearSlotSelectionVisual();
+  emitModelsSyncTrace(
+    `renderGrid16 innerHTML clear preset=${currentPresetIndex} slots=${slots.length} loaded=${loadedPresetIndex}`,
+  );
   contentEl.innerHTML = "";
   contentEl.appendChild(root);
   const hadSelectedContext = hasSelectedParamsContextForCurrentPreset();
@@ -4496,6 +4825,12 @@ async function renderSlots(
   stompLayout: ActivePresetStompLayout | null = null,
 ) {
   if (rawSlots.length === 0) {
+    if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length > 0) {
+      emitModelsSyncTrace(
+        `renderSlots skip renderEmpty keep snapshot len=${lastHwSyncNormalizedSlots.length}`,
+      );
+      return;
+    }
     renderEmpty("Aucun bloc detecte dans ce preset.");
     return;
   }
@@ -4539,6 +4874,9 @@ async function renderSlots(
   }
 
   clearSlotSelectionVisual();
+  emitModelsSyncTrace(
+    `renderSlots(flow) innerHTML clear preset=${currentPresetIndex} rawSlots=${rawSlots.length}`,
+  );
   contentEl.innerHTML = "";
   contentEl.appendChild(root);
   const hadSelectedContext = hasSelectedParamsContextForCurrentPreset();
@@ -4583,6 +4921,9 @@ async function requestLoadForPreset(index: number) {
   lastSeenHardwareSlotSequence = -1;
   startLoadingHeartbeat("Lecture du preset actif");
   console.log(`[PresetDebug][models] request_preset_content preset=${index}`);
+  emitModelsSyncTrace(
+    `requestLoadForPreset start index=${index} currentPreset=${currentPresetIndex} loaded=${loadedPresetIndex}`,
+  );
 
   try {
     lastRequestPresetInvokeAt = Date.now();
@@ -4625,13 +4966,19 @@ async function requestLoadForPreset(index: number) {
         ? await invoke<[string, string, string, string][] | null>("get_active_preset_slots_debug")
         : await invoke<[string, string][] | null>("get_active_preset_slots");
       if (slots !== null) {
+        const normalizedSlots = normalizeSlotsPayloadFromInvoke(slots as never);
+        if (normalizedSlots.length === 0) {
+          return;
+        }
         window.clearInterval(timer);
         console.log(`[PresetDebug][models] slots ready preset=${index} count=${slots.length}`);
+        emitModelsSyncTrace(
+          `requestLoadForPreset slotsReady index=${index} count=${slots.length} tries=${tries}`,
+        );
         recoveryAttemptCount = 0;
         stopLoadingHeartbeat();
         loadedPresetIndex = index;
         lastSoftUsbPresetReadAt = Date.now();
-        const normalizedSlots = normalizeSlotsPayloadFromInvoke(slots as never);
         // Evite d'afficher une vieille réponse si l'utilisateur a recliqué ailleurs.
         if (currentPresetIndex === index) {
           let routingFlow: RoutingMarker[] = [];
@@ -4744,6 +5091,9 @@ async function refresh() {
       }
       mainWindowPresetDriftStreak = 0;
       console.log(`[PresetDebug][models] active preset changed ${currentPresetIndex} -> ${active}`);
+      emitModelsSyncTrace(
+        `refresh presetDrift CONFIRMED uiWas=${currentPresetIndex} backendActive=${active} -> renderEmpty+scheduleLoad`,
+      );
       currentPresetIndex = active;
       loadedPresetIndex = -1;
       clearSelectedParamsContext();
