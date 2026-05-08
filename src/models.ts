@@ -139,8 +139,15 @@ let lastHwSyncChainSignature: string | null = null;
 let pendingHwLayoutSignature: string | null = null;
 /** Snapshot liste presets + preset actif (device) pour éviter MAJ label inutiles. */
 let lastPresetNamesSig: string | null = null;
-/** Dernier événement "slot actif hardware" consommé côté UI. */
+/**
+ * Dernier événement "slot actif hardware" consommé côté UI.
+ * Valeur négative = "pas encore aligné après un chargement preset" : le premier soft-sync
+ * synchronise sans forcer un `request_preset_content` (évite un dump USB en rafale après chaque load).
+ */
 let lastSeenHardwareSlotSequence = 0;
+/** Deux constats consécutifs requis avant de traiter active_preset ≠ preset vue models (évite flash). */
+let devicePresetMismatchStreak = 0;
+let mainWindowPresetDriftStreak = 0;
 /** Slot à appliquer après rendu / sync si un nouvel événement hardware est détecté. */
 let pendingHardwareSelectedKemplineSlotIndex: number | null = null;
 /** Bus slot_bus pour les blocs spéciaux (Input/Output/Split/Merge) sans kempline index. */
@@ -167,6 +174,17 @@ function hwSlotDebugLog(message: string): void {
  */
 function applyHardwareSlotStateFromBackend(hw: HardwareActiveSlotState | null): boolean {
   if (!hw || !Number.isFinite(hw.sequence)) return false;
+  if (lastSeenHardwareSlotSequence < 0) {
+    lastSeenHardwareSlotSequence = hw.sequence;
+    const nextIdx =
+      Number.isInteger(hw.slotIndex) && (hw.slotIndex as number) >= 0
+        ? (hw.slotIndex as number)
+        : null;
+    const nextBus = Number.isInteger(hw.slotBus) ? (hw.slotBus as number) : null;
+    pendingHardwareSelectedKemplineSlotIndex = nextIdx;
+    pendingHardwareSelectedSlotBus = nextBus;
+    return false;
+  }
   let forceUsb = false;
   if (hw.sequence < lastSeenHardwareSlotSequence) {
     hwSlotDebugLog(
@@ -486,6 +504,11 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
 
     const deviceActive = await invoke<number>("get_active_preset");
     if (deviceActive !== presetIdx) {
+      devicePresetMismatchStreak += 1;
+      if (devicePresetMismatchStreak < 2) {
+        return;
+      }
+      devicePresetMismatchStreak = 0;
       const names = await invoke<string[]>("get_preset_names");
       if (deviceActive >= 0 && deviceActive < names.length) {
         currentPresetIndex = deviceActive;
@@ -496,6 +519,7 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
       }
       return;
     }
+    devicePresetMismatchStreak = 0;
 
     const names = await invoke<string[]>("get_preset_names");
     const nameSig = `${deviceActive}\n${names.join("\n")}`;
@@ -4554,9 +4578,9 @@ async function requestLoadForPreset(index: number) {
   hardwareSyncPausedForPresetLoad = true;
   pendingPresetIndex = -1;
   lastRequestedPresetIndex = index;
-  // Forcer la détection du slot HW comme "nouveau" au prochain cycle soft refresh,
-  // même si le slot n'a pas changé depuis le dernier preset.
-  lastSeenHardwareSlotSequence = 0;
+  // Sentinel : le premier soft-sync aligne la séquence HW sans déclencher un dump USB « artificiel »
+  // (voir applyHardwareSlotStateFromBackend). Le chargement peut aussi écraser via hwSnap.
+  lastSeenHardwareSlotSequence = -1;
   startLoadingHeartbeat("Lecture du preset actif");
   console.log(`[PresetDebug][models] request_preset_content preset=${index}`);
 
@@ -4714,12 +4738,19 @@ async function refresh() {
     lastPresetNamesSig = `${active}\n${names.join("\n")}`;
 
     if (active !== currentPresetIndex) {
+      mainWindowPresetDriftStreak += 1;
+      if (mainWindowPresetDriftStreak < 2) {
+        return;
+      }
+      mainWindowPresetDriftStreak = 0;
       console.log(`[PresetDebug][models] active preset changed ${currentPresetIndex} -> ${active}`);
       currentPresetIndex = active;
       loadedPresetIndex = -1;
       clearSelectedParamsContext();
       renderEmpty("Chargement des modeles...");
       scheduleLoadForPreset(active, true);
+    } else {
+      mainWindowPresetDriftStreak = 0;
     }
     if (!loading && loadedPresetIndex !== currentPresetIndex) {
       scheduleLoadForPreset(currentPresetIndex, false);
