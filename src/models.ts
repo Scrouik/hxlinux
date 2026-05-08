@@ -73,7 +73,8 @@ const HW_SYNC_INTERVAL_MS_KEY = "models_hw_sync_interval_ms";
  * (valeurs chaîne / grille figées jusqu’à un chargement explicite).
  */
 const HW_USB_PRESET_POLL_MS_KEY = "models_hw_usb_preset_poll_ms";
-const HW_USB_PRESET_POLL_DEFAULT_MS = 4000;
+/** Défaut un peu plus agressif qu’HX Edit, mais sans refaire un dump à chaque poll UI (200 ms). */
+const HW_USB_PRESET_POLL_DEFAULT_MS = 2500;
 const HW_USB_PRESET_POLL_MIN_MS = 500;
 const HW_USB_PRESET_POLL_MAX_MS = 120000;
 const DEBUG_HW_SLOT_SYNC_FLAG = "models_debug_hw_slot_sync";
@@ -88,6 +89,8 @@ const REQUEST_PRESET_HARD_RECOVERY_AFTER = 4;
 let lastHardwareSyncAt = 0;
 /** Dernier `request_preset_content` réussi déclenché par le soft-sync (pas les chargements utilisateur). */
 let lastSoftUsbPresetReadAt = 0;
+/** Quand le Helix notifie un nouveau slot actif, on veut un dump preset tout de suite (pas attendre le poll périodique). */
+let pendingForceUsbPresetContent = false;
 let hardwareSyncBusy = false;
 let hardwareSyncPausedForPresetLoad = false;
 let lastLiveWriteAt = 0;
@@ -156,6 +159,35 @@ function hwSlotDebugEnabled(): boolean {
 function hwSlotDebugLog(message: string): void {
   if (!hwSlotDebugEnabled()) return;
   console.log(`[HwSlotSync] ${message}`);
+}
+
+/**
+ * Applique l’état « slot actif » vu côté backend. Retourne true si la séquence a augmenté
+ * (nouvelle sélection sur le hardware) → on forcera un `request_preset_content` au plus vite.
+ */
+function applyHardwareSlotStateFromBackend(hw: HardwareActiveSlotState | null): boolean {
+  if (!hw || !Number.isFinite(hw.sequence)) return false;
+  let forceUsb = false;
+  if (hw.sequence < lastSeenHardwareSlotSequence) {
+    hwSlotDebugLog(
+      `reset sequence local=${lastSeenHardwareSlotSequence} backend=${hw.sequence}`,
+    );
+    lastSeenHardwareSlotSequence = hw.sequence;
+  } else if (hw.sequence > lastSeenHardwareSlotSequence) {
+    forceUsb = true;
+    const nextIdx =
+      Number.isInteger(hw.slotIndex) && (hw.slotIndex as number) >= 0
+        ? (hw.slotIndex as number)
+        : null;
+    const nextBus = Number.isInteger(hw.slotBus) ? (hw.slotBus as number) : null;
+    hwSlotDebugLog(
+      `event sequence ${lastSeenHardwareSlotSequence} -> ${hw.sequence}, slot=${nextIdx ?? "null"}, bus=${nextBus ?? "null"}`,
+    );
+    lastSeenHardwareSlotSequence = hw.sequence;
+    pendingHardwareSelectedKemplineSlotIndex = nextIdx;
+    pendingHardwareSelectedSlotBus = nextBus;
+  }
+  return forceUsb;
 }
 
 function catalogChainHexLogEnabled(): boolean {
@@ -383,18 +415,34 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
   if (!wroteThisCycle && now - lastLiveWriteAt < LIVE_WRITE_SYNC_PAUSE_MS) return;
   if (now - lastHardwareSyncAt < syncMs) return;
 
+  let hwSlotState: HardwareActiveSlotState | null = null;
+  try {
+    hwSlotState = await invoke<HardwareActiveSlotState>("get_active_hardware_slot_state");
+  } catch {
+    hwSlotState = null;
+  }
+  if (applyHardwareSlotStateFromBackend(hwSlotState)) {
+    pendingForceUsbPresetContent = true;
+  }
+
   const usbPresetPollMs = getHardwareUsbPresetPollMs();
   const wantUsbPresetDump =
-    usbPresetPollMs > 0 && now - lastSoftUsbPresetReadAt >= usbPresetPollMs;
-  if (wantUsbPresetDump && requestPresetCooldownRemainingMs(now) > 0) return;
+    pendingForceUsbPresetContent ||
+    (usbPresetPollMs > 0 && now - lastSoftUsbPresetReadAt >= usbPresetPollMs);
+  if (wantUsbPresetDump && requestPresetCooldownRemainingMs(now) > 0 && !pendingForceUsbPresetContent) {
+    return;
+  }
   lastHardwareSyncAt = now;
 
   const presetIdx = currentPresetIndex;
   hardwareSyncBusy = true;
   try {
     let normalized: SlotDebug[] | null = null;
+    let didUsbPresetDumpThisCycle = false;
 
     if (wantUsbPresetDump) {
+      pendingForceUsbPresetContent = false;
+      didUsbPresetDumpThisCycle = true;
       lastRequestPresetInvokeAt = Date.now();
       await invoke("request_preset_content");
 
@@ -461,34 +509,6 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
 
     await logCatalogChainHexDiffIfNeeded(normalized, presetIdx);
 
-    let hwSlotState: HardwareActiveSlotState | null = null;
-    try {
-      hwSlotState = await invoke<HardwareActiveSlotState>("get_active_hardware_slot_state");
-    } catch {
-      hwSlotState = null;
-    }
-    if (hwSlotState && Number.isFinite(hwSlotState.sequence)) {
-      if (hwSlotState.sequence < lastSeenHardwareSlotSequence) {
-        // Reconnexion/redémarrage backend: repartir du compteur actuel.
-        hwSlotDebugLog(
-          `reset sequence local=${lastSeenHardwareSlotSequence} backend=${hwSlotState.sequence}`,
-        );
-        lastSeenHardwareSlotSequence = hwSlotState.sequence;
-      } else if (hwSlotState.sequence > lastSeenHardwareSlotSequence) {
-        const nextIdx =
-          Number.isInteger(hwSlotState.slotIndex) && (hwSlotState.slotIndex as number) >= 0
-            ? (hwSlotState.slotIndex as number)
-            : null;
-        const nextBus = Number.isInteger(hwSlotState.slotBus) ? (hwSlotState.slotBus as number) : null;
-        hwSlotDebugLog(
-          `event sequence ${lastSeenHardwareSlotSequence} -> ${hwSlotState.sequence}, slot=${nextIdx ?? "null"}, bus=${nextBus ?? "null"}`,
-        );
-        lastSeenHardwareSlotSequence = hwSlotState.sequence;
-        pendingHardwareSelectedKemplineSlotIndex = nextIdx;
-        pendingHardwareSelectedSlotBus = nextBus;
-      }
-    }
-
     const sig = chainLayoutSignature(normalized);
     // Layout inchangé => on évite `renderSlots` (flash) et on met à jour uniquement le panneau sélectionné.
     if (lastHwSyncChainSignature !== null && sig === lastHwSyncChainSignature) {
@@ -498,13 +518,15 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
       return;
     }
     // Anti-flash: un changement isolé/parsing transitoire ne doit pas reconstruire tout le haut.
-    // On ne rerender que si la nouvelle signature est observée 2 cycles d'affilée.
+    // Après un dump USB frais dans ce cycle, on applique tout de suite la grille (évite état bancal :
+    // panneau params sur nouveau modèle mais pastilles encore à l’ancien).
     if (lastHwSyncChainSignature !== null && sig !== lastHwSyncChainSignature) {
-      if (pendingHwLayoutSignature !== sig) {
+      if (!didUsbPresetDumpThisCycle && pendingHwLayoutSignature !== sig) {
         pendingHwLayoutSignature = sig;
         await softRefreshParamsPaneFromSlots(normalized);
         return;
       }
+      pendingHwLayoutSignature = null;
     }
 
     rememberHwSyncChainLayout(normalized);
