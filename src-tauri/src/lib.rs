@@ -453,6 +453,146 @@ fn switch_active_hardware_slot(
     Ok(())
 }
 
+/// Sonde expérimentale **focus slot** USB : même enveloppe `1d … 80:10:ed:03` que
+/// [`switch_active_hardware_slot`], avec variante **`83:66:cd:04`** observée sur captures HX Edit
+/// (`Slot1_to_slot2_PresetTest_HXEdit.json`, etc.) vs **`cd:03`** côté HXLinux actuel.
+///
+/// Ne met **pas** à jour `hw_active_slot_*` (évite de désynchroniser l’UI pendant l’essai).
+/// Les réponses **IN** `0x81` sont consommées par `usb_listener` — pour les voir :  
+/// `invoke("set_usb_trace_enabled", { enabled: true })` et/ou `set_usb_io_diag`.
+///
+/// Paramètres :
+/// - `style` : `hx_edit_cd04` (défaut) ou `hxlinux_cd03` (équivalent commande switch).
+/// - `tagByte` : optionnel ; octet après `cd` (captures HX : souvent `slot_bus` en `cd:04`, `0xf9` en `cd:03`).
+/// - `includeChainFromDump` : si `true` (défaut), résume le parse `preset_chain_params` sur le segment
+///   assignable du slot depuis **`preset_data`** déjà chargé (valide la chaîne parse, pas le trafic IN).
+#[tauri::command]
+fn probe_hardware_slot_focus_usb(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_index: u32,
+    style: Option<String>,
+    tag_byte: Option<u8>,
+    include_chain_from_dump: Option<bool>,
+) -> Result<Value, String> {
+    if slot_index >= 16 {
+        return Err("slotIndex hors plage (0..15)".to_string());
+    }
+    let style_raw = style
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("hx_edit_cd04");
+    let style_lc = style_raw.to_ascii_lowercase();
+    let (cd_variant, style_key) = match style_lc.as_str() {
+        "hx_edit" | "hx_edit_cd04" | "cd04" => (0x04u8, "hx_edit_cd04"),
+        "hxlinux" | "hxlinux_cd03" | "cd03" | "linux" => (0x03u8, "hxlinux_cd03"),
+        other => {
+            return Err(format!(
+                "style inconnu: {other} (attendu: hx_edit_cd04 | hxlinux_cd03)"
+            ));
+        }
+    };
+
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        (app.active_preset, app.helix_state.clone())
+    };
+    let helix_arc = helix_arc.ok_or_else(|| "HX non connecté".to_string())?;
+
+    let slot_bus = kempline_index_to_slot_bus(slot_index as usize)
+        .ok_or_else(|| "slotIndex invalide".to_string())?;
+
+    let tag = tag_byte.unwrap_or(if cd_variant == 0x04 {
+        slot_bus
+    } else {
+        0xf9
+    });
+
+    let mut s = helix_arc.lock().unwrap();
+    if !s.connected {
+        return Err("HX non connecté".to_string());
+    }
+    if s.preset_content_only {
+        return Err("probe ignorée pendant lecture preset (preset_content_only)".to_string());
+    }
+
+    let cnt = s.next_x80_cnt();
+    let session = s.session_no;
+    let double = s.preset_data_packet_double();
+    let packet = vec![
+        0x1d, 0x00, 0x00, 0x18,
+        0x80, 0x10, 0xed, 0x03,
+        0x00, cnt, 0x00, 0x04,
+        session, double[0], double[1], 0x00,
+        0x01, 0x00, 0x06, 0x00,
+        0x0d, 0x00, 0x00, 0x00,
+        0x83, 0x66, 0xcd, cd_variant,
+        tag, 0x64, 0x4e, 0x65,
+        0x82, 0x62, slot_bus, 0x1a,
+        0x00, 0x00, 0x00, 0x00,
+    ];
+
+    let include_dump = include_chain_from_dump.unwrap_or(true);
+    let chain_json = if include_dump {
+        let ready = s.preset_data_ready && !s.preset_data.is_empty();
+        let idx_ok = s.preset_index == active_preset;
+        let mut snap = serde_json::json!({
+            "presetDataReady": ready,
+            "presetIndexMatchesActive": idx_ok,
+            "segmentLen": serde_json::Value::Null,
+            "chainParamCount": serde_json::Value::Null,
+            "parseOk": false,
+        });
+        if ready && idx_ok {
+            if let Some(seg) = kempline_assignable_segment_bytes(&s.preset_data, slot_index as usize)
+            {
+                snap["segmentLen"] = serde_json::json!(seg.len());
+                if let Some(vals) = chain_param_values_for_assignable_segment(seg) {
+                    snap["chainParamCount"] = serde_json::json!(vals.len());
+                    snap["parseOk"] = serde_json::json!(true);
+                }
+            }
+        }
+        Some(snap)
+    } else {
+        None
+    };
+
+    s.send(OutPacket::new(packet.clone()));
+    drop(s);
+
+    let out_hex = packet
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join(" ");
+    eprintln!(
+        "[SlotFocusProbe][sent] style={} slot_index={} slot_bus={:02x} cd={:02x} tag={:02x} len={} {}",
+        style_key,
+        slot_index,
+        slot_bus,
+        cd_variant,
+        tag,
+        packet.len(),
+        out_hex
+    );
+
+    let mut root = serde_json::json!({
+        "slotIndex": slot_index,
+        "slotBus": slot_bus,
+        "style": style_key,
+        "cdVariant": cd_variant,
+        "tagByte": tag,
+        "outPacketLen": packet.len(),
+        "outPacketHex": out_hex,
+        "inTrafficHint": "Le flux IN 0x81 est lu par usb_listener : activer set_usb_trace_enabled et/ou set_usb_io_diag pour voir les réponses dans le terminal.",
+    });
+    if let Some(c) = chain_json {
+        root["chainFromDump"] = c;
+    }
+    Ok(root)
+}
+
 /// Sonde USB « assignation de modèle dans un slot » (captures HX Edit, best-effort).
 /// `op` : `add` (slot vide, bulk 56 o ancienne capture) ou `replace` (slot occupé, bulk **48 o**
 /// `83:66:cd:04` + courts `80:10`, voir Preset33 mai 2026 — `slot_bus` + octet voie `2*slotIndex`).
@@ -2705,6 +2845,7 @@ pub fn run() {
             rename_preset,
             activate_preset,
             switch_active_hardware_slot,
+            probe_hardware_slot_focus_usb,
             request_preset_content,
             force_recover_preset_reader,
             probe_live_param_write,

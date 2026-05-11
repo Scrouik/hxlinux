@@ -2,6 +2,20 @@
 
 Ce fichier sert de **mémo locale** quand l’historique de chat ou le contexte IDE est perdu après un redémarrage. Il complète le `README.md` (objectifs produit et commandes de base).
 
+**11 mai 2026 — lecture preset vs changement de slot (captures HX Edit) + garde-fous JS / suite**
+
+- **Constat captures Windows (HX Edit)** dans `src/Paquets Json/` :
+  - **`Change_to_PresetTest_HXEdit.json`** : se positionner sur le preset « Preset Test » → trafic **plus lourd** (ex. plus d’**OUT `0x01` avec `80:10:ed:03`**, plus d’octets **IN bulk `0x81`** que les captures slot-only).
+  - **`Slot1_to_slot2_PresetTest_HXEdit.json`** / **`Slot2_to_slot3_PresetTest_HXEdit.json`** : changement de **slot** dans le **même** preset → trafic **nettement plus léger** → **forte présomption** : HX Edit **ne** refait **pas** une relecture preset **équivalente** à un changement / focus preset ; lecture **plus ciblée** (à corréler au parseur).
+- **Trames repérées (ex. `Slot1_to_slot2_PresetTest_HXEdit.json`, ~+874 ms après début fichier)** :
+  - **OUT `0x01` #1335** (40 octets `usb.capdata`) : commande type focus slot, contient **`83:66:cd:04`** (variante par rapport au **`cd:03`** observé sur la commande **`switch_active_hardware_slot`** côté HXLinux) puis **`82:62:02:1a`** (`slot_bus` **0x02** = slot path 1 index 1).
+  - **IN `0x81` #1359** (36 octets) puis **#1361** (44 octets) : courtes réponses après l’OUT ; candidats pour la **réponse « bloc slot »** (pas un dump preset entier).
+- **HXLinux (11 mai)** : sur notif **slot actif** (séquence backend), le soft-sync **ne force plus** par défaut **`request_preset_content`** : **`get_active_preset_slots`** + panneau params depuis **`preset_data`** RAM (pas de dump USB à chaque changement de slot). Option **`localStorage`** **`models_hw_force_preset_dump_on_slot_notify=1`** pour réactiver la relecture preset immédiate (secours). **`get_active_preset_slot_chain_param_values`** reste sans USB : segments depuis **`preset_data`** après chargement preset ou **`models_hw_usb_preset_poll_ms`**.
+- **Garde-fous ajoutés / à conserver** pendant l’exploration « lecture slot » (ne **pas** tout retirer d’un bloc) :
+  - **`src/models.ts`** : file **`enqueueHardwareSlotSwitch`** (pas deux `switch_active_hardware_slot` concurrents) ; **`waitUntilHardwareSyncIdle`** avant switch (évite un switch **pendant** les `await` du soft-sync / dump) ; **`fetchSlotChainParamValuesReliable`** en attente **temps** (défaut **14 s**, soft-refresh idem **14 s**) + trace **`chainFetch TIMEOUT`** si sync trace activée.
+  - **`src-tauri/src/helix/usb_writer.rs`** : **`MIN_ED03_OUT_GAP_MS = 14`** (test **20 ms** rétrogradé ; l’écart slot/preset côté UI tenait surtout aux **courses** buffer vide / sync, pas à ce seul réglage).
+- **Suite** : commande Tauri **`probe_hardware_slot_focus_usb`** (rejoue OUT type capture HX Edit, parse segment optionnel depuis **`preset_data`**). Prochain pas : exploiter les **IN courtes** côté parseur si nécessaire au-delà du refresh RAM. **Ne pas** supprimer les stabilisations tant qu’elles ne sont pas redondantes mesurées.
+
 **2 mai 2026 — protocole ED03 stabilisé, blocs spéciaux (Input/Output/Split/Merge) détectés comme slot actif. Voir section « 30 avril – 2 mai 2026 » ci-dessous.**
 
 **8 mai 2026 — anti-flash matrice, picker optimiste, parse preset transitoire, traces ModelsSync**
