@@ -114,6 +114,9 @@ let slotModelUsbProbeInFlight: number | null = null;
  */
 let mergeProbeSlotModelUntil: { ki: number; deadline: number } | null = null;
 const PROBE_SLOT_MERGE_GRACE_MS = 20_000;
+/** Évite un `request_preset_content` (poll) collé au trafic `probe_slot_model_usb` → preset_data vidé → chainFetch null / hardwareSyncBusy long. */
+let suppressUsbPresetPollUntilMs = 0;
+const USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS = 10_000;
 let hardwareSyncPausedForPresetLoad = false;
 let lastLiveWriteAt = 0;
 let liveWriteUiInteractionUntil = 0;
@@ -586,9 +589,11 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
 
   const usbPresetPollMs = getHardwareUsbPresetPollMs();
   const forceUsbPending = pendingForceUsbPresetContent;
-  const wantUsbPresetDump =
-    pendingForceUsbPresetContent ||
-    (usbPresetPollMs > 0 && now - lastSoftUsbPresetReadAt >= usbPresetPollMs);
+  const pollPresetDue =
+    usbPresetPollMs > 0 &&
+    now - lastSoftUsbPresetReadAt >= usbPresetPollMs &&
+    now >= suppressUsbPresetPollUntilMs;
+  const wantUsbPresetDump = pendingForceUsbPresetContent || pollPresetDue;
   if (wantUsbPresetDump && requestPresetCooldownRemainingMs(now) > 0 && !pendingForceUsbPresetContent) {
     emitModelsSyncTrace(
       `softSync skip cooldown wantUsb pollMs=${usbPresetPollMs} lastUsbReadAge=${now - lastSoftUsbPresetReadAt}ms`,
@@ -1202,6 +1207,8 @@ async function applySlotModelFromPickerListClick(
     });
     console.info("[SlotModelProbe]", op, displayName, catalogModelId, out);
     mergeProbeSlotModelUntil = { ki, deadline: Date.now() + PROBE_SLOT_MERGE_GRACE_MS };
+    suppressUsbPresetPollUntilMs = Date.now() + USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS;
+    lastSoftUsbPresetReadAt = Date.now();
     emitModelsSyncTrace(
       `slot_model_probe ok slot=${ki} — no pendingForceUsbPresetContent (pas de relecture preset complète)`,
     );
@@ -5055,6 +5062,7 @@ async function requestLoadForPreset(index: number) {
   loading = true;
   hardwareSyncPausedForPresetLoad = true;
   mergeProbeSlotModelUntil = null;
+  suppressUsbPresetPollUntilMs = 0;
   pendingPresetIndex = -1;
   lastRequestedPresetIndex = index;
   // Sentinel : le premier soft-sync aligne la séquence HW sans déclencher un dump USB « artificiel »
@@ -5285,6 +5293,7 @@ window.addEventListener("DOMContentLoaded", () => {
     currentPresetIndex = index;
     loadedPresetIndex = -1;
     mergeProbeSlotModelUntil = null;
+    suppressUsbPresetPollUntilMs = 0;
     clearSelectedParamsContext();
     renderEmpty("Chargement des modeles...");
     scheduleLoadForPreset(index, true);
