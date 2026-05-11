@@ -663,6 +663,17 @@ fn sync_hardware_slot_focus_usb(
         std::mem::swap(&mut frames, &mut s.usb_slot_focus_capture);
     }
 
+    let parsed = helix::slot_focus_in::parse_slot_focus_bulk_in_frames(&frames);
+    let slot_focus_parsed =
+        serde_json::to_value(&parsed).unwrap_or(serde_json::Value::Null);
+    let slot_idx_usize = slot_index as usize;
+    {
+        let mut s = helix_arc.lock().unwrap();
+        if slot_idx_usize < 16 {
+            s.last_slot_focus_capsule[slot_idx_usize] = parsed.clone();
+        }
+    }
+
     let frames_hex: Vec<String> = frames
         .iter()
         .map(|f| {
@@ -675,10 +686,11 @@ fn sync_hardware_slot_focus_usb(
 
     if preset_debug_verbose_enabled() {
         eprintln!(
-            "[SlotFocusSync] slot_index={} slot_bus={:02x} in_frames={} out={}",
+            "[SlotFocusSync] slot_index={} slot_bus={:02x} in_frames={} parsed={} out={}",
             slot_index,
             slot_bus,
             frames_hex.len(),
+            parsed.is_some(),
             out_hex
         );
     }
@@ -691,6 +703,7 @@ fn sync_hardware_slot_focus_usb(
         "waitElapsedMs": t0.elapsed().as_millis() as u64,
         "inFrameCount": frames_hex.len(),
         "inFramesHex": frames_hex,
+        "slotFocusParsed": slot_focus_parsed,
     }))
 }
 
@@ -1118,6 +1131,7 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
     s.preset_index = active_preset;
     s.preset_data_ready = false;
     s.preset_data.clear();
+    s.last_slot_focus_capsule = std::array::from_fn(|_| None);
     // preset_content_only=true dans les deux cas : bloque les RequestPresetName
     // déclenchés par le MIDI listener pendant qu'on attend le x2 de confirmation.
     s.preset_content_only = true;
@@ -1187,6 +1201,7 @@ fn force_recover_preset_reader(state: tauri::State<Arc<Mutex<AppState>>>) -> Res
         s.preset_content_only = false;
         s.preset_data_ready = false;
         s.preset_data.clear();
+        s.last_slot_focus_capsule = std::array::from_fn(|_| None);
         // Re-synchronise l'état de requête (mêmes valeurs de base que RequestPreset::shutdown no-data).
         s.preset_pkt_counter = 0x001e;
         s.request_preset_session_id = 0xf4;
@@ -1334,6 +1349,10 @@ fn get_active_preset_stomp_layout(
 
 /// Valeurs de chaîne lues dans le segment preset du slot **Kempline 0..15** (`read_params` Python).
 /// `None` : pas de données preset actives, slot hors plage, segment vide `06`, ou parse impossible.
+///
+/// **Sans buffer preset** : si un [`SlotFocusInCapsule`] a été rempli pour ce slot (via
+/// `sync_hardware_slot_focus_usb`) et que le `slot_bus` correspond, renvoie `Some(vec![])` pour
+/// éviter un timeout côté front ; l’empreinte USB est dans `slotFocusParsed` sur la réponse sync.
 #[tauri::command]
 fn get_active_preset_slot_chain_param_values(
     state: tauri::State<Arc<Mutex<AppState>>>,
@@ -1342,19 +1361,45 @@ fn get_active_preset_slot_chain_param_values(
     if slot_index >= 16 {
         return None;
     }
+    let slot_idx = slot_index as usize;
     let (active_preset, helix_arc) = {
         let app = state.lock().unwrap();
         (app.active_preset, app.helix_state.clone()?)
     };
+    let expected_bus = kempline_index_to_slot_bus(slot_idx)?;
     let s = helix_arc.lock().unwrap();
-    if !s.preset_data_ready || s.preset_data.is_empty() {
-        return None;
+    let dump_ok =
+        s.preset_data_ready && !s.preset_data.is_empty() && s.preset_index == active_preset;
+    if dump_ok {
+        if let Some(seg) = kempline_assignable_segment_bytes(&s.preset_data, slot_idx) {
+            if let Some(vals) = chain_param_values_for_assignable_segment(&seg) {
+                if preset_debug_verbose_enabled() {
+                    if let Some(ref cap) = s.last_slot_focus_capsule[slot_idx] {
+                        if cap.slot_bus == expected_bus {
+                            if let Some(off) = helix::slot_focus_in::find_anchor_subsequence(
+                                &s.preset_data,
+                                &cap.anchor12,
+                            ) {
+                                eprintln!(
+                                    "[SlotFocus][corr] slot_index={} anchor12 @ preset offset {:#x} (len={})",
+                                    slot_index,
+                                    off,
+                                    s.preset_data.len()
+                                );
+                            }
+                        }
+                    }
+                }
+                return Some(vals);
+            }
+        }
     }
-    if s.preset_index != active_preset {
-        return None;
+    if let Some(ref cap) = s.last_slot_focus_capsule[slot_idx] {
+        if cap.slot_bus == expected_bus {
+            return Some(Vec::new());
+        }
     }
-    let seg = kempline_assignable_segment_bytes(&s.preset_data, slot_index as usize)?;
-    chain_param_values_for_assignable_segment(&seg)
+    None
 }
 
 /// Valeurs de chaîne des segments I/O Path 1 (Input/Output) dans la fenêtre Kempline.
@@ -3562,5 +3607,94 @@ mod extract_first_module_amp_cab_inference_tests {
         ];
         let slot = extract_first_module_from_assignable_chunk(&seg);
         assert_eq!(slot.module_hex, "06");
+    }
+}
+
+/// Références Wireshark **HX Edit**, même preset « Preset Test », changement de slot **sans**
+/// modification du contenu des slots (`Slot1_to_slot2_PresetTest_HXEdit.json` vs
+/// `Slot2_to_slot3_PresetTest_HXEdit.json`). Sert de garde-fou si on parse les IN `0x81` côté Rust.
+#[cfg(test)]
+mod hxedit_slot_focus_preset_test_reference {
+    fn capdata_hex(s: &str) -> Vec<u8> {
+        s.split(':')
+            .filter(|t| !t.is_empty())
+            .map(|b| u8::from_str_radix(b, 16).unwrap())
+            .collect()
+    }
+
+    /// OUT bulk `0x01`, 40 octets — aligné [`probe_hardware_slot_focus_usb`] `hx_edit_cd04`.
+    const OUT_SLOT1_TO_2: &str = "1d:00:00:18:80:10:ed:03:00:eb:00:04:6b:4e:00:00:01:00:06:00:0d:00:00:00:83:66:cd:04:02:64:4e:65:82:62:02:1a:00:00:00:00";
+    const OUT_SLOT2_TO_3: &str = "1d:00:00:18:80:10:ed:03:00:1c:00:04:7c:4e:00:00:01:00:06:00:0d:00:00:00:83:66:cd:04:03:64:4e:65:82:62:03:1a:00:00:00:00";
+
+    /// IN `0x81` immédiatement après l’OUT (36 puis 44 octets dans les captures).
+    const IN36_SLOT2: &str = "19:00:00:18:ed:03:80:10:00:f9:00:04:14:04:00:00:00:00:06:00:09:00:00:00:83:66:cd:04:02:67:00:68:c0:79:13:6a";
+    const IN36_SLOT3: &str = "19:00:00:18:ed:03:80:10:00:2c:00:04:29:04:00:00:00:00:06:00:09:00:00:00:83:66:cd:04:03:67:00:68:c0:79:13:6a";
+
+    const IN44_SLOT2: &str = "21:00:00:18:f0:03:02:10:00:c5:00:04:09:02:00:00:00:00:04:00:11:00:00:00:82:69:27:6a:84:52:01:44:03:79:13:6a:82:62:02:1a:00:c2:40:c0";
+    const IN44_SLOT3: &str = "21:00:00:18:f0:03:02:10:00:f7:00:04:09:02:00:00:00:00:04:00:11:00:00:00:82:69:27:6a:84:52:01:44:03:79:13:6a:82:62:03:1a:00:c2:40:c0";
+
+    #[test]
+    fn out_packets_differ_only_in_session_like_fields_and_slot_bus() {
+        let a = capdata_hex(OUT_SLOT1_TO_2);
+        let b = capdata_hex(OUT_SLOT2_TO_3);
+        assert_eq!(a.len(), 40);
+        assert_eq!(b.len(), 40);
+        // En-tête ED03 + compteur : varie entre captures.
+        assert_ne!(a[8..12], b[8..12]);
+        assert_ne!(a[12..16], b[12..16]);
+        // Corps fixe jusqu’à `83:66:cd:04`.
+        assert_eq!(&a[16..28], &b[16..28]);
+        // Octet après `cd:04` = tag (= slot_bus dans ces captures).
+        assert_eq!(a[28], 0x02);
+        assert_eq!(b[28], 0x03);
+        assert_eq!(&a[29..32], &[0x64, 0x4e, 0x65]);
+        assert_eq!(&a[29..32], &b[29..32]);
+        assert_eq!(a[32], 0x82);
+        assert_eq!(a[33], 0x62);
+        assert_eq!(a[34], 0x02);
+        assert_eq!(b[34], 0x03);
+        assert_eq!(a[35], 0x1a);
+        assert_eq!(&a[36..40], &b[36..40]);
+    }
+
+    #[test]
+    fn in36_ed03_replies_echo_slot_bus_and_share_suffix() {
+        let s2 = capdata_hex(IN36_SLOT2);
+        let s3 = capdata_hex(IN36_SLOT3);
+        assert_eq!(s2.len(), 36);
+        assert_eq!(s3.len(), 36);
+        assert_eq!(&s2[0..8], &s3[0..8]);
+        assert_eq!(s2[8], s3[8]);
+        assert_ne!(s2[9], s3[9]);
+        assert_eq!(&s2[10..12], &s3[10..12]);
+        assert_ne!(&s2[12..14], &s3[12..14]);
+        assert_eq!(&s2[14..28], &s3[14..28]);
+        assert_eq!(s2[28], 0x02);
+        assert_eq!(s3[28], 0x03);
+        // Suffixe identique sur ces deux gestes (preset inchangé, slots non édités).
+        assert_eq!(&s2[29..36], &[0x67, 0x00, 0x68, 0xc0, 0x79, 0x13, 0x6a]);
+        assert_eq!(s2[29..36], s3[29..36]);
+    }
+
+    #[test]
+    fn in44_f003_payload_shares_model_like_block_only_slot_bus_changes() {
+        let s2 = capdata_hex(IN44_SLOT2);
+        let s3 = capdata_hex(IN44_SLOT3);
+        assert_eq!(s2.len(), 44);
+        assert_eq!(s3.len(), 44);
+        assert_eq!(&s2[0..9], &s3[0..9]);
+        assert_ne!(s2[9], s3[9]);
+        assert_eq!(&s2[10..24], &s3[10..24]);
+        // Bloc stable `82:69…6a` … `03:79:13:6a` puis `82:62:SS:1a` (candidat corrélation preset / module).
+        assert_eq!(&s2[24..36], &s3[24..36]);
+        assert_eq!(
+            &s2[24..36],
+            &[
+                0x82, 0x69, 0x27, 0x6a, 0x84, 0x52, 0x01, 0x44, 0x03, 0x79, 0x13, 0x6a
+            ]
+        );
+        assert_eq!(&s2[36..39], &[0x82, 0x62, 0x02]);
+        assert_eq!(&s3[36..39], &[0x82, 0x62, 0x03]);
+        assert_eq!(&s2[39..44], &s3[39..44]);
     }
 }

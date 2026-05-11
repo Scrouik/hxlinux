@@ -12,6 +12,7 @@ pub mod modes;
 pub mod live_write;
 pub mod live_write_config;
 pub mod edit_slot_model;
+pub mod slot_focus_in;
 
 use std::sync::mpsc::Sender;
 use std::time::Instant;
@@ -176,6 +177,8 @@ pub struct HelixState {
     /// Remplie par `usb_listener` tant que `Instant::now() < deadline` (courte, ~55 ms ; max ~40 trames).
     pub usb_slot_focus_capture_deadline: Option<Instant>,
     pub usb_slot_focus_capture: Vec<Vec<u8>>,
+    /// Dernier paquet IN « focus slot » parsé par index Kempline (rempli par `sync_hardware_slot_focus_usb`).
+    pub last_slot_focus_capsule: [Option<slot_focus_in::SlotFocusInCapsule>; 16],
 }
 
 // ===========================================================
@@ -280,6 +283,7 @@ impl HelixState {
             hw_active_slot_sequence: 0,
             usb_slot_focus_capture_deadline: None,
             usb_slot_focus_capture: Vec::new(),
+            last_slot_focus_capsule: std::array::from_fn(|_| None),
         }
     }
 

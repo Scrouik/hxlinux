@@ -88,6 +88,8 @@ const HW_FORCE_PRESET_DUMP_ON_SLOT_NOTIFY_KEY = "models_hw_force_preset_dump_on_
  * (`sync_hardware_slot_focus_usb`) après notif slot. Défaut : actif.
  */
 const HW_SLOT_FOCUS_USB_KEY = "models_hw_slot_focus_usb";
+/** `localStorage.setItem("models_hw_slot_focus_await_chain", "1")` : avant lecture chaîne, attendre `sync_hardware_slot_focus_usb` (buffer preset vide / tests IN). */
+const HW_SLOT_FOCUS_AWAIT_CHAIN_KEY = "models_hw_slot_focus_await_chain";
 /** Log console lorsque le `moduleHex` d’un slot change après sync USB (jointure catalogue). */
 const DEBUG_CATALOG_CHAINHEX_FLAG = "models_debug_catalog_chainhex";
 /** `localStorage.setItem("models_debug_sync_trace", "1")` → logs `[ModelsSync]…` dans le terminal (`cargo tauri dev`) pour diagnostiquer flash / reload. */
@@ -110,7 +112,12 @@ let slotModelUsbProbeInFlight: number | null = null;
  * Après `probe_slot_model_usb` réussi sans re-dump preset : le parse `get_active_preset_slots` peut
  * encore refléter l’ancien `preset_data` Rust. On garde la ligne optimiste pour ce slot un court instant.
  */
-let mergeProbeSlotModelUntil: { ki: number; deadline: number } | null = null;
+let mergeProbeSlotModelUntil: {
+  ki: number;
+  deadline: number;
+  /** Évite de spammer `emitModelsSyncTrace` à chaque tick soft-sync (~200 ms). */
+  mergeTraceEmitted?: boolean;
+} | null = null;
 const PROBE_SLOT_MERGE_GRACE_MS = 20_000;
 /** Évite un `request_preset_content` (poll) collé au trafic `probe_slot_model_usb` → preset_data vidé → chainFetch null / hardwareSyncBusy long. */
 let suppressUsbPresetPollUntilMs = 0;
@@ -140,6 +147,70 @@ type PendingLiveWrite = {
   rawMax: number | null;
 };
 const pendingLiveWrites = new Map<string, PendingLiveWrite>();
+/**
+ * Paramètres modifiés en live write alors que `preset_data` (RAM) n’est pas encore à jour :
+ * fusion au prochain rendu / patch du panneau pour éviter l’affichage de vieilles valeurs au retour sur le slot.
+ */
+const liveChainParamOverridesByPresetSlot = new Map<string, Map<string, ChainParamValueJson>>();
+
+function liveChainOverrideStorageKey(preset: number, kemplineSlotIndex: number): string {
+  return `${preset}|${kemplineSlotIndex}`;
+}
+
+function recordLiveChainParamOverrideForKemplineSlot(
+  preset: number,
+  kemplineSlotIndex: number,
+  symbolicId: string,
+  value: ChainParamValueJson,
+): void {
+  if (preset < 0 || !Number.isInteger(kemplineSlotIndex) || kemplineSlotIndex < 0) return;
+  const sid = symbolicId.trim();
+  if (!sid) return;
+  const key = liveChainOverrideStorageKey(preset, kemplineSlotIndex);
+  let m = liveChainParamOverridesByPresetSlot.get(key);
+  if (!m) {
+    m = new Map();
+    liveChainParamOverridesByPresetSlot.set(key, m);
+  }
+  m.set(sid, value);
+}
+
+function clearLiveChainOverridesForKemplineSlot(preset: number, kemplineSlotIndex: number): void {
+  liveChainParamOverridesByPresetSlot.delete(liveChainOverrideStorageKey(preset, kemplineSlotIndex));
+}
+
+function clearAllLiveChainParamOverrides(): void {
+  liveChainParamOverridesByPresetSlot.clear();
+}
+
+function mergeLiveChainOverridesIntoAligned(
+  preset: number,
+  kemplineSlotIndex: number | undefined,
+  paramsForDisplay: ModelParamDefJson[],
+  chainAligned: Array<ChainParamValueJson | undefined> | null | undefined,
+): Array<ChainParamValueJson | undefined> | null {
+  if (
+    kemplineSlotIndex === undefined ||
+    !Number.isInteger(kemplineSlotIndex) ||
+    kemplineSlotIndex < 0 ||
+    preset < 0
+  ) {
+    return chainAligned ?? null;
+  }
+  const om = liveChainParamOverridesByPresetSlot.get(
+    liveChainOverrideStorageKey(preset, kemplineSlotIndex),
+  );
+  if (!om || om.size === 0) return chainAligned ?? null;
+  const base = (chainAligned?.slice() as Array<ChainParamValueJson | undefined>) ?? [];
+  const n = paramsForDisplay.length;
+  while (base.length < n) base.push(undefined);
+  for (let i = 0; i < n; i += 1) {
+    const sid = (paramsForDisplay[i]?.symbolicID ?? "").trim();
+    if (!sid || !om.has(sid)) continue;
+    base[i] = om.get(sid);
+  }
+  return base;
+}
 
 function liveWriteUsbNormalized01(w: PendingLiveWrite): number {
   const lo = w.rawMin;
@@ -533,9 +604,12 @@ function applyProbeSlotMergeToNormalized(normalized: SlotDebug[]): SlotDebug[] {
   const ki = m.ki;
   const optimistic = lastHwSyncNormalizedSlots[ki];
   if (!optimistic) return normalized;
-  emitModelsSyncTrace(
-    `softSync merge probe slot=${ki} (stale preset_data parse vs optimistic row; no post-probe dump)`,
-  );
+  if (!m.mergeTraceEmitted) {
+    mergeProbeSlotModelUntil = { ...m, mergeTraceEmitted: true };
+    emitModelsSyncTrace(
+      `softSync merge probe slot=${ki} (stale preset_data parse vs optimistic row; no post-probe dump)`,
+    );
+  }
   return normalized.map((s, i) => (i === ki ? { ...optimistic } : { ...s }));
 }
 
@@ -905,6 +979,14 @@ function scheduleLiveParamWriteProbe(
       : null;
   const rawMin = typeof p.min === "number" && Number.isFinite(p.min) ? p.min : null;
   const rawMax = typeof p.max === "number" && Number.isFinite(p.max) ? p.max : null;
+  if (currentPresetIndex >= 0) {
+    recordLiveChainParamOverrideForKemplineSlot(
+      currentPresetIndex,
+      slotIndex,
+      symbolicId,
+      rawValue,
+    );
+  }
   pendingLiveWrites.set(key, {
     slotIndex,
     paramIndex,
@@ -1190,6 +1272,9 @@ async function applySlotModelFromPickerListClick(
   if (selectedParamsKemplineSlotIndex === ki) {
     selectParamsPaneByKemplineIndex(ki);
   }
+  if (currentPresetIndex >= 0) {
+    clearLiveChainOverridesForKemplineSlot(currentPresetIndex, ki);
+  }
   markLiveWriteUiInteraction();
   slotModelUsbProbeInFlight = ki;
   try {
@@ -1202,7 +1287,11 @@ async function applySlotModelFromPickerListClick(
       assignVariant,
     });
     console.info("[SlotModelProbe]", op, displayName, catalogModelId, out);
-    mergeProbeSlotModelUntil = { ki, deadline: Date.now() + PROBE_SLOT_MERGE_GRACE_MS };
+    mergeProbeSlotModelUntil = {
+      ki,
+      deadline: Date.now() + PROBE_SLOT_MERGE_GRACE_MS,
+      mergeTraceEmitted: false,
+    };
     suppressUsbPresetPollUntilMs = Date.now() + USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS;
     lastSoftUsbPresetReadAt = Date.now();
     emitModelsSyncTrace(
@@ -1449,6 +1538,7 @@ function clearSelectedParamsContext(): void {
   selectedParamsInPlaceUpdater = null;
   selectedParamsInPlaceSlotKey = null;
   paramsPaneCatalogBySlotKey.clear();
+  clearAllLiveChainParamOverrides();
   pendingHardwareSelectedKemplineSlotIndex = null;
   pendingHardwareSelectedSlotBus = null;
   if (autoSelectFallbackTimer !== null) {
@@ -3385,12 +3475,17 @@ function renderModelsParamsPane(
     }
     if (synth.length > 0) chainForAlign = synth;
   }
-  const chainAligned = alignChainValuesToModelParamOrder(
-    chainForAlign,
+  const chainAligned = mergeLiveChainOverridesIntoAligned(
+    currentPresetIndex,
+    kemplineSlotIndex,
     paramsForDisplay,
-    params,
-    catalogRoutingSignal,
-    catalogParamOrder,
+    alignChainValuesToModelParamOrder(
+      chainForAlign,
+      paramsForDisplay,
+      params,
+      catalogRoutingSignal,
+      catalogParamOrder,
+    ),
   );
   const updateAlignedValues = appendModelsParamRows(
     list,
@@ -3402,12 +3497,17 @@ function renderModelsParamsPane(
     kemplineSlotIndex,
   );
   const applyRawChainValuesInPlace = (rawChainValues: ChainParamValueJson[] | null): void => {
-    const aligned = alignChainValuesToModelParamOrder(
-      rawChainValues,
+    const aligned = mergeLiveChainOverridesIntoAligned(
+      currentPresetIndex,
+      kemplineSlotIndex,
       paramsForDisplay,
-      params,
-      catalogRoutingSignal,
-      catalogParamOrder,
+      alignChainValuesToModelParamOrder(
+        rawChainValues,
+        paramsForDisplay,
+        params,
+        catalogRoutingSignal,
+        catalogParamOrder,
+      ),
     );
     updateAlignedValues(aligned ?? null);
   };
@@ -3560,6 +3660,17 @@ async function loadAndShowModelsParamsForSlot(
     let linkedCabValues: ChainParamValueJson[] | null = null;
     let allCabDefinitions: ModelDefinitionJson[] | null = null;
     if (kemplineSlotIndex !== undefined && Number.isInteger(kemplineSlotIndex)) {
+      if (
+        typeof localStorage !== "undefined" &&
+        localStorage.getItem(HW_SLOT_FOCUS_AWAIT_CHAIN_KEY) === "1" &&
+        slotFocusUsbSyncEnabled()
+      ) {
+        try {
+          await invoke("sync_hardware_slot_focus_usb", { slotIndex: kemplineSlotIndex });
+        } catch {
+          /* focus USB optionnel */
+        }
+      }
       chainValues = await fetchSlotChainParamValuesReliable(kemplineSlotIndex, seq);
       try {
         const linkedCabFull = await invoke<LinkedCabWithParamsJson | null>(
@@ -3671,6 +3782,14 @@ async function loadAndShowModelsParamsForSlot(
     const prevCatalogId = paramsPaneCatalogBySlotKey.get(slotKeyNow);
     const modelChangedAtSlot =
       prevCatalogId !== undefined && prevCatalogId !== catalogModelIdTrimmed;
+    if (
+      modelChangedAtSlot &&
+      kemplineSlotIndex !== undefined &&
+      Number.isInteger(kemplineSlotIndex) &&
+      currentPresetIndex >= 0
+    ) {
+      clearLiveChainOverridesForKemplineSlot(currentPresetIndex, kemplineSlotIndex);
+    }
     const kempMatchesNow =
       kemplineSlotIndex === undefined ||
       (selectedParamsKemplineSlotIndex !== null && selectedParamsKemplineSlotIndex === kemplineSlotIndex);
