@@ -31,9 +31,9 @@ use helix::ModeRequest;
 use helix::KeepAliveCommand;
 use helix::{
     kempline_index_to_slot_bus,
-    set_preset_debug_verbose_enabled, set_usb_packet_trace_delta_only,
-    set_usb_io_diag_enabled, set_usb_packet_trace_enabled, usb_packet_trace_delta_only,
-    usb_packet_trace_enabled,
+    preset_debug_verbose_enabled, set_preset_debug_verbose_enabled,
+    set_usb_packet_trace_delta_only, set_usb_io_diag_enabled, set_usb_packet_trace_enabled,
+    usb_packet_trace_delta_only, usb_packet_trace_enabled,
 };
 use helix::packet::OutPacket;
 use helix::live_write::build_live_write_frames_from_state;
@@ -591,6 +591,104 @@ fn probe_hardware_slot_focus_usb(
         root["chainFromDump"] = c;
     }
     Ok(root)
+}
+
+/// **Étape 1** — lecture USB « focus slot » (même OUT que captures HX Edit `83:66:cd:04`) puis
+/// collecte des IN `0x81` sur une fenêtre courte (remplie par `usb_listener`).
+/// Ne modifie pas `preset_data` : sert à valider le trafic ; l’UI continue d’utiliser le dump preset
+/// au chargement + merge RAM sur changement de slot.
+#[tauri::command]
+fn sync_hardware_slot_focus_usb(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_index: u32,
+) -> Result<Value, String> {
+    if slot_index >= 16 {
+        return Err("slotIndex hors plage (0..15)".to_string());
+    }
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state
+            .clone()
+            .ok_or_else(|| "HX non connecté".to_string())?
+    };
+    let slot_bus = kempline_index_to_slot_bus(slot_index as usize)
+        .ok_or_else(|| "slotIndex invalide".to_string())?;
+
+    const CAPTURE_MS: u64 = 130;
+    let t0 = std::time::Instant::now();
+    let out_hex: String = {
+        let mut s = helix_arc.lock().unwrap();
+        if !s.connected {
+            return Err("HX non connecté".to_string());
+        }
+        if s.preset_content_only {
+            return Err("sync slot ignorée pendant lecture preset (preset_content_only)".to_string());
+        }
+        let cnt = s.next_x80_cnt();
+        let session = s.session_no;
+        let double = s.preset_data_packet_double();
+        let packet = vec![
+            0x1d, 0x00, 0x00, 0x18,
+            0x80, 0x10, 0xed, 0x03,
+            0x00, cnt, 0x00, 0x04,
+            session, double[0], double[1], 0x00,
+            0x01, 0x00, 0x06, 0x00,
+            0x0d, 0x00, 0x00, 0x00,
+            0x83, 0x66, 0xcd, 0x04,
+            slot_bus, 0x64, 0x4e, 0x65,
+            0x82, 0x62, slot_bus, 0x1a,
+            0x00, 0x00, 0x00, 0x00,
+        ];
+        let out_hex = packet
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
+        s.usb_slot_focus_capture.clear();
+        s.usb_slot_focus_capture_deadline =
+            Some(std::time::Instant::now() + Duration::from_millis(CAPTURE_MS));
+        s.send(OutPacket::new(packet));
+        out_hex
+    };
+
+    thread::sleep(Duration::from_millis(CAPTURE_MS.saturating_add(20)));
+
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    {
+        let mut s = helix_arc.lock().unwrap();
+        s.usb_slot_focus_capture_deadline = None;
+        std::mem::swap(&mut frames, &mut s.usb_slot_focus_capture);
+    }
+
+    let frames_hex: Vec<String> = frames
+        .iter()
+        .map(|f| {
+            f.iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+
+    if preset_debug_verbose_enabled() {
+        eprintln!(
+            "[SlotFocusSync] slot_index={} slot_bus={:02x} in_frames={} out={}",
+            slot_index,
+            slot_bus,
+            frames_hex.len(),
+            out_hex
+        );
+    }
+
+    Ok(serde_json::json!({
+        "slotIndex": slot_index,
+        "slotBus": slot_bus,
+        "outHex": out_hex,
+        "captureWindowMs": CAPTURE_MS,
+        "waitElapsedMs": t0.elapsed().as_millis() as u64,
+        "inFrameCount": frames_hex.len(),
+        "inFramesHex": frames_hex,
+    }))
 }
 
 /// Sonde USB « assignation de modèle dans un slot » (captures HX Edit, best-effort).
@@ -2846,6 +2944,7 @@ pub fn run() {
             activate_preset,
             switch_active_hardware_slot,
             probe_hardware_slot_focus_usb,
+            sync_hardware_slot_focus_usb,
             request_preset_content,
             force_recover_preset_reader,
             probe_live_param_write,

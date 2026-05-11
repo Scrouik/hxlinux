@@ -14,6 +14,7 @@ pub mod live_write_config;
 pub mod edit_slot_model;
 
 use std::sync::mpsc::Sender;
+use std::time::Instant;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::helix::packet::OutPacket;
 
@@ -170,6 +171,11 @@ pub struct HelixState {
     pub hw_active_slot_bus: Option<u8>,
     /// +1 à chaque changement détecté de slot actif.
     pub hw_active_slot_sequence: u32,
+
+    /// Fenêtre de capture des IN `0x81` après un OUT « focus slot » (`sync_hardware_slot_focus_usb`).
+    /// Remplie par `usb_listener` tant que `Instant::now() < deadline` (max ~40 trames).
+    pub usb_slot_focus_capture_deadline: Option<Instant>,
+    pub usb_slot_focus_capture: Vec<Vec<u8>>,
 }
 
 // ===========================================================
@@ -272,6 +278,8 @@ impl HelixState {
             hw_active_slot_index: None,
             hw_active_slot_bus: None,
             hw_active_slot_sequence: 0,
+            usb_slot_focus_capture_deadline: None,
+            usb_slot_focus_capture: Vec::new(),
         }
     }
 

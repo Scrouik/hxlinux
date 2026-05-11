@@ -85,6 +85,11 @@ const DEBUG_HW_SLOT_SYNC_FLAG = "models_debug_hw_slot_sync";
  * changement de slot — refresh grille / params depuis `preset_data` RAM + `get_active_preset_slots`.
  */
 const HW_FORCE_PRESET_DUMP_ON_SLOT_NOTIFY_KEY = "models_hw_force_preset_dump_on_slot_notify";
+/**
+ * `localStorage.setItem("models_hw_slot_focus_usb", "0")` désactive l’OUT « focus slot » HX Edit
+ * (`sync_hardware_slot_focus_usb`) après notif slot. Défaut : actif.
+ */
+const HW_SLOT_FOCUS_USB_KEY = "models_hw_slot_focus_usb";
 /** Log console lorsque le `moduleHex` d’un slot change après sync USB (jointure catalogue). */
 const DEBUG_CATALOG_CHAINHEX_FLAG = "models_debug_catalog_chainhex";
 /** `localStorage.setItem("models_debug_sync_trace", "1")` → logs `[ModelsSync]…` dans le terminal (`cargo tauri dev`) pour diagnostiquer flash / reload. */
@@ -183,6 +188,10 @@ function hwSlotDebugLog(message: string): void {
 
 function forcePresetDumpOnHardwareSlotNotify(): boolean {
   return localStorage.getItem(HW_FORCE_PRESET_DUMP_ON_SLOT_NOTIFY_KEY) === "1";
+}
+
+function slotFocusUsbSyncEnabled(): boolean {
+  return localStorage.getItem(HW_SLOT_FOCUS_USB_KEY) !== "0";
 }
 
 /**
@@ -570,6 +579,30 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
   try {
     let normalized: SlotDebug[] | null = null;
     let didUsbPresetDumpThisCycle = false;
+
+    if (
+      hardwareSlotSequenceAdvanced &&
+      slotFocusUsbSyncEnabled() &&
+      !forcePresetDumpOnHardwareSlotNotify() &&
+      hwSlotState &&
+      Number.isInteger(hwSlotState.slotIndex) &&
+      (hwSlotState.slotIndex as number) >= 0 &&
+      (hwSlotState.slotIndex as number) < 16
+    ) {
+      const focusIdx = hwSlotState.slotIndex as number;
+      try {
+        const snap = await invoke<{
+          inFrameCount?: number;
+          inFramesHex?: string[];
+        }>("sync_hardware_slot_focus_usb", { slotIndex: focusIdx });
+        const n = snap?.inFrameCount ?? 0;
+        hwSlotDebugLog(`sync_hardware_slot_focus_usb slot=${focusIdx} inFrames=${n}`);
+        emitModelsSyncTrace(`slot_focus_usb ok slot=${focusIdx} inFrames=${n}`);
+      } catch (e) {
+        console.warn("[HwSlotSync] sync_hardware_slot_focus_usb", e);
+        emitModelsSyncTrace(`slot_focus_usb error slot=${focusIdx} ${String(e)}`);
+      }
+    }
 
     if (wantUsbPresetDump) {
       pendingForceUsbPresetContent = false;

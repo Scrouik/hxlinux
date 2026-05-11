@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashSet;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use rusb::DeviceHandle;
 use rusb::GlobalContext;
 
@@ -102,6 +102,11 @@ pub fn start_listener(
                     // Dispatcher vers le mode actif
                     // On lock state et mode séparément pour éviter deadlock
                     let mut s = state.lock().unwrap();
+                    if let Some(deadline) = s.usb_slot_focus_capture_deadline {
+                        if Instant::now() < deadline && s.usb_slot_focus_capture.len() < 40 {
+                            s.usb_slot_focus_capture.push(data.clone());
+                        }
+                    }
                     // Échos paramètre HX Edit / firmware : mémorisés pour aligner `write_live_param`.
                     s.ingest_ed03_param_echo(&data);
                     // Notification « slot hardware » (16+16 octets IN), voir Line6_HX_Stomp_USB_Protocol.md
