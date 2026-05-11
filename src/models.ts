@@ -5230,9 +5230,15 @@ async function refresh() {
     lastPresetNamesSig = `${active}\n${names.join("\n")}`;
 
     if (active !== currentPresetIndex) {
-      mainWindowPresetDriftStreak += 1;
-      if (mainWindowPresetDriftStreak < 2) {
-        return;
+      // Au premier `refresh` après ouverture Models, `currentPresetIndex` vaut encore **-1** :
+      // attendre 2 constats « drift » bloquait tout `scheduleLoadForPreset` (return avant le bloc
+      // du bas). Ce n’était pas lié au poll preset — le poll ne faisait que re-dumps plus tard.
+      const presetUiUnset = currentPresetIndex < 0;
+      if (!presetUiUnset) {
+        mainWindowPresetDriftStreak += 1;
+        if (mainWindowPresetDriftStreak < 2) {
+          return;
+        }
       }
       mainWindowPresetDriftStreak = 0;
       console.log(`[PresetDebug][models] active preset changed ${currentPresetIndex} -> ${active}`);
