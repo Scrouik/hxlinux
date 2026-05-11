@@ -67,15 +67,13 @@ const LIVE_WRITE_MIDI_CHANNEL_KEY = "models_live_midi_channel";
 const LIVE_WRITE_SYNC_PAUSE_MS = 1200;
 const HW_SYNC_INTERVAL_MS_KEY = "models_hw_sync_interval_ms";
 /**
- * Intervalle minimum entre deux lectures preset USB complètes déclenchées par le soft-sync.
- * `models_hw_sync_interval_ms` pilote la fréquence des cycles UI (slot actif, panneau) ;
- * sans cette séparation, chaque cycle appelait `request_preset_content` → rafales de trames `19`
- * et instabilité device. Défaut 4000 ms ; `0` = jamais de re-dump USB depuis le soft-sync
- * (valeurs chaîne / grille figées jusqu’à un chargement explicite).
+ * Intervalle minimum entre deux lectures **contenu preset** USB (`request_preset_content`) hors
+ * chargement explicite de preset. **Par défaut (clé absente) : désactivé (0)** — évite les courses
+ * avec la lecture slot et les faux diagnostics « slot » quand le poll preset échoue.
+ * Réactivation filet : `localStorage.setItem("models_hw_usb_preset_poll_ms", "2500")` (ms, min 500).
+ * `models_hw_sync_interval_ms` pilote toujours la fréquence des cycles soft-sync (slot / panneau).
  */
 const HW_USB_PRESET_POLL_MS_KEY = "models_hw_usb_preset_poll_ms";
-/** Défaut un peu plus agressif qu’HX Edit, mais sans refaire un dump à chaque poll UI (200 ms). */
-const HW_USB_PRESET_POLL_DEFAULT_MS = 2500;
 const HW_USB_PRESET_POLL_MIN_MS = 500;
 const HW_USB_PRESET_POLL_MAX_MS = 120000;
 const DEBUG_HW_SLOT_SYNC_FLAG = "models_debug_hw_slot_sync";
@@ -321,11 +319,9 @@ function getHardwareSyncIntervalMs(): number {
 
 function getHardwareUsbPresetPollMs(): number {
   const raw = (localStorage.getItem(HW_USB_PRESET_POLL_MS_KEY) ?? "").trim();
-  if (raw === "0") return 0;
-  if (!raw) return HW_USB_PRESET_POLL_DEFAULT_MS;
+  if (!raw || raw === "0") return 0;
   const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) return HW_USB_PRESET_POLL_DEFAULT_MS;
-  if (parsed === 0) return 0;
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
   return Math.max(HW_USB_PRESET_POLL_MIN_MS, Math.min(HW_USB_PRESET_POLL_MAX_MS, parsed));
 }
 
