@@ -173,7 +173,7 @@ pub struct HelixState {
     pub hw_active_slot_sequence: u32,
 
     /// Fenêtre de capture des IN `0x81` après un OUT « focus slot » (`sync_hardware_slot_focus_usb`).
-    /// Remplie par `usb_listener` tant que `Instant::now() < deadline` (max ~40 trames).
+    /// Remplie par `usb_listener` tant que `Instant::now() < deadline` (courte, ~55 ms ; max ~40 trames).
     pub usb_slot_focus_capture_deadline: Option<Instant>,
     pub usb_slot_focus_capture: Vec<Vec<u8>>,
 }

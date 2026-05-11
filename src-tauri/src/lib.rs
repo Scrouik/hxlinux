@@ -614,7 +614,9 @@ fn sync_hardware_slot_focus_usb(
     let slot_bus = kempline_index_to_slot_bus(slot_index as usize)
         .ok_or_else(|| "slotIndex invalide".to_string())?;
 
-    const CAPTURE_MS: u64 = 130;
+    /// Fenêtre courte : les IN utiles arrivent en général tout de suite ; 130 ms + sleep
+    /// ajoutait ~150 ms de latence ressentie sur chaque changement de slot hardware.
+    const CAPTURE_MS: u64 = 55;
     let t0 = std::time::Instant::now();
     let out_hex: String = {
         let mut s = helix_arc.lock().unwrap();
@@ -651,7 +653,8 @@ fn sync_hardware_slot_focus_usb(
         out_hex
     };
 
-    thread::sleep(Duration::from_millis(CAPTURE_MS.saturating_add(20)));
+    // Marge minuscule au-delà de la deadline pour la dernière trame IN.
+    thread::sleep(Duration::from_millis(CAPTURE_MS.saturating_add(8)));
 
     let mut frames: Vec<Vec<u8>> = Vec::new();
     {

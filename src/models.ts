@@ -590,18 +590,20 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
       (hwSlotState.slotIndex as number) < 16
     ) {
       const focusIdx = hwSlotState.slotIndex as number;
-      try {
-        const snap = await invoke<{
-          inFrameCount?: number;
-          inFramesHex?: string[];
-        }>("sync_hardware_slot_focus_usb", { slotIndex: focusIdx });
-        const n = snap?.inFrameCount ?? 0;
-        hwSlotDebugLog(`sync_hardware_slot_focus_usb slot=${focusIdx} inFrames=${n}`);
-        emitModelsSyncTrace(`slot_focus_usb ok slot=${focusIdx} inFrames=${n}`);
-      } catch (e) {
-        console.warn("[HwSlotSync] sync_hardware_slot_focus_usb", e);
-        emitModelsSyncTrace(`slot_focus_usb error slot=${focusIdx} ${String(e)}`);
-      }
+      // Ne pas await : la synchro USB (~60 ms côté Rust) ne doit pas retarder grille / panneau (RAM).
+      void invoke<{
+        inFrameCount?: number;
+        inFramesHex?: string[];
+      }>("sync_hardware_slot_focus_usb", { slotIndex: focusIdx })
+        .then((snap) => {
+          const n = snap?.inFrameCount ?? 0;
+          hwSlotDebugLog(`sync_hardware_slot_focus_usb slot=${focusIdx} inFrames=${n}`);
+          emitModelsSyncTrace(`slot_focus_usb ok slot=${focusIdx} inFrames=${n}`);
+        })
+        .catch((e) => {
+          console.warn("[HwSlotSync] sync_hardware_slot_focus_usb", e);
+          emitModelsSyncTrace(`slot_focus_usb error slot=${focusIdx} ${String(e)}`);
+        });
     }
 
     if (wantUsbPresetDump) {
