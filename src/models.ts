@@ -108,6 +108,12 @@ let pendingForceUsbPresetContent = false;
 let hardwareSyncBusy = false;
 /** Pendant `probe_slot_model_usb` (MAJ optimiste) : pas de soft-sync qui relirait d’anciens slots. */
 let slotModelUsbProbeInFlight: number | null = null;
+/**
+ * Après `probe_slot_model_usb` réussi sans re-dump preset : le parse `get_active_preset_slots` peut
+ * encore refléter l’ancien `preset_data` Rust. On garde la ligne optimiste pour ce slot un court instant.
+ */
+let mergeProbeSlotModelUntil: { ki: number; deadline: number } | null = null;
+const PROBE_SLOT_MERGE_GRACE_MS = 20_000;
 let hardwareSyncPausedForPresetLoad = false;
 let lastLiveWriteAt = 0;
 let liveWriteUiInteractionUntil = 0;
@@ -517,6 +523,23 @@ function armRecoveryPresetLoad(reason: string): void {
   }, REQUEST_PRESET_RECOVERY_DELAY_MS);
 }
 
+function applyProbeSlotMergeToNormalized(normalized: SlotDebug[]): SlotDebug[] {
+  const m = mergeProbeSlotModelUntil;
+  if (!m || Date.now() > m.deadline) {
+    mergeProbeSlotModelUntil = null;
+    return normalized;
+  }
+  if (normalized.length !== 16) return normalized;
+  if (!lastHwSyncNormalizedSlots || lastHwSyncNormalizedSlots.length !== 16) return normalized;
+  const ki = m.ki;
+  const optimistic = lastHwSyncNormalizedSlots[ki];
+  if (!optimistic) return normalized;
+  emitModelsSyncTrace(
+    `softSync merge probe slot=${ki} (stale preset_data parse vs optimistic row; no post-probe dump)`,
+  );
+  return normalized.map((s, i) => (i === ki ? { ...optimistic } : { ...s }));
+}
+
 /**
  * Sync matériel sans reconstruire toute l’UI si la disposition des blocs est inchangée
  * (réduit le flash : seul le panneau paramètres du slot sélectionné est rechargé).
@@ -681,6 +704,10 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
         );
       }
       return;
+    }
+
+    if (normalized.length === 16) {
+      normalized = applyProbeSlotMergeToNormalized(normalized);
     }
 
     const deviceActive = await invoke<number>("get_active_preset");
@@ -1174,7 +1201,10 @@ async function applySlotModelFromPickerListClick(
       assignVariant,
     });
     console.info("[SlotModelProbe]", op, displayName, catalogModelId, out);
-    pendingForceUsbPresetContent = true;
+    mergeProbeSlotModelUntil = { ki, deadline: Date.now() + PROBE_SLOT_MERGE_GRACE_MS };
+    emitModelsSyncTrace(
+      `slot_model_probe ok slot=${ki} — no pendingForceUsbPresetContent (pas de relecture preset complète)`,
+    );
   } catch (e) {
     console.warn("[SlotModelProbe]", e);
     if (prevSnapshot) {
@@ -5024,6 +5054,7 @@ async function requestLoadForPreset(index: number) {
 
   loading = true;
   hardwareSyncPausedForPresetLoad = true;
+  mergeProbeSlotModelUntil = null;
   pendingPresetIndex = -1;
   lastRequestedPresetIndex = index;
   // Sentinel : le premier soft-sync aligne la séquence HW sans déclencher un dump USB « artificiel »
@@ -5253,6 +5284,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     currentPresetIndex = index;
     loadedPresetIndex = -1;
+    mergeProbeSlotModelUntil = null;
     clearSelectedParamsContext();
     renderEmpty("Chargement des modeles...");
     scheduleLoadForPreset(index, true);
