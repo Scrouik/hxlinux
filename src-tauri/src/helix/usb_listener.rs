@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 use rusb::DeviceHandle;
 use rusb::GlobalContext;
 
+use tauri::Emitter;
+
 use crate::helix::{
     HelixState, Mode, usb_io_diag_enabled, usb_packet_trace_delta_only, usb_packet_trace_enabled,
     usb_trace_fingerprint,
@@ -25,9 +27,10 @@ const BUFFER_SIZE: usize = 512;
 
 pub fn start_listener(
     handle: Arc<DeviceHandle<GlobalContext>>,
-    state:  Arc<Mutex<HelixState>>,
-    mode:   Arc<Mutex<Box<dyn Mode>>>,
-    stop:   Arc<AtomicBool>,
+    state: Arc<Mutex<HelixState>>,
+    mode: Arc<Mutex<Box<dyn Mode>>>,
+    stop: Arc<AtomicBool>,
+    app_handle: Option<tauri::AppHandle>,
 ) {
     thread::spawn(move || {
         let mut buf = vec![0u8; BUFFER_SIZE];
@@ -101,18 +104,26 @@ pub fn start_listener(
 
                     // Dispatcher vers le mode actif
                     // On lock state et mode séparément pour éviter deadlock
-                    let mut s = state.lock().unwrap();
-                    if let Some(deadline) = s.usb_slot_focus_capture_deadline {
-                        if Instant::now() < deadline && s.usb_slot_focus_capture.len() < 40 {
-                            s.usb_slot_focus_capture.push(data.clone());
+                    let hw_slot_changed = {
+                        let mut s = state.lock().unwrap();
+                        if let Some(deadline) = s.usb_slot_focus_capture_deadline {
+                            if Instant::now() < deadline && s.usb_slot_focus_capture.len() < 40 {
+                                s.usb_slot_focus_capture.push(data.clone());
+                            }
+                        }
+                        // Échos paramètre HX Edit / firmware : mémorisés pour aligner `write_live_param`.
+                        s.ingest_ed03_param_echo(&data);
+                        // Notification « slot hardware » (`82 62 … 1a`, paires ed/ef), voir doc protocole.
+                        let ev = s.ingest_hw_slot_notify_in(&data);
+                        let mut m = mode.lock().unwrap();
+                        m.data_in(&data, &mut s);
+                        ev
+                    };
+                    if let (Some(app), Some(payload)) = (app_handle.as_ref(), hw_slot_changed) {
+                        if let Err(e) = app.emit("models:hardware-slot-changed", payload) {
+                            eprintln!("[UsbListener] emit models:hardware-slot-changed: {e}");
                         }
                     }
-                    // Échos paramètre HX Edit / firmware : mémorisés pour aligner `write_live_param`.
-                    s.ingest_ed03_param_echo(&data);
-                    // Notification « slot hardware » (16+16 octets IN), voir Line6_HX_Stomp_USB_Protocol.md
-                    s.ingest_hw_slot_notify_in(&data);
-                    let mut m = mode.lock().unwrap();
-                    m.data_in(&data, &mut s);
                 }
                 Ok(_) => {
                     // 0 bytes reçus — on continue

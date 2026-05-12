@@ -146,7 +146,7 @@ impl Mode for Connect {
             0x00, 0x02
         ], 10) {
             self.received_x11_on_x80 = true;
-            // Kempline : start_x80x10_keep_alive_thread(delay=0.0)
+            // Keep-alive `ed` : désormais dans le cycle ordonné après ReconfigureX1 (un seul thread).
             let pkt = OutPacket::new(vec![
                 0x0c, 0x00, 0x00, 0x28,
                 0x02, 0x10, 0xf0, 0x03,
@@ -176,7 +176,7 @@ impl Mode for Connect {
             ]);
             state.send(pkt);
 
-        // -- x11 reçu sur x2 → démarrage keep-alive x2
+        // -- x11 reçu sur x2 (subscribe f0 OK) — pas de poll ici : phase 4 + polling après ReconfigureX1
         } else if byte_cmp(data, &pattern![
             0x11, 0x00, 0x00, 0x18,
             0xf0, 0x03, 0x02, 0x10,
@@ -184,8 +184,8 @@ impl Mode for Connect {
             0x09, 0x02
         ], 14) {
             self.received_x11_on_x2 = true;
-            // -- x11 reçu sur x2 → démarrage keep-alive x2
-            state.start_keepalive(crate::helix::KeepAliveCommand::StartX2);
+            // Keep-alive x2 / poll f0:03 — différé après `ReconfigureX1` + phase 4 (cf. captures HX Edit
+            // vs Linux : sinon le Stomp ignore les polls tant que l’échange preset n’est pas amorcé).
         } else if byte_cmp(data, &pattern![
             0x08, 0x00, 0x00, 0x18,
             0xf0, 0x03, 0x02, 0x10,

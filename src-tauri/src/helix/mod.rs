@@ -13,11 +13,22 @@ pub mod live_write;
 pub mod live_write_config;
 pub mod edit_slot_model;
 pub mod slot_focus_in;
+pub mod editor_phase4_bootstrap;
 
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 use std::sync::atomic::{AtomicBool, Ordering};
+use serde::Serialize;
 use crate::helix::packet::OutPacket;
+
+/// Émis vers le front (`models:hardware-slot-changed`) quand le bus de slot actif change (trafic `82 62 … 1a`).
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HardwareSlotChangedPayload {
+    pub sequence: u32,
+    pub slot_index: Option<usize>,
+    pub slot_bus: Option<u8>,
+}
 
 /// Mapping index grille Kempline (0..15) -> slot bus observé en USB.
 /// Path 1: 0..7 -> 0x01..0x08
@@ -187,9 +198,8 @@ pub struct HelixState {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum KeepAliveCommand {
-    StartX1,
-    StartX2,
-    StartX80,
+    /// Un seul thread : cycle `ed:03` → `ef:03` → `f0:03` (queues fixes HX Edit).
+    StartOrdered,
     StopAll,
 }
 
@@ -338,7 +348,9 @@ impl HelixState {
     }
 
     /// Détecte les petites trames IN « slot » du Stomp (`ed 03 80 10` puis `ef 03 01 10` sur 16 octets).
-    pub fn ingest_hw_slot_notify_in(&mut self, data: &[u8]) {
+    /// Retourne un payload à émettre vers l’UI si le **bus** de slot actif a changé (`82 62 SS 1a`).
+    pub fn ingest_hw_slot_notify_in(&mut self, data: &[u8]) -> Option<HardwareSlotChangedPayload> {
+        let mut slot_bus_changed: Option<HardwareSlotChangedPayload> = None;
         // Keep-alive x2 long: recherche d'un marqueur `82 62 SS 1a`
         // SS = slot bus ; couvre les slots effet (0x01–0x12) et les blocs structurels
         // Input(0x00), Output(0x09), Split(0x0a), Merge(0x13).
@@ -360,16 +372,21 @@ impl HelixState {
                                 slot_index,
                             );
                         }
+                        slot_bus_changed = Some(HardwareSlotChangedPayload {
+                            sequence: self.hw_active_slot_sequence,
+                            slot_index: self.hw_active_slot_index,
+                            slot_bus: self.hw_active_slot_bus,
+                        });
                     }
                 }
             }
         }
 
         if data.len() != 16 {
-            return;
+            return slot_bus_changed;
         }
         if !data.starts_with(&[0x08, 0x00, 0x00, 0x18]) {
-            return;
+            return slot_bus_changed;
         }
         let mut b = [0u8; 16];
         b.copy_from_slice(data);
@@ -378,7 +395,7 @@ impl HelixState {
         if data[4] == 0xed && data[5] == 0x03 && data[6] == 0x80 && data[7] == 0x10 {
             self.hw_slot_notify_ed_in = Some(b);
             self.hw_slot_notify_ef_in = None;
-            return;
+            return slot_bus_changed;
         }
         // Device IN : octets 4–7 = ef 03 01 10
         if data[4] == 0xef && data[5] == 0x03 && data[6] == 0x01 && data[7] == 0x10 {
@@ -402,6 +419,7 @@ impl HelixState {
                 }
             }
         }
+        slot_bus_changed
     }
 
     pub fn increase_session_quadruple_x11(&mut self) {

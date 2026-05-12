@@ -2,6 +2,32 @@
 
 Ce fichier sert de **mémo locale** quand l’historique de chat ou le contexte IDE est perdu après un redémarrage. Il complète le `README.md` (objectifs produit et commandes de base).
 
+**12 mai 2026 (suite) — Grille : mise à jour alignée sur la RAM `preset_data` (relecture preset uniquement)**
+
+Objectif produit : **ne plus reconstruire la matrice** à partir d’un parse de **`preset_data`** (Rust) **entre** deux relectures — éviter les « fantômes » (UI qui réaffiche un slot supprimé sur le Helix parce que le buffer PC était encore l’ancien dump).
+
+**`src/models.ts` — `runHardwareSyncSoftRefresh`**
+
+- Si le cycle **ne** lance **pas** `request_preset_content` (`wantUsbPresetDump` faux) : **plus d’invoke** `get_active_preset_slots` / `get_active_preset_slots_debug` pour alimenter la grille. On clone **`lastHwSyncNormalizedSlots`** (snapshot pris au dernier chargement / dernière relecture USB + éventuelles **MAJ optimistes** picker / bouton × remove) pour **`softRefreshParamsPaneFromSlots`**, **`consumePendingHardwareSlotSelection`**, etc.
+- Si **`didUsbPresetDumpThisCycle`** est vrai (poll `models_hw_usb_preset_poll_ms`, forçage `models_hw_force_preset_dump_on_slot_notify`, etc.) : comportement inchangé — attente parse après dump, **`applyProbeSlotMergeToNormalized`**, puis **`renderSlots`** + **`rememberHwSyncChainLayout`** quand la signature de layout l’exige.
+- **Garde** explicite : sans dump USB **dans ce cycle**, sortie après rafraîchissement panneau / sélection HW — **pas** de **`renderSlots`** ni de nouveau **`rememberHwSyncChainLayout`** depuis ce chemin (le snapshot a déjà été posé au chargement ou après dump).
+- **Traces** : `emitModelsSyncTrace` avec libellés du type `softSync sans request_preset_content : pas de get_active_preset_slots` et `softSync sans dump USB ce cycle : pas de renderSlots`.
+- **Anti-spam (même session)** : messages soft-sync / cooldown / abort / événement `models:hardware-slot-changed` passent par **`emitModelsSyncTraceThrottled`** (fenêtres 400 ms … 30 s selon la clé) ; succès **`sync_hardware_slot_focus_usb`** → **`hwSlotDebugLog`** uniquement (`models_debug_hw_slot_sync=1`) ; **`console.info` événement slot** seulement si `models_debug_hw_slot_sync` **ou** `models_debug_sync_trace`.
+
+**`rememberHwSyncChainLayout`**
+
+- **`lastHwSyncNormalizedSlots`** : désormais pour **toute** liste de slots non vide (`slots.length > 0`), pas seulement la grille 16 cases — permet au soft-sync d’avoir un snapshot en mode **flow** aussi.
+
+**Complément même session — remove slot (×) sans fantôme immédiat**
+
+- **`attachSelectedSlotRemoveButton`** : après `probe_slot_model_usb` **remove** réussi, MAJ optimiste du snapshot + **`mergeProbeSlotModelUntil`** + **`slotModelUsbProbeInFlight`** pendant l’invoke (aligné sur le chemin picker add/replace), car **`probe_slot_model_usb`** n’écrit **pas** dans `preset_data` côté Rust.
+
+**Doc / flags à relire avec ce changement**
+
+- **`models_hw_sync_interval_ms`** : le tick (~200 ms) sert surtout au **panneau params**, à la **sélection slot HW**, au **poll optionnel** ; il **ne** re-parse **plus** tout le preset pour la **grille** à chaque fois.
+- **`models_hw_usb_preset_poll_ms`** : toujours le levier pour forcer une **relecture** périodique → alors la grille peut se resynchroniser avec le dump frais.
+- Section **« Flags front utiles »** plus bas (notes *soft refresh* / signature layout) : la phrase « re-parse à chaque tick » pour la grille est **obsolète** ; garder l’idée *in-place params* + *renderSlots seulement après relecture*.
+
 **12 mai 2026 — IN « focus slot » parsées, capsule par slot, comparaison captures HX Edit vs Linux**
 
 Implémentation (commit **`02e0836`**, branche **`refactor/multithread`**) :
@@ -36,7 +62,7 @@ Implémentation (commit **`02e0836`**, branche **`refactor/multithread`**) :
 - **Trames repérées (ex. `Slot1_to_slot2_PresetTest_HXEdit.json`, ~+874 ms après début fichier)** :
   - **OUT `0x01` #1335** (40 octets `usb.capdata`) : commande type focus slot, contient **`83:66:cd:04`** (variante par rapport au **`cd:03`** observé sur la commande **`switch_active_hardware_slot`** côté HXLinux) puis **`82:62:02:1a`** (`slot_bus` **0x02** = slot path 1 index 1).
   - **IN `0x81` #1359** (36 octets) puis **#1361** (44 octets) : courtes réponses après l’OUT ; candidats pour la **réponse « bloc slot »** (pas un dump preset entier).
-- **HXLinux (11 mai)** : sur notif **slot actif** (séquence backend), le soft-sync **ne force plus** par défaut **`request_preset_content`** : **`get_active_preset_slots`** + panneau params depuis **`preset_data`** RAM (pas de dump USB à chaque changement de slot). Option **`localStorage`** **`models_hw_force_preset_dump_on_slot_notify=1`** pour réactiver la relecture preset immédiate (secours). **`get_active_preset_slot_chain_param_values`** : segments depuis **`preset_data`** quand le dump est prêt ; **voir 12 mai 2026** pour repli **sans** buffer (capsule IN focus + `Some([])`). **Poll preset USB** : par défaut **désactivé** (clé absente) ; **`models_hw_usb_preset_poll_ms`** ex. **`2500`** pour réactiver un re-dump périodique (filet).
+- **HXLinux (11 mai)** : sur notif **slot actif** (séquence backend), le soft-sync **ne force plus** par défaut **`request_preset_content`** (pas de dump USB à chaque changement de slot). **Mise à jour 12 mai (suite)** : entre deux **`request_preset_content`**, le soft-sync **ne** re-parse **plus** `get_active_preset_slots` pour **reconstruire la grille** ; panneau params / sélection HW = snapshot **`lastHwSyncNormalizedSlots`** (+ MAJ optimistes probe/remove). Option **`models_hw_force_preset_dump_on_slot_notify=1`** (secours dump immédiat). **`get_active_preset_slot_chain_param_values`** : segments depuis **`preset_data`** quand le dump est prêt ; **voir 12 mai 2026** (bloc focus) pour repli **sans** buffer (capsule IN + `Some([])`). **Poll** : **`models_hw_usb_preset_poll_ms`** (ex. `2500`) pour re-dump périodique → alors grille alignée sur RAM fraîche.
 - **Garde-fous ajoutés / à conserver** pendant l’exploration « lecture slot » (ne **pas** tout retirer d’un bloc) :
   - **`src/models.ts`** : file **`enqueueHardwareSlotSwitch`** (pas deux `switch_active_hardware_slot` concurrents) ; **`waitUntilHardwareSyncIdle`** avant switch (évite un switch **pendant** les `await` du soft-sync / dump) ; **`fetchSlotChainParamValuesReliable`** en attente **temps** (défaut **14 s**, soft-refresh idem **14 s**) + trace **`chainFetch TIMEOUT`** si sync trace activée.
   - **`src-tauri/src/helix/usb_writer.rs`** : **`MIN_ED03_OUT_GAP_MS = 14`** (test **20 ms** rétrogradé ; l’écart slot/preset côté UI tenait surtout aux **courses** buffer vide / sync, pas à ce seul réglage).
@@ -50,11 +76,11 @@ Symptômes traités : flash plein écran / grille vidée après **poll USB** ou 
 
 **`src/models.ts` — soft-sync (`runHardwareSyncSoftRefresh`)**
 
-- Après **`request_preset_content`** : attente **~120 ms** avant la première lecture des slots ; boucles d’attente : ne **valider** le résultat que si **`normalizeSlotsPayloadFromInvoke(…).length > 0`** (sinon on continue à poller). Même logique pour la branche **sans** dump USB.
+- Après **`request_preset_content`** (dump **dans ce cycle**) : attente **~120 ms** avant la première lecture des slots ; boucles d’attente : ne **valider** le résultat que si **`normalizeSlotsPayloadFromInvoke(…).length > 0`** (sinon on continue à poller). **12 mai (suite)** : sans dump dans le cycle, le soft-sync **ne** refait plus cette boucle de parse pour la grille — clone du snapshot `lastHwSyncNormalizedSlots` (voir section en tête).
 - Si après attente il n’y a **toujours pas** de slots : **`normalized = null`**, plus de log factice « usbDump ok » avec 0 slot.
 - **Abort** : si `normalized` absent ou **longueur 0**, ne pas détruire la grille quand **`lastHwSyncNormalizedSlots`** contient encore un snapshot utile → **`softRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots)`** + log `emptyParse keepExistingGrid`.
 - **Debounce layout** : dump USB déclenché **uniquement** par **`poll_interval`** (pas **`hw_notify_force`**) → même **passage 1 / 2** anti-flash que sans USB (`usbDumpIsPollOnly`), pour éviter un **`renderGrid16` complet** sur un simple pic de signature après re-parse.
-- **Cache grille** : **`lastHwSyncNormalizedSlots`** (copie des 16 `SlotDebug`) rempli dans **`rememberHwSyncChainLayout`** ; sert au rollback / cohérence signature et à l’UI optimiste.
+- **Cache grille** : **`lastHwSyncNormalizedSlots`** (copie des `SlotDebug` au dernier `rememberHwSyncChainLayout`) ; **12 mai (suite)** : snapshot dès que `slots.length > 0` (grille 16 ou flow). Sert au rollback / cohérence signature et à l’UI optimiste.
 
 **`src/models.ts` — picker changement de modèle (optimiste)**
 
@@ -433,8 +459,8 @@ Le **slider d’aperçu** du panneau paramètres garde **`min` 0** et **`max` 1*
 
 Notes implémentation :
 - Le cycle 200 ms est en mode **soft refresh** (`runHardwareSyncSoftRefresh` dans `src/models.ts`) :  
-  - si la **signature layout des slots** est inchangée, pas de rerender grille ;  
-  - le panneau paramètres est mis à jour **in-place** quand le même slot reste sélectionné (pas de flash).
+  - **grille** : **`renderSlots`** uniquement après un **`request_preset_content`** dans ce cycle (relecture = RAM `preset_data` à jour), ou au **chargement preset** (`requestLoadForPreset`) — pas de re-parse `get_active_preset_slots` entre deux lectures pour reconstruire la matrice ;  
+  - **panneau params** / **sélection HW** : snapshot **`lastHwSyncNormalizedSlots`** + rafraîchissement in-place quand le slot sélectionné reste le même (évite flash).
 
 ---
 

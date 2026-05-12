@@ -45,6 +45,13 @@ type HardwareActiveSlotState = {
   sequence: number;
 };
 
+/** Payload Rust `models:hardware-slot-changed` (camelCase) — slot actif hardware a changé de bus. */
+type HardwareSlotChangedPayload = {
+  sequence: number;
+  slotIndex: number | null;
+  slotBus: number | null;
+};
+
 let currentPresetIndex = -1;
 let loadedPresetIndex = -1;
 let loading = false;
@@ -67,20 +74,23 @@ const LIVE_WRITE_MIDI_CHANNEL_KEY = "models_live_midi_channel";
 const LIVE_WRITE_SYNC_PAUSE_MS = 1200;
 const HW_SYNC_INTERVAL_MS_KEY = "models_hw_sync_interval_ms";
 /**
- * Intervalle minimum entre deux lectures **contenu preset** USB (`request_preset_content`) hors
- * chargement explicite de preset. **Par défaut (clé absente) : désactivé (0)** — évite les courses
- * avec la lecture slot et les faux diagnostics « slot » quand le poll preset échoue.
- * Réactivation filet : `localStorage.setItem("models_hw_usb_preset_poll_ms", "2500")` (ms, min 500).
- * `models_hw_sync_interval_ms` pilote toujours la fréquence des cycles soft-sync (slot / panneau).
+ * Fréquence du soft-sync matériel (sélection slot HW, panneau params, poll optionnel).
+ * **Par défaut : 200 ms** si la clé est absente — le listener USB met à jour l’état tout de suite ;
+ * l’UI suit au tick ou immédiatement via l’événement `models:hardware-slot-changed`.
+ * La **grille** n’est **pas** re-construite depuis `preset_data` entre deux `request_preset_content` :
+ * seulement après relecture preset (chargement, poll `models_hw_usb_preset_poll_ms`, forçage notif).
+ * Désactiver explicitement : `localStorage.setItem("models_hw_sync_interval_ms", "0")`.
+ * Filet re-dump preset optionnel : `localStorage.setItem("models_hw_usb_preset_poll_ms", "2500")` (ms, min 500).
  */
 const HW_USB_PRESET_POLL_MS_KEY = "models_hw_usb_preset_poll_ms";
 const HW_USB_PRESET_POLL_MIN_MS = 500;
 const HW_USB_PRESET_POLL_MAX_MS = 120000;
+/** `models_debug_hw_slot_sync=1` : logs `[HwSlotSync]` (dont succès `sync_hardware_slot_focus_usb`) ; avec **`models_debug_sync_trace`** ou ce flag : `console.info` sur `models:hardware-slot-changed`. */
 const DEBUG_HW_SLOT_SYNC_FLAG = "models_debug_hw_slot_sync";
 /**
  * Ancien comportement (debug / secours) : sur notif « slot actif hardware », forcer encore un
  * `request_preset_content` immédiat. Par défaut (clé absente ou ≠ `1`) : pas de dump preset sur
- * changement de slot — refresh grille / params depuis `preset_data` RAM + `get_active_preset_slots`.
+ * changement de slot — panneau / sélection depuis le snapshot ; grille seulement après relecture.
  */
 const HW_FORCE_PRESET_DUMP_ON_SLOT_NOTIFY_KEY = "models_hw_force_preset_dump_on_slot_notify";
 /**
@@ -92,7 +102,7 @@ const HW_SLOT_FOCUS_USB_KEY = "models_hw_slot_focus_usb";
 const HW_SLOT_FOCUS_AWAIT_CHAIN_KEY = "models_hw_slot_focus_await_chain";
 /** Log console lorsque le `moduleHex` d’un slot change après sync USB (jointure catalogue). */
 const DEBUG_CATALOG_CHAINHEX_FLAG = "models_debug_catalog_chainhex";
-/** `localStorage.setItem("models_debug_sync_trace", "1")` → logs `[ModelsSync]…` dans le terminal (`cargo tauri dev`) pour diagnostiquer flash / reload. */
+/** `localStorage.setItem("models_debug_sync_trace", "1")` → logs `[ModelsSync]…` ; lignes répétitives throttlées (`emitModelsSyncTraceThrottled`). */
 const MODELS_SYNC_TRACE_FLAG = "models_debug_sync_trace";
 const HW_SYNC_MIN_MS = 100;
 const HW_SYNC_MAX_MS = 5000;
@@ -276,6 +286,7 @@ function slotFocusUsbSyncEnabled(): boolean {
  * Applique l’état « slot actif » vu côté backend. Retourne true si la séquence a augmenté
  * (nouvelle sélection sur le hardware) → le soft-sync rafraîchit le slot depuis la RAM ;
  * un `request_preset_content` immédiat n’est déclenché que si `models_hw_force_preset_dump_on_slot_notify=1`.
+ * L’événement `models:hardware-slot-changed` déclenche aussi un soft-sync sans attendre le tick.
  */
 function applyHardwareSlotStateFromBackend(hw: HardwareActiveSlotState | null): boolean {
   if (!hw || !Number.isFinite(hw.sequence)) return false;
@@ -298,8 +309,10 @@ function applyHardwareSlotStateFromBackend(hw: HardwareActiveSlotState | null): 
     lastSeenHardwareSlotSequence = hw.sequence;
   } else if (hw.sequence > lastSeenHardwareSlotSequence) {
     forceUsb = true;
-    emitModelsSyncTrace(
+    emitModelsSyncTraceThrottled(
+      "hw_slot_seq",
       `hw_slot_notify seq ${lastSeenHardwareSlotSequence}->${hw.sequence} slotIdx=${hw.slotIndex} slotBus=${hw.slotBus}`,
+      400,
     );
     const nextIdx =
       Number.isInteger(hw.slotIndex) && (hw.slotIndex as number) >= 0
@@ -327,6 +340,7 @@ function modelsSyncTraceEnabled(): boolean {
 /**
  * Trace sync UI : `console.info` (DevTools fenêtre Models) + `eprintln!` côté Rust (terminal `cargo tauri dev`).
  * Active avec `localStorage.setItem("models_debug_sync_trace", "1")` dans la **fenêtre Models**.
+ * Pour les messages très répétitifs (soft-sync ~200 ms), utiliser **`emitModelsSyncTraceThrottled`**.
  */
 function emitModelsSyncTrace(line: string): void {
   if (!modelsSyncTraceEnabled()) return;
@@ -336,6 +350,23 @@ function emitModelsSyncTrace(line: string): void {
   void invoke("log_frontend_message", { message: msg }).catch(() => {
     console.warn("[ModelsSync] log_frontend_message invoke failed — trace déjà ci-dessus (console)");
   });
+}
+
+/** Dernière émission par clé — évite spam console + `invoke(log_frontend_message)` à chaque tick. */
+const modelsSyncTraceLastByKey = new Map<string, number>();
+const MODELS_SYNC_TRACE_THROTTLE_DEFAULT_MS = 12_000;
+
+function emitModelsSyncTraceThrottled(
+  key: string,
+  line: string,
+  minIntervalMs: number = MODELS_SYNC_TRACE_THROTTLE_DEFAULT_MS,
+): void {
+  if (!modelsSyncTraceEnabled()) return;
+  const now = Date.now();
+  const prev = modelsSyncTraceLastByKey.get(key) ?? 0;
+  if (now - prev < minIntervalMs) return;
+  modelsSyncTraceLastByKey.set(key, now);
+  emitModelsSyncTrace(line);
 }
 
 /** Même texte que l’ancien `console.log` : le backend le réaffiche via `eprintln!` (terminal `tauri dev`). */
@@ -382,9 +413,11 @@ async function logCatalogChainHexDiffIfNeeded(slots: SlotDebug[], presetIndex: n
 
 function getHardwareSyncIntervalMs(): number {
   const raw = (localStorage.getItem(HW_SYNC_INTERVAL_MS_KEY) ?? "").trim();
-  if (!raw) return 0;
+  if (raw === "0") return 0;
+  if (!raw) return 200;
   const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  if (parsed === 0) return 0;
   return Math.max(HW_SYNC_MIN_MS, Math.min(HW_SYNC_MAX_MS, parsed));
 }
 
@@ -513,8 +546,8 @@ function chainLayoutSignature(slots: SlotDebug[]): string {
 
 function rememberHwSyncChainLayout(slots: SlotDebug[]): void {
   lastHwSyncChainSignature = chainLayoutSignature(slots);
-  lastHwSyncNormalizedSlots =
-    slots.length === 16 ? slots.map((s) => ({ ...s })) : null;
+  // Snapshot pour le soft-sync sans re-parse : grille 16 ou flow (toute liste non vide).
+  lastHwSyncNormalizedSlots = slots.length > 0 ? slots.map((s) => ({ ...s })) : null;
   pendingHwLayoutSignature = null;
 }
 
@@ -614,8 +647,11 @@ function applyProbeSlotMergeToNormalized(normalized: SlotDebug[]): SlotDebug[] {
 }
 
 /**
- * Sync matériel sans reconstruire toute l’UI si la disposition des blocs est inchangée
- * (réduit le flash : seul le panneau paramètres du slot sélectionné est rechargé).
+ * Sync matériel : le **parse** `get_active_preset_slots` (RAM Rust `preset_data`) n’est utilisé
+ * pour la grille **que** si ce cycle a fait un `request_preset_content` (RAM fraîchement relue).
+ * Sinon on s’appuie sur le snapshot `lastHwSyncNormalizedSlots` (dernier chargement / dernière
+ * relecture + MAJ optimistes probe/remove) pour le panneau params et la sélection HW — pas de
+ * `renderSlots` depuis un dump périmé.
  */
 async function runHardwareSyncSoftRefresh(): Promise<void> {
   const syncMs = getHardwareSyncIntervalMs();
@@ -649,8 +685,10 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
       hwSlotDebugLog(
         "hw slot seq advanced: refresh depuis RAM (pas de request_preset_content sur seule notif slot)",
       );
-      emitModelsSyncTrace(
-        "hw_slot_notify -> slot-only RAM refresh (no request_preset_content); poll preset unchanged",
+      emitModelsSyncTraceThrottled(
+        "hw_slot_notify_tick",
+        "hw_slot_notify -> slot-only snapshot (pas de request_preset_content sur seule notif slot) ; voir description.md 12 mai (suite)",
+        15_000,
       );
     }
   }
@@ -665,8 +703,10 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
     now >= suppressUsbPresetPollUntilMs;
   const wantUsbPresetDump = pendingForceUsbPresetContent || pollPresetDue;
   if (wantUsbPresetDump && requestPresetCooldownRemainingMs(now) > 0 && !pendingForceUsbPresetContent) {
-    emitModelsSyncTrace(
+    emitModelsSyncTraceThrottled(
+      "soft_sync_usb_cooldown",
       `softSync skip cooldown wantUsb pollMs=${usbPresetPollMs} lastUsbReadAge=${now - lastSoftUsbPresetReadAt}ms`,
+      10_000,
     );
     return;
   }
@@ -696,11 +736,14 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
         .then((snap) => {
           const n = snap?.inFrameCount ?? 0;
           hwSlotDebugLog(`sync_hardware_slot_focus_usb slot=${focusIdx} inFrames=${n}`);
-          emitModelsSyncTrace(`slot_focus_usb ok slot=${focusIdx} inFrames=${n}`);
         })
         .catch((e) => {
           console.warn("[HwSlotSync] sync_hardware_slot_focus_usb", e);
-          emitModelsSyncTrace(`slot_focus_usb error slot=${focusIdx} ${String(e)}`);
+          emitModelsSyncTraceThrottled(
+            "slot_focus_usb_err",
+            `slot_focus_usb error slot=${focusIdx} ${String(e)}`,
+            5_000,
+          );
         });
     }
 
@@ -743,23 +786,21 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
         emitModelsSyncTrace(`softSync usbDump NO_SLOTS after wait preset=${presetIdx}`);
       }
     } else {
-      for (let tries = 0; tries < 6; tries += 1) {
-        if (currentPresetIndex !== presetIdx) return;
-        try {
-          const slots = debugRoutingMode
-            ? await invoke<[string, string, string, string][] | null>("get_active_preset_slots_debug")
-            : await invoke<[string, string][] | null>("get_active_preset_slots");
-          if (slots !== null) {
-            const candidate = normalizeSlotsPayloadFromInvoke(slots as never);
-            if (candidate.length > 0) {
-              normalized = candidate;
-              break;
-            }
-          }
-        } catch {
-          // transient
-        }
-        await delayMs(80);
+      // Pas de relecture preset ce cycle : ne pas re-parser `preset_data` (évite grille fantôme).
+      if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length > 0) {
+        normalized = lastHwSyncNormalizedSlots.map((s) => ({ ...s }));
+        emitModelsSyncTraceThrottled(
+          "soft_sync_snapshot_tick",
+          "softSync : pas de request_preset_content ce cycle — pas de get_active_preset_slots ; snapshot pour params / sélection HW",
+          30_000,
+        );
+      } else {
+        normalized = null;
+        emitModelsSyncTraceThrottled(
+          "soft_sync_no_snapshot",
+          "softSync sans request_preset_content et sans snapshot grille — skip",
+          20_000,
+        );
       }
     }
 
@@ -769,13 +810,17 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
         lastHwSyncNormalizedSlots.length > 0 &&
         currentPresetIndex === presetIdx
       ) {
-        emitModelsSyncTrace(
+        emitModelsSyncTraceThrottled(
+          "soft_sync_empty_parse",
           `softSync abort emptyParse keepExistingGrid preset=${presetIdx} snapSlots=${lastHwSyncNormalizedSlots.length}`,
+          8_000,
         );
         await softRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
       } else {
-        emitModelsSyncTrace(
+        emitModelsSyncTraceThrottled(
+          "soft_sync_abort_no_norm",
           `softSync abort noNormalized=${!normalized || normalized.length === 0} presetChanged=${currentPresetIndex !== presetIdx} cur=${currentPresetIndex} snap=${presetIdx}`,
+          8_000,
         );
       }
       return;
@@ -788,8 +833,10 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
     const deviceActive = await invoke<number>("get_active_preset");
     if (deviceActive !== presetIdx) {
       devicePresetMismatchStreak += 1;
-      emitModelsSyncTrace(
+      emitModelsSyncTraceThrottled(
+        "device_preset_mismatch_streak",
         `deviceActive mismatch backend=${deviceActive} modelsUi=${presetIdx} streak=${devicePresetMismatchStreak}/2`,
+        5_000,
       );
       if (devicePresetMismatchStreak < 2) {
         return;
@@ -828,22 +875,34 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
       await softRefreshParamsPaneFromSlots(normalized);
       return;
     }
-    // Anti-flash: un changement isolé/parsing transitoire ne doit pas reconstruire tout le haut.
-    // Changement de layout réel : re-render grille (notif slot seule → pas de dump USB ici, voir poll).
-    // Dump USB seulement `poll_interval` : même debounce que sans USB — le poll peut faire varier la signature
-    // un tick alors que la chaîne est identique (voir flash utilisateur + logs ModelsSync).
+    // Anti-flash / debounce layout : sans dump USB ce cycle, la signature ne vient pas d’un parse
+    // frais — le chemin `!didUsbPresetDumpThisCycle` ci-dessous évite tout `renderSlots`.
     const usbDumpIsPollOnly = didUsbPresetDumpThisCycle && !forceUsbPending;
     if (lastHwSyncChainSignature !== null && sig !== lastHwSyncChainSignature) {
       const allowLayoutDebounce = !didUsbPresetDumpThisCycle || usbDumpIsPollOnly;
       if (allowLayoutDebounce && pendingHwLayoutSignature !== sig) {
         pendingHwLayoutSignature = sig;
         await softRefreshParamsPaneFromSlots(normalized);
-        emitModelsSyncTrace(
+        emitModelsSyncTraceThrottled(
+          "soft_sync_layout_debounce",
           `softSync layout debounce pass1 -> paramsPane only (sig changed usbPollOnly=${usbDumpIsPollOnly})`,
+          8_000,
         );
         return;
       }
       pendingHwLayoutSignature = null;
+    }
+
+    if (!didUsbPresetDumpThisCycle) {
+      pendingHwLayoutSignature = null;
+      consumePendingHardwareSlotSelection();
+      await softRefreshParamsPaneFromSlots(normalized);
+      emitModelsSyncTraceThrottled(
+        "soft_sync_no_dump_grid",
+        "softSync sans dump USB ce cycle : pas de renderSlots (grille = dernier chargement / MAJ optimistes)",
+        20_000,
+      );
+      return;
     }
 
     rememberHwSyncChainLayout(normalized);
@@ -1582,6 +1641,8 @@ function attachSelectedSlotRemoveButton(el: HTMLElement, slotIndex: number): voi
     ev.preventDefault();
     ev.stopPropagation();
     void (async () => {
+      const emptySlot: SlotDebug = { category: "", name: "<empty>" };
+      slotModelUsbProbeInFlight = slotIndex;
       try {
         const out = await invoke<string>("probe_slot_model_usb", {
           op: "remove",
@@ -1589,8 +1650,39 @@ function attachSelectedSlotRemoveButton(el: HTMLElement, slotIndex: number): voi
         });
         console.info("[SlotModelProbe]", "remove", `slot=${slotIndex}`, out);
         selectedParamsValuesSig = null;
+        // Comme `add`/`replace` : `probe_slot_model_usb` n’écrit pas dans `preset_data` Rust.
+        // Sans MAJ optimiste du snapshot, le soft-sync (~200 ms) re-parse l’ancien dump → fantôme.
+        if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16) {
+          const next = lastHwSyncNormalizedSlots.map((s, i) =>
+            i === slotIndex ? { ...emptySlot } : { ...s },
+          );
+          lastHwSyncNormalizedSlots = next;
+          lastHwSyncChainSignature = chainLayoutSignature(next);
+          patchMatrixSlotVisualFromSlot(slotIndex, emptySlot);
+          patchMatrixCategoryDescFromSlot(slotIndex, emptySlot);
+          mergeProbeSlotModelUntil = {
+            ki: slotIndex,
+            deadline: Date.now() + PROBE_SLOT_MERGE_GRACE_MS,
+            mergeTraceEmitted: false,
+          };
+          suppressUsbPresetPollUntilMs = Date.now() + USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS;
+          lastSoftUsbPresetReadAt = Date.now();
+          emitModelsSyncTrace(
+            `slot_model_probe remove ok slot=${slotIndex} — optimistic empty + merge grace (preset_data inchangé côté Rust)`,
+          );
+        }
+        markLiveWriteUiInteraction();
+        if (currentPresetIndex >= 0) {
+          clearLiveChainOverridesForKemplineSlot(currentPresetIndex, slotIndex);
+        }
+        if (selectedParamsKemplineSlotIndex === slotIndex) {
+          suppressNextUiSlotHardwareSwitch = true;
+          selectParamsPaneByKemplineIndex(slotIndex);
+        }
       } catch (e) {
         console.warn("[SlotModelProbe][remove]", e);
+      } finally {
+        slotModelUsbProbeInFlight = null;
       }
     })();
   });
@@ -5418,6 +5510,21 @@ window.addEventListener("DOMContentLoaded", () => {
     clearSelectedParamsContext();
     renderEmpty("Chargement des modeles...");
     scheduleLoadForPreset(index, true);
+  });
+
+  void listen<HardwareSlotChangedPayload>("models:hardware-slot-changed", (event) => {
+    const p = event.payload;
+    if (hwSlotDebugEnabled() || modelsSyncTraceEnabled()) {
+      console.info("[HxLinux] models:hardware-slot-changed", p);
+    }
+    if (p && typeof p.sequence === "number") {
+      emitModelsSyncTraceThrottled(
+        "evt_hw_slot_changed",
+        `event models:hardware-slot-changed seq=${p.sequence} slotIdx=${p.slotIndex} slotBus=${p.slotBus}`,
+        2_000,
+      );
+    }
+    scheduleHardwareSyncPoll();
   });
 
   void refresh();

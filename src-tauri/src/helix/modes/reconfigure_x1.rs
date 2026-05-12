@@ -54,8 +54,9 @@ impl Mode for ReconfigureX1 {
             0xef, 0x03, 0x01, 0x10,
             0x00, 0x02, 0x00, 0x04
         ], 12) {
-            // Kempline : start_x1x10_keep_alive_thread(delay=0.0)
-            state.start_keepalive(KeepAliveCommand::StartX1);
+            // Phase 4 HX Edit : requêtes `19` ed + `1a` ef avant le polling `08…f0:03` régulier.
+            crate::helix::editor_phase4_bootstrap::send(state);
+            state.start_keepalive(KeepAliveCommand::StartOrdered);
             state.switch_mode(ModeRequest::RequestPresetName);
 
         } else if Standard::check_keep_alive(data, state) {

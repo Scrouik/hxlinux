@@ -3034,9 +3034,10 @@ pub fn run() {
                 let _ = main_window.set_focus();
             }
 
+            let ah = app.app_handle().clone();
             let state = app_state_clone;
             thread::spawn(move || {
-                start_monitor(state);
+                start_monitor(state, ah);
             });
             Ok(())
         })
@@ -3047,22 +3048,24 @@ pub fn run() {
 // ===========================================================
 // Surveille le branchement USB et lance/arrête la connexion
 // ===========================================================
-fn start_monitor(app_state: Arc<Mutex<AppState>>) {
+fn start_monitor(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) {
     let stop_monitor = Arc::new(AtomicBool::new(false));
     let state_for_connect = Arc::clone(&app_state);
     let state_for_lost = Arc::clone(&app_state);
+    let ah_for_helix = app_handle.clone();
 
     helix::usb_monitor::start_monitor(
         Arc::new(Mutex::new(HelixState::new())),
         Arc::clone(&stop_monitor),
         Arc::new(move || {
             let state = Arc::clone(&state_for_connect);
+            let ah = ah_for_helix.clone();
             {
                 let mut app = state.lock().unwrap();
                 app.connection_issue_hint = None;
             }
             thread::spawn(move || {
-                start_helix(state);
+                start_helix(state, ah);
             });
         }),
         Arc::new(move || {
@@ -3078,7 +3081,7 @@ fn start_monitor(app_state: Arc<Mutex<AppState>>) {
 // ===========================================================
 // Connexion complète au HX et boucle de traitement
 // ===========================================================
-fn start_helix(app_state: Arc<Mutex<AppState>>) {
+fn start_helix(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) {
     // Ouvrir le premier device supporté trouvé (HX Stomp XL / Stomp / Floor / LT).
     let (device_name, handle) = match find_supported_device_handle() {
         Some(tuple) => tuple,
@@ -3173,6 +3176,7 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
         Arc::clone(&state),
         Arc::clone(&current_mode),
         Arc::clone(&stop_listener),
+        Some(app_handle),
     );
 
     // -- KeepAlive manager --
@@ -3183,9 +3187,9 @@ fn start_helix(app_state: Arc<Mutex<AppState>>) {
         thread::spawn(move || {
             loop {
                 match ka_rx.recv() {
-                    Ok(KeepAliveCommand::StartX1)  => ka.start_x1(Arc::clone(&s)),
-                    Ok(KeepAliveCommand::StartX2)  => ka.start_x2(Arc::clone(&s)),
-                    Ok(KeepAliveCommand::StartX80) => ka.start_x80(Arc::clone(&s)),
+                    Ok(KeepAliveCommand::StartOrdered) => {
+                        ka.start_ordered(Arc::clone(&s));
+                    }
                     Ok(KeepAliveCommand::StopAll)  => {
                         ka.stop_all();
                         break;

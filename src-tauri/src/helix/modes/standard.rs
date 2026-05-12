@@ -225,7 +225,11 @@ impl Mode for Standard {
             return false;
         }
 
-        // Fin de transfert preset sur x80 — ignorer silencieusement
+        // ACK court x80 ed:03 (16 o) — ex. réponse au poll `80:10:ed:03` avec `00:08` ou `00:10`.
+        // HXEdit ne renvoie pas un second OUT `…00:08…` sur ce IN : le prochain OUT est encore
+        // un poll `…80:10:ed:03…00:10…` (voir connect_device_30s_HXEdit.json après IN `…00:10:c1:02:00:00`).
+        // L’ancien bloc « variante 0x10 » (Kempline) consommait `next_x80_cnt()` et injectait un OUT
+        // parasite qui désynchronisait la boucle keep-alive (ef/f0).
         if byte_cmp(data, &pattern![
             0x08, 0x00, 0x00, 0x18,
             0xed, 0x03, 0x80, 0x10,
@@ -234,21 +238,12 @@ impl Mode for Standard {
         ], 16) {
             return false;
         }
-        // Fin de transfert preset variante (0x10) :
-        // acquitter pour éviter un blocage ED03 si le paquet arrive tard.
         if byte_cmp(data, &pattern![
             0x08, 0x00, 0x00, 0x18,
             0xed, 0x03, 0x80, 0x10,
             0x00, XX, 0x00, 0x10,
             XX, XX, 0x00, 0x00
         ], 16) {
-            let cnt = state.next_x80_cnt();
-            state.send(OutPacket::new(vec![
-                0x08, 0x00, 0x00, 0x18,
-                0x80, 0x10, 0xed, 0x03,
-                0x00, cnt,  0x00, 0x08,
-                data[12], data[13], data[14], data[15],
-            ]));
             return false;
         }
 
