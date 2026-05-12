@@ -1,5 +1,7 @@
 # USB Slot Model Fixes (4-5 mai 2026)
 
+**Voir aussi** : [Récap keep-alive `ed → ef → f0`](recap-keep-alive-ed-ef-f0-mai-2026.md) (polling éditeur, handler Kempline, silence `f0` sur Linux) — sujet distinct de l’assignation slot/modèle décrite ici.
+
 ## Contexte
 
 L'objectif était de stabiliser l'assignation de modèles dans un slot via `probe_slot_model_usb` (HXLinux), en particulier le cas **Distortion mono** qui échouait alors que d'autres familles passaient.

@@ -2,6 +2,8 @@
 
 Document de continuité après une semaine d’absence : ce qui a été fait, pourquoi, hypothèses, état actuel, pistes.
 
+**Voir aussi** : [USB Slot Model Fixes](usb-slot-model-fixes.md) — autre chantier (mai 2026) sur **`probe_slot_model_usb`**, profils `ed:03` (`80:10` vs `03:10`), lane dynamique, ressources `HX_ModelUsbAssign.json` / Distortion mono. Ce récap-ci porte surtout sur le **keep-alive global** `ed→ef→f0` et `standard.rs`, pas sur le changement de modèle dans un slot.
+
 ---
 
 ## Contexte général
