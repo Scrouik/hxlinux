@@ -164,7 +164,7 @@ impl Mode for Connect {
             0x00, 0x01, 0x00, 0x01,
             0x00, 0x02, 0x00, 0x00
         ], 20) {
-            let cnt = state.x2_cnt;
+            let cnt = state.next_x2_cnt();
             let pkt = OutPacket::new(vec![
                 0x11, 0x00, 0x00, 0x18,
                 0x02, 0x10, 0xf0, 0x03,
@@ -176,7 +176,7 @@ impl Mode for Connect {
             ]);
             state.send(pkt);
 
-        // -- x11 reçu sur x2 (subscribe f0 OK) — pas de poll ici : phase 4 + polling après ReconfigureX1
+        // -- x11 reçu sur x2 (handshake f0 OK) → poll d’activation sub=08 (HX Edit #3255)
         } else if byte_cmp(data, &pattern![
             0x11, 0x00, 0x00, 0x18,
             0xf0, 0x03, 0x02, 0x10,
@@ -184,8 +184,18 @@ impl Mode for Connect {
             0x09, 0x02
         ], 14) {
             self.received_x11_on_x2 = true;
-            // Keep-alive x2 / poll f0:03 — différé après `ReconfigureX1` + phase 4 (cf. captures HX Edit
-            // vs Linux : sinon le Stomp ignore les polls tant que l’échange preset n’est pas amorcé).
+            // Arme le canal f0:03 (HX Edit #3255 : cnt=0x03 après handshake cnt=0x02, ~15 ms plus tard).
+            let cnt = state.next_x2_cnt();
+            let pkt = OutPacket::with_delay(
+                vec![
+                    0x08, 0x00, 0x00, 0x18,
+                    0x02, 0x10, 0xf0, 0x03,
+                    0x00, cnt, 0x00, 0x08,
+                    0x09, 0x10, 0x00, 0x00,
+                ],
+                15,
+            );
+            state.send(pkt);
         } else if byte_cmp(data, &pattern![
             0x08, 0x00, 0x00, 0x18,
             0xf0, 0x03, 0x02, 0x10,

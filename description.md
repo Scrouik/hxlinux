@@ -2,6 +2,27 @@
 
 Ce fichier sert de **mémo locale** quand l’historique de chat ou le contexte IDE est perdu après un redémarrage. Il complète le `README.md` (objectifs produit et commandes de base).
 
+**18 mai 2026 — Keep-alive `f0:03` : canal activé, sync slot hardware → UI**
+
+**Symptôme** : après unification du keep-alive `ed→ef→f0` et fix ACK `ed` parasite, le negotiate/subscribe `f0` passait (IN subscribe + handshake OK), mais **silence** sur les polls réguliers `08…02:10:f0:03` (`sub=10`) ; l’UI ne suivait pas le slot actif quand on changeait de bloc sur le Helix.
+
+**Causes** (comparaison `src/Paquets Json/connect_device_30s_HXEdit.json` vs captures Linux) :
+
+1. **Poll d’activation manquant** — HX Edit envoie, juste après le handshake `f0`, un poll court **`sub=08`** (`08:00:00:18:02:10:f0:03:…:00:08:09:10…`, frame #3255). HXLinux avait supprimé cette étape (`connect.rs` : « pas de poll ici »).
+2. **Compteur `x2` en double** — le handshake utilisait `state.x2_cnt` sans incrément ; `next_x2_cnt()` sur le poll d’activation renvoyait encore **0x02** au lieu de **0x03** (HX : handshake **02**, activation **03**).
+3. **Keep-alive trop tôt** — le 1er poll `sub=10` partait ~28 ms après la fin du bootstrap phase 4, pendant le dump preset sur `0x81` ; HX Edit attend ~**688 ms** (frames #3447 → #3761).
+
+**Correctifs** :
+
+- **`src-tauri/src/helix/modes/connect.rs`** : poll d’activation `sub=08` après handshake (`OutPacket::with_delay` 15 ms) ; handshake via **`next_x2_cnt()`**.
+- **`src-tauri/src/helix/keep_alive.rs`** : **`POST_PHASE4_SETTLE_MS = 700`** — `sleep` une fois au démarrage du thread avant la boucle `ed→ef→f0`.
+
+**Validation** : IN `f0:03:02:10` sur activation et polls réguliers ; compteurs requête/réponse alignés ; **changement de slot hardware visible dans l’UI** (test terrain, sans capture obligatoire). Les payloads subscribe/handshake sont **identiques byte à byte** à HX Edit.
+
+**Doc détaillée** : [`docs/recap-keep-alive-ed-ef-f0-mai-2026.md`](docs/recap-keep-alive-ed-ef-f0-mai-2026.md).
+
+**Suite** : un petit bug mineur reste à traiter (session suivante) ; les trames **44 o** `21…f0:03` (focus / détail slot) peuvent être re-capturées si besoin — voir `slot_focus_in.rs` et §12 mai ci-dessous.
+
 **12 mai 2026 (suite) — Grille : mise à jour alignée sur la RAM `preset_data` (relecture preset uniquement)**
 
 Objectif produit : **ne plus reconstruire la matrice** à partir d’un parse de **`preset_data`** (Rust) **entre** deux relectures — éviter les « fantômes » (UI qui réaffiche un slot supprimé sur le Helix parce que le buffer PC était encore l’ancien dump).

@@ -1,8 +1,10 @@
-# Récap — keep-alive USB `ed → ef → f0`, handler Kempline, silence `f0` (mai 2026)
+# Récap — keep-alive USB `ed → ef → f0`, handler Kempline, canal `f0:03` (mai 2026)
 
-Document de continuité après une semaine d’absence : ce qui a été fait, pourquoi, hypothèses, état actuel, pistes.
+Document de continuité : ce qui a été fait, pourquoi, hypothèses, état actuel, pistes.
 
-**Voir aussi** : [USB Slot Model Fixes](usb-slot-model-fixes.md) — autre chantier (mai 2026) sur **`probe_slot_model_usb`**, profils `ed:03` (`80:10` vs `03:10`), lane dynamique, ressources `HX_ModelUsbAssign.json` / Distortion mono. Ce récap-ci porte surtout sur le **keep-alive global** `ed→ef→f0` et `standard.rs`, pas sur le changement de modèle dans un slot.
+**Voir aussi** : [USB Slot Model Fixes](usb-slot-model-fixes.md) — autre chantier (mai 2026) sur **`probe_slot_model_usb`**, profils `ed:03` (`80:10` vs `03:10`), lane dynamique, ressources `HX_ModelUsbAssign.json` / Distortion mono. Ce récap-ci porte surtout sur le **keep-alive global** `ed→ef→f0`, `connect.rs` et `standard.rs`.
+
+**Mise à jour 18 mai 2026** : le silence `f0:03` et la non-sync slot hardware → UI sont **résolus** (voir §4).
 
 ---
 
@@ -15,7 +17,7 @@ Problèmes traités dans cette série de changements :
 1. **Compteurs et trames** mélangés entre plusieurs chemins (threads / handlers).
 2. Un handler issu de **Kempline** (`standard.py`) qui **polluait** le bus et cassait la séquence.
 3. **Confusion** entre trames keep-alive `ed` (`00:10`) et trames **live write** `ed` (`00:08` + `live_write_ctr`).
-4. **Silence du Stomp sur `f0:03`** (pas d’IN `f0:03:02:10` côté Linux alors que HX Edit en a) — **non résolu** à la date de ce document.
+4. **Silence du Stomp sur `f0:03`** — **résolu le 18 mai 2026** (poll d’activation `sub=08`, compteur `x2`, délai post-bootstrap).
 
 ---
 
@@ -48,6 +50,45 @@ Problèmes traités dans cette série de changements :
 - **`live_write.rs`** : seul endroit qui construit systématiquement le **16 o** `08…80:10:ed:03` avec **`00:08`** et le compteur live (`live_write_ctr`).
 - **`standard.rs`** (autres branches) : réponses réactives (ex. LED) avec `00:08` + `session_quadruple`, distinct du keep-alive.
 
+### 4. Activation du canal `f0:03` — poll `sub=08`, compteur `x2`, délai post-bootstrap (18 mai 2026)
+
+**Symptôme** : après les commits « keep-alive unifié » + fix ACK `ed`, le subscribe/handshake `f0` passait (IN `0c:28` et `11:18` OK), mais **aucune** réponse aux polls réguliers `08…02:10:f0:03` avec **`sub=10`** ; l’UI ne suivait pas le changement de slot sur le hardware.
+
+**Analyse** (captures `connect_device_30s_HXEdit.json` vs `connect_device_30s_Linux.json`) :
+
+| Étape | HX Edit | Linux (avant fix) |
+|-------|---------|-------------------|
+| Subscribe `0c:28` | identique | identique |
+| Handshake `11:18` cnt **0x02** | identique | identique |
+| **Poll activation** `08:16` **sub=08** cnt **0x03** | #3255 (~15 ms après handshake) | **absent** (commentaire « pas de poll ici » dans `connect.rs`) |
+| Bootstrap phase 4 (`1a ef` + `cc:fe`) | #3447 | ~#271 |
+| Délai avant 1er poll `sub=10` | **~688 ms** | **~28 ms** (pendant dump preset sur `0x81`) |
+| 1er poll régulier cnt / sub | **0x04** / **10** | **0x02** / **10** (double compteur) |
+
+**Trois correctifs** :
+
+1. **`connect.rs`** — après handshake `f0` (`x11` sur x2), envoi du poll d’**activation** :
+   `08:00:00:18:02:10:f0:03:00:<cnt>:00:08:09:10:00:00`  
+   (HX Edit #3255 ; `OutPacket::with_delay` **15 ms**).
+
+2. **`connect.rs`** — handshake ack : `state.x2_cnt` → **`state.next_x2_cnt()`** pour que l’activation utilise **0x03** et non un second **0x02** (`next_x2_cnt` retourne la valeur courante puis incrémente).
+
+3. **`keep_alive.rs`** — **`POST_PHASE4_SETTLE_MS = 700`** : `thread::sleep` une fois au démarrage du thread keep-alive, **avant** la première boucle `ed→ef→f0` (HX #3447 → #3761 ≈ 688 ms).
+
+**Validation** :
+
+- IN `f0:03:02:10` sur le poll d’activation (`sub=08`) et sur les polls réguliers (`sub=10`) ; compteurs alignés requête/réponse (03, 04, 05…).
+- **Changement de slot sur le Helix reflété dans l’UI** sans capture supplémentaire obligatoire.
+- Subscribe/handshake : payloads **byte à byte identiques** à HX Edit — le problème n’était **pas** le negotiate `0c:28`.
+
+**Séquence cible** :
+
+```
+subscribe → handshake (cnt 02) → poll activation (cnt 03, sub 08) → IN f0 16o
+→ phase 4 bootstrap → dump preset → sleep 700ms
+→ boucle keep-alive ed / ef / f0 (sub 10) → IN f0 16o (+ 44o si changement slot HW)
+```
+
 ---
 
 ## Hypothèses validées ou infirmées
@@ -57,58 +98,60 @@ Problèmes traités dans cette série de changements :
 | L’ACK `ed` device doit recopier byte à byte la queue OUT (`ee:1c` vs `bc:39` etc.) | **Non** — HX Edit : OUT `ee:1c`, IN `c1:02` ; même **compteur** `b[9]`, queues différentes. |
 | Les `a6:02` / `30:02` (ACK) vs `ee:1c` (HX) indiquent à eux seuls une erreur d’« adresse » | **Faible** — ce sont surtout des **handles / session** différents ; le préfixe `…:02` en bas de mot est une famille vue sur plusieurs ACK. |
 | Le handler « variante 0x10 » cassait le cycle `ed→ef→f0` | **Oui** — trame supplémentaire, mauvais sous-champ `00:08`, avance du compteur `x80`. |
-| Le silence `f0` est expliqué uniquement par `bc:39` ≠ `c1:02` | **Non démontré** — même OUT HX utilise `09:10` sur `f0` ; l’IN HX a `09:02`, écart déjà **côté device**. |
+| Le silence `f0` est expliqué uniquement par `bc:39` ≠ `c1:02` | **Non démontré** — même OUT HX utilise `09:10` sur `f0` ; l’IN HX a `09:02`, écart **côté device** sur l’ACK, pas la cause du silence total. |
+| Le subscribe `f0` incorrect empêche le polling régulier | **Non** — negotiate et handshake **identiques** à HX Edit ; il manquait le poll **`sub=08`** + timing + compteur. |
+| Retarder le keep-alive après bootstrap aide le 1er `f0` | **Oui** — ~700 ms évite d’envoyer `f0` pendant la rafale dump preset sur `0x81`. |
 
 ---
 
-## Situation actuelle (à ton retour)
+## Situation actuelle (18 mai 2026)
 
-- **Cycle logiciel** : `ed → ef → f0` sans parasite depuis `standard.rs` ; keep-alive aligné sur l’idée des captures HX Edit.
-- **Traces Linux** (`Preset_Test_Slot7_to_6_to_5_to_4_to_3_HXLinux.json`) : **IN** sur `ed` et `ef` présents sur `0x81` ; **aucun** `f0:03:02:10` entrant dans le grep — le Stomp **n’émet pas** (ou pas capté) la petite notification `f0` alors que les OUT `02:10:f0:03` partent bien.
-- **Objectif produit** non atteint si tu attends la **notification de slot** via ce canal : il reste un **écart comportemental Linux vs HX Edit** à expliquer.
-
----
-
-## Pistes à explorer (priorité indicative)
-
-1. **Bootstrap / phase 4** — Comparer **byte à byte** le tout premier cycle `ed→ef→f0` après `editor_phase4_bootstrap::send` avec une capture HX Edit au même stade (compteurs `x80`/`x1`/`x2`, `session_no`, `preset_data_packet_double()`).
-2. **État « éditeur prêt »** — Le firmware pourrait ne publier les IN `f0` qu’après une séquence ou un flag non encore rejoué sous Linux.
-3. **Lecture IN `0x81`** — Vérifier qu’aucun chemin ne **vide** ou ne **retarde** les URB IN au moment où le device répondrait à `f0` (race avec le thread keep-alive vs dispatcher principal).
-4. **Compteur `x2` seul** — Vérifier si le premier `f0` après connexion doit réutiliser une valeur apprise d’un IN précédent (captures HX autour des tout premiers `f0`).
-5. **Timing** — Augmenter légèrement le délai entre `ef` et `f0` ou entre cycles pour tester un hypothesis « pile USB / firmware » (faible coût, résultat parfois instructif).
-6. **Ne pas confondre** — S’assurer que les tests usbmon incluent bien **endpoint `0x81`** pour les IN (les complétions OUT `0x01` peuvent avoir `data_len: 0` sous usbmon alors que les données utiles sont sur IN).
-7. **Document voisin** — `docs/usb-slot-model-fixes.md` pour le fil **slot / modèle** (autre facette du même transport `ed:03`).
-8. **x2 ack générique**
-if byte_cmp(data, &pattern![
-    0x17, 0x00, 0x00, 0x18,
-    0xf0, 0x03, 0x02, 0x10, ...
-], 16) {
-    state.send(OutPacket::with_delay(vec![
-        0x08, 0x00, 0x00, 0x18,
-        0x02, 0x10, 0xf0, 0x03,
-        0x00, cnt, 0x00, 0x08,
-        0x74, 0x77, 0x00, 0x00,
-    ], 10));
+- **Cycle logiciel** : `ed → ef → f0` sans parasite depuis `standard.rs` ; keep-alive aligné sur les captures HX Edit.
+- **Canal `f0:03`** : poll d’activation puis polling `sub=10` ; IN `f0:03:02:10` **16 o** reçus ; dialogue synchrone (compteurs requête = réponse).
+- **Produit** : **sync slot hardware → UI** validée en usage (changement de slot sur le boîtier).
+- **Captures** : `src/Paquets Json/connect_device_30s_HXEdit.json` (référence) ; `connect_device_30s_Linux.json` post-fix (local, non versionné).
+- **Reste ouvert** : un **petit bug mineur** à traiter en session suivante (non documenté ici) ; notifications **44 o** `21…f0:03` (focus slot / détail slot) à confirmer au besoin sur capture ciblée.
 
 ---
 
-## Fichiers clés à rouvrir
+## Pistes (état)
+
+**Traitées (18 mai 2026)** :
+
+1. Bootstrap / timing premier `f0` post phase 4 → `POST_PHASE4_SETTLE_MS`.
+2. État « éditeur prêt » / poll d’activation → `sub=08` dans `connect.rs`.
+3. Compteur `x2` handshake vs activation → `next_x2_cnt()` sur le handshake.
+4. Timing immédiat après handshake → délai 15 ms sur le poll `08`.
+5. Endpoint `0x81` pour les IN — vérifié sur captures post-fix.
+
+**Encore ouverts** :
+
+- Détail du bug mineur restant (session suivante).
+- Parser / focus : trames **44 o** `82:62:SS:1a` hors keep-alive pur (voir `slot_focus_in.rs`, `description.md` §12 mai).
+- Document voisin : `docs/usb-slot-model-fixes.md` pour le fil **slot / modèle**.
+
+---
+
+## Fichiers clés
 
 | Fichier | Rôle |
 |---------|------|
-| `src-tauri/src/helix/keep_alive.rs` | Boucle `ed→ef→f0`, construction dynamique du tail `ed`. |
+| `src-tauri/src/helix/modes/connect.rs` | Subscribe/handshake `f0` ; **poll activation `sub=08`** ; `next_x2_cnt` sur handshake. |
+| `src-tauri/src/helix/keep_alive.rs` | Boucle `ed→ef→f0` ; `POST_PHASE4_SETTLE_MS` ; tail `ed` dynamique. |
 | `src-tauri/src/helix/modes/standard.rs` | Handlers IN ; ACK `ed` courts en pass silencieux. |
 | `src-tauri/src/helix/live_write.rs` | Pré/post `ed` avec `00:08` (UI), pas keep-alive. |
-| `src-tauri/src/helix/editor_phase4_bootstrap.rs` | Séquence avant polling stable. |
-| `src/Paquets Json/connect_device_30s_HXEdit.json` | Référence comportement HX Edit (dont IN `f0:03:02:10`). |
-| `src/Paquets Json/Preset_Test_Slot7_to_6_to_5_to_4_to_3_HXLinux.json` | Référence Linux récente (sans IN `f0`). |
+| `src-tauri/src/helix/editor_phase4_bootstrap.rs` | Séquence `19 ed` ×3 + `1a ef` avant polling stable. |
+| `src-tauri/src/helix/mod.rs` | `ingest_hw_slot_notify_in` (`82 62 SS 1a`) → événement UI slot. |
+| `src/Paquets Json/connect_device_30s_HXEdit.json` | Référence HX Edit (#3243 handshake → #3255 activation → #3761 1er poll `sub=10`). |
+
+Les exports Wireshark sous `src/Paquets Json/` restent en général **hors dépôt** (fichiers locaux volumineux).
 
 ---
 
 ## Note méthodologique
 
-Quand une règle vient de **Kempline / `standard.py`**, la validation par **capture HX Edit** (ordre des trames, sens `send`/`recv`, valeurs dynamiques) a montré son utilité : plusieurs « acquittements » étaient des **faux positifs** sur des ACK normaux du poll.
+Quand une règle vient de **Kempline / `standard.py`**, la validation par **capture HX Edit** (ordre des trames, sens `send`/`recv`, valeurs dynamiques) a montré son utilité : plusieurs « acquittements » étaient des **faux positifs** sur des ACK normaux du poll. La suppression du poll `sub=08` dans `connect.rs` était une **régression** : le subscribe accepté ne suffit pas à armer le polling régulier.
 
 ---
 
-*Rédigé pour reprise après absence — mai 2026.*
+*Rédigé pour reprise après absence — mai 2026 ; résolution canal `f0:03` documentée le 18 mai 2026.*
