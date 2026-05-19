@@ -13,6 +13,8 @@ pub mod live_write;
 pub mod live_write_config;
 pub mod edit_slot_model;
 pub mod slot_focus_in;
+pub mod slot_param_in;
+pub mod slot_watch;
 pub mod editor_phase4_bootstrap;
 
 use std::sync::mpsc::Sender;
@@ -190,6 +192,11 @@ pub struct HelixState {
     pub usb_slot_focus_capture: Vec<Vec<u8>>,
     /// Dernier paquet IN « focus slot » parsé par index Kempline (rempli par `sync_hardware_slot_focus_usb`).
     pub last_slot_focus_capsule: [Option<slot_focus_in::SlotFocusInCapsule>; 16],
+    /// Empreinte précédente pour surveillance contenu slot (modèle / vide / params).
+    pub slot_watch_prev: [slot_watch::SlotWatchSnapshot; 16],
+    pub hw_slot_content_sequence: u32,
+    /// Déduplication des événements paramètre IN (`85:62…1c:PP:77`).
+    pub slot_param_emit: slot_param_in::SlotParamEmitState,
 }
 
 // ===========================================================
@@ -294,7 +301,21 @@ impl HelixState {
             usb_slot_focus_capture_deadline: None,
             usb_slot_focus_capture: Vec::new(),
             last_slot_focus_capsule: std::array::from_fn(|_| None),
+            slot_watch_prev: std::array::from_fn(|_| slot_watch::SlotWatchSnapshot::default()),
+            hw_slot_content_sequence: 0,
+            slot_param_emit: slot_param_in::SlotParamEmitState::default(),
         }
+    }
+
+    /// Parse les trames IN bulk pour changements de paramètre live (`85:62…77:ca|c2|c3|…`).
+    pub fn ingest_slot_param_in(
+        &mut self,
+        data: &[u8],
+    ) -> Vec<slot_param_in::SlotParamChangedPayload> {
+        if data.len() < 11 {
+            return Vec::new();
+        }
+        self.slot_param_emit.ingest_buffer(data)
     }
 
     /// Mémorise le suffixe « modèle » des échos paramètre (IN) pour caler les OUT live.

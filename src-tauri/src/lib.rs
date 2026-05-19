@@ -21,7 +21,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::thread;
 use tauri::{
-    LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, Size, WindowEvent,
+    Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, Size, WindowEvent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -599,6 +599,7 @@ fn probe_hardware_slot_focus_usb(
 /// au chargement + merge RAM sur changement de slot.
 #[tauri::command]
 fn sync_hardware_slot_focus_usb(
+    app: tauri::AppHandle,
     state: tauri::State<Arc<Mutex<AppState>>>,
     slot_index: u32,
 ) -> Result<Value, String> {
@@ -667,11 +668,38 @@ fn sync_hardware_slot_focus_usb(
     let slot_focus_parsed =
         serde_json::to_value(&parsed).unwrap_or(serde_json::Value::Null);
     let slot_idx_usize = slot_index as usize;
-    {
+    let content_change = {
         let mut s = helix_arc.lock().unwrap();
         if slot_idx_usize < 16 {
             s.last_slot_focus_capsule[slot_idx_usize] = parsed.clone();
         }
+        let next = helix::slot_watch::SlotWatchSnapshot::from_capsule(parsed.as_ref());
+        let kind = if slot_idx_usize < 16 {
+            helix::slot_watch::detect_slot_content_change(
+                &mut s.slot_watch_prev[slot_idx_usize],
+                &next,
+            )
+        } else {
+            None
+        };
+        kind.map(|k| {
+            s.hw_slot_content_sequence = s.hw_slot_content_sequence.wrapping_add(1);
+            helix::slot_watch::SlotContentChangedPayload {
+                sequence: s.hw_slot_content_sequence,
+                slot_index,
+                kind: k.as_str().to_string(),
+                capsule_sig: next.capsule_sig.clone(),
+            }
+        })
+    };
+    if let Some(ref payload) = content_change {
+        if preset_debug_verbose_enabled() {
+            eprintln!(
+                "[SlotWatch] slot_index={} kind={} seq={}",
+                payload.slot_index, payload.kind, payload.sequence
+            );
+        }
+        let _ = app.emit("models:slot-content-changed", payload);
     }
 
     let frames_hex: Vec<String> = frames
@@ -704,6 +732,7 @@ fn sync_hardware_slot_focus_usb(
         "inFrameCount": frames_hex.len(),
         "inFramesHex": frames_hex,
         "slotFocusParsed": slot_focus_parsed,
+        "contentChange": content_change,
     }))
 }
 
@@ -1132,6 +1161,8 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
     s.preset_data_ready = false;
     s.preset_data.clear();
     s.last_slot_focus_capsule = std::array::from_fn(|_| None);
+    s.slot_watch_prev = std::array::from_fn(|_| helix::slot_watch::SlotWatchSnapshot::default());
+    s.slot_param_emit.clear();
     // preset_content_only=true dans les deux cas : bloque les RequestPresetName
     // déclenchés par le MIDI listener pendant qu'on attend le x2 de confirmation.
     s.preset_content_only = true;
@@ -1202,6 +1233,8 @@ fn force_recover_preset_reader(state: tauri::State<Arc<Mutex<AppState>>>) -> Res
         s.preset_data_ready = false;
         s.preset_data.clear();
         s.last_slot_focus_capsule = std::array::from_fn(|_| None);
+        s.slot_watch_prev = std::array::from_fn(|_| helix::slot_watch::SlotWatchSnapshot::default());
+    s.slot_param_emit.clear();
         // Re-synchronise l'état de requête (mêmes valeurs de base que RequestPreset::shutdown no-data).
         s.preset_pkt_counter = 0x001e;
         s.request_preset_session_id = 0xf4;

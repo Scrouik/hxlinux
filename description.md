@@ -2,6 +2,197 @@
 
 Ce fichier sert de **mémo locale** quand l’historique de chat ou le contexte IDE est perdu après un redémarrage. Il complète le `README.md` (objectifs produit et commandes de base).
 
+---
+
+## 19 mai 2026 — Prochaine session : Phase C (écoute passive IN → grille + panneau params)
+
+**Objectif produit (accord session)** : après chargement preset (`preset_data` = parse initial uniquement), toute modif **hardware ou UI** sur un slot doit mettre à jour **la cellule concernée** (modèle / vide / params) **sans** `request_preset_content` à chaque tick. Vision grille : **18 colonnes × 2 lignes** (Path In / Split / Merge / Slots / Out).
+
+**Déjà en place (ne pas refaire)** :
+
+- Phase A/B : `helix/slot_watch.rs`, empreinte capsule (`anchor12` + `ed_suffix7`), événement `models:slot-content-changed` (`kind: "content"`), poll `models_hw_slot_content_watch_ms` (défaut 1200 ms).
+- Soft-sync grille : entre deux dumps USB, clone `lastHwSyncNormalizedSlots` — pas de re-parse `get_active_preset_slots` (§12 mai).
+- Write live OUT : `helix/live_write.rs` (float `27` + `77:ca`, bool/discret `23` + `77:c2/c3` ou index).
+- Doc détaillée surveillance : [`docs/todo-slot-content-watch.md`](docs/todo-slot-content-watch.md).
+
+### Convention slot (à ne pas confondre)
+
+| Langage utilisateur | Index Kempline / grille | `slot_bus` USB (`82:62:XX:1a` ou `85:62:XX`) |
+|---------------------|-------------------------|-----------------------------------------------|
+| « Slot 1 » (1er bloc effet du path) | **0** | **`0x01`** |
+| « Slot 2 » | **1** | **`0x02`** |
+| … | … | … |
+
+Les captures de mai 2026 nommées `Slot0_…` = **index 0** (premier slot effet).
+
+### Protocole wire — paramètre live (validé captures HX Edit)
+
+**Captures analysées et bonnes** (`src/Paquets Json/`, USBPcap Windows, preset « Preset Test », slot index **0**) :
+
+| Fichier | Scénario | Résultat |
+|---------|----------|----------|
+| `Slot0_Change_param_#0.json` | 1er param (UI) | `param_selector = 0x00`, float après `77:ca` |
+| `Slot0_Change_param_#1.json` | 2e param | `param_selector = 0x01` |
+| `Slot0_Change_param_#2json` | 3e param | `param_selector = 0x02` |
+| `Slot0_Change_Model_2_Time.json` | 2× changement modèle sur slot 0 | assign `83:66`, bulks IN, snapshots — dialecte **modèle**, pas param |
+
+**Ancre commune** (même offset que `live_write.rs`, trames IN **52 o** `f0:03` côté HX Edit) :
+
+```text
+85:62 :SS :1d :c3 :1a :00 :1c :PP :77 :XX …
+         slot_bus              param#   type
+```
+
+| Octet `XX` après `77` | Type | Valeur |
+|------------------------|------|--------|
+| `ca` + 4 octets BE | Float | IEEE (souvent 0…1) |
+| `c2` / `c3` | Bool | off / on |
+| `00`…`0n` | Discret | index position |
+
+- **`PP` = index paramètre** dans l’ordre wire du modèle (0, 1, 2, …) — **identique** à `param_index` / `param_selector` HXLinux (`param_selector_byte_from_index` dans `live_write.rs`).
+- **Un tour de knob hardware** = **plusieurs** trames avec le **même `PP`** et float qui change (pas un bug de capture).
+- HX Edit envoie surtout des **IN 52 o** avec la valeur ; les **OUT `ed:03` 16 o** (`87:59`) sont du keep-alive/sync, pas la payload valeur.
+- Pour lier au **nom** du param : slot + modèle actif (bloc `83:66:cd:…`) + fichier `.models` ; en **mono**, appliquer la même règle que l’envoi : `paramsVisibleForSignal` / `liveWriteParamIndexForRow` (`models.ts`) pour ne pas décaler les index `stereo-only`.
+
+### Données d’analyse figées (19 mai — ne pas refaire le reverse)
+
+**Export Wireshark / USBPcap** : champ `usb.capdata` au même niveau que `usb` dans `_source.layers` (pas imbriqué dans `usb`). Sur captures Windows, IN device = `usb.src` **≠** `"host"` (souvent `"1.1.1"`) — ne pas filtrer uniquement `src == host` pour les IN.
+
+**Parseur Python / Rust — offsets dans `capdata` splitté par `:`**
+
+Après repérage de `85:62:01` à l’index `i` :
+
+| Champ | Index hex parts |
+|-------|-----------------|
+| `slot_bus` | `i+2` (ici `01`) |
+| `param_selector` (`PP`) | `i+8` |
+| marqueur type | `i+9` = `77`, `i+10` = `ca` \| `c2` \| `c3` \| index discret |
+| float BE (si `ca`) | `i+11` … `i+14` |
+
+**Trame IN 52 o type param (ex. `#0`, 1er pas, t≈1,20 s)** — à utiliser en test unitaire :
+
+```text
+2b:00:00:18:f0:03:02:10:00:f5:00:04:09:02:00:00:00:00:04:00:1b:00:00:00:82:69:1e:6a:84:52:00:44:06:79:14:6a:85:62:01:1d:c3:1a:00:1c:00:77:ca:3e:dc:28:f5:40
+```
+
+- Préfixe `2b:00:00:18:f0:03:02:10…` (diffère du OUT HXLinux `27:00:00:18:80:10:ed:03…`).
+- Bloc stable avant slot : `82:69:1e:6a:84:52:00:44:06:79:14:6a` (même famille que focus 44 o).
+- Queue utile : `85:62:01:1d:c3:1a:00:1c:00:77:ca:3e:dc:28:f5` → PP=`00`, float≈**0,43**.
+
+**Statistiques par capture param (preset « Preset Test », slot index 0)**
+
+| Fichier | Paquets fichier | `capdata` | Durée ~ | Pas IN `77:ca` | `PP` | Float (1er→dernier) | Fenêtre rafale | OUT `ed:03` 16 o |
+|---------|-----------------|-----------|---------|----------------|------|---------------------|----------------|------------------|
+| `Slot0_Change_param_#0.json` | 1262 | 40 | 4,2 s | **9** | `0x00` | 0,43 → 0,51 | 1,20–1,98 s | 4× `87:59`, seq `23→26` |
+| `Slot0_Change_param_#1.json` | 1216 | 47 | 4,0 s | **15** | `0x01` | 0,54 → 0,69 | 0,74–0,95 s | 3× `87:59`, seq `47→49` |
+| `Slot0_Change_param_#2json` | 916 | 38 | 3,0 s | **12** | `0x02` | 0,61 → 0,75 | 0,84–0,98 s | 3× `87:59`, seq `5e→5f…` |
+
+- **OUT keep-alive param** (identique sur les 3 captures, **pas** la valeur) :  
+  `08:00:00:18:80:10:ed:03:00:<seq>:00:10:87:59:00:00` — seul l’octet seq (position 9) bouge ~toutes les **1 s**.
+- **IN echo court** (optionnel, calage seq) : `08:00:00:18:ed:03:80:10:00:<seq>:00:10:df:03:00:00` — **sans** bloc `83:66` → `ingest_ed03_param_echo` actuel ne s’en sert pas pour le modèle.
+- **Knob HW** : N pas = N trames IN 52 o, **même `PP`**, float monotone (comportement normal, pas erreur de capture).
+
+**Changement modèle ×2 — `Slot0_Change_Model_2_Time.json`**
+
+| | Détail |
+|--|--------|
+| Fichier | 1622 paquets, **98** `capdata`, ~**5,08 s** |
+| Slot | `81:62:01` / `82:62:01` (index **0**) |
+| Rafales | ~**t=1,02 s** et ~**t=3,02 s** (2 remplacements modèle) |
+| OUT préambule assign (36 o) | `1b:00:00:18:80:10:ed:03:00:dc:00:04:3f:41:00:00:01:00:06:00:0b:00:00:00:83:66:cd:03:fc:64:2d:65:81:62:01:00` |
+| IN bulk assign (ex. 92 o, +2 ms) | commence par `53:00:00:18:ed:03:80:10…83:66:cd:03:fc:67:…` |
+| Suite | IN ~68 o méta preset, IN **272 o** avec `SNAPSHOT 1/2/3`, texte **Preset Test** |
+| 2ᵉ changement | variante **`83:66:cd:04`** sur un IN ~68 o (pas seulement `cd:03`) |
+| ≠ param | pas de `85:62…1c:PP:77:ca` dans la fenêtre utile |
+
+**Snippet Rust de recherche (à copier en Phase C)**
+
+```rust
+// Chercher dans buf IN : … 85 62 SS 1d c3 1a 00 1c PP 77 XX …
+for i in 0..buf.len().saturating_sub(15) {
+    if buf[i..i+3] != [0x85, 0x62, _] { continue; } // SS = buf[i+2]
+    if buf.get(i+3..i+8) != Some(&[0x1d, 0xc3, 0x1a, 0x00, 0x1c]) { continue; }
+    let pp = buf[i + 8];
+    if buf.get(i+9) != Some(&0x77) { continue; }
+    let tag = buf[i + 10];
+    // tag 0xca => float BE buf[i+11..i+15]
+}
+```
+
+### À faire en priorité (implémentation)
+
+1. **Backend — parse IN passif** (nouveau module ou extension `usb_listener.rs` / `mod.rs`) :
+   - Scanner chaque bulk IN `0x81` : chercher `85:62` + `00:1c` + `PP` + `77`.
+   - Extraire `(slot_bus, param_selector, valeur décodée, kind float|bool|discrete)`.
+   - Ignorer / fusionner les rafales (debounce ~100–200 ms par clé `slot_bus:PP` — garder dernière valeur).
+   - Ne déclencher que si `hw_active_slot_bus` correspond **ou** si le bus est connu dans la grille courante.
+
+2. **Backend — événement** : émettre vers le front (ex. `models:slot-param-changed` ou enrichir `models:slot-content-changed` avec `kind: "param"`, `paramIndex`, `rawValue`, `valueType`).
+
+3. **Front — `models.ts`** :
+   - Listener : mettre à jour la ligne du panneau params **in-place** (sliders / bool / combo) pour le slot + `paramIndex` sans `fetchSlotChainParamValuesReliable` / sans dump.
+   - Optionnel : mettre à jour `lastHwSyncNormalizedSlots` / cache valeurs chaîne si la grille affiche des résumés.
+
+4. **Ensuite (même phase C)** : decode IN **modèle** / **slot vide** depuis captures assign (`Slot0_Change_Model_2_Time.json`, `Model_change_slot1_Linux.json`) → MAJ cellule matrice (nom, icône, vide) sans `preset_data`.
+
+5. **Tests** : unitaires Rust sur hex extraits des 3 JSON param `#0/#1/#2` ; test que `PP` 0/1/2 et floats monotones sont parsés.
+
+### Inventaire `src/Paquets Json/` (19 mai soir — à analyser demain)
+
+**Déjà reverse / données figées ci-dessus** (ne pas refaire sauf doute) :
+
+- `Slot0_Change_param_#0.json`, `#1.json`, `#2json`
+- `Slot0_Change_Model_2_Time.json`
+
+**Nouvelles captures à analyser en session** :
+
+| Fichier | Scénario supposé (d’après le nom) |
+|---------|-----------------------------------|
+| `Slot0_Delete_Model.json` | Suppression / vidage modèle slot 0 |
+| `Slot0_Move_Path1.json` | Déplacement bloc vers path 1 |
+| `Slot0_Move_Path2.json` | Déplacement bloc vers path 2 |
+| `In_Change_Param_#0.json` | Twist param #0 sur bloc **Input** |
+| `Out_Change_Param_#0.json` | Twist param #0 sur bloc **Output** |
+| `Split_Change_Param_#0.json` | Twist param #0 sur **Split** |
+| `Merge_Change_Param_#0.json` | Twist param #0 sur **Merge** |
+| `Save Preset HXEdit.json` | Sauvegarde preset (HX Edit) |
+
+**Autres** (référence / secondaire) : `verif.json` (déjà cité ailleurs pour live write).
+
+Ordre d’analyse suggéré demain : **Delete** + **Save** (modèle / preset) → **Move Path1/2** → blocs **In/Out/Split/Merge** param (vérifier `slot_bus` `0x00` / `0x09` / `0x0a` / `0x13` et si le motif `85:62…1c:PP:77` est identique).
+
+### Captures encore utiles (si absentes des fichiers ci-dessus)
+
+| Manquant | Action HW |
+|----------|-----------|
+| Insert model dans slot **vide** | Si `Delete` ne couvre pas l’assign complet |
+| Bool / discret HW | Toggle ou liste sur slot 0 |
+| Même scénario **HXLinux** vs HX Edit | 1 capture Linux pour diff OUT |
+
+### Fichiers code prévus
+
+| Fichier | Action |
+|---------|--------|
+| `helix/usb_listener.rs` | Appeler ingest param après lecture IN |
+| `helix/mod.rs` ou `helix/slot_param_in.rs` (nouveau) | Parse `85:62…1c:PP:77` |
+| `lib.rs` | `emit` Tauri event |
+| `models.ts` | Handler + MAJ panneau ; debounce UI |
+| `preset_chain_params.rs` | Réutiliser decode types si possible |
+
+### Ne pas faire / pièges
+
+- Ne pas réactiver dump preset à chaque notif slot (`models_hw_force_preset_dump_on_slot_notify=1` = secours seulement).
+- Ne pas utiliser `preset_data` pour la surveillance temps réel (accord architecture mai 2026).
+- Teardown USB agressif à la quit : **abandonné** (cassait reconnexion) — voir `docs/todo-analyse-trames-communes.md`.
+
+### Références rapides
+
+- Analyse trames communes / idle : `docs/todo-analyse-trames-communes.md`
+- Protocole write : `Line6_HX_Stomp_USB_Protocol.md`, § live write dans ce fichier (26–27 avril)
+- Branche de travail : `refactor/multithread`
+
+---
+
 **18 mai 2026 — Keep-alive `f0:03` : canal activé, sync slot hardware → UI**
 
 **Symptôme** : après unification du keep-alive `ed→ef→f0` et fix ACK `ed` parasite, le negotiate/subscribe `f0` passait (IN subscribe + handshake OK), mais **silence** sur les polls réguliers `08…02:10:f0:03` (`sub=10`) ; l’UI ne suivait pas le slot actif quand on changeait de bloc sur le Helix.
@@ -871,13 +1062,20 @@ Les slots effet restent : Path 1 `0x01–0x08` → index 0–7 ; Path 2 `0x0b–
 
 ## Todo à faire dans le Hardware avec capture WireShark
 
-### Priorité — édition preset (prochaine étape)
-1. ⬜ Capturer **changement de model** dans un slot existant (HX Edit → sélectionner un autre modèle dans la liste)
-2. ⬜ Capturer **insertion d'un model** dans un slot vide
-3. ⬜ Capturer **sauvegarde d'un preset** (bouton Save dans HX Edit)
+### Priorité code — Phase C (voir § **19 mai 2026** en tête de fichier)
+
+1. ⬜ Implémenter **ingest IN param** (`85:62…1c:PP:77`) + événement front + MAJ panneau sans dump
+2. ⬜ Decode IN **modèle / vide** → MAJ cellule grille
+3. ⬜ Tests unitaires hex depuis `Slot0_Change_param_#0/#1/#2json`
+
+### Priorité captures (complément)
+
+1. ⬜ Capturer **insertion d'un model** dans un slot vide
+2. ⬜ Capturer **sauvegarde d'un preset** (bouton Save dans HX Edit)
+3. ⬜ **Slot clear** / bool / discret sur HW (réf. § 19 mai)
 
 ### Suite
-4. ⬜ Tester une suppression de model dans un slot
+4. ⬜ Tester une suppression de model dans un slot (si pas couvert par clear)
 5. ⬜ Tester un déplacement de model du path 1 au path 2 et inversement.
 6. ⬜ Tester une modification de parametre sur split et merge
 7. ⬜ Tester un déplacement de split et merge
@@ -886,6 +1084,8 @@ Les slots effet restent : Path 1 `0x01–0x08` → index 0–7 ; Path 2 `0x0b–
 - ✅ Slot actif : blocs spéciaux Input/Output/Split/Merge (`slot_bus` identifiés, voir section **30 avril – 2 mai 2026**)
 - ✅ Changement de preset hardware → UI (captures `Preset1 to 8`, `Preset1 to 2`)
 - ✅ Changement de slot hardware → UI (captures `Slot1 to slot2 hardware`)
+- ✅ **Twist param slot 0** (HX Edit) : `Slot0_Change_param_#0.json`, `#1.json`, `#2json` — `param_selector` 0x00/01/02 + float `77:ca`
+- ✅ **2× changement modèle slot 0** (HX Edit) : `Slot0_Change_Model_2_Time.json`
 
 ## Test
 

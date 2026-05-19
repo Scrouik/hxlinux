@@ -16,8 +16,8 @@ use rusb::GlobalContext;
 use tauri::Emitter;
 
 use crate::helix::{
-    HelixState, Mode, usb_io_diag_enabled, usb_packet_trace_delta_only, usb_packet_trace_enabled,
-    usb_trace_fingerprint,
+    HelixState, Mode, preset_debug_verbose_enabled, usb_io_diag_enabled,
+    usb_packet_trace_delta_only, usb_packet_trace_enabled, usb_trace_fingerprint,
 };
 use crate::helix::packet::{classify_in_packet, packet_counter};
 
@@ -115,13 +115,30 @@ pub fn start_listener(
                         s.ingest_ed03_param_echo(&data);
                         // Notification « slot hardware » (`82 62 … 1a`, paires ed/ef), voir doc protocole.
                         let ev = s.ingest_hw_slot_notify_in(&data);
+                        let param_events = s.ingest_slot_param_in(&data);
                         let mut m = mode.lock().unwrap();
                         m.data_in(&data, &mut s);
-                        ev
+                        (ev, param_events)
                     };
-                    if let (Some(app), Some(payload)) = (app_handle.as_ref(), hw_slot_changed) {
+                    if let (Some(app), Some(payload)) = (app_handle.as_ref(), hw_slot_changed.0) {
                         if let Err(e) = app.emit("models:hardware-slot-changed", payload) {
                             eprintln!("[UsbListener] emit models:hardware-slot-changed: {e}");
+                        }
+                    }
+                    if let Some(app) = app_handle.as_ref() {
+                        for payload in hw_slot_changed.1 {
+                            if preset_debug_verbose_enabled() {
+                                eprintln!(
+                                    "[SlotParamIn] emit slot={} pp={} type={} val={}",
+                                    payload.slot_index,
+                                    payload.param_index,
+                                    payload.value_type,
+                                    payload.value
+                                );
+                            }
+                            if let Err(e) = app.emit("models:slot-param-changed", payload) {
+                                eprintln!("[UsbListener] emit models:slot-param-changed: {e}");
+                            }
                         }
                     }
                 }

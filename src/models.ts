@@ -52,6 +52,30 @@ type HardwareSlotChangedPayload = {
   slotBus: number | null;
 };
 
+/** Contenu du slot actif modifié (empreinte IN focus) — surveillance slot-only, sans preset_data. */
+type SlotContentChangedPayload = {
+  sequence: number;
+  slotIndex: number;
+  kind: "content";
+  capsuleSig?: string;
+};
+
+/** Paramètre live modifié sur le hardware (IN `85:62…1c:PP:77`, parse passif). */
+type SlotParamChangedPayload = {
+  sequence: number;
+  slotIndex: number;
+  slotBus: number;
+  paramIndex: number;
+  valueType: "float" | "bool" | "discrete" | string;
+  value: ChainParamValueJson;
+};
+
+type SlotFocusSyncResponse = {
+  slotIndex: number;
+  contentChange?: SlotContentChangedPayload | null;
+  inFrameCount?: number;
+};
+
 let currentPresetIndex = -1;
 let loadedPresetIndex = -1;
 let loading = false;
@@ -100,6 +124,13 @@ const HW_FORCE_PRESET_DUMP_ON_SLOT_NOTIFY_KEY = "models_hw_force_preset_dump_on_
 const HW_SLOT_FOCUS_USB_KEY = "models_hw_slot_focus_usb";
 /** `localStorage.setItem("models_hw_slot_focus_await_chain", "1")` : avant lecture chaîne, attendre `sync_hardware_slot_focus_usb` (buffer preset vide / tests IN). */
 const HW_SLOT_FOCUS_AWAIT_CHAIN_KEY = "models_hw_slot_focus_await_chain";
+/**
+ * Surveillance périodique du slot hardware actif (focus USB + diff empreinte).
+ * Défaut 1200 ms ; `localStorage.setItem("models_hw_slot_content_watch_ms", "0")` pour désactiver.
+ */
+const HW_SLOT_CONTENT_WATCH_MS_KEY = "models_hw_slot_content_watch_ms";
+const HW_SLOT_CONTENT_WATCH_MIN_MS = 400;
+const HW_SLOT_CONTENT_WATCH_MAX_MS = 30000;
 /** Log console lorsque le `moduleHex` d’un slot change après sync USB (jointure catalogue). */
 const DEBUG_CATALOG_CHAINHEX_FLAG = "models_debug_catalog_chainhex";
 /** `localStorage.setItem("models_debug_sync_trace", "1")` → logs `[ModelsSync]…` ; lignes répétitives throttlées (`emitModelsSyncTraceThrottled`). */
@@ -111,6 +142,7 @@ const REQUEST_PRESET_RECOVERY_DELAY_MS = 800;
 const REQUEST_PRESET_SOFT_STALL_TRIES = 18;
 const REQUEST_PRESET_HARD_RECOVERY_AFTER = 4;
 let lastHardwareSyncAt = 0;
+let lastSlotContentWatchAt = 0;
 /** Dernier `request_preset_content` réussi déclenché par le soft-sync (pas les chargements utilisateur). */
 let lastSoftUsbPresetReadAt = 0;
 /** Dump preset USB immédiat hors chargement preset : sondage modèle slot, ou opt-in sur notif slot. */
@@ -280,6 +312,69 @@ function forcePresetDumpOnHardwareSlotNotify(): boolean {
 
 function slotFocusUsbSyncEnabled(): boolean {
   return localStorage.getItem(HW_SLOT_FOCUS_USB_KEY) !== "0";
+}
+
+function getSlotContentWatchIntervalMs(): number {
+  const raw = (localStorage.getItem(HW_SLOT_CONTENT_WATCH_MS_KEY) ?? "").trim();
+  if (raw === "0") return 0;
+  if (!raw) return 1200;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  if (parsed === 0) return 0;
+  return Math.min(HW_SLOT_CONTENT_WATCH_MAX_MS, Math.max(HW_SLOT_CONTENT_WATCH_MIN_MS, parsed));
+}
+
+/**
+ * Réaction à un changement IN sur le slot surveillé (capsule focus).
+ * Grille : MAJ ultérieure via decode IN (pas preset_data). Panneau params : refresh ciblé si slot sélectionné.
+ */
+async function applySlotContentWatchFromSync(
+  snap: SlotFocusSyncResponse,
+  ki: number,
+): Promise<void> {
+  const change = snap.contentChange;
+  if (!change) return;
+  emitModelsSyncTraceThrottled(
+    "slot_content_usb",
+    `slot watch slot=${ki} kind=${change.kind} capsule=${change.capsuleSig ?? "?"}`,
+    3_000,
+  );
+  if (selectedParamsKemplineSlotIndex === ki && lastHwSyncNormalizedSlots) {
+    await softRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
+  }
+}
+
+async function invokeSlotFocusWatch(ki: number): Promise<void> {
+  if (!slotFocusUsbSyncEnabled()) return;
+  if (ki < 0 || ki >= 16) return;
+  try {
+    const snap = await invoke<SlotFocusSyncResponse>("sync_hardware_slot_focus_usb", {
+      slotIndex: ki,
+    });
+    await applySlotContentWatchFromSync(snap, ki);
+  } catch (e) {
+    emitModelsSyncTraceThrottled(
+      "slot_content_watch_err",
+      `slot content watch error slot=${ki} ${String(e)}`,
+      5_000,
+    );
+  }
+}
+
+/** Focus USB périodique sur le slot actif (sans dump preset complet). */
+async function maybeWatchActiveSlotContent(
+  hw: HardwareActiveSlotState | null,
+): Promise<void> {
+  const interval = getSlotContentWatchIntervalMs();
+  if (interval <= 0) return;
+  if (!hw || !Number.isInteger(hw.slotIndex) || (hw.slotIndex as number) < 0) return;
+  const ki = hw.slotIndex as number;
+  if (ki >= 16) return;
+  const now = Date.now();
+  if (now - lastSlotContentWatchAt < interval) return;
+  if (slotModelUsbProbeInFlight !== null) return;
+  lastSlotContentWatchAt = now;
+  await invokeSlotFocusWatch(ki);
 }
 
 /**
@@ -729,13 +824,11 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
     ) {
       const focusIdx = hwSlotState.slotIndex as number;
       // Ne pas await : la synchro USB (~60 ms côté Rust) ne doit pas retarder grille / panneau (RAM).
-      void invoke<{
-        inFrameCount?: number;
-        inFramesHex?: string[];
-      }>("sync_hardware_slot_focus_usb", { slotIndex: focusIdx })
-        .then((snap) => {
+      void invoke<SlotFocusSyncResponse>("sync_hardware_slot_focus_usb", { slotIndex: focusIdx })
+        .then(async (snap) => {
           const n = snap?.inFrameCount ?? 0;
           hwSlotDebugLog(`sync_hardware_slot_focus_usb slot=${focusIdx} inFrames=${n}`);
+          await applySlotContentWatchFromSync(snap, focusIdx);
         })
         .catch((e) => {
           console.warn("[HwSlotSync] sync_hardware_slot_focus_usb", e);
@@ -897,6 +990,7 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
       pendingHwLayoutSignature = null;
       consumePendingHardwareSlotSelection();
       await softRefreshParamsPaneFromSlots(normalized);
+      await maybeWatchActiveSlotContent(hwSlotState);
       emitModelsSyncTraceThrottled(
         "soft_sync_no_dump_grid",
         "softSync sans dump USB ce cycle : pas de renderSlots (grille = dernier chargement / MAJ optimistes)",
@@ -959,6 +1053,7 @@ async function softRefreshParamsPaneFromSlots(slots: SlotDebug[]): Promise<void>
     if (selectedParamsValuesSig === nextSig) return;
     selectedParamsInPlaceUpdater = null;
     selectedParamsInPlaceSlotKey = null;
+    selectedParamsHwWireContext = null;
     clearModelsParamsPaneContent();
     selectedParamsValuesSig = nextSig;
     return;
@@ -1071,6 +1166,69 @@ function liveWriteParamIndexForRow(
   const idxByRef = writeOrder.indexOf(target);
   if (idxByRef >= 0) return idxByRef;
   return rowIndex;
+}
+
+/** Inverse de `liveWriteParamIndexForRow` : index wire `PP` → `symbolicID` catalogue. */
+function symbolicIdForWireParamIndex(
+  paramsForDisplay: ModelParamDefJson[],
+  wireParamIndex: number,
+  catalogSignal: string | null | undefined,
+): string | null {
+  const writeOrder = paramsVisibleForSignal(paramsForDisplay, catalogSignal);
+  const p = writeOrder[wireParamIndex];
+  const sid = (p?.symbolicID ?? "").trim();
+  return sid || null;
+}
+
+function chainValueFromHwSlotParam(p: SlotParamChangedPayload): ChainParamValueJson | null {
+  if (p.valueType === "bool") {
+    if (typeof p.value === "boolean") return p.value;
+    if (p.value === 0 || p.value === 1) return p.value === 1;
+    return null;
+  }
+  if (p.valueType === "discrete") {
+    const n = typeof p.value === "number" ? p.value : Number(p.value);
+    if (!Number.isFinite(n)) return null;
+    return Math.round(n);
+  }
+  if (p.valueType === "float") {
+    const n = typeof p.value === "number" ? p.value : Number(p.value);
+    if (!Number.isFinite(n)) return null;
+    return n;
+  }
+  return null;
+}
+
+function applyHardwareSlotParamChanged(p: SlotParamChangedPayload): void {
+  if (currentPresetIndex < 0) return;
+  if (Date.now() < liveWriteUiInteractionUntil) return;
+  const cv = chainValueFromHwSlotParam(p);
+  if (cv === null) return;
+
+  const ctx = selectedParamsHwWireContext;
+  const sid =
+    ctx !== null
+      ? symbolicIdForWireParamIndex(ctx.paramsForDisplay, p.paramIndex, ctx.catalogSignal)
+      : null;
+  if (!sid) return;
+
+  recordLiveChainParamOverrideForKemplineSlot(currentPresetIndex, p.slotIndex, sid, cv);
+
+  if (
+    selectedParamsKemplineSlotIndex !== p.slotIndex ||
+    selectedParamsPresetIndex !== currentPresetIndex ||
+    !selectedParamsInPlaceUpdater
+  ) {
+    return;
+  }
+
+  selectedParamsInPlaceUpdater(null);
+  selectedParamsValuesSig = `${currentPresetIndex}|${p.slotIndex}|hw:${p.sequence}:${p.paramIndex}:${String(cv)}`;
+  emitModelsSyncTraceThrottled(
+    "evt_slot_param_changed",
+    `hw param slot=${p.slotIndex} pp=${p.paramIndex} ${sid}=${String(cv)}`,
+    400,
+  );
 }
 
 function discreteSliderTickCount(
@@ -1556,6 +1714,11 @@ let selectedParamsValuesSig: string | null = null;
 // Callback de patch in-place pour le panneau courant (même modèle, valeurs différentes).
 let selectedParamsInPlaceUpdater: ((rawChainValues: ChainParamValueJson[] | null) => void) | null = null;
 let selectedParamsInPlaceSlotKey: string | null = null;
+/** Contexte pour mapper l’index wire `PP` → `symbolicID` (panneau params ouvert). */
+let selectedParamsHwWireContext: {
+  paramsForDisplay: ModelParamDefJson[];
+  catalogSignal: string | null | undefined;
+} | null = null;
 /** Id catalogue du dernier rendu par clé slot — détecte un changement de modèle au même index sans tout reconstruire inutilement. */
 const paramsPaneCatalogBySlotKey = new Map<string, string>();
 
@@ -1596,6 +1759,7 @@ function clearSelectedParamsContext(): void {
   selectedParamsValuesSig = null;
   selectedParamsInPlaceUpdater = null;
   selectedParamsInPlaceSlotKey = null;
+  selectedParamsHwWireContext = null;
   paramsPaneCatalogBySlotKey.clear();
   clearAllLiveChainParamOverrides();
   pendingHardwareSelectedKemplineSlotIndex = null;
@@ -1853,6 +2017,7 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
     if (selectedParamsSlotKey !== nextSlotKey) {
       selectedParamsInPlaceUpdater = null;
       selectedParamsInPlaceSlotKey = null;
+      selectedParamsHwWireContext = null;
     }
     selectedParamsSlotKey = nextSlotKey;
     selectedParamsKemplineSlotIndex = Number.isFinite(kemplineSlotIndex)
@@ -3454,6 +3619,7 @@ function showModelsParamsLoading() {
   clearModelsParamsSubheadAndIcon();
   selectedParamsInPlaceUpdater = null;
   selectedParamsInPlaceSlotKey = null;
+  selectedParamsHwWireContext = null;
   const inner = getModelsParamsInner();
   if (!inner) return;
   inner.replaceChildren();
@@ -3630,6 +3796,10 @@ function renderModelsParamsPane(
     selectedParamsInPlaceUpdater = applyRawChainValuesInPlace;
     selectedParamsInPlaceSlotKey = slotKeyForPane;
     selectedParamsSlotKey = slotKeyForPane;
+    selectedParamsHwWireContext = {
+      paramsForDisplay,
+      catalogSignal: catalogRoutingSignal,
+    };
   }
 }
 
@@ -5525,6 +5695,37 @@ window.addEventListener("DOMContentLoaded", () => {
       );
     }
     scheduleHardwareSyncPoll();
+  });
+
+  void listen<SlotContentChangedPayload>("models:slot-content-changed", (event) => {
+    const p = event.payload;
+    if (!p || typeof p.slotIndex !== "number") return;
+    if (hwSlotDebugEnabled() || modelsSyncTraceEnabled()) {
+      console.info("[HxLinux] models:slot-content-changed", p);
+    }
+    emitModelsSyncTraceThrottled(
+      "evt_slot_content_changed",
+      `event models:slot-content-changed seq=${p.sequence} slot=${p.slotIndex} kind=${p.kind}`,
+      2_000,
+    );
+    void (async () => {
+      if (
+        lastHwSyncNormalizedSlots &&
+        lastHwSyncNormalizedSlots.length === 16 &&
+        selectedParamsKemplineSlotIndex === p.slotIndex
+      ) {
+        await softRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
+      }
+    })();
+  });
+
+  void listen<SlotParamChangedPayload>("models:slot-param-changed", (event) => {
+    const p = event.payload;
+    if (!p || typeof p.slotIndex !== "number" || typeof p.paramIndex !== "number") return;
+    if (hwSlotDebugEnabled() || modelsSyncTraceEnabled()) {
+      console.info("[HxLinux] models:slot-param-changed", p);
+    }
+    applyHardwareSlotParamChanged(p);
   });
 
   void refresh();
