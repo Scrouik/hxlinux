@@ -70,6 +70,14 @@ type SlotParamChangedPayload = {
   value: ChainParamValueJson;
 };
 
+/** Modèle changé sur le hardware (notif `1f` + pull `1b`/`19`/`19`, parse bulk IN). */
+type SlotModelHwChangedPayload = {
+  sequence: number;
+  slotIndex: number;
+  slotBus: number;
+  moduleHex: string | null;
+};
+
 type SlotFocusSyncResponse = {
   slotIndex: number;
   contentChange?: SlotContentChangedPayload | null;
@@ -324,10 +332,74 @@ function getSlotContentWatchIntervalMs(): number {
   return Math.min(HW_SLOT_CONTENT_WATCH_MAX_MS, Math.max(HW_SLOT_CONTENT_WATCH_MIN_MS, parsed));
 }
 
+/** Index Kempline du slot effet actif (UI ou pending sync hardware). */
+function activeEffectKemplineSlotIndex(): number | null {
+  const ki =
+    selectedParamsKemplineSlotIndex ?? pendingHardwareSelectedKemplineSlotIndex;
+  if (ki === null || ki < 0 || ki > 15) return null;
+  return ki;
+}
+
 /**
- * Réaction à un changement IN sur le slot surveillé (capsule focus).
- * Grille : MAJ ultérieure via decode IN (pas preset_data). Panneau params : refresh ciblé si slot sélectionné.
+ * Changement de modèle sur le slot actif hardware : trames IN → réponse USB → `chainHex` IN.
+ * Panneau params : défauts du fichier `.models` uniquement (jamais `preset_data`).
  */
+async function applyHardwareSlotModelChanged(p: SlotModelHwChangedPayload): Promise<void> {
+  const activeKi = activeEffectKemplineSlotIndex();
+  if (activeKi === null) {
+    emitModelsSyncTraceThrottled(
+      "evt_slot_model_hw_skip",
+      "models:slot-model-changed ignoré : aucun slot effet actif UI",
+      3_000,
+    );
+    return;
+  }
+  // La notif HW ne peut concerner que le slot actif ; on ne filtre pas sur p.slotIndex.
+  const ki = activeKi;
+
+  let slot: SlotDebug;
+  const hex = (p.moduleHex ?? "").trim();
+  let catalogModelIdTrimmed = "";
+  if (hex) {
+    const id = await getCatalogModelIdForHex(hex);
+    catalogModelIdTrimmed = (id ?? "").trim();
+    const meta = catalogModelIdTrimmed ? await getPresetMetaForId(catalogModelIdTrimmed) : null;
+    const catalogName = catalogModelIdTrimmed
+      ? await getCatalogModelNameForId(catalogModelIdTrimmed)
+      : null;
+    const displayName = (catalogName ?? "").trim() || hex;
+    const categoryName = (meta?.categoryName ?? "").trim() || "?";
+    slot = {
+      category: categoryName,
+      name: displayName,
+      moduleHex: hex,
+      catalogModelId: catalogModelIdTrimmed || undefined,
+    };
+  } else {
+    slot = { category: "", name: "<empty>" };
+  }
+
+  if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16) {
+    const next = lastHwSyncNormalizedSlots.map((s, i) => (i === ki ? { ...slot } : { ...s }));
+    lastHwSyncNormalizedSlots = next;
+    lastHwSyncChainSignature = chainLayoutSignature(next);
+  }
+
+  patchMatrixSlotVisualFromSlot(ki, slot);
+  patchMatrixCategoryDescFromSlot(ki, slot);
+  selectParamsPaneByKemplineIndex(ki);
+
+  if (catalogModelIdTrimmed) {
+    await loadAndShowModelsParamsFromCatalogDefaults(slot, catalogModelIdTrimmed, ki);
+  } else if (!hex) {
+    showModelsParamsNotFound(slot, null);
+  } else {
+    showModelsParamsError(
+      `Jointure catalogue impossible pour chainHex « ${hex.toUpperCase()} ».`,
+    );
+  }
+}
+
 async function applySlotContentWatchFromSync(
   snap: SlotFocusSyncResponse,
   ki: number,
@@ -882,11 +954,6 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
       // Pas de relecture preset ce cycle : ne pas re-parser `preset_data` (évite grille fantôme).
       if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length > 0) {
         normalized = lastHwSyncNormalizedSlots.map((s) => ({ ...s }));
-        emitModelsSyncTraceThrottled(
-          "soft_sync_snapshot_tick",
-          "softSync : pas de request_preset_content ce cycle — pas de get_active_preset_slots ; snapshot pour params / sélection HW",
-          30_000,
-        );
       } else {
         normalized = null;
         emitModelsSyncTraceThrottled(
@@ -5726,6 +5793,15 @@ window.addEventListener("DOMContentLoaded", () => {
       console.info("[HxLinux] models:slot-param-changed", p);
     }
     applyHardwareSlotParamChanged(p);
+  });
+
+  void listen<SlotModelHwChangedPayload>("models:slot-model-changed", (event) => {
+    const p = event.payload;
+    if (!p || typeof p.slotIndex !== "number") return;
+    if (hwSlotDebugEnabled() || modelsSyncTraceEnabled()) {
+      console.info("[HxLinux] models:slot-model-changed", p);
+    }
+    void applyHardwareSlotModelChanged(p);
   });
 
   void refresh();

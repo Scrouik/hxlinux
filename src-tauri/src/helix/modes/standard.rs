@@ -17,7 +17,7 @@ impl Standard {
         // Pendant la connexion, on bloque x80 et x2
         if state.connecting {
             if byte_cmp(data, &pattern![XX, 0x00, 0x00, 0x18, 0xef, 0x03, 0x01, 0x10], 8) {
-                return true; // ← ajouter x1
+                return true;
             }
             if byte_cmp(data, &pattern![XX, 0x00, 0x00, 0x18, 0xed, 0x03, 0x80, 0x10], 8) {
                 return true;
@@ -32,7 +32,7 @@ impl Standard {
             0xef, 0x03, 0x01, 0x10,
             0x00, XX, 0x00, 0x10
         ], 12) {
-            return true;  // pas de send() ici
+            return true;
         }
         // x2
         if byte_cmp(data, &pattern![
@@ -71,7 +71,9 @@ impl Mode for Standard {
             return true;
         }
 
-        // x2 ack générique
+        // x2 ack générique (17 bytes, 0x17 head)
+        // HXEdit : ACK avec preset_dump_ack_ctr (lane dump, pas 74:77 fixe)
+        // Ref. 02_change_preset_HW_HXEdit.json : double=f4:18, 09:19, e7:19...
         if byte_cmp(data, &pattern![
             0x17, 0x00, 0x00, 0x18,
             0xf0, 0x03, 0x02, 0x10,
@@ -79,11 +81,12 @@ impl Mode for Standard {
             0x09, 0x02, 0x00, 0x00
         ], 16) {
             let cnt = state.next_x2_cnt();
+            let double = state.next_preset_dump_ack_double();
             state.send(OutPacket::with_delay(vec![
                 0x08, 0x00, 0x00, 0x18,
                 0x02, 0x10, 0xf0, 0x03,
                 0x00, cnt,  0x00, 0x08,
-                0x74, 0x77, 0x00, 0x00,
+                double[0], double[1], 0x00, 0x00,
             ], 10));
             return true;
         }
@@ -124,6 +127,7 @@ impl Mode for Standard {
 
         // PRESET SWITCH — pattern principal
         // Kempline : data[40] porte le numéro de preset
+        // HXEdit : ACK avec preset_dump_ack_ctr (ref. 02_change_preset_*_HXEdit.json)
         if byte_cmp(data, &pattern![
             0x21, 0x00, 0x00, 0x18,
             0xf0, 0x03, 0x02, 0x10,
@@ -135,18 +139,16 @@ impl Mode for Standard {
             0x84, 0x52
         ], 30) {
             let cnt = state.next_x2_cnt();
+            let double = state.next_preset_dump_ack_double();
             state.send(OutPacket::new(vec![
                 0x08, 0x00, 0x00, 0x18,
                 0x02, 0x10, 0xf0, 0x03,
                 0x00, cnt,  0x00, 0x08,
-                0x74, 0x77, 0x00, 0x00,
+                double[0], double[1], 0x00, 0x00,
             ]));
             if data.len() > 40 {
                 state.preset_index = data[40] as usize;
             }
-            // Si activate_preset a posé le flag, c'est ce x2 de confirmation qu'on
-            // attendait : on lance la lecture content_only maintenant que tous les x2
-            // sont ACKés. Sinon, comportement normal : lire le nom du preset.
             if state.want_content_only_after_x2 {
                 state.want_content_only_after_x2 = false;
                 state.preset_content_only = true;
@@ -158,9 +160,7 @@ impl Mode for Standard {
         }
 
         // PRESET SWITCH — pattern secondaire (pré-notification, arrive avant 0x04:6a)
-        // Ce paquet précède toujours le pattern principal (0x04:6a) qui porte preset_index
-        // et déclenche seul le read chain. ACK silencieux uniquement — déclencher
-        // RequestPresetName ici provoque une double interruption du RequestPreset en cours.
+        // HXEdit : ACK avec preset_dump_ack_ctr
         if byte_cmp(data, &pattern![
             0x21, 0x00, 0x00, 0x18,
             0xf0, 0x03, 0x02, 0x10,
@@ -174,11 +174,12 @@ impl Mode for Standard {
             0x82, 0x62
         ], 38) {
             let cnt = state.next_x2_cnt();
+            let double = state.next_preset_dump_ack_double();
             state.send(OutPacket::with_delay(vec![
                 0x08, 0x00, 0x00, 0x18,
                 0x02, 0x10, 0xf0, 0x03,
                 0x00, cnt,  0x00, 0x08,
-                0x74, 0x77, 0x00, 0x00,
+                double[0], double[1], 0x00, 0x00,
             ], 10));
             return true;
         }
@@ -196,17 +197,17 @@ impl Mode for Standard {
             0x01, 0x79, 0x05, 0x6a,
             0x82, 0x6b, 0x00, 0x6c
         ], 40) {
-            return false; // pass silencieux
+            return false;
         }
 
-        // 0x27 sur x2 — paquets UI attendus
+        // 0x27 sur x2 — paquets UI attendus silencieux
         if byte_cmp(data, &pattern![
             0x27, 0x00, 0x00, 0x18,
             0xf0, 0x03, 0x02, 0x10,
             0x00, XX, 0x00, 0x04,
             0x09, 0x02, 0x00, 0x00
         ], 16) {
-            return false; // pass silencieux
+            return false;
         }
 
         // 0x27 avec 0x10 et 0x77 — pass silencieux
@@ -225,11 +226,7 @@ impl Mode for Standard {
             return false;
         }
 
-        // ACK court x80 ed:03 (16 o) — ex. réponse au poll `80:10:ed:03` avec `00:08` ou `00:10`.
-        // HXEdit ne renvoie pas un second OUT `…00:08…` sur ce IN : le prochain OUT est encore
-        // un poll `…80:10:ed:03…00:10…` (voir connect_device_30s_HXEdit.json après IN `…00:10:c1:02:00:00`).
-        // L’ancien bloc « variante 0x10 » (Kempline) consommait `next_x80_cnt()` et injectait un OUT
-        // parasite qui désynchronisait la boucle keep-alive (ef/f0).
+        // ACK court x80 ed:03 (16 o) — pass silencieux
         if byte_cmp(data, &pattern![
             0x08, 0x00, 0x00, 0x18,
             0xed, 0x03, 0x80, 0x10,

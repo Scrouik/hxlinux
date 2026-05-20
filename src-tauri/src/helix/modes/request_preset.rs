@@ -73,7 +73,8 @@ impl RequestPreset {
     /// Envoie Phase 2 (sub=0x0c, byte30=0x16) après réception de la réponse Phase 1.
     fn send_phase2(&mut self, state: &mut HelixState) {
         let cnt      = state.next_x80_cnt();
-        let double   = state.next_preset_data_packet_double();
+        // Lane éditeur (0x64xx) — phase 4 / pull
+        let double   = state.next_editor_ed03_double();
         let sess_id  = state.request_preset_session_id;
         state.request_preset_session_id = state.request_preset_session_id.wrapping_add(1);
         let cmd_type = state.ed03_cmd_type;
@@ -90,7 +91,6 @@ impl RequestPreset {
             0xc0, 0x00, 0x00, 0x00,
         ]);
         state.send(pkt);
-        self.last_ack_double = double;
         self.waiting_phase1_response = false;
 
         if preset_debug_verbose_enabled() {
@@ -114,7 +114,8 @@ impl Mode for RequestPreset {
 
         let cnt      = state.next_x80_cnt();
         let sess1    = state.session_no;
-        let double1  = state.preset_data_packet_double();   // pas d'incrément pour Phase 1
+        // Lane éditeur (0x64xx) — pas d'incrément pour Phase 1
+        let double1  = state.editor_ed03_double_val();
         let sess_id1 = state.request_preset_session_id;
         let cmd_type = state.ed03_cmd_type;
 
@@ -125,10 +126,10 @@ impl Mode for RequestPreset {
 
         if preset_debug_verbose_enabled() {
             eprintln!(
-                "[PresetDebug][RequestPreset::start] preset_index={} content_only={} pkt_counter={:#06x} sess_id1={:#04x} sess1={:#04x} cmd_type={:#04x} phase2_session={:#04x}",
+                "[PresetDebug][RequestPreset::start] preset_index={} content_only={} editor_ed03_double={:#06x} sess_id1={:#04x} sess1={:#04x} cmd_type={:#04x} phase2_session={:#04x}",
                 state.preset_index,
                 state.preset_content_only,
-                state.preset_pkt_counter,
+                state.editor_ed03_double,
                 sess_id1,
                 sess1,
                 cmd_type,
@@ -168,11 +169,12 @@ impl Mode for RequestPreset {
                     0x00, XX, 0x00, 0x04
                 ], 12) {
                     let cnt = state.next_x2_cnt();
+                    let double = state.next_preset_dump_ack_double();
                     state.send(OutPacket::new(vec![
                         0x08, 0x00, 0x00, 0x18,
                         0x02, 0x10, 0xf0, 0x03,
                         0x00, cnt, 0x00, 0x08,
-                        0x74, 0x77, 0x00, 0x00,
+                        double[0], double[1], 0x00, 0x00,
                     ]));
                 }
                 return false;
@@ -224,22 +226,19 @@ impl Mode for RequestPreset {
         }
 
         if self.waiting_phase1_response {
-            // Réponse Phase 1 : sub=0x04, au moins 36 octets (64 ou 68 selon l'état device).
-            // HXEdit envoie Phase 2 quelle que soit la taille exacte — ne pas contraindre à 68.
+            // Réponse Phase 1 : sub=0x04, au moins 36 octets
             if sub == 0x04 && data.len() >= 36 {
                 if preset_debug_verbose_enabled() {
                     eprintln!("[PresetDebug][RequestPreset::data_in] Phase 1 réponse ({} octets) → envoi Phase 2", data.len());
                 }
                 self.send_phase2(state);
             }
-            // Tout autre paquet pendant l'attente Phase 1 : ignorer
             return true;
         }
 
         // Phase transfert données
         match (data.len(), sub) {
             // FDT (fin-de-transfert) : 32 octets, sub=0x04, data[16]==0xa1
-            // Doit être testé EN PREMIER pour ne pas être confondu avec un chunk partiel.
             (32, 0x04) if data[16] == 0xa1 => {
                 let cnt         = state.next_x80_cnt();
                 let fdt_session = self.phase2_session.wrapping_add(0x10);
@@ -267,13 +266,14 @@ impl Mode for RequestPreset {
                 true
             }
 
-            // Chunk de données preset : n'importe quelle taille, sub=0x04, au moins 1 octet de data.
-            // Couvre les chunks complets (272 octets = 256 data) ET les chunks partiels finaux.
+            // Chunk de données preset : ACK avec lane dump (preset_dump_ack_ctr)
+            // Lane distincte de editor_ed03_double (0x64xx) — observé HX Edit :
+            // 9d:11, 9d:12... (octet haut stable = session, bas s'incrémente +1)
             (_, 0x04) if data.len() > 16 => {
                 let chunk_data_len = data.len() - 16;
                 self.preset_data.extend_from_slice(&data[16..]);
                 let cnt        = state.next_x80_cnt();
-                let new_double = state.next_preset_data_packet_double();
+                let new_double = state.next_preset_dump_ack_double();
                 state.send(OutPacket::new(vec![
                     0x08, 0x00, 0x00, 0x18,
                     0x80, 0x10, 0xed, 0x03,
@@ -288,7 +288,6 @@ impl Mode for RequestPreset {
                     );
                 }
                 if chunk_data_len < 256 {
-                    // Chunk partiel = dernier chunk, pas de FDT pour ce type de preset.
                     if preset_debug_verbose_enabled() {
                         eprintln!(
                             "[PresetDebug][RequestPreset::data_in] chunk partiel → transfert complet total={}",
@@ -310,7 +309,6 @@ impl Mode for RequestPreset {
                 true
             }
 
-            // Notification post-session (0x08) et heartbeat (0x10) : ignorer
             (_, 0x08) | (_, 0x10) => true,
 
             _ => {
@@ -329,19 +327,22 @@ impl Mode for RequestPreset {
         self.cancel_watchdog();
         state.preset_data = std::mem::take(&mut self.preset_data);
         let has_data = !state.preset_data.is_empty();
-        state.got_preset       = has_data;
+        state.got_preset        = has_data;
         state.preset_data_ready = has_data;
         state.preset_content_only = false;
-        // session_no déterministe post-Phase2 (comme HXEdit, observé en capture)
         state.session_no = if has_data {
             self.phase2_session.wrapping_add(0x10)
         } else {
-            // Phase 2 jamais établie ou timeout : session aléatoire pour éviter un désalignement
             rand::random::<u8>().max(0x04)
         };
         state.ed03_cmd_type = state.ed03_cmd_type.wrapping_add(1);
+        if has_data && self.last_ack_double != [0, 0] {
+            state.preset_last_ack_double = self.last_ack_double;
+        }
         if !has_data {
-            state.preset_pkt_counter = 0x001e;
+            // Reset lane éditeur uniquement — preset_dump_ack_ctr reste sur sa lane
+            state.editor_ed03_double = HelixState::PRESET_ED03_TRANSACTION_FIRST.wrapping_sub(1);
+            state.preset_last_ack_double = [0, 0];
             state.request_preset_session_id = 0xf4;
         }
         if preset_debug_verbose_enabled() {

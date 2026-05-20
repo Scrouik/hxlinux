@@ -149,6 +149,29 @@ struct AppState {
     last_preset_request_at: Option<Instant>,
 }
 
+/// Copie `preset_names` / `active_preset` depuis `HelixState` vers `AppState`.
+/// Les noms sont souvent prêts dans `HelixState` avant le passage en mode `Standard`
+/// (qui était le seul chemin de copie) — l’UI poll `get_preset_names()` et voyait une liste vide.
+fn sync_app_presets_from_helix(app: &mut AppState, s: &HelixState) -> bool {
+    let mut synced = false;
+    if s.got_preset_names && s.preset_names.len() >= EXPECTED_PRESET_COUNT {
+        if app.preset_names != s.preset_names {
+            app.preset_names = s.preset_names.clone();
+            synced = true;
+            eprintln!(
+                "[PresetDebug][sync] preset_names -> AppState ({} noms, actif={})",
+                app.preset_names.len(),
+                s.preset_index
+            );
+        }
+    }
+    if app.active_preset != s.preset_index {
+        app.active_preset = s.preset_index;
+        synced = true;
+    }
+    synced
+}
+
 enum UsbDiscovery {
     NoHxVisible,
     SupportedVisible(&'static str),
@@ -204,17 +227,32 @@ fn discover_hx_usb() -> UsbDiscovery {
 
 #[tauri::command]
 fn get_preset_names(state: tauri::State<Arc<Mutex<AppState>>>) -> Vec<String> {
-    // IMPORTANT pour le debug:
-    // On ne fait aucun correctif "UX" ici: on renvoie la liste brute telle que
-    // reconstruite par `RequestPresetNames`.
-    // Les corrections seront réintroduites seulement une fois que le décodage
-    // index->nom est stabilisé.
-    state.lock().unwrap().preset_names.clone()
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        if app.preset_names.len() >= EXPECTED_PRESET_COUNT {
+            return app.preset_names.clone();
+        }
+        app.helix_state.clone()
+    };
+    let mut app = state.lock().unwrap();
+    if let Some(helix_arc) = helix_arc {
+        if let Ok(s) = helix_arc.lock() {
+            sync_app_presets_from_helix(&mut app, &s);
+        }
+    }
+    app.preset_names.clone()
 }
 
 #[tauri::command]
 fn get_active_preset(state: tauri::State<Arc<Mutex<AppState>>>) -> usize {
-    state.lock().unwrap().active_preset
+    let helix_arc = state.lock().unwrap().helix_state.clone();
+    let mut app = state.lock().unwrap();
+    if let Some(helix_arc) = helix_arc {
+        if let Ok(s) = helix_arc.lock() {
+            sync_app_presets_from_helix(&mut app, &s);
+        }
+    }
+    app.active_preset
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -385,9 +423,9 @@ fn activate_preset(
     if let Some(ref helix_arc) = app.helix_state {
         if let Ok(mut s) = helix_arc.lock() {
             s.want_content_only_after_x2 = true;
-            // Le MIDI PC ne génère pas de paquet x2 avec 82 62 XX 1a → le slot actif
-            // n'est jamais notifié. On remet à None pour éviter d'afficher le slot du
-            // preset précédent pendant et après le chargement.
+            // Masque le slot du preset précédent pendant le chargement. Le slot du nouveau preset
+            // est rétabli par `ingest_hw_slot_notify_in` (trame IN `82:62`, souvent 44 o head `21`
+            // après PC — cf. `Change_preset.json`), même variable que cadre orange / pull modèle.
             s.hw_active_slot_index = None;
             s.hw_active_slot_bus = None;
             s.hw_active_slot_sequence = s.hw_active_slot_sequence.wrapping_add(1);
@@ -438,7 +476,7 @@ fn switch_active_hardware_slot(
         0x00, 0x00, 0x00, 0x00,
     ];
     s.send(OutPacket::new(packet.clone()));
-    // Optimiste: met à jour l'état "slot actif hardware" local en attendant la notif IN.
+    // Même état que `ingest_hw_slot_notify_in` (`hw_active_slot_*`) — pas un second registre.
     s.hw_active_slot_index = Some(slot_index as usize);
     s.hw_active_slot_bus = Some(slot_bus);
     s.hw_active_slot_sequence = s.hw_active_slot_sequence.wrapping_add(1);
@@ -1236,7 +1274,7 @@ fn force_recover_preset_reader(state: tauri::State<Arc<Mutex<AppState>>>) -> Res
         s.slot_watch_prev = std::array::from_fn(|_| helix::slot_watch::SlotWatchSnapshot::default());
     s.slot_param_emit.clear();
         // Re-synchronise l'état de requête (mêmes valeurs de base que RequestPreset::shutdown no-data).
-        s.preset_pkt_counter = 0x001e;
+        s.reset_preset_ed03_transaction_counter();
         s.request_preset_session_id = 0xf4;
         s.new_session_no();
         s.switch_mode(ModeRequest::Standard);
@@ -2997,6 +3035,13 @@ pub fn run() {
     if std::env::var("USB_IO_DIAG").map(|v| v == "1").unwrap_or(false) {
         set_usb_io_diag_enabled(true);
     }
+    if std::env::var("HX_SLOT_MODEL_HW_PULL_DEBUG")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        helix::slot_model_hw_pull::set_slot_model_hw_pull_debug(true);
+        eprintln!("[SlotModelHwPull] debug activé (HX_SLOT_MODEL_HW_PULL_DEBUG)");
+    }
 
     let app_state = Arc::new(Mutex::new(AppState::default()));
     let app_state_clone = Arc::clone(&app_state);
@@ -3404,19 +3449,24 @@ fn start_helix(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) {
                 let mut s = state.lock().unwrap();
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
+                let need_preset_content =
+                    s.got_preset_names && !s.preset_data_ready && s.preset_data.is_empty();
                 {
                     let mut app = app_state.lock().unwrap();
-                    // Ne jamais écraser la liste globale avec un état partiel.
-                    if s.just_fetched_preset_names && s.preset_names.len() >= EXPECTED_PRESET_COUNT {
-                        app.preset_names = s.preset_names.clone();
+                    if s.just_fetched_preset_names || app.preset_names.len() < EXPECTED_PRESET_COUNT {
+                        sync_app_presets_from_helix(&mut app, &s);
                     }
                     s.just_fetched_preset_names = false;
                     s.got_preset = false;
-                    app.active_preset = s.preset_index;
                     app.connection_issue_hint = None;
                 }
-                *m = Box::new(Standard);
-                m.start(&mut s);
+                if need_preset_content {
+                    s.preset_content_only = true;
+                    s.switch_mode(ModeRequest::RequestPreset(true));
+                } else {
+                    *m = Box::new(Standard);
+                    m.start(&mut s);
+                }
             }
             Ok(ModeRequest::StandardPresetRead(gen)) => {
                 // Message émis par le timer (20ms) ou watchdog (2000ms) interne de RequestPreset.
@@ -3436,12 +3486,9 @@ fn start_helix(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) {
                 m.shutdown(&mut s);
                 {
                     let mut app = app_state.lock().unwrap();
-                    if s.just_fetched_preset_names && s.preset_names.len() >= EXPECTED_PRESET_COUNT {
-                        app.preset_names = s.preset_names.clone();
-                    }
+                    sync_app_presets_from_helix(&mut app, &s);
                     s.just_fetched_preset_names = false;
                     s.got_preset = false;
-                    app.active_preset = s.preset_index;
                     app.connection_issue_hint = None;
                 }
                 *m = Box::new(Standard);

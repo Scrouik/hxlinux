@@ -33,6 +33,7 @@ pub fn start_listener(
     app_handle: Option<tauri::AppHandle>,
 ) {
     thread::spawn(move || {
+        crate::helix::slot_model_hw_pull::init_slot_model_hw_pull_debug_from_env();
         let mut buf = vec![0u8; BUFFER_SIZE];
         let mut seen_fingerprints: HashSet<Vec<u8>> = HashSet::new();
         let mut suppressed_repeats: u64 = 0;
@@ -113,16 +114,23 @@ pub fn start_listener(
                         }
                         // Échos paramètre HX Edit / firmware : mémorisés pour aligner `write_live_param`.
                         s.ingest_ed03_param_echo(&data);
-                        // Notification « slot hardware » (`82 62 … 1a`, paires ed/ef), voir doc protocole.
+                        // Slot actif unique (`hw_active_slot_*`) : `ingest_hw_slot_notify_in` — preset/HW/UI.
                         let ev = s.ingest_hw_slot_notify_in(&data);
+                        // Pull modèle après `1d`/`1f` — réutilise `hw_active`, pas un 2e registre slot.
+                        let model_changed = s.ingest_slot_model_hw_in(&data);
                         let param_events = s.ingest_slot_param_in(&data);
                         let mut m = mode.lock().unwrap();
                         m.data_in(&data, &mut s);
-                        (ev, param_events)
+                        (ev, param_events, model_changed)
                     };
                     if let (Some(app), Some(payload)) = (app_handle.as_ref(), hw_slot_changed.0) {
                         if let Err(e) = app.emit("models:hardware-slot-changed", payload) {
                             eprintln!("[UsbListener] emit models:hardware-slot-changed: {e}");
+                        }
+                    }
+                    if let (Some(app), Some(payload)) = (app_handle.as_ref(), hw_slot_changed.2) {
+                        if let Err(e) = app.emit("models:slot-model-changed", payload) {
+                            eprintln!("[UsbListener] emit models:slot-model-changed: {e}");
                         }
                     }
                     if let Some(app) = app_handle.as_ref() {

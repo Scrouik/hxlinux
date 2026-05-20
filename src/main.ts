@@ -160,7 +160,10 @@ async function loadPresets() {
 
     if (names.length === 0) {
       const showHint = connectionHint.startsWith("No HX detected");
-      setStatus("loading", connectionHint, showHint ? firmwareHint : undefined);
+      const loadingText = deviceName
+        ? "Chargement des presets…"
+        : connectionHint;
+      setStatus("loading", loadingText, showHint ? firmwareHint : undefined);
       return;
     }
 

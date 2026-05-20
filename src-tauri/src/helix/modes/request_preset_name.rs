@@ -84,11 +84,12 @@ impl Mode for RequestPresetName {
                 0x00, XX, 0x00, 0x04
             ], 12) {
                 let cnt = state.next_x2_cnt();
+                let double = state.next_preset_dump_ack_double();
                 state.send(OutPacket::with_delay(vec![
                     0x08, 0x00, 0x00, 0x18,
                     0x02, 0x10, 0xf0, 0x03,
                     0x00, cnt, 0x00, 0x08,
-                    0x74, 0x77, 0x00, 0x00,
+                    double[0], double[1], 0x00, 0x00,
                 ], 10));
             }
             return false;

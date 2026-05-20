@@ -1,14 +1,25 @@
 // Grand échange « éditeur » observé sur HX Edit entre subscribe f0 et le polling régulier
-// (`connect_device_30s_HXEdit.json` : 19 ed ×3 puis 1a ef). Sans cela le Stomp peut ignorer
-// les polls `08…f0:03` (captures Linux).
+// (`Start_Model_change.json` : 3× OUT `19` ed puis 1× OUT `1a` ef).
+//
+// Double transaction (octets 28–29 après `83:66:cd:03`) sur les OUT :
+//   19 #1 → e8:64   19 #2 → ea:64 (+2 sur le 1er octet, pas e9:64)   19 #3 → eb:64
+//   1a     → e8:64 réutilisé (pas de 4ᵉ incrément — HX Edit ne met pas ec:64 ici).
+// Ensuite RequestPreset continue depuis editor_ed03_double == 0x64ec.
+//
+// Lane : editor_ed03_double (0x64xx) — distinct de preset_dump_ack_ctr et live_write_ctr.
 
 use crate::helix::HelixState;
 use crate::helix::packet::OutPacket;
 
 const INTER_PACKET_DELAY_MS: u64 = 20;
 
-/// Envoie les requêtes longues `ed` / `ef` qui amorcent l’état preset + liste (phase 4).
+/// Envoie les requêtes longues `ed` / `ef` qui amorcent l'état preset + liste (phase 4).
 pub fn send(state: &mut HelixState) {
+    // Repositionne editor_ed03_double à 0x64e7 → prochain next() = 0x64e8
+    state.editor_ed03_double = HelixState::PRESET_ED03_TRANSACTION_FIRST.wrapping_sub(1);
+
+    // 19 #1 — wire e8:64 (0x64e8)
+    let d_e8 = state.next_editor_ed03_double();
     let c0 = state.next_x80_cnt();
     state.send(OutPacket::with_delay(
         vec![
@@ -19,12 +30,15 @@ pub fn send(state: &mut HelixState) {
             0x01, 0x00, 0x06, 0x00,
             0x09, 0x00, 0x00, 0x00,
             0x83, 0x66, 0xcd, 0x03,
-            0xe8, 0x64, 0x4c, 0x65,
+            d_e8[0], d_e8[1], 0x4c, 0x65,
             0x80, 0x00, 0x00, 0x00,
         ],
         INTER_PACKET_DELAY_MS,
     ));
 
+    // 19 #2 — wire ea:64 (0x64ea) : HX saute e9:64 entre e8 et ea
+    state.editor_ed03_double = 0x64ea;
+    let d_ea = state.editor_ed03_double_val();
     let c1 = state.next_x80_cnt();
     state.send(OutPacket::with_delay(
         vec![
@@ -35,12 +49,14 @@ pub fn send(state: &mut HelixState) {
             0x01, 0x00, 0x06, 0x00,
             0x09, 0x00, 0x00, 0x00,
             0x83, 0x66, 0xcd, 0x03,
-            0xea, 0x64, 0x17, 0x65,
+            d_ea[0], d_ea[1], 0x17, 0x65,
             0xc0, 0x00, 0x00, 0x00,
         ],
         INTER_PACKET_DELAY_MS,
     ));
 
+    // 19 #3 — wire eb:64 (0x64eb), compteur → 0x64ec pour la suite
+    let d_eb = state.next_editor_ed03_double();
     let c2 = state.next_x80_cnt();
     state.send(OutPacket::with_delay(
         vec![
@@ -51,12 +67,13 @@ pub fn send(state: &mut HelixState) {
             0x01, 0x00, 0x06, 0x00,
             0x09, 0x00, 0x00, 0x00,
             0x83, 0x66, 0xcd, 0x03,
-            0xeb, 0x64, 0x16, 0x65,
+            d_eb[0], d_eb[1], 0x16, 0x65,
             0xc0, 0x00, 0x00, 0x00,
         ],
         INTER_PACKET_DELAY_MS,
     ));
 
+    // 1a ef — wire e8:64 encore (même double que #1, pas de next)
     let cx = state.next_x1_cnt();
     state.send(OutPacket::with_delay(
         vec![
@@ -67,7 +84,7 @@ pub fn send(state: &mut HelixState) {
             0x01, 0x00, 0x02, 0x00,
             0x0a, 0x00, 0x00, 0x00,
             0x83, 0x66, 0xcd, 0x03,
-            0xe8, 0x64, 0xcc, 0xfe,
+            d_e8[0], d_e8[1], 0xcc, 0xfe,
             0x65, 0x80, 0x00, 0x00,
         ],
         INTER_PACKET_DELAY_MS,

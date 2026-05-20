@@ -15,6 +15,8 @@ pub mod edit_slot_model;
 pub mod slot_focus_in;
 pub mod slot_param_in;
 pub mod slot_watch;
+pub mod slot_model_hw_pull;
+pub mod model_catalog;
 pub mod editor_phase4_bootstrap;
 
 use std::sync::mpsc::Sender;
@@ -106,8 +108,19 @@ pub struct HelixState {
 
     pub connecting: bool,
 
-    // Compteur de paquets preset (kempline : preset_data_packet_double)
-    pub preset_pkt_counter: u16,
+    /// Dernier double ACK chunk preset (lane dump) — conservé pour debug / FDT ; le pull modèle utilise [`Self::editor_ed03_double`].
+    pub preset_last_ack_double: [u8; 2],
+
+    /// Compteur dédié aux ACK chunks preset (bytes 12-13 des ACK sub=08 sur ed:03).
+    /// Octet haut = session (aléatoire, stable par dump), octet bas s'incrémente de +1.
+    /// Lane distincte de [`Self::editor_ed03_double`] (0x64xx) — plage observée HX Edit : 9d:11, 9d:12...
+    pub preset_dump_ack_ctr: u16,
+
+    /// Compteur dédié à la lane éditeur ed:03 36 bytes (bytes 28-29, cd:03).
+    /// Valeur initiale : 0x64e8 (observée HX Edit cold boot, Start_Model_change.json).
+    /// S'incrémente de +1 à chaque OUT 36 bytes cd:03 (phase 4, pull 1b/19).
+    /// NE PAS mélanger avec preset_dump_ack_ctr ni live_write_ctr.
+    pub editor_ed03_double: u16,
 
     // Compteurs keep-alive
     pub x1_cnt:  u8,
@@ -178,12 +191,17 @@ pub struct HelixState {
     pub hw_slot_notify_ef_in: Option<[u8; 16]>,
     /// +1 à chaque réception d’un EF03 court **alors qu’un** ED03 court était déjà mémorisé (cycle complet).
     pub hw_slot_notify_sequence: u32,
-    /// Slot actif observé côté hardware (index Kempline 0..15), déduit du flux IN `0x81`.
-    /// None pour les blocs structurels (Input/Output/Split/Merge).
+    /// **Source unique** du slot actif côté host (cadre orange UI + `slot_bus` des OUT pull modèle).
+    ///
+    /// Mis à jour uniquement par [`Self::ingest_hw_slot_notify_in`] quand une trame IN contient
+    /// `82:62:SS:1a` (sélection HW/UI, ou preset chargé — souvent IN 44 o head `21` + `f0:03:02:10`,
+    /// voir capture `Change_preset.json`). Pas de second registre ni de parse « preset » séparé.
+    ///
+    /// Index Kempline 0..15 ; `None` pour les blocs structurels (Input/Output/Split/Merge).
     pub hw_active_slot_index: Option<usize>,
-    /// Slot bus brut du dernier slot actif détecté (couvre les blocs structurels).
+    /// Bus brut du slot actif (`SS` dans `82:62:SS:1a`).
     pub hw_active_slot_bus: Option<u8>,
-    /// +1 à chaque changement détecté de slot actif.
+    /// +1 à chaque changement de `hw_active_slot_bus` (événement `models:hardware-slot-changed`).
     pub hw_active_slot_sequence: u32,
 
     /// Fenêtre de capture des IN `0x81` après un OUT « focus slot » (`sync_hardware_slot_focus_usb`).
@@ -197,6 +215,20 @@ pub struct HelixState {
     pub hw_slot_content_sequence: u32,
     /// Déduplication des événements paramètre IN (`85:62…1c:PP:77`).
     pub slot_param_emit: slot_param_in::SlotParamEmitState,
+    /// Dernier envoi pull modèle HW après notif `1d`/`1f`.
+    pub hw_model_pull_last_at: Option<Instant>,
+    /// Collecte des IN bulk après pull modèle HW (parse `module_hex`).
+    pub hw_model_pull_capture_deadline: Option<Instant>,
+    pub hw_model_pull_capture: Vec<Vec<u8>>,
+    pub hw_model_pull_slot_bus: Option<u8>,
+    /// Machine d’états pull HX Edit : 0=off, 1=après `1b`+`f0`, 2=après 1er `19`, 3=après 2e `19`.
+    pub hw_model_pull_step: u8,
+    /// Octet « voie » après `83:66:cd` vu dans la dernière IN stub (`02`/`03`/`04`…).
+    pub hw_model_pull_cd_lane: Option<u8>,
+    /// Octets après `83:66:cd:PP` renvoyés par l’IN `1c` (ex. `f7:67`) — recollés sur le retry `1b`.
+    pub hw_model_pull_echo_double: Option<[u8; 2]>,
+    /// Un retry `1b`+`f0` a déjà été tenté avec lane/double issus du `1c`.
+    pub hw_model_pull_retried_1b: bool,
 }
 
 // ===========================================================
@@ -282,7 +314,9 @@ impl HelixState {
             preset_read_generation: 0,
             connecting:         true,
             got_preset:         false,
-            preset_pkt_counter: 0x001e,
+            preset_dump_ack_ctr: 0x119d, // session=0x9d, ctr_bas=0x11 (observé HX Edit cold boot)
+            editor_ed03_double: Self::preset_ed03_transaction_counter_before_first(),
+            preset_last_ack_double: [0, 0],
             request_preset_session_id: 0xf4,
             ed03_cmd_type:      0x01,
             session_quadruple: [0xf4, 0x1e, 0x00, 0x00],
@@ -304,7 +338,23 @@ impl HelixState {
             slot_watch_prev: std::array::from_fn(|_| slot_watch::SlotWatchSnapshot::default()),
             hw_slot_content_sequence: 0,
             slot_param_emit: slot_param_in::SlotParamEmitState::default(),
+            hw_model_pull_last_at: None,
+            hw_model_pull_capture_deadline: None,
+            hw_model_pull_capture: Vec::new(),
+            hw_model_pull_slot_bus: None,
+            hw_model_pull_step: 0,
+            hw_model_pull_cd_lane: None,
+            hw_model_pull_echo_double: None,
+            hw_model_pull_retried_1b: false,
         }
+    }
+
+    /// Slot actif : notif `1d`/`1f` → pull échelonné (`1b` → `f0` → `19` ×2) → parse IN (hors `preset_data`).
+    pub fn ingest_slot_model_hw_in(
+        &mut self,
+        data: &[u8],
+    ) -> Option<slot_model_hw_pull::SlotModelHwChangedPayload> {
+        slot_model_hw_pull::ingest_slot_model_hw_in(self, data)
     }
 
     /// Parse les trames IN bulk pour changements de paramètre live (`85:62…77:ca|c2|c3|…`).
@@ -368,13 +418,15 @@ impl HelixState {
         );
     }
 
-    /// Détecte les petites trames IN « slot » du Stomp (`ed 03 80 10` puis `ef 03 01 10` sur 16 octets).
-    /// Retourne un payload à émettre vers l’UI si le **bus** de slot actif a changé (`82 62 SS 1a`).
+    /// Met à jour [`Self::hw_active_slot_*`] et notifie l’UI — **seul** chemin pour le slot actif.
+    ///
+    /// Scan linéaire de `82:62:SS:1a` sur **toute** trame IN (16 o keep-alive, 40 o switch UI,
+    /// 44 o après preset, etc.). Ne pas ajouter de filtre par head `21` / `f0:03:02:10` : ce serait
+    /// le même traitement dupliqué. Les paires courtes `ed:03:80:10` + `ef:03:01:10` (16 o) sont
+    /// mémorisées en plus pour le debug protocole.
     pub fn ingest_hw_slot_notify_in(&mut self, data: &[u8]) -> Option<HardwareSlotChangedPayload> {
         let mut slot_bus_changed: Option<HardwareSlotChangedPayload> = None;
-        // Keep-alive x2 long: recherche d'un marqueur `82 62 SS 1a`
-        // SS = slot bus ; couvre les slots effet (0x01–0x12) et les blocs structurels
-        // Input(0x00), Output(0x09), Split(0x0a), Merge(0x13).
+        // Marqueur sélection / preset : `82:62:SS:1a` (≠ `81:62` des notifs changement modèle).
         for i in 0..=data.len().saturating_sub(4) {
             if data[i] == 0x82 && data[i + 1] == 0x62 && data[i + 3] == 0x1a {
                 let slot_bus = data[i + 2];
@@ -457,20 +509,51 @@ impl HelixState {
     }
     
 
-    /// Kempline : preset_data_packet_double()
-    /// Retourne [lo, hi] du compteur courant
+    /// Première valeur wire du double transaction (`e8:64` dans `Start_Model_change.json`).
+    pub const PRESET_ED03_TRANSACTION_FIRST: u16 = 0x64e8;
+
+    /// Valeur interne pour que le premier [`Self::next_editor_ed03_double`] renvoie
+    /// [`Self::PRESET_ED03_TRANSACTION_FIRST`].
+    pub fn preset_ed03_transaction_counter_before_first() -> u16 {
+        Self::PRESET_ED03_TRANSACTION_FIRST.wrapping_sub(1)
+    }
+
+    /// Repositionne la lane éditeur avant phase 4 / après échec preset (prochain OUT = `e8:64`).
+    pub fn reset_preset_ed03_transaction_counter(&mut self) {
+        self.editor_ed03_double = Self::preset_ed03_transaction_counter_before_first();
+    }
+
+    /// Alias historique (Kempline) → lane éditeur [`Self::editor_ed03_double`].
     pub fn preset_data_packet_double(&self) -> [u8; 2] {
-        let lo = (self.preset_pkt_counter & 0xFF) as u8;
-        let hi = ((self.preset_pkt_counter >> 8) & 0xFF) as u8;
+        self.editor_ed03_double_val()
+    }
+
+    /// Double pour les ACK chunks preset (lane dump, pas lane éditeur).
+    /// Octet haut = session stable, octet bas s'incrémente de +1.
+    pub fn preset_dump_ack_double(&self) -> [u8; 2] {
+        let lo = (self.preset_dump_ack_ctr & 0xFF) as u8;
+        let hi = ((self.preset_dump_ack_ctr >> 8) & 0xFF) as u8;
         [lo, hi]
     }
 
-    /// Kempline : next_preset_data_packet_double()
-    /// Incrémente et retourne [lo, hi]
-    pub fn next_preset_data_packet_double(&mut self) -> [u8; 2] {
-        self.preset_pkt_counter = self.preset_pkt_counter.wrapping_add(1);
-        self.preset_data_packet_double()
+    pub fn next_preset_dump_ack_double(&mut self) -> [u8; 2] {
+        self.preset_dump_ack_ctr = self.preset_dump_ack_ctr.wrapping_add(1);
+        self.preset_dump_ack_double()
     }
+
+    /// Double pour la lane éditeur ed:03 36 bytes (phase 4, pull 1b/19).
+    /// Valeur initiale : 0x64e8. Ne pas utiliser pour les ACK chunks.
+    pub fn editor_ed03_double_val(&self) -> [u8; 2] {
+        let lo = (self.editor_ed03_double & 0xFF) as u8;
+        let hi = ((self.editor_ed03_double >> 8) & 0xFF) as u8;
+        [lo, hi]
+    }
+
+    pub fn next_editor_ed03_double(&mut self) -> [u8; 2] {
+        self.editor_ed03_double = self.editor_ed03_double.wrapping_add(1);
+        self.editor_ed03_double_val()
+    }
+
 
     /// Envoie un paquet USB vers le HX
     pub fn send(&self, packet: OutPacket) {

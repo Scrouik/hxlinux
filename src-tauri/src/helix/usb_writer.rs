@@ -108,48 +108,68 @@ pub fn start_writer(
                         }
                     }
 
-                    // Envoi sur endpoint 0x01
-                    match handle.write_bulk(
-                        ENDPOINT_OUT,
-                        &pkt.data,
-                        Duration::from_millis(WRITE_TIMEOUT_MS),
-                    ) {
-                        Ok(written) => {
-                            consecutive_errors = 0;
-                            if out_payload_has_ed03(&pkt.data) {
-                                last_ed03_out = Some(Instant::now());
-                            }
-                            if usb_io_diag_enabled() {
-                                eprintln!(
-                                    "[UsbIODiag][OUT][ok] id={} kind={} written={} cnt={}",
-                                    write_id,
-                                    kind,
-                                    written,
-                                    cnt.map(|v| format!("{:02x}", v)).unwrap_or_else(|| "--".to_string())
-                                );
+                    let mut wire_chunks: Vec<Vec<u8>> = Vec::with_capacity(1 + pkt.tail_burst.len());
+                    wire_chunks.push(pkt.data.clone());
+                    wire_chunks.extend(pkt.tail_burst.iter().cloned());
+
+                    for (bi, chunk) in wire_chunks.iter().enumerate() {
+                        if bi > 0 && out_payload_has_ed03(chunk) {
+                            if let Some(prev) = last_ed03_out {
+                                let min_gap = Duration::from_millis(MIN_ED03_OUT_GAP_MS);
+                                let elapsed = prev.elapsed();
+                                if elapsed < min_gap {
+                                    thread::sleep(min_gap - elapsed);
+                                }
                             }
                         }
-                        Err(e) => {
-                            consecutive_errors += 1;
-                            eprintln!("[UsbWriter] erreur écriture : {} (consec={})", e, consecutive_errors);
-                            if out_payload_has_ed03(&pkt.data) {
-                                // Éviter d’enchaîner des ED03 en rafale après timeout / device occupé.
-                                last_ed03_out = Some(Instant::now());
+                        match handle.write_bulk(
+                            ENDPOINT_OUT,
+                            chunk,
+                            Duration::from_millis(WRITE_TIMEOUT_MS),
+                        ) {
+                            Ok(written) => {
+                                consecutive_errors = 0;
+                                if out_payload_has_ed03(chunk) {
+                                    last_ed03_out = Some(Instant::now());
+                                }
+                                if usb_io_diag_enabled() {
+                                    eprintln!(
+                                        "[UsbIODiag][OUT][ok] id={} burst={}/{} kind={} written={}",
+                                        write_id,
+                                        bi + 1,
+                                        wire_chunks.len(),
+                                        classify_out_packet(chunk),
+                                        written,
+                                    );
+                                }
                             }
-                            if usb_io_diag_enabled() {
+                            Err(e) => {
+                                consecutive_errors += 1;
                                 eprintln!(
-                                    "[UsbIODiag][OUT][err] id={} kind={} err={} cnt={} consec={}",
-                                    write_id,
-                                    kind,
+                                    "[UsbWriter] erreur écriture burst {}/{} : {} (consec={})",
+                                    bi + 1,
+                                    wire_chunks.len(),
                                     e,
-                                    cnt.map(|v| format!("{:02x}", v)).unwrap_or_else(|| "--".to_string()),
                                     consecutive_errors
                                 );
-                            }
-                            // Stall USB (Pipe) : clear_halt pour débloquer le pipe OUT.
-                            if e == rusb::Error::Pipe {
-                                eprintln!("[UsbWriter] pipe stall détecté → clear_halt 0x01");
-                                let _ = handle.clear_halt(ENDPOINT_OUT);
+                                if out_payload_has_ed03(chunk) {
+                                    last_ed03_out = Some(Instant::now());
+                                }
+                                if usb_io_diag_enabled() {
+                                    eprintln!(
+                                        "[UsbIODiag][OUT][err] id={} burst={}/{} err={} consec={}",
+                                        write_id,
+                                        bi + 1,
+                                        wire_chunks.len(),
+                                        e,
+                                        consecutive_errors
+                                    );
+                                }
+                                if e == rusb::Error::Pipe {
+                                    eprintln!("[UsbWriter] pipe stall détecté → clear_halt 0x01");
+                                    let _ = handle.clear_halt(ENDPOINT_OUT);
+                                }
+                                break;
                             }
                         }
                     }

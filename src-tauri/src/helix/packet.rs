@@ -8,17 +8,37 @@
 pub struct OutPacket {
     pub data: Vec<u8>,
     pub delay_ms: u64,  // délai avant envoi (kempline utilise delay=0.140 etc.)
+    /// Envoyés sur le fil **à la suite** de `data`, sans autre paquet de la file entre les deux
+    /// (ex. rafale HX Edit `1b` + `f0` ~16 µs).
+    pub tail_burst: Vec<Vec<u8>>,
 }
 
 impl OutPacket {
     /// Paquet sans délai
     pub fn new(data: Vec<u8>) -> Self {
-        Self { data, delay_ms: 0 }
+        Self {
+            data,
+            delay_ms: 0,
+            tail_burst: Vec::new(),
+        }
     }
 
     /// Paquet avec délai en millisecondes
     pub fn with_delay(data: Vec<u8>, delay_ms: u64) -> Self {
-        Self { data, delay_ms }
+        Self {
+            data,
+            delay_ms,
+            tail_burst: Vec::new(),
+        }
+    }
+
+    /// `head` puis chaque élément de `tail` en rafale USB (une seule entrée de file).
+    pub fn with_tail_burst(head: Vec<u8>, tail: Vec<Vec<u8>>) -> Self {
+        Self {
+            data: head,
+            delay_ms: 0,
+            tail_burst: tail,
+        }
     }
 }
 
