@@ -118,9 +118,21 @@ pub fn is_hw_model_change_notify_1f(data: &[u8]) -> bool {
     is_hw_model_change_notify_loose(data) && data[0] == 0x1f
 }
 
+/// Suffixe IN `1f` « None » (frame 1315, `change_model_to_none_HW_HXEdit.json`, t≈2.593 s).
+/// Distinct de l’assign (`05:79:0a:6a`) ; le scroll intermédiaire reste en `1d` + `82:69:16:6a`.
+const HW_MODEL_NONE_NOTIFY_MARK: &[u8] =
+    &[0x82, 0x69, 0x31, 0x6a, 0x84, 0x52, 0x00, 0x44, 0x05, 0x79, 0x0e, 0x6a];
+
+pub fn is_hw_model_slot_cleared_notify(data: &[u8]) -> bool {
+    is_hw_model_change_notify_1f(data)
+        && data
+            .windows(HW_MODEL_NONE_NOTIFY_MARK.len())
+            .any(|w| w == HW_MODEL_NONE_NOTIFY_MARK)
+}
+
 /// Seule entrée valide pour démarrer le pull (pas `1d`, pas les IN `21` 44 o preset/focus).
 pub fn is_hw_model_pull_trigger_notify(data: &[u8]) -> bool {
-    is_hw_model_change_notify_1f(data)
+    is_hw_model_change_notify_1f(data) && !is_hw_model_slot_cleared_notify(data)
 }
 
 /// Bus du slot effet **actif** (`HelixState::hw_active_slot_*`, marqueur IN `82:62:SS:1a`).
@@ -554,6 +566,9 @@ pub fn ingest_slot_model_hw_in(
             pull_trace(
                 "notify 1d — ignorée (paire modèle ; pull uniquement sur 1f, même batch USB possible)",
             );
+        } else if is_hw_model_slot_cleared_notify(data) {
+            pull_trace("notify 1f slot None (05:79:0e:6a) — pas de pull");
+            return emit_slot_cleared_from_hw_notify(state, data);
         } else if is_hw_model_pull_trigger_notify(data) {
             ingest_slot_model_hw_notify(state, data);
         }
@@ -565,6 +580,28 @@ pub fn ingest_slot_model_hw_in(
     }
 
     None
+}
+
+fn emit_slot_cleared_from_hw_notify(
+    state: &mut HelixState,
+    data: &[u8],
+) -> Option<SlotModelHwChangedPayload> {
+    let slot_bus = slot_bus_for_model_pull(state, data)?;
+    let slot_index = slot_bus_to_kempline_index(slot_bus)? as u32;
+    if active_effect_slot_bus(state).is_none() {
+        state.hw_active_slot_index = Some(slot_bus as usize);
+        state.hw_active_slot_bus = Some(slot_bus);
+    }
+    pull_trace(&format!(
+        "slot None slot_bus={slot_bus:02x} (kempline {slot_index})"
+    ));
+    state.hw_slot_content_sequence = state.hw_slot_content_sequence.wrapping_add(1);
+    Some(SlotModelHwChangedPayload {
+        sequence: state.hw_slot_content_sequence,
+        slot_index,
+        slot_bus,
+        module_hex: None,
+    })
 }
 
 fn ingest_slot_model_hw_notify(state: &mut HelixState, data: &[u8]) -> bool {
@@ -628,6 +665,12 @@ mod tests {
         0x1f, 0x00, 0x00, 0x18, 0xf0, 0x03, 0x02, 0x10, 0x00, 0xc1, 0x00, 0x04, 0x09, 0x02, 0x00,
         0x00, 0x00, 0x00, 0x04, 0x00, 0x0f, 0x00, 0x00, 0x00, 0x82, 0x69, 0x31, 0x6a, 0x84, 0x52,
         0x00, 0x44, 0x05, 0x79, 0x0a, 0x6a, 0x81, 0x62, 0x01, 0x93,
+    ];
+    /// Frame 1315 — `change_model_to_none_HW_HXEdit.json` (assign → `0a:6a`, None → `0e:6a`).
+    const IN1F_NONE: &[u8] = &[
+        0x1f, 0x00, 0x00, 0x18, 0xf0, 0x03, 0x02, 0x10, 0x00, 0x34, 0x00, 0x04, 0x09, 0x02, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x0f, 0x00, 0x00, 0x00, 0x82, 0x69, 0x31, 0x6a, 0x84, 0x52,
+        0x00, 0x44, 0x05, 0x79, 0x0e, 0x6a, 0x81, 0x62, 0x01, 0xc0,
     ];
 
     const IN92_ASSIGN: &[u8] = &[
@@ -698,6 +741,25 @@ mod tests {
         state.hw_active_slot_bus = Some(0x01);
         ingest_slot_model_hw_in(&mut state, IN21);
         assert!(state.hw_model_pull_capture_deadline.is_none());
+    }
+
+    #[test]
+    fn detects_none_notify_from_capture_frame_1315() {
+        assert!(is_hw_model_slot_cleared_notify(IN1F_NONE));
+        assert!(!is_hw_model_slot_cleared_notify(IN1F));
+        assert!(!is_hw_model_pull_trigger_notify(IN1F_NONE));
+        assert!(is_hw_model_pull_trigger_notify(IN1F));
+    }
+
+    #[test]
+    fn ingest_1f_none_emits_empty_without_pull() {
+        let mut state = HelixState::new();
+        state.hw_active_slot_index = Some(0);
+        state.hw_active_slot_bus = Some(0x01);
+        let payload = ingest_slot_model_hw_in(&mut state, IN1F_NONE).expect("payload");
+        assert!(payload.module_hex.is_none());
+        assert!(state.hw_model_pull_capture_deadline.is_none());
+        assert_eq!(state.hw_model_pull_step, 0);
     }
 
     #[test]
