@@ -236,8 +236,9 @@ Objectif produit : **ne plus reconstruire la matrice** à partir d’un parse de
 
 **Doc / flags à relire avec ce changement**
 
-- **`models_hw_sync_interval_ms`** : le tick (~200 ms) sert surtout au **panneau params**, à la **sélection slot HW**, au **poll optionnel** ; il **ne** re-parse **plus** tout le preset pour la **grille** à chaque fois.
-- **`models_hw_usb_preset_poll_ms`** : toujours le levier pour forcer une **relecture** périodique → alors la grille peut se resynchroniser avec le dump frais.
+- **Soft-sync (mai 2026)** : plus de poll **200 ms** — déclenché par **`models:hardware-slot-changed`** uniquement. Détail, flags, retrait futur : **`docs/models-hardware-sync.md`**.
+- **`models_hw_sync_interval_ms`** : throttle **optionnel** entre deux soft-sync event (défaut **off**). Ne re-parse **pas** la grille entre deux `request_preset_content`.
+- **`models_hw_usb_preset_poll_ms`** : timer **dédié** (ex. 2500 ms) pour relecture preset USB → grille alignée sur RAM device.
 - Section **« Flags front utiles »** plus bas (notes *soft refresh* / signature layout) : la phrase « re-parse à chaque tick » pour la grille est **obsolète** ; garder l’idée *in-place params* + *renderSlots seulement après relecture*.
 
 **12 mai 2026 — IN « focus slot » parsées, capsule par slot, comparaison captures HX Edit vs Linux**

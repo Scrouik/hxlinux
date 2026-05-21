@@ -107,13 +107,11 @@ const LIVE_WRITE_MIDI_CHANNEL_KEY = "models_live_midi_channel";
 const LIVE_WRITE_SYNC_PAUSE_MS = 1200;
 const HW_SYNC_INTERVAL_MS_KEY = "models_hw_sync_interval_ms";
 /**
- * Fréquence du soft-sync matériel (sélection slot HW, panneau params, poll optionnel).
- * **Par défaut : 200 ms** si la clé est absente — le listener USB met à jour l’état tout de suite ;
- * l’UI suit au tick ou immédiatement via l’événement `models:hardware-slot-changed`.
- * La **grille** n’est **pas** re-construite depuis `preset_data` entre deux `request_preset_content` :
- * seulement après relecture preset (chargement, poll `models_hw_usb_preset_poll_ms`, forçage notif).
- * Désactiver explicitement : `localStorage.setItem("models_hw_sync_interval_ms", "0")`.
- * Filet re-dump preset optionnel : `localStorage.setItem("models_hw_usb_preset_poll_ms", "2500")` (ms, min 500).
+ * Throttle optionnel entre deux appels **event-driven** de `runHardwareSyncSoftRefresh`
+ * (ex. deux `models:hardware-slot-changed` rapprochés). **Pas de poll périodique** par défaut.
+ * **Par défaut : 0** (pas de throttle) — voir `docs/models-hardware-sync.md`.
+ * Throttle explicite : `localStorage.setItem("models_hw_sync_interval_ms", "200")`.
+ * Re-dump preset USB optionnel (timer dédié) : `models_hw_usb_preset_poll_ms` (ex. `2500`, min 500).
  */
 const HW_USB_PRESET_POLL_MS_KEY = "models_hw_usb_preset_poll_ms";
 const HW_USB_PRESET_POLL_MIN_MS = 500;
@@ -166,7 +164,7 @@ let slotModelUsbProbeInFlight: number | null = null;
 let mergeProbeSlotModelUntil: {
   ki: number;
   deadline: number;
-  /** Évite de spammer `emitModelsSyncTrace` à chaque tick soft-sync (~200 ms). */
+  /** Évite de spammer `emitModelsSyncTrace` sur soft-sync répétés. */
   mergeTraceEmitted?: boolean;
 } | null = null;
 const PROBE_SLOT_MERGE_GRACE_MS = 20_000;
@@ -684,7 +682,7 @@ async function logCatalogChainHexDiffIfNeeded(slots: SlotDebug[], presetIndex: n
 function getHardwareSyncIntervalMs(): number {
   const raw = (localStorage.getItem(HW_SYNC_INTERVAL_MS_KEY) ?? "").trim();
   if (raw === "0") return 0;
-  if (!raw) return 200;
+  if (!raw) return 0;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed < 0) return 0;
   if (parsed === 0) return 0;
@@ -821,12 +819,22 @@ function rememberHwSyncChainLayout(slots: SlotDebug[]): void {
   pendingHwLayoutSignature = null;
 }
 
-function scheduleHardwareSyncPoll(): void {
-  // Boucle périodique "soft" : priorise les mises à jour incrémentales.
+/** Soft-sync déclenché par événement USB (`models:hardware-slot-changed`), pas par un tick fixe. */
+function scheduleHardwareSyncFromEvent(): void {
   if (hardwareSyncPausedForPresetLoad) return;
-  // Pendant scroll modèle / rebuild params, éviter invokes + softRefresh en parallèle (freeze webview).
   if (hwUi.gestureInProgress) return;
   void runHardwareSyncSoftRefresh();
+}
+
+/** Re-dump preset USB périodique uniquement si `models_hw_usb_preset_poll_ms` > 0 (voir doc). */
+function startOptionalUsbPresetPollTimer(): void {
+  const pollMs = getHardwareUsbPresetPollMs();
+  if (pollMs <= 0) return;
+  window.setInterval(() => {
+    if (hardwareSyncPausedForPresetLoad) return;
+    if (hwUi.gestureInProgress) return;
+    void runHardwareSyncSoftRefresh();
+  }, pollMs);
 }
 
 function requestPresetCooldownRemainingMs(now = Date.now()): number {
@@ -927,7 +935,6 @@ function applyProbeSlotMergeToNormalized(normalized: SlotDebug[]): SlotDebug[] {
  */
 async function runHardwareSyncSoftRefresh(): Promise<void> {
   const syncMs = getHardwareSyncIntervalMs();
-  if (syncMs <= 0) return;
   if (currentPresetIndex < 0) return;
   if (hwUi.gestureInProgress) return;
   if (loading || hardwareSyncBusy) return;
@@ -5888,7 +5895,7 @@ window.addEventListener("DOMContentLoaded", () => {
         2_000,
       );
     }
-    scheduleHardwareSyncPoll();
+    scheduleHardwareSyncFromEvent();
   });
 
   void listen<SlotContentChangedPayload>("models:slot-content-changed", (event) => {
@@ -5933,7 +5940,5 @@ window.addEventListener("DOMContentLoaded", () => {
   window.setInterval(() => {
     void refresh();
   }, 300);
-  window.setInterval(() => {
-    scheduleHardwareSyncPoll();
-  }, 200);
+  startOptionalUsbPresetPollTimer();
 });
