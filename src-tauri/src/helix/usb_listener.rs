@@ -116,11 +116,12 @@ pub fn start_listener(
                         s.ingest_ed03_param_echo(&data);
                         // Slot actif unique (`hw_active_slot_*`) : `ingest_hw_slot_notify_in` — preset/HW/UI.
                         let ev = s.ingest_hw_slot_notify_in(&data);
-                        // Pull modèle après `1d`/`1f` — réutilise `hw_active`, pas un 2e registre slot.
-                        let model_changed = s.ingest_slot_model_hw_in(&data);
+                        // ACK scroll modèle : toujours (même pendant RequestPresetNames — sinon le HW se fige).
+                        let _ = crate::helix::slot_model_hw_pull::ack_hw_model_scroll_in(&mut s, &data);
                         let param_events = s.ingest_slot_param_in(&data);
                         let mut m = mode.lock().unwrap();
                         m.data_in(&data, &mut s);
+                        let model_changed = s.ingest_slot_model_hw_in(&data);
                         (ev, param_events, model_changed)
                     };
                     if let (Some(app), Some(payload)) = (app_handle.as_ref(), hw_slot_changed.0) {

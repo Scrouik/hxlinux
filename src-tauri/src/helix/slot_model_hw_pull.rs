@@ -24,7 +24,8 @@ use crate::helix::is_special_slot_bus;
 use crate::helix::kempline_index_to_slot_bus;
 use crate::helix::slot_bus_to_kempline_index;
 use crate::helix::HelixState;
-use crate::helix::packet::OutPacket;
+use crate::helix::packet::{byte_cmp, OutPacket};
+use crate::pattern;
 
 /// Délai entre les deux `19` (après réponse IN). `1b`+`f0` = rafale sans attente (HX Edit ~0,02 ms).
 const INTER_19_DELAY_MS: u64 = 4;
@@ -34,18 +35,16 @@ pub const PULL_DEBOUNCE_MS: u64 = 50;
 const PULL_CAPTURE_MS: u64 = 400;
 const PULL_CAPTURE_MAX_FRAMES: usize = 48;
 
-// --- `live_write_ctr` (octets 12–13, LE) sur les OUT `80:10:ed:03` 36 o du pull modèle ---
+// --- `hw_model_pull_ctr` (octets 12–13, LE) sur les OUT `80:10:ed:03` 36 o du pull modèle ---
 //
-// Même compteur que le live write param (`HelixState::live_write_ctr`, voir `live_write.rs` et
-// `Line6_HX_Stomp_USB_Protocol.md`), mais les pas d’incrément **ne sont pas tous identiques** :
+// Lane **distincte** de `live_write_ctr` (live write + sonde UI `edit_slot_model.rs`) :
 //
 // | Contexte | Pas typique | Où c’est codé |
 // |----------|-------------|---------------|
-// | Write paramètre 48 o | **+0x1F** (31 déc.) | `live_write.rs`, défaut `edit_slot_model.rs` |
-// | Pull : `1b` → 1er `19` | **+0x4B** ou **+0x44** (capture slot 0) | ci-dessous |
-// | Pull : 1er `19` → 2e `19` | **+0x31** (49 déc.) — stable sur capture HX Edit | ci-dessous |
+// | Write paramètre / sonde UI | **+0x1F** | `live_write.rs`, `edit_slot_model.rs` |
+// | Pull : `1b` → 1er `19` | **+0x4B** | ci-dessous |
+// | Pull : 1er `19` → 2e `19` | **+0x31** | ci-dessous |
 //
-// Ne pas confondre **0x1F** (31 déc.) et **0x31** (49 déc.) : ce sont deux valeurs hex différentes.
 // Réf. capture : `Slot0_Change_Model_2_Time.json` (`3f:41` → `8a:41` → `bb:41`, etc.).
 
 /// Après envoi du `1b` : avance le CTR avant de construire le 1er `19` (délai réel + trafic intermédiaire).
@@ -95,6 +94,41 @@ fn pull_trace_hex(label: &str, data: &[u8]) {
         hex,
         if data.len() > n { " …" } else { "" }
     );
+}
+
+/// ACK `f0:03` sub=08 sur chaque notif scroll `1d`/`1f` 40 o — **indépendant du mode** actif
+/// (`RequestPresetNames`, etc.) : appelé depuis `usb_listener`, pas seulement `Standard`.
+pub fn ack_hw_model_scroll_in(state: &mut HelixState, data: &[u8]) -> bool {
+    if data.len() != 40 {
+        return false;
+    }
+    if data[0] != 0x1d && data[0] != 0x1f {
+        return false;
+    }
+    if !byte_cmp(
+        data,
+        &pattern![
+            XX, 0x00, 0x00, 0x18,
+            0xf0, 0x03, 0x02, 0x10,
+            0x00, XX, 0x00, 0x04,
+            0x09, 0x02
+        ],
+        14,
+    ) {
+        return false;
+    }
+    let cnt = state.next_x2_cnt();
+    if data[0] == 0x1f && is_hw_model_slot_cleared_notify(data) {
+        state.hw_model_scroll_skip_inc_once = true;
+    }
+    let double = state.next_hw_model_scroll_ack_double(data[0]);
+    state.send(OutPacket::new(vec![
+        0x08, 0x00, 0x00, 0x18,
+        0x02, 0x10, 0xf0, 0x03,
+        0x00, cnt, 0x00, 0x08,
+        double[0], double[1], 0x00, 0x00,
+    ]));
+    true
 }
 
 pub fn is_hw_model_change_notify_loose(data: &[u8]) -> bool {
@@ -374,15 +408,15 @@ fn cd_lane_for_out(state: &HelixState) -> u8 {
     state.hw_model_pull_cd_lane.unwrap_or(0x03)
 }
 
-/// Lit `live_write_ctr` pour les octets 12–13 (valeur au moment de la construction du paquet).
+/// Lit `hw_model_pull_ctr` pour les octets 12–13 (valeur au moment de la construction du paquet).
 fn pull_ctr_bytes(state: &HelixState) -> (u8, u8) {
-    let ctr = state.live_write_ctr;
+    let ctr = state.hw_model_pull_ctr;
     ((ctr & 0xff) as u8, ((ctr >> 8) & 0xff) as u8)
 }
 
-/// Simule l’avancement du CTR entre deux OUT du pull (voir `PULL_CTR_DELTA_*` — pas +0x1F systématique).
+/// Avance la lane pull modèle (voir `PULL_CTR_DELTA_*` — pas +0x1F du live write).
 fn advance_pull_ctr(state: &mut HelixState, delta: u16) {
-    state.live_write_ctr = state.live_write_ctr.wrapping_add(delta);
+    state.hw_model_pull_ctr = state.hw_model_pull_ctr.wrapping_add(delta);
 }
 
 /// OUT pull : `slot_bus` = slot actif host (via [`slot_bus_for_model_pull`]), placé aux octets `81:62`.
@@ -790,17 +824,18 @@ mod tests {
     }
 
     #[test]
-    fn pull_19_uses_live_write_ctr_and_advances() {
+    fn pull_19_uses_hw_model_pull_ctr_and_advances() {
         let mut state = HelixState::new();
-        state.live_write_ctr = 0x413f;
+        state.hw_model_pull_ctr = 0x413f;
         let p1 = build_pull_19(&mut state, false);
         assert_eq!(p1[12], 0x3f);
         assert_eq!(p1[13], 0x41);
-        assert_eq!(state.live_write_ctr, 0x4170); // +0x31
+        assert_eq!(state.hw_model_pull_ctr, 0x4170); // +0x31
         let p2 = build_pull_19(&mut state, true);
         assert_eq!(p2[12], 0x70);
         assert_eq!(p2[13], 0x41);
-        assert_eq!(state.live_write_ctr, 0x41a1); // +0x31
+        assert_eq!(state.hw_model_pull_ctr, 0x41a1); // +0x31
+        assert_eq!(state.live_write_ctr, 0x6cbd); // sonde UI n’a pas pollué la lane pull
     }
 
     #[test]
