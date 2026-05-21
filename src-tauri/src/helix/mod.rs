@@ -116,6 +116,15 @@ pub struct HelixState {
     /// Lane distincte de [`Self::editor_ed03_double`] (0x64xx) — plage observée HX Edit : 9d:11, 9d:12...
     pub preset_dump_ack_ctr: u16,
 
+    /// Lane ACK scroll modèle HW (`1d` / `1f` 40 o → OUT `f0:03` sub=08, octets 12–13 LE).
+    /// +0x15 entre deux `1d` ; +0x17 après `1d`→`1f` (assign) ; +0x2e après `1f`→`1d`.
+    /// Plage observée : 0x65xx–0x74xx (`change_model_to_none_HW_HXEdit.json`).
+    /// **Ne pas** utiliser [`Self::preset_dump_ack_ctr`] (+1) ni [`Self::live_write_ctr`] (+0x1F).
+    pub hw_model_scroll_ack_ctr: u16,
+    pub hw_model_scroll_ack_prev: Option<u8>,
+    /// Après `1f` « None », le premier `1d` suivant réémet le même double (step 0 une fois).
+    pub hw_model_scroll_skip_inc_once: bool,
+
     /// Compteur dédié à la lane éditeur ed:03 36 bytes (bytes 28-29, cd:03).
     /// Valeur initiale : 0x64e8 (observée HX Edit cold boot, Start_Model_change.json).
     /// S'incrémente de +1 à chaque OUT 36 bytes cd:03 (phase 4, pull 1b/19).
@@ -291,6 +300,26 @@ pub fn usb_trace_fingerprint(data: &[u8]) -> Vec<u8> {
     fp
 }
 
+/// Pas d’incrément lane scroll ACK (octets 12–13 OUT) selon captures HX Edit.
+pub(crate) fn hw_model_scroll_ack_step(
+    prev: Option<u8>,
+    head: u8,
+    skip_inc_once: bool,
+) -> (u16, bool) {
+    if skip_inc_once && prev == Some(0x1f) && head == 0x1d {
+        return (0, false);
+    }
+    let step = match (prev, head) {
+        (None, _) => 0,
+        (Some(0x1d), 0x1d) => 0x0015,
+        (Some(0x1d), 0x1f) => 0x0017,
+        (Some(0x1f), 0x1d) => 0x002e,
+        (Some(0x1f), 0x1f) => 0x0017,
+        _ => 0x0015,
+    };
+    (step, skip_inc_once)
+}
+
 impl HelixState {
     pub fn new() -> Self {
         Self {
@@ -315,6 +344,9 @@ impl HelixState {
             connecting:         true,
             got_preset:         false,
             preset_dump_ack_ctr: 0x119d, // session=0x9d, ctr_bas=0x11 (observé HX Edit cold boot)
+            hw_model_scroll_ack_ctr: 0x6561, // scroll modèle HW (milieu session, capture none)
+            hw_model_scroll_ack_prev: None,
+            hw_model_scroll_skip_inc_once: false,
             editor_ed03_double: Self::preset_ed03_transaction_counter_before_first(),
             preset_last_ack_double: [0, 0],
             request_preset_session_id: 0xf4,
@@ -541,6 +573,23 @@ impl HelixState {
         self.preset_dump_ack_double()
     }
 
+    pub fn hw_model_scroll_ack_double(&self) -> [u8; 2] {
+        let lo = (self.hw_model_scroll_ack_ctr & 0xFF) as u8;
+        let hi = ((self.hw_model_scroll_ack_ctr >> 8) & 0xFF) as u8;
+        [lo, hi]
+    }
+
+    /// Double renvoyé dans l’ACK scroll modèle ; avance la lane selon la transition `prev`→`head`.
+    pub fn next_hw_model_scroll_ack_double(&mut self, head: u8) -> [u8; 2] {
+        let (step, skip_next) =
+            hw_model_scroll_ack_step(self.hw_model_scroll_ack_prev, head, self.hw_model_scroll_skip_inc_once);
+        self.hw_model_scroll_skip_inc_once = skip_next;
+        let out = self.hw_model_scroll_ack_double();
+        self.hw_model_scroll_ack_ctr = self.hw_model_scroll_ack_ctr.wrapping_add(step);
+        self.hw_model_scroll_ack_prev = Some(head);
+        out
+    }
+
     /// Double pour la lane éditeur ed:03 36 bytes (phase 4, pull 1b/19).
     /// Valeur initiale : 0x64e8. Ne pas utiliser pour les ACK chunks.
     pub fn editor_ed03_double_val(&self) -> [u8; 2] {
@@ -601,4 +650,33 @@ impl HelixState {
         self.session_no = rand::random::<u8>().max(0x04);
     }
 
+}
+
+#[cfg(test)]
+mod hw_model_scroll_ack_tests {
+    use super::*;
+
+    #[test]
+    fn scroll_ack_step_matches_hx_edit_05_assign() {
+        let mut ctr = 0x1c24u16;
+        let mut prev = None;
+        for (head, expect_out, expect_ctr_after) in [
+            (0x1d, 0x1c24, 0x1c24),
+            (0x1f, 0x1c24, 0x1c3b),
+            (0x1d, 0x1c3b, 0x1c69),
+            (0x1d, 0x1c69, 0x1c7e),
+        ] {
+            let (step, _) = hw_model_scroll_ack_step(prev, head, false);
+            let out = ctr;
+            ctr = ctr.wrapping_add(step);
+            assert_eq!(out, expect_out, "head={head:#x}");
+            prev = Some(head);
+            assert_eq!(ctr, expect_ctr_after, "head={head:#x}");
+        }
+    }
+
+    #[test]
+    fn scroll_ack_step_1d_to_1d_is_0x15() {
+        assert_eq!(hw_model_scroll_ack_step(Some(0x1d), 0x1d, false).0, 0x15);
+    }
 }

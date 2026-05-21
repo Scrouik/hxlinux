@@ -116,11 +116,11 @@ pub fn start_listener(
                         s.ingest_ed03_param_echo(&data);
                         // Slot actif unique (`hw_active_slot_*`) : `ingest_hw_slot_notify_in` — preset/HW/UI.
                         let ev = s.ingest_hw_slot_notify_in(&data);
-                        // Pull modèle après `1d`/`1f` — réutilise `hw_active`, pas un 2e registre slot.
-                        let model_changed = s.ingest_slot_model_hw_in(&data);
                         let param_events = s.ingest_slot_param_in(&data);
                         let mut m = mode.lock().unwrap();
+                        // ACK scroll `1d`/`1f` avant pull : deux OUT `f0:03` sub=08 sur le même `1f` (cf. HX Edit).
                         m.data_in(&data, &mut s);
+                        let model_changed = s.ingest_slot_model_hw_in(&data);
                         (ev, param_events, model_changed)
                     };
                     if let (Some(app), Some(payload)) = (app_handle.as_ref(), hw_slot_changed.0) {

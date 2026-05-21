@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -23,6 +24,16 @@ const barActive   = document.getElementById("bar-active")!;
 const barHint     = document.getElementById("bar-hint")!;
 const presetCount = document.getElementById("preset-count")!;
 const appRoot     = document.querySelector(".app") as HTMLElement;
+const hwShutdownBanner = document.getElementById("hw-shutdown-banner")!;
+
+const SHUTDOWN_HW_CONFIRM_MSG =
+  "Le Stomp XL peut rester en mode dégradé si vous fermez HXLinux sans l'éteindre.\n\n" +
+  "Recommandation : coupez l'alimentation du Stomp après avoir fermé l'application.\n\n" +
+  "Fermer HXLinux quand même ?";
+
+const BAR_HINT_DEFAULT = "Right-click for options · Drag to reorder";
+const BAR_HINT_CONNECTED =
+  "Right-click for options · Drag to reorder · À la fermeture : éteindre le Stomp XL";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -164,6 +175,8 @@ async function loadPresets() {
         ? "Chargement des presets…"
         : connectionHint;
       setStatus("loading", loadingText, showHint ? firmwareHint : undefined);
+      hwShutdownBanner.hidden = !deviceName;
+      barHint.textContent = deviceName ? BAR_HINT_CONNECTED : BAR_HINT_DEFAULT;
       return;
     }
 
@@ -176,6 +189,8 @@ async function loadPresets() {
     }
 
     setStatus("connected", deviceName ?? "HX connecté");
+    hwShutdownBanner.hidden = false;
+    barHint.textContent = BAR_HINT_CONNECTED;
 
     // Scroll vers le preset actif au premier chargement
     const activeEl = list.querySelector(".active") as HTMLElement | null;
@@ -194,8 +209,29 @@ async function loadPresets() {
     }
     presetNames = [];
     activePreset = -1;
+    hwShutdownBanner.hidden = true;
+    barHint.textContent = BAR_HINT_DEFAULT;
     render([], -1);
   }
+}
+
+async function setupShutdownWarningOnClose(): Promise<void> {
+  const appWindow = getCurrentWindow();
+  await appWindow.onCloseRequested(async (event) => {
+    let connected = false;
+    try {
+      connected = (await invoke<string | null>("get_connected_device_name")) != null;
+    } catch {
+      connected = false;
+    }
+    if (!connected) {
+      return;
+    }
+    const proceed = window.confirm(SHUTDOWN_HW_CONFIRM_MSG);
+    if (!proceed) {
+      event.preventDefault();
+    }
+  });
 }
 
 // ─── Item interactions ────────────────────────────────────────────────────────
@@ -473,6 +509,8 @@ function onDragEnd() {
 window.addEventListener("DOMContentLoaded", () => {
   setStatus("waiting", "En attente...");
   updateAppWidth([]);
+  hwShutdownBanner.hidden = true;
+  void setupShutdownWarningOnClose();
   loadPresets();
   window.setInterval(loadPresets, 1500);
 });

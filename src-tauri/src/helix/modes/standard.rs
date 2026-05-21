@@ -44,6 +44,41 @@ impl Standard {
         }
         false
     }
+
+    /// ACK `f0:03` `sub=08` pour les notifs scroll modèle HW (`1d` / `1f` 40 o).
+    /// HX Edit acquitte chaque paire pendant la molette (cf. captures change_model_*).
+    fn ack_hw_model_scroll_notify(state: &mut HelixState, data: &[u8]) -> bool {
+        if data.len() != 40 {
+            return false;
+        }
+        if data[0] != 0x1d && data[0] != 0x1f {
+            return false;
+        }
+        if !byte_cmp(
+            data,
+            &pattern![
+                XX, 0x00, 0x00, 0x18,
+                0xf0, 0x03, 0x02, 0x10,
+                0x00, XX, 0x00, 0x04,
+                0x09, 0x02
+            ],
+            14,
+        ) {
+            return false;
+        }
+        let cnt = state.next_x2_cnt();
+        if data[0] == 0x1f && crate::helix::slot_model_hw_pull::is_hw_model_slot_cleared_notify(data) {
+            state.hw_model_scroll_skip_inc_once = true;
+        }
+        let double = state.next_hw_model_scroll_ack_double(data[0]);
+        state.send(OutPacket::new(vec![
+            0x08, 0x00, 0x00, 0x18,
+            0x02, 0x10, 0xf0, 0x03,
+            0x00, cnt, 0x00, 0x08,
+            double[0], double[1], 0x00, 0x00,
+        ]));
+        true
+    }
 }
 
 impl Mode for Standard {
@@ -88,6 +123,11 @@ impl Mode for Standard {
                 0x00, cnt,  0x00, 0x08,
                 double[0], double[1], 0x00, 0x00,
             ], 10));
+            return true;
+        }
+
+        // Scroll modèle HW (`1d` rafale + `1f` fin de paire) — ACK comme HX Edit ; pull géré dans `ingest_slot_model_hw_in`.
+        if Standard::ack_hw_model_scroll_notify(state, data) {
             return true;
         }
 

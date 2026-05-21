@@ -1,0 +1,8 @@
+chainHex = "cc88" - Name = "Simple EQ"
+chainHex = "cc86" - Name = "Low and High Cut"
+chainHex = "cd0210" - Name = "Low/High Shelf"
+chainHex = "cc87" - Name = "Parametric"
+chainHex = "cd0212" - Name = "Tilt"
+chainHex = "cc85" - Name = "10 Band Graphic"
+chainHex = "cd0144" - Name = "Cali Q Graphic"
+chainHex = "cd0245" - Name = "Acoustic Sim"
