@@ -18,6 +18,7 @@ import {
   type CatalogPickerData,
   type PresetMetaJson,
 } from "./hxModelCatalogMeta";
+import { hwUi } from "./hwUiRefresh";
 import "./styles.css";
 
 type SlotDebug = {
@@ -332,6 +333,18 @@ function getSlotContentWatchIntervalMs(): number {
   return Math.min(HW_SLOT_CONTENT_WATCH_MAX_MS, Math.max(HW_SLOT_CONTENT_WATCH_MIN_MS, parsed));
 }
 
+function setModelsParamsBrowsingMode(browsing: boolean): void {
+  const inner = getModelsParamsInner();
+  if (inner) inner.classList.toggle("models-params-browsing", browsing);
+  const pane = document.getElementById("models-params-pane");
+  if (pane) pane.classList.toggle("models-params-browsing", browsing);
+}
+
+/** Soft-sync périodique : sync params si idle (pas de debounce qui repousse sans fin). */
+function scheduleSoftRefreshParamsPaneFromSlots(slots: SlotDebug[]): void {
+  hwUi.runParamsSyncWhenIdle("params", () => softRefreshParamsPaneFromSlots(slots));
+}
+
 /** Index Kempline du slot effet actif (UI ou pending sync hardware). */
 function activeEffectKemplineSlotIndex(): number | null {
   const ki =
@@ -340,9 +353,121 @@ function activeEffectKemplineSlotIndex(): number | null {
   return ki;
 }
 
+const hwModelHexCatalogCache = new Map<
+  string,
+  { catalogModelIdTrimmed: string; slot: SlotDebug }
+>();
+
+let hwParamsHeavyGeneration = 0;
+let lastCompletedHwParamsHeavyKey = "";
+let lastHwPickerCatalogId: string | null = null;
+
+function scheduleHwParamsHeavyJob(job: () => void | Promise<void>): void {
+  const gen = ++hwParamsHeavyGeneration;
+  hwUi.scheduleAfterHwGesture("params", async () => {
+    if (gen !== hwParamsHeavyGeneration) {
+      emitModelsSyncTraceThrottled(
+        "hw_params_heavy_stale",
+        `params heavy ignoré (geste plus récent) gen=${gen} cur=${hwParamsHeavyGeneration}`,
+        800,
+      );
+      return;
+    }
+    await job();
+  });
+}
+
+async function slotDebugFromHwModelPayload(p: SlotModelHwChangedPayload): Promise<{
+  slot: SlotDebug;
+  catalogModelIdTrimmed: string;
+  hex: string;
+}> {
+  const hex = (p.moduleHex ?? "").trim();
+  let catalogModelIdTrimmed = "";
+  if (hex) {
+    const cached = hwModelHexCatalogCache.get(hex);
+    if (cached) {
+      return { hex, catalogModelIdTrimmed: cached.catalogModelIdTrimmed, slot: cached.slot };
+    }
+    const id = await getCatalogModelIdForHex(hex);
+    catalogModelIdTrimmed = (id ?? "").trim();
+    const meta = catalogModelIdTrimmed ? await getPresetMetaForId(catalogModelIdTrimmed) : null;
+    const catalogName = catalogModelIdTrimmed
+      ? await getCatalogModelNameForId(catalogModelIdTrimmed)
+      : null;
+    const displayName = (catalogName ?? "").trim() || hex;
+    const categoryName = (meta?.categoryName ?? "").trim() || "?";
+    const slot: SlotDebug = {
+      category: categoryName,
+      name: displayName,
+      moduleHex: hex,
+      catalogModelId: catalogModelIdTrimmed || undefined,
+    };
+    hwModelHexCatalogCache.set(hex, { catalogModelIdTrimmed, slot });
+    return { hex, catalogModelIdTrimmed, slot };
+  }
+  return {
+    hex,
+    catalogModelIdTrimmed,
+    slot: { category: "", name: "<empty>" },
+  };
+}
+
+/** Grille + picker : immédiat (`hwUi.runImmediate`). */
+function applyHardwareSlotModelVisualFast(
+  ki: number,
+  slot: SlotDebug,
+  catalogModelIdTrimmed: string,
+): void {
+  hwUi.runImmediate("grid", () => {
+    if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16) {
+      const next = lastHwSyncNormalizedSlots.map((s, i) => (i === ki ? { ...slot } : { ...s }));
+      lastHwSyncNormalizedSlots = next;
+      lastHwSyncChainSignature = chainLayoutSignature(next);
+    }
+    patchMatrixSlotVisualFromSlot(ki, slot);
+    patchMatrixCategoryDescFromSlot(ki, slot);
+    const titleEl = document.getElementById("models-params-pane-title");
+    if (titleEl) {
+      const label = slot.name?.trim();
+      titleEl.textContent = label ? `${label} …` : "Modèle…";
+    }
+  });
+
+  if (catalogModelIdTrimmed) {
+    if (catalogModelIdTrimmed === lastHwPickerCatalogId) return;
+    lastHwPickerCatalogId = catalogModelIdTrimmed;
+    hwUi.runImmediate("picker", () => {
+      void mountModelsSlotPicker().then(async () => {
+        const meta = await getPresetMetaForId(catalogModelIdTrimmed);
+        syncModelsSlotPickerFromLoadedModel(catalogModelIdTrimmed, meta, slot.moduleHex);
+      });
+    });
+  } else {
+    lastHwPickerCatalogId = null;
+  }
+}
+
+async function applyHardwareSlotModelParamsHeavy(
+  ki: number,
+  slot: SlotDebug,
+  catalogModelIdTrimmed: string,
+  hex: string,
+): Promise<void> {
+  if (catalogModelIdTrimmed) {
+    await loadAndShowModelsParamsFromCatalogDefaults(slot, catalogModelIdTrimmed, ki);
+  } else if (!hex) {
+    showModelsParamsNotFound(slot, null);
+  } else {
+    showModelsParamsError(
+      `Jointure catalogue impossible pour chainHex « ${hex.toUpperCase()} ».`,
+    );
+  }
+}
+
 /**
- * Changement de modèle sur le slot actif hardware : trames IN → réponse USB → `chainHex` IN.
- * Panneau params : défauts du fichier `.models` uniquement (jamais `preset_data`).
+ * Changement de modèle HW : visuel liste/matrice tout de suite ; panneau params après calme (~200 ms).
+ * Bus Rust inchangé — debounce uniquement côté webview.
  */
 async function applyHardwareSlotModelChanged(p: SlotModelHwChangedPayload): Promise<void> {
   const activeKi = activeEffectKemplineSlotIndex();
@@ -354,50 +479,28 @@ async function applyHardwareSlotModelChanged(p: SlotModelHwChangedPayload): Prom
     );
     return;
   }
-  // La notif HW ne peut concerner que le slot actif ; on ne filtre pas sur p.slotIndex.
   const ki = activeKi;
+  const { slot, catalogModelIdTrimmed, hex } = await slotDebugFromHwModelPayload(p);
 
-  let slot: SlotDebug;
-  const hex = (p.moduleHex ?? "").trim();
-  let catalogModelIdTrimmed = "";
-  if (hex) {
-    const id = await getCatalogModelIdForHex(hex);
-    catalogModelIdTrimmed = (id ?? "").trim();
-    const meta = catalogModelIdTrimmed ? await getPresetMetaForId(catalogModelIdTrimmed) : null;
-    const catalogName = catalogModelIdTrimmed
-      ? await getCatalogModelNameForId(catalogModelIdTrimmed)
-      : null;
-    const displayName = (catalogName ?? "").trim() || hex;
-    const categoryName = (meta?.categoryName ?? "").trim() || "?";
-    slot = {
-      category: categoryName,
-      name: displayName,
-      moduleHex: hex,
-      catalogModelId: catalogModelIdTrimmed || undefined,
-    };
-  } else {
-    slot = { category: "", name: "<empty>" };
-  }
+  applyHardwareSlotModelVisualFast(ki, slot, catalogModelIdTrimmed);
 
-  if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16) {
-    const next = lastHwSyncNormalizedSlots.map((s, i) => (i === ki ? { ...slot } : { ...s }));
-    lastHwSyncNormalizedSlots = next;
-    lastHwSyncChainSignature = chainLayoutSignature(next);
-  }
-
-  patchMatrixSlotVisualFromSlot(ki, slot);
-  patchMatrixCategoryDescFromSlot(ki, slot);
-  selectParamsPaneByKemplineIndex(ki);
-
-  if (catalogModelIdTrimmed) {
-    await loadAndShowModelsParamsFromCatalogDefaults(slot, catalogModelIdTrimmed, ki);
-  } else if (!hex) {
-    showModelsParamsNotFound(slot, null);
-  } else {
-    showModelsParamsError(
-      `Jointure catalogue impossible pour chainHex « ${hex.toUpperCase()} ».`,
-    );
-  }
+  const heavyKey = `${currentPresetIndex}|${ki}|${catalogModelIdTrimmed}|${hex}`;
+  scheduleHwParamsHeavyJob(async () => {
+    if (
+      heavyKey === lastCompletedHwParamsHeavyKey &&
+      selectedParamsKemplineSlotIndex === ki &&
+      selectedParamsInPlaceUpdater
+    ) {
+      emitModelsSyncTraceThrottled(
+        "hw_params_heavy_skip_dup",
+        `params heavy skip (déjà affiché) key=${heavyKey}`,
+        1_500,
+      );
+      return;
+    }
+    await applyHardwareSlotModelParamsHeavy(ki, slot, catalogModelIdTrimmed, hex);
+    lastCompletedHwParamsHeavyKey = heavyKey;
+  });
 }
 
 async function applySlotContentWatchFromSync(
@@ -412,7 +515,7 @@ async function applySlotContentWatchFromSync(
     3_000,
   );
   if (selectedParamsKemplineSlotIndex === ki && lastHwSyncNormalizedSlots) {
-    await softRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
+    scheduleSoftRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
   }
 }
 
@@ -721,6 +824,8 @@ function rememberHwSyncChainLayout(slots: SlotDebug[]): void {
 function scheduleHardwareSyncPoll(): void {
   // Boucle périodique "soft" : priorise les mises à jour incrémentales.
   if (hardwareSyncPausedForPresetLoad) return;
+  // Pendant scroll modèle / rebuild params, éviter invokes + softRefresh en parallèle (freeze webview).
+  if (hwUi.gestureInProgress) return;
   void runHardwareSyncSoftRefresh();
 }
 
@@ -824,6 +929,7 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
   const syncMs = getHardwareSyncIntervalMs();
   if (syncMs <= 0) return;
   if (currentPresetIndex < 0) return;
+  if (hwUi.gestureInProgress) return;
   if (loading || hardwareSyncBusy) return;
   if (slotModelUsbProbeInFlight !== null) return;
   if (loadedPresetIndex !== currentPresetIndex) return;
@@ -975,7 +1081,7 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
           `softSync abort emptyParse keepExistingGrid preset=${presetIdx} snapSlots=${lastHwSyncNormalizedSlots.length}`,
           8_000,
         );
-        await softRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
+        scheduleSoftRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
       } else {
         emitModelsSyncTraceThrottled(
           "soft_sync_abort_no_norm",
@@ -1032,7 +1138,7 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
     if (lastHwSyncChainSignature !== null && sig === lastHwSyncChainSignature) {
       pendingHwLayoutSignature = null;
       consumePendingHardwareSlotSelection();
-      await softRefreshParamsPaneFromSlots(normalized);
+      scheduleSoftRefreshParamsPaneFromSlots(normalized);
       return;
     }
     // Anti-flash / debounce layout : sans dump USB ce cycle, la signature ne vient pas d’un parse
@@ -1042,7 +1148,7 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
       const allowLayoutDebounce = !didUsbPresetDumpThisCycle || usbDumpIsPollOnly;
       if (allowLayoutDebounce && pendingHwLayoutSignature !== sig) {
         pendingHwLayoutSignature = sig;
-        await softRefreshParamsPaneFromSlots(normalized);
+        scheduleSoftRefreshParamsPaneFromSlots(normalized);
         emitModelsSyncTraceThrottled(
           "soft_sync_layout_debounce",
           `softSync layout debounce pass1 -> paramsPane only (sig changed usbPollOnly=${usbDumpIsPollOnly})`,
@@ -1056,7 +1162,7 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
     if (!didUsbPresetDumpThisCycle) {
       pendingHwLayoutSignature = null;
       consumePendingHardwareSlotSelection();
-      await softRefreshParamsPaneFromSlots(normalized);
+      scheduleSoftRefreshParamsPaneFromSlots(normalized);
       await maybeWatchActiveSlotContent(hwSlotState);
       emitModelsSyncTraceThrottled(
         "soft_sync_no_dump_grid",
@@ -1289,13 +1395,25 @@ function applyHardwareSlotParamChanged(p: SlotParamChangedPayload): void {
     return;
   }
 
-  selectedParamsInPlaceUpdater(null);
-  selectedParamsValuesSig = `${currentPresetIndex}|${p.slotIndex}|hw:${p.sequence}:${p.paramIndex}:${String(cv)}`;
-  emitModelsSyncTraceThrottled(
-    "evt_slot_param_changed",
-    `hw param slot=${p.slotIndex} pp=${p.paramIndex} ${sid}=${String(cv)}`,
-    400,
-  );
+  const slotIndex = p.slotIndex;
+  const paramIndex = p.paramIndex;
+  const sequence = p.sequence;
+  hwUi.scheduleAfterHwGesture("params", () => {
+    if (
+      selectedParamsKemplineSlotIndex !== slotIndex ||
+      selectedParamsPresetIndex !== currentPresetIndex ||
+      !selectedParamsInPlaceUpdater
+    ) {
+      return;
+    }
+    selectedParamsInPlaceUpdater(null);
+    selectedParamsValuesSig = `${currentPresetIndex}|${slotIndex}|hw:${sequence}:${paramIndex}:${String(cv)}`;
+    emitModelsSyncTraceThrottled(
+      "evt_slot_param_changed",
+      `hw param slot=${slotIndex} pp=${paramIndex} ${sid}=${String(cv)}`,
+      400,
+    );
+  });
 }
 
 function discreteSliderTickCount(
@@ -1439,6 +1557,11 @@ function refillSlotPickerModelList(highlightModelId: string | null | undefined):
       void applySlotModelFromPickerListClick(row.id, row.name, row.assignVariant);
     });
     slotPickerListEl.appendChild(li);
+  }
+  if (hi) {
+    slotPickerListEl
+      .querySelector(".models-slot-picker-model-item--active")
+      ?.scrollIntoView({ block: "nearest", behavior: "auto" });
   }
 }
 
@@ -2115,6 +2238,9 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
       if (slot === null) {
         suppressNextUiSlotHardwareSwitch = false;
         clearModelsParamsPaneContent();
+        return;
+      }
+      if (!userInitiated && hwUi.blockSyntheticParamsLoad) {
         return;
       }
       await loadAndShowModelsParamsForSlot(
@@ -5714,6 +5840,7 @@ async function refresh() {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  hwUi.configure({ setParamsBrowsingMode: setModelsParamsBrowsingMode });
   void mountModelsSlotPicker();
 
   window.addEventListener("keydown", (e) => {
@@ -5775,15 +5902,13 @@ window.addEventListener("DOMContentLoaded", () => {
       `event models:slot-content-changed seq=${p.sequence} slot=${p.slotIndex} kind=${p.kind}`,
       2_000,
     );
-    void (async () => {
-      if (
-        lastHwSyncNormalizedSlots &&
-        lastHwSyncNormalizedSlots.length === 16 &&
-        selectedParamsKemplineSlotIndex === p.slotIndex
-      ) {
-        await softRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
-      }
-    })();
+    if (
+      lastHwSyncNormalizedSlots &&
+      lastHwSyncNormalizedSlots.length === 16 &&
+      selectedParamsKemplineSlotIndex === p.slotIndex
+    ) {
+      scheduleSoftRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
+    }
   });
 
   void listen<SlotParamChangedPayload>("models:slot-param-changed", (event) => {

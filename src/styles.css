@@ -218,6 +218,13 @@ html, body {
   font-weight: 600;
 }
 
+/* Pendant un geste HW : liste active, panneau params grisé jusqu’au settle (~200 ms). */
+.models-params-pane.models-params-browsing .models-params-params-column .models-params-inner,
+.models-params-inner.models-params-browsing {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 .models-params-params-column {
   flex: 1 1 0;
   min-width: 0;
