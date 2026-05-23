@@ -14,7 +14,7 @@ Ce document décrit ce qui reste actif après le retrait du **poll soft-sync tou
 | **`runHardwareSyncSoftRefresh()`** | `src/models.ts` | Orchestration **ponctuelle** : slot HW actif, focus USB, flush live-write, soft-refresh params depuis snapshot, option re-dump preset. |
 | **`scheduleHardwareSyncFromEvent()`** | idem | Appelée sur **`models:hardware-slot-changed`** uniquement. |
 | **`refresh()`** (300 ms) | idem | **Changement de preset** sur le device (`get_active_preset` ≠ index UI). |
-| **`hwUi`** (`src/hwUiRefresh.ts`) | debounce UI | Modèle / params après calme (~200 ms), pas le bus Rust. |
+| **`hwUi`** (`src/hwUiRefresh.ts`) | debounce UI | Modèle : aperçu léger à chaque event ; catalogue + picker + params au settle (~200 ms). |
 | **Events USB** | `usb_listener.rs` → front | Modèle, param, slot actif. |
 | **Poll USB preset optionnel** | `startOptionalUsbPresetPollTimer()` | Timer **uniquement** si `models_hw_usb_preset_poll_ms` est défini. |
 
@@ -36,6 +36,7 @@ La **grille** n’est toujours pas re-parse entre deux `request_preset_content` 
 | `models_hw_slot_focus_usb` | on | `sync_hardware_slot_focus_usb` après notif slot (capsule → `models:slot-content-changed`). |
 | `models_debug_sync_trace` | off | Logs `[ModelsSync]`. |
 | `models_debug_heavy_ui` | off | Durée des jobs lourds `hwUi`. |
+| `models_debug_hw_model_fast` | off | Aperçu scroll vs settle (catalogue / picker / params) sur `slot-model-changed`. |
 
 ## Réactiver un poll périodique (legacy)
 
@@ -56,6 +57,12 @@ Ordre suggéré (quand les events couvrent 100 % des besoins) :
 3. Garder `refresh()` pour le preset index.
 4. Garder `hwUi` + listeners `slot-model-changed` / `slot-param-changed`.
 5. `cargo test` + test manuel : changement slot HW, scroll modèle, knobs, changement preset sur pédale.
+
+## Plantage HW au scroll modèle (pull incomplet)
+
+Si le modèle s’affiche (`"cdXXXX"; "Nom"`) puis le HW freeze : finalize **avant** le bulk IN ~272 o après `19` #2. Correctif : `hw_model_pull_saw_final_bulk` — `post-pull` seulement après ce 272 o (HX Edit).
+
+L’IN **`0x21` 44 o** post-assign (stomp « modèle enregistré ») est **unidirectionnel** : pas d’ACK host (`ack_hw_model_scroll_in` ignore ; pas d’événement `hardware-slot-changed`). Les **`1f`** 40 o reçoivent `f0:03` sub=08 ; les **`1d`** aussi **sauf** pendant un pull actif ou ~85 ms après finalize (`hw_model_pull_quiet_until`). Ne pas traiter un bulk **272 o** comme 1ʳᵉ réponse au `1b` (`looks_like_first_pull_reply` : tête `53`/`56` ou ~92 o, pas `len>=68`). Pull pending : flush seulement après la fenêtre quiet (évite enchaînement `1b` sur 272 tardif).
 
 ## Tests manuels rapides
 

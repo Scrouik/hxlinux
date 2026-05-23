@@ -55,7 +55,7 @@ impl RequestPreset {
                         let next_mode = if content_only {
                             ModeRequest::StandardPresetRead(generation)
                         } else {
-                            ModeRequest::RequestPresetNames
+                            ModeRequest::Standard
                         };
                         if preset_debug_verbose_enabled() {
                             eprintln!(
@@ -124,18 +124,18 @@ impl Mode for RequestPreset {
         // Avancer sess_id de 1 pour que Phase 2 utilise sess_id1 + 1
         state.request_preset_session_id = state.request_preset_session_id.wrapping_add(1);
 
-        if preset_debug_verbose_enabled() {
-            eprintln!(
-                "[PresetDebug][RequestPreset::start] preset_index={} content_only={} editor_ed03_double={:#06x} sess_id1={:#04x} sess1={:#04x} cmd_type={:#04x} phase2_session={:#04x}",
-                state.preset_index,
-                state.preset_content_only,
-                state.editor_ed03_double,
-                sess_id1,
-                sess1,
-                cmd_type,
-                self.phase2_session,
-            );
-        }
+        crate::helix::init_trace::trace_fmt(format_args!(
+            "RequestPreset::start preset_index={} content_only={} preset_data_ready={}",
+            state.preset_index,
+            state.preset_content_only,
+            state.preset_data_ready,
+        ));
+        eprintln!(
+            "[PresetDebug][RequestPreset::start] preset_index={} content_only={} preset_data_ready={}",
+            state.preset_index,
+            state.preset_content_only,
+            state.preset_data_ready,
+        );
 
         // Phase 1 : sub=0x04, byte30=0x17 — demande du nom du preset
         let pkt = OutPacket::new(vec![
@@ -258,7 +258,7 @@ impl Mode for RequestPreset {
                 let next_mode = if state.preset_content_only {
                     ModeRequest::StandardPresetRead(state.preset_read_generation)
                 } else {
-                    ModeRequest::RequestPresetNames
+                    ModeRequest::Standard
                 };
                 if let Some(ref tx) = self.mode_tx {
                     let _ = tx.send(next_mode);
@@ -298,7 +298,7 @@ impl Mode for RequestPreset {
                     let next_mode = if state.preset_content_only {
                         ModeRequest::StandardPresetRead(state.preset_read_generation)
                     } else {
-                        ModeRequest::RequestPresetNames
+                        ModeRequest::Standard
                     };
                     if let Some(ref tx) = self.mode_tx {
                         let _ = tx.send(next_mode);
@@ -345,6 +345,11 @@ impl Mode for RequestPreset {
             state.preset_last_ack_double = [0, 0];
             state.request_preset_session_id = 0xf4;
         }
+        crate::helix::init_trace::trace_fmt(format_args!(
+            "RequestPreset::shutdown preset_data_ready={} bytes={}",
+            state.preset_data_ready,
+            state.preset_data.len()
+        ));
         if preset_debug_verbose_enabled() {
             eprintln!(
                 "[PresetDebug][RequestPreset::shutdown] preset_data_ready={} bytes={} session_no={:#04x} ed03_cmd_type={:#04x}",

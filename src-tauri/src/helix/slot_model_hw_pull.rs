@@ -3,7 +3,8 @@
 //!
 //! Flux cible (sans `preset_data`) :
 //! 1. IN `1d` puis `1f` 40 o (`f0:03:02:10`) — souvent **même lot de lecture USB** (même timestamp).
-//!    **Un seul** pull host sur `1f` ; `1d` ignoré (le debounce temps ne sépare pas un même batch).
+//!    **Un seul** pull host sur `1f` ; `1d` ignoré (même lot USB). Après un pull, le settling
+//!    post-pull (272 dump) retarde le prochain `1b` — pas de debounce temps sur `1f`.
 //! 2. Host : `1b` 36 o → court `f0:03` 16 o → attendre IN ~92 o
 //! 3. Host : `19` 36 o → attendre IN ~68 o
 //! 4. Host : `19` 36 o → IN ~272 o avec `chainHex` / id module `19…1a`
@@ -29,10 +30,17 @@ use crate::pattern;
 
 /// Délai entre les deux `19` (après réponse IN). `1b`+`f0` = rafale sans attente (HX Edit ~0,02 ms).
 const INTER_19_DELAY_MS: u64 = 4;
-/// Filet de sécurité si deux `1f` rapprochés (la paire `1d`+`1f` est ~15 ms — trop court pour débouncer entre les deux).
-pub const PULL_DEBOUNCE_MS: u64 = 50;
-/// Plafond si aucun `module_hex` (sinon `try_early_finalize` sort dès le bulk ~92/272 o).
-const PULL_CAPTURE_MS: u64 = 400;
+/// Pas de nouveau pull juste après un pull terminé (scroll rapide sur le knob).
+/// Les `1f` pendant cette fenêtre sont ignorés (pas de `1b` depuis un scroll périmé).
+const PULL_COOLDOWN_AFTER_DONE_MS: u64 = 40;
+/// Après finalize : pas de pull pending ni d’ACK `1d` (évite 272 tardif pris pour 1ʳᵉ réponse `1b`).
+const PULL_POST_FINALIZE_QUIET_MS: u64 = 85;
+/// Silence requis après un pull réussi : pas de nouveau `1b` tant que des 272 dump arrivent encore.
+const PULL_POST_PULL_SETTLING_MS: u64 = 50;
+/// Pas de `request_preset_content` pendant/après scroll HW (évite dump USB vs ACK 1d).
+pub const HW_MODEL_USB_BUSY_AFTER_SCROLL_MS: u64 = 700;
+/// Attente du bulk ~272 o après `19` #2 (captures HX Edit).
+const PULL_CAPTURE_MS: u64 = 600;
 const PULL_CAPTURE_MAX_FRAMES: usize = 48;
 
 // --- `hw_model_pull_ctr` (octets 12–13, LE) sur les OUT `80:10:ed:03` 36 o du pull modèle ---
@@ -52,6 +60,22 @@ const PULL_CTR_DELTA_AFTER_1B: u16 = 0x004b;
 
 /// Entre les deux `19` consécutifs : pas observé **+0x31** (49 déc.), pas le +0x1F du live write.
 const PULL_CTR_DELTA_AFTER_19: u16 = 0x0031;
+
+// --- `hw_model_scroll_ack_ctr` (octets 12–13, LE) sur le court OUT `f0:03 sub=08` 16 o ---
+//
+// Même lane que les ACK scroll `1d`/`1f` (`ack_hw_model_scroll_in`, `mod::hw_model_scroll_ack_step`).
+// Capture `3_scroll_HXEdit.json` :
+//
+// | Étape HX | Δ u16 LE | Rôle chez HXLinux |
+// |----------|----------|-------------------|
+// | `f0` après `1b` (pull) | — (valeur courante) | `build_pull_f0_interstitial` |
+// | `f0` après 19 #1 | **+0x2e** | `advance_scroll_ack_after_pull_interstitial_f0` avant 19 #1 |
+// | ACK `f0` après IN `1f` | **+0x17** | `next_hw_model_scroll_ack_double(0x1f)` |
+// | ACK `f0` après IN `1d` | **+0x15** | `next_hw_model_scroll_ack_double(0x1d)` |
+// | Entre deux pulls (après `1f` préc.) | **+0x15** typ. | ACK `1d` hors capture pull |
+//
+/// HX envoie un 2ᵉ `f0` interstitiel après 19 #1 ; on n’envoie qu’un seul `f0` avec le `1b`.
+const PULL_SCROLL_ACK_ADVANCE_AFTER_INTERSTITIAL_F0: u16 = 0x002e;
 
 static PULL_DEBUG: AtomicBool = AtomicBool::new(false);
 
@@ -96,13 +120,109 @@ fn pull_trace_hex(label: &str, data: &[u8]) {
     );
 }
 
-/// ACK `f0:03` sub=08 sur chaque notif scroll `1d`/`1f` 40 o — **indépendant du mode** actif
-/// (`RequestPresetNames`, etc.) : appelé depuis `usb_listener`, pas seulement `Standard`.
-pub fn ack_hw_model_scroll_in(state: &mut HelixState, data: &[u8]) -> bool {
-    if data.len() != 40 {
+/// USB occupé par scroll modèle / pull — ne pas lancer un dump preset UI en parallèle.
+pub fn hw_model_usb_busy(state: &HelixState) -> bool {
+    if state.init_usb_settle_active() {
+        return true;
+    }
+    // Pendant RequestPreset* / RequestPresetNames : pas de « busy scroll » (rafale `1d` firmware).
+    if state.preset_usb_read_in_progress() {
         return false;
     }
-    if data[0] != 0x1d && data[0] != 0x1f {
+    if state.hw_model_pull_capture_deadline.is_some() {
+        return true;
+    }
+    if let Some(t) = state.hw_model_last_scroll_in_at {
+        if t.elapsed() < Duration::from_millis(HW_MODEL_USB_BUSY_AFTER_SCROLL_MS) {
+            return true;
+        }
+    }
+    if let Some(t) = state.hw_model_pull_last_at {
+        if t.elapsed() < Duration::from_millis(PULL_COOLDOWN_AFTER_DONE_MS) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Mêmes garde-fous que [`ingest_slot_model_hw_notify`] : ce `1f` va lancer un `1b`+`f0` pull.
+pub fn would_start_hw_model_pull_on_1f(state: &HelixState, data: &[u8]) -> bool {
+    if !is_hw_model_pull_trigger_notify(data) {
+        return false;
+    }
+    if state.init_usb_settle_active()
+        || state.preset_usb_read_in_progress()
+        || state.preset_content_only
+    {
+        return false;
+    }
+    if slot_bus_for_model_pull(state, data).is_none() {
+        return false;
+    }
+    if post_pull_stream_settling_active(state) {
+        return false;
+    }
+    if state.hw_model_pull_capture_deadline.is_some() {
+        return false;
+    }
+    true
+}
+
+fn should_defer_model_notify_1d_ack(state: &HelixState, data: &[u8]) -> bool {
+    data.first() == Some(&0x1d)
+        && is_hw_model_change_notify_loose(data)
+        && state.should_ack_firmware_1d_notify()
+        && state.hw_model_pull_capture_deadline.is_none()
+        && !state
+            .hw_model_pull_quiet_until
+            .is_some_and(|t| Instant::now() < t)
+}
+
+/// Envoie l’ACK scroll et avance [`HelixState::hw_model_scroll_ack_ctr`].
+fn send_hw_model_scroll_ack(state: &mut HelixState, data: &[u8]) -> bool {
+    let head = data.first().copied().unwrap_or(0);
+    debug_assert!(head == 0x1d || head == 0x1f);
+    if state.preset_data_ready {
+        state.hw_model_last_scroll_in_at = Some(Instant::now());
+    }
+    let cnt = state.next_x2_cnt();
+    if head == 0x1f && is_hw_model_slot_cleared_notify(data) {
+        state.hw_model_scroll_skip_inc_once = true;
+    }
+    let double = state.next_hw_model_scroll_ack_double(head);
+    if slot_model_hw_pull_debug_enabled() {
+        pull_trace(&format!(
+            "ACK OUT f0:03 sub=08 pour IN {head:#x} len={}",
+            data.len()
+        ));
+    }
+    state.send(OutPacket::new(vec![
+        0x08, 0x00, 0x00, 0x18,
+        0x02, 0x10, 0xf0, 0x03,
+        0x00, cnt, 0x00, 0x08,
+        double[0], double[1], 0x00, 0x00,
+    ]));
+    if head == 0x1d {
+        crate::helix::init_trace::trace_1d_ack_decision(true, "ACK f0:03 sub=08");
+    }
+    true
+}
+
+/// ACK `f0:03` sub=08 sur notifs firmware `1d` / `1f` 40 o (molette **ou** sync preset/slots).
+/// L’IN `21` 44 o post-assign (stomp → host) est **unidirectionnel** : pas d’ACK host.
+/// Politique `1d` : ACK en Standard / init settle ; pas d’ACK pendant RequestPreset* ni pendant
+/// un pull modèle actif (les `1d` en rafale pendant `1b`/`19` saturent la file OUT — cf. crash scroll).
+/// **`1f`** : ACK hors lecture preset (fin de paire — le Stomp attend la réponse).
+/// **Pull** : HX Edit n’ACK pas la paire `1d`/`1f` déclencheuse avant le `1b` — lane inchangée pour le `f0` interstitiel.
+pub fn ack_hw_model_scroll_in(state: &mut HelixState, data: &[u8]) -> bool {
+    let head = data.first().copied().unwrap_or(0);
+    if head == 0x21 {
+        if is_hw_model_post_assign_21(data) {
+            pull_trace("notify 21 post-assign — ignorée (pas d’ACK host)");
+        }
+        return false;
+    }
+    if head != 0x1d && head != 0x1f || data.len() != 40 {
         return false;
     }
     if !byte_cmp(
@@ -117,18 +237,59 @@ pub fn ack_hw_model_scroll_in(state: &mut HelixState, data: &[u8]) -> bool {
     ) {
         return false;
     }
-    let cnt = state.next_x2_cnt();
-    if data[0] == 0x1f && is_hw_model_slot_cleared_notify(data) {
-        state.hw_model_scroll_skip_inc_once = true;
+    if head == 0x1d && !state.should_ack_firmware_1d_notify() {
+        crate::helix::init_trace::trace_1d_ack_decision(
+            false,
+            "suppress_1d ou init settle (pas d'ACK scroll)",
+        );
+        pull_trace("1d sans ACK (mode lecture preset — sync firmware, pas molette)");
+        return false;
     }
-    let double = state.next_hw_model_scroll_ack_double(data[0]);
-    state.send(OutPacket::new(vec![
-        0x08, 0x00, 0x00, 0x18,
-        0x02, 0x10, 0xf0, 0x03,
-        0x00, cnt, 0x00, 0x08,
-        double[0], double[1], 0x00, 0x00,
-    ]));
-    true
+    if head == 0x1d
+        && (state.hw_model_pull_capture_deadline.is_some()
+            || state
+                .hw_model_pull_quiet_until
+                .is_some_and(|t| Instant::now() < t))
+    {
+        let reason = if state.hw_model_pull_capture_deadline.is_some() {
+            "pull modèle actif"
+        } else {
+            "post-finalize quiet"
+        };
+        crate::helix::init_trace::trace_1d_ack_decision(false, reason);
+        pull_trace(&format!("1d sans ACK ({reason} — évite rafale OUT sub=08)"));
+        return false;
+    }
+
+    if head == 0x1d && should_defer_model_notify_1d_ack(state, data) {
+        if let Some(prev) = state.hw_model_scroll_deferred_1d.take() {
+            let _ = send_hw_model_scroll_ack(state, &prev);
+        }
+        state.hw_model_scroll_deferred_1d = Some(data.to_vec());
+        pull_trace("1d modèle — ACK différé (paire avant pull possible, HX Edit)");
+        return false;
+    }
+
+    if head == 0x1f {
+        if would_start_hw_model_pull_on_1f(state, data) {
+            state.hw_model_scroll_deferred_1d = None;
+            pull_trace("1f pull — pas d'ACK scroll avant 1b (lane inchangée, HX Edit)");
+            return false;
+        }
+        if let Some(d1d) = state.hw_model_scroll_deferred_1d.take() {
+            let _ = send_hw_model_scroll_ack(state, &d1d);
+        }
+    }
+
+    send_hw_model_scroll_ack(state, data)
+}
+
+/// IN `21` 44 o stomp « modèle enregistré sur ce slot » (host ne répond pas).
+pub fn is_hw_model_post_assign_21(data: &[u8]) -> bool {
+    data.len() == 44
+        && data.first() == Some(&0x21)
+        && data.get(24..28) == Some(&[0x82, 0x69, 0x27, 0x6a])
+        && data.windows(3).any(|w| w == [0x82, 0x62, 0x01, 0x1a])
 }
 
 pub fn is_hw_model_change_notify_loose(data: &[u8]) -> bool {
@@ -290,12 +451,19 @@ fn cd_lane_byte(data: &[u8]) -> Option<u8> {
         .map(|w| w[3])
 }
 
+/// Bulk final ~272 o (3ᵉ IN du pull) — ne doit pas déclencher `19` #1 / #2.
+fn is_pull_final_meta_bulk(data: &[u8]) -> bool {
+    data.len() >= 180
+}
+
 fn looks_like_first_pull_reply(data: &[u8]) -> bool {
-    bulk_looks_like_assign_response(data)
-        || data.len() >= 68
-        || data.first() == Some(&0x53)
-        // Si le `f0` ACK arrive trop tard, le Stomp répond parfois `1c` 36 o (8366) au lieu de `53` 92 o.
-        || (data.len() >= 36 && data.first() == Some(&0x1c) && data.windows(3).any(|w| w == [0x83, 0x66, 0xcd]))
+    if is_pull_final_meta_bulk(data) {
+        return false;
+    }
+    matches!(data.first(), Some(0x53) | Some(0x51) | Some(0x47) | Some(0x6c) | Some(0x50))
+        || (data.len() >= 90 && data.len() < 120 && data.first() == Some(&0x56))
+        || (data.len() >= 80 && data.len() < 120 && bulk_looks_like_assign_response(data))
+        || is_in_1c_stub(data)
 }
 
 fn is_in_1c_stub(data: &[u8]) -> bool {
@@ -305,9 +473,64 @@ fn is_in_1c_stub(data: &[u8]) -> bool {
 }
 
 fn looks_like_second_pull_reply(data: &[u8]) -> bool {
-    bulk_looks_like_assign_response(data)
-        || data.len() >= 48
+    if is_pull_final_meta_bulk(data) {
+        return false;
+    }
+    data.first() == Some(&0x39)
         || is_in_1c_stub(data)
+        || (data.len() >= 48 && data.len() < 120 && bulk_looks_like_assign_response(data))
+}
+
+fn arm_pull_post_finalize_quiet(state: &mut HelixState) {
+    state.hw_model_pull_quiet_until =
+        Some(Instant::now() + Duration::from_millis(PULL_POST_FINALIZE_QUIET_MS));
+}
+
+fn arm_post_pull_stream_settling(state: &mut HelixState) {
+    state.hw_model_post_pull_settling = true;
+    state.hw_model_post_pull_deadline =
+        Some(Instant::now() + Duration::from_millis(PULL_POST_PULL_SETTLING_MS));
+}
+
+fn touch_post_pull_stream_settling(state: &mut HelixState) {
+    state.hw_model_post_pull_settling = true;
+    state.hw_model_post_pull_deadline =
+        Some(Instant::now() + Duration::from_millis(PULL_POST_PULL_SETTLING_MS));
+}
+
+pub(crate) fn post_pull_stream_settling_active(state: &HelixState) -> bool {
+    state.hw_model_post_pull_settling
+        && state
+            .hw_model_post_pull_deadline
+            .is_some_and(|t| Instant::now() < t)
+}
+
+/// Fin de la fenêtre settling ; retourne `true` si elle vient d’expirer.
+fn tick_post_pull_stream_settling(state: &mut HelixState) -> bool {
+    if !state.hw_model_post_pull_settling {
+        return false;
+    }
+    let Some(deadline) = state.hw_model_post_pull_deadline else {
+        state.hw_model_post_pull_settling = false;
+        return false;
+    };
+    if Instant::now() < deadline {
+        return false;
+    }
+    state.hw_model_post_pull_settling = false;
+    state.hw_model_post_pull_deadline = None;
+    pull_trace("post-pull settling terminé (plus de 272 dump)");
+    true
+}
+
+/// Fin de settling : ne pas envoyer de `1b` depuis un `1f` vieux (le Stomp a pu scroller pendant les 272).
+fn clear_stale_pending_after_post_pull_settling(state: &mut HelixState) {
+    let Some(slot_bus) = state.hw_model_pull_pending_slot_bus.take() else {
+        return;
+    };
+    pull_trace(&format!(
+        "pending après settling slot_bus={slot_bus:02x} abandonné — attendre prochain 1f (scroll frais)"
+    ));
 }
 
 fn frame_has_assign_marker(data: &[u8]) -> bool {
@@ -364,9 +587,13 @@ fn arm_pull_capture(state: &mut HelixState, slot_bus: u8) {
     state.hw_model_pull_capture.clear();
     state.hw_model_pull_slot_bus = Some(slot_bus);
     state.hw_model_pull_step = 1;
-    state.hw_model_pull_cd_lane = None;
+    // Ne pas effacer cd lane `04` post-wrap (sinon le pull suivant repart en `03` → échec).
+    if state.hw_model_pull_cd_lane != Some(0x04) {
+        state.hw_model_pull_cd_lane = None;
+    }
     state.hw_model_pull_echo_double = None;
     state.hw_model_pull_retried_1b = false;
+    state.hw_model_pull_saw_final_bulk = false;
     state.hw_model_pull_capture_deadline =
         Some(Instant::now() + Duration::from_millis(PULL_CAPTURE_MS));
 }
@@ -378,8 +605,11 @@ fn remember_cd_lane_from_in(state: &mut HelixState, data: &[u8]) {
         return;
     }
     if let Some(lane) = cd_lane_byte(data) {
-        state.hw_model_pull_cd_lane = Some(lane);
-        pull_trace(&format!("IN cd lane={lane:02x}"));
+        // Ne pas rétrograder `04` → `03` (certains IN post-pull gardent `cd:03` dans le bulk).
+        if state.hw_model_pull_cd_lane != Some(0x04) || lane == 0x04 {
+            state.hw_model_pull_cd_lane = Some(lane);
+            pull_trace(&format!("IN cd lane={lane:02x}"));
+        }
     }
     if let Some(d) = preset_double_after_cd(data) {
         state.hw_model_pull_echo_double = Some(d);
@@ -397,15 +627,18 @@ fn preset_double_after_cd(data: &[u8]) -> Option<[u8; 2]> {
     None
 }
 
-/// Double pour les OUT pull `1b`/`19` (octets 28–29, lane éditeur 0x64xx).
-/// Utilise `editor_ed03_double` — distinct de preset_dump_ack_ctr et live_write_ctr.
-fn pull_preset_double(state: &HelixState) -> [u8; 2] {
-    // Lane éditeur (0x64xx) — toujours, indépendamment du dernier ACK dump
-    state.editor_ed03_double_val()
-}
-
 fn cd_lane_for_out(state: &HelixState) -> u8 {
     state.hw_model_pull_cd_lane.unwrap_or(0x03)
+}
+
+/// HX Edit (`3_scroll_HXEdit.json`) : à partir du wrap bas `fd:64` → `00:64`, la voie `cd` passe
+/// de `03` à `04` et y reste pour les pulls suivants.
+fn cd_lane_for_hw_model_pull_out(state: &mut HelixState, prev_lo: u8, wire: [u8; 2]) -> u8 {
+    if wire[0] < prev_lo {
+        state.hw_model_pull_cd_lane = Some(0x04);
+        pull_trace("editor double wrap bas → cd lane 04 (aligné HX Edit)");
+    }
+    cd_lane_for_out(state)
 }
 
 /// Lit `hw_model_pull_ctr` pour les octets 12–13 (valeur au moment de la construction du paquet).
@@ -422,8 +655,9 @@ fn advance_pull_ctr(state: &mut HelixState, delta: u16) {
 /// OUT pull : `slot_bus` = slot actif host (via [`slot_bus_for_model_pull`]), placé aux octets `81:62`.
 fn build_pull_1b(state: &mut HelixState, slot_bus: u8) -> Vec<u8> {
     let cnt0 = state.next_x80_cnt();
-    let d0 = pull_preset_double(state);
-    let cd_lane = cd_lane_for_out(state);
+    let prev_lo = (state.editor_ed03_double & 0xFF) as u8;
+    let d0 = state.next_editor_ed03_double_for_hw_model_pull();
+    let cd_lane = cd_lane_for_hw_model_pull_out(state, prev_lo, d0);
     let (ctr_lo, ctr_hi) = pull_ctr_bytes(state);
     advance_pull_ctr(state, PULL_CTR_DELTA_AFTER_1B);
     vec![
@@ -434,17 +668,26 @@ fn build_pull_1b(state: &mut HelixState, slot_bus: u8) -> Vec<u8> {
 }
 
 /// Court `f0:03` entre `1b` et le premier bulk IN (capture HX Edit #515).
+/// Octets 12–13 = `hw_model_scroll_ack_ctr` (pas de pas ici : HX n’incrémente qu’au 2ᵉ `f0`, simulé avant 19 #1).
 fn build_pull_f0_interstitial(state: &mut HelixState) -> Vec<u8> {
     let cnt = state.next_x2_cnt();
+    let double = state.hw_model_scroll_ack_double();
     vec![
-        0x08, 0x00, 0x00, 0x18, 0x02, 0x10, 0xf0, 0x03, 0x00, cnt, 0x00, 0x08, 0x52, 0x11, 0x00,
-        0x00,
+        0x08, 0x00, 0x00, 0x18, 0x02, 0x10, 0xf0, 0x03, 0x00, cnt, 0x00, 0x08, double[0], double[1],
+        0x00, 0x00,
     ]
+}
+
+/// Compense le 2ᵉ `f0` HX (après 19 #1, +0x2e) qu’on n’émet pas.
+fn advance_scroll_ack_after_pull_interstitial_f0(state: &mut HelixState) {
+    state.hw_model_scroll_ack_ctr = state
+        .hw_model_scroll_ack_ctr
+        .wrapping_add(PULL_SCROLL_ACK_ADVANCE_AFTER_INTERSTITIAL_F0);
 }
 
 fn build_pull_19(state: &mut HelixState, second: bool) -> Vec<u8> {
     let cnt = state.next_x80_cnt();
-    let d = pull_preset_double(state);
+    let d = state.editor_ed03_double_val();
     let cd_lane = cd_lane_for_out(state);
     let (ctr_lo, ctr_hi) = pull_ctr_bytes(state);
     advance_pull_ctr(state, PULL_CTR_DELTA_AFTER_19);
@@ -458,10 +701,11 @@ fn build_pull_19(state: &mut HelixState, second: bool) -> Vec<u8> {
 }
 
 fn send_pull_19_first(state: &mut HelixState, _in_data: &[u8]) {
+    advance_scroll_ack_after_pull_interstitial_f0(state);
     let pkt = build_pull_19(state, false);
     state.send(OutPacket::with_delay(pkt, INTER_19_DELAY_MS));
     state.hw_model_pull_step = 2;
-    pull_trace("OUT 19 #1 (réponse IN 53 reçue)");
+    pull_trace("OUT 19 #1 (1ʳᵉ réponse bulk assign)");
 }
 
 fn send_pull_19_second(state: &mut HelixState) {
@@ -480,27 +724,107 @@ fn send_pull_1b_f0_burst(state: &mut HelixState, slot_bus: u8, label: &str) {
     let pkt_f0 = build_pull_f0_interstitial(state);
     let cnt_f0 = pkt_f0[9];
     let f0_sub = pkt_f0.get(11).copied().unwrap_or(0);
+    let scroll_d0 = pkt_f0.get(12).copied().unwrap_or(0);
+    let scroll_d1 = pkt_f0.get(13).copied().unwrap_or(0);
     state.send(OutPacket::with_tail_burst(pkt1b, vec![pkt_f0]));
     pull_trace(&format!(
-        "{label} slot_bus={slot_bus:02x} x80_1b={cnt1b:02x} cd_lane={cd_lane:02x} preset_double={preset_d0:02x}:{preset_d1:02x} x2_f0={cnt_f0:02x} f0_sub={f0_sub:02x}"
+        "{label} slot_bus={slot_bus:02x} x80_1b={cnt1b:02x} cd_lane={cd_lane:02x} preset_double={preset_d0:02x}:{preset_d1:02x} x2_f0={cnt_f0:02x} f0_sub={f0_sub:02x} scroll_ack_double={scroll_d0:02x}:{scroll_d1:02x}"
     ));
 }
 
 /// Démarre le pull : `1b` puis court `f0:03` (capture HX Edit), puis attend les IN.
 pub fn send_pull_sequence(state: &mut HelixState, slot_bus: u8) {
+    if state.init_usb_settle_active() {
+        pull_trace("pull ignoré : init USB settle (ACK seulement)");
+        return;
+    }
+    if post_pull_stream_settling_active(state) {
+        pull_trace("pull ignoré : post-pull settling (272 dump en cours)");
+        queue_pending_hw_model_pull(state, slot_bus);
+        return;
+    }
     arm_pull_capture(state, slot_bus);
     send_pull_1b_f0_burst(state, slot_bus, "sent 1b+f0 (burst USB)");
 }
 
-fn try_early_finalize(state: &mut HelixState) -> Option<SlotModelHwChangedPayload> {
-    let frames = &state.hw_model_pull_capture;
-    if let Some(Some(hex)) = best_module_hex_from_frames(frames) {
-        return finalize_pull_capture(state, None).map(|mut p| {
-            p.module_hex = Some(hex);
-            p
-        });
+/// Reprend le trafic « idle » HX Edit après un pull (le keep-alive est suspendu pendant la capture).
+fn send_post_pull_resume_traffic(state: &mut HelixState) {
+    let cnt_x1 = state.next_x1_cnt();
+    state.send(OutPacket::new(vec![
+        0x08, 0x00, 0x00, 0x18,
+        0x01, 0x10, 0xef, 0x03,
+        0x00, cnt_x1, 0x00, 0x08,
+        0x72, 0x1e, 0x00, 0x00,
+    ]));
+    let cnt_x2 = state.next_x2_cnt();
+    state.send(OutPacket::new(vec![
+        0x08, 0x00, 0x00, 0x18,
+        0x02, 0x10, 0xf0, 0x03,
+        0x00, cnt_x2, 0x00, 0x10,
+        0x09, 0x10, 0x00, 0x00,
+    ]));
+    if slot_model_hw_pull_debug_enabled() {
+        pull_trace("post-pull OUT ef:03 + f0:03 sub=10 (reprise keep-alive)");
     }
-    None
+}
+
+/// Écho IN 16 o après notre `f0` interstitiel du pull (`ed:03` / sub `08` / double) — à acquitter.
+fn try_ack_pull_interstitial_echo(state: &mut HelixState, data: &[u8]) {
+    if data.len() != 16 {
+        return;
+    }
+    if data.get(4..8) != Some(&[0xed, 0x03, 0x80, 0x10]) || data.get(11) != Some(&0x08) {
+        return;
+    }
+    let cnt = state.next_x2_cnt();
+    let d0 = data.get(12).copied().unwrap_or(0);
+    let d1 = data.get(13).copied().unwrap_or(0);
+    state.send(OutPacket::new(vec![
+        0x08, 0x00, 0x00, 0x18,
+        0x02, 0x10, 0xf0, 0x03,
+        0x00, cnt, 0x00, 0x08,
+        d0, d1, 0x00, 0x00,
+    ]));
+    if slot_model_hw_pull_debug_enabled() {
+        pull_trace(&format!(
+            "ACK echo IN 16o post f0 interstitial pull (double={d0:02x}:{d1:02x})"
+        ));
+    }
+}
+
+fn queue_pending_hw_model_pull(state: &mut HelixState, slot_bus: u8) {
+    state.hw_model_pull_pending_slot_bus = Some(slot_bus);
+    pull_trace(&format!(
+        "pull en file slot_bus={slot_bus:02x} (pull en cours ou cooldown)"
+    ));
+}
+
+/// Relance un pull fileté (réservé ; le rattrapage se fait via le prochain `1f` utilisateur).
+#[allow(dead_code)]
+pub fn flush_pending_hw_model_pull(state: &mut HelixState) {
+    let Some(slot_bus) = state.hw_model_pull_pending_slot_bus.take() else {
+        return;
+    };
+    if state.init_usb_settle_active()
+        || state.preset_usb_read_in_progress()
+        || state.preset_content_only
+        || state.hw_model_pull_capture_deadline.is_some()
+        || state
+            .hw_model_pull_quiet_until
+            .is_some_and(|t| Instant::now() < t)
+    {
+        state.hw_model_pull_pending_slot_bus = Some(slot_bus);
+        return;
+    }
+    if let Some(last) = state.hw_model_pull_last_at {
+        if last.elapsed() < Duration::from_millis(PULL_COOLDOWN_AFTER_DONE_MS) {
+            state.hw_model_pull_pending_slot_bus = Some(slot_bus);
+            return;
+        }
+    }
+    pull_trace(&format!("flush pull pending slot_bus={slot_bus:02x} (après quiet)"));
+    state.hw_model_pull_pending_slot_bus = None;
+    send_pull_sequence(state, slot_bus);
 }
 
 fn finalize_pull_capture(
@@ -510,9 +834,13 @@ fn finalize_pull_capture(
     let slot_bus = state.hw_model_pull_slot_bus.take()?;
     state.hw_model_pull_capture_deadline = None;
     state.hw_model_pull_step = 0;
-    state.hw_model_pull_cd_lane = None;
+    // Garder cd lane `04` après wrap bas — ne pas repasser à `03` au pull suivant (HX Edit).
+    if state.hw_model_pull_cd_lane != Some(0x04) {
+        state.hw_model_pull_cd_lane = None;
+    }
     state.hw_model_pull_echo_double = None;
     state.hw_model_pull_retried_1b = false;
+    state.hw_model_pull_saw_final_bulk = false;
 
     let mut frames = Vec::new();
     std::mem::swap(&mut frames, &mut state.hw_model_pull_capture);
@@ -526,23 +854,43 @@ fn finalize_pull_capture(
         if slot_model_hw_pull_debug_enabled() {
             log_capture_summary(&frames);
         }
+        pull_trace("pull échoué (pas de bulk assignable) — reprise keep-alive, pending effacé");
+        state.hw_model_pull_pending_slot_bus = None;
+        send_post_pull_resume_traffic(state);
+        arm_pull_post_finalize_quiet(state);
+        arm_post_pull_stream_settling(state);
+        state.hw_model_pull_last_at = Some(Instant::now());
         return None;
     };
-    let slot_index = slot_bus_to_kempline_index(slot_bus)? as u32;
+    let Some(slot_index) = slot_bus_to_kempline_index(slot_bus).map(|i| i as u32) else {
+        state.hw_model_pull_pending_slot_bus = None;
+        arm_pull_post_finalize_quiet(state);
+        state.hw_model_pull_last_at = Some(Instant::now());
+        return None;
+    };
 
     if let Some(ref hex) = module_hex {
         log_hw_model_changed(hex);
     }
 
+    send_post_pull_resume_traffic(state);
+
     state.hw_slot_content_sequence = state.hw_slot_content_sequence.wrapping_add(1);
     let sequence = state.hw_slot_content_sequence;
 
-    Some(SlotModelHwChangedPayload {
+    let payload = SlotModelHwChangedPayload {
         sequence,
         slot_index,
         slot_bus,
         module_hex,
-    })
+    };
+    arm_pull_post_finalize_quiet(state);
+    arm_post_pull_stream_settling(state);
+    if state.hw_model_pull_pending_slot_bus.is_some() {
+        pull_trace("pending conservé — rattrapage au prochain 1f (pas de flush sur keep-alive/21)");
+    }
+    state.hw_model_pull_last_at = Some(Instant::now());
+    Some(payload)
 }
 
 fn ingest_pull_capture(
@@ -557,6 +905,9 @@ fn ingest_pull_capture(
     }
     pull_trace_hex("capture IN", data);
     remember_cd_lane_from_in(state, data);
+    if state.hw_model_pull_step == 1 {
+        try_ack_pull_interstitial_echo(state, data);
+    }
 
     match state.hw_model_pull_step {
         1 if looks_like_first_pull_reply(data) => {
@@ -575,15 +926,35 @@ fn ingest_pull_capture(
         _ => {}
     }
 
-    if let Some(payload) = try_early_finalize(state) {
-        return Some(payload);
+    // HX Edit : après `19` #2, le Stomp envoie encore un bulk ~272 o. Finaliser avant
+    // (post-pull ef/f0) laisse le firmware bloqué — modèle affiché mais HW mort.
+    if is_pull_final_meta_bulk(data) {
+        state.hw_model_pull_saw_final_bulk = true;
+        pull_trace(&format!(
+            "IN bulk final len={} (après 19 #2)",
+            data.len()
+        ));
+    } else if slot_model_hw_pull_debug_enabled() {
+        if let Some(Some(hex)) = best_module_hex_from_frames(&state.hw_model_pull_capture) {
+            if state.hw_model_pull_step >= 2 && !state.hw_model_pull_saw_final_bulk {
+                pull_trace(&format!(
+                    "hex={hex} visible step={} — attend bulk ~272 avant finalize",
+                    state.hw_model_pull_step
+                ));
+            }
+        }
     }
 
-    if state.hw_model_pull_step >= 3 && data.len() >= 200 {
+    if state.hw_model_pull_step >= 3 && state.hw_model_pull_saw_final_bulk {
         return finalize_pull_capture(state, None);
     }
 
     if now >= deadline {
+        if state.hw_model_pull_step >= 3 && !state.hw_model_pull_saw_final_bulk {
+            pull_trace(
+                "timeout sans bulk 272 — finalize forcé (module_hex depuis 92/116 o si présent)",
+            );
+        }
         return finalize_pull_capture(state, Some(data));
     }
 
@@ -594,9 +965,33 @@ pub fn ingest_slot_model_hw_in(
     state: &mut HelixState,
     data: &[u8],
 ) -> Option<SlotModelHwChangedPayload> {
+    // Pas de flush ici : un keep-alive / `21` après quiet ne doit pas lancer un `1b` fantôme.
+    // Le pending « pendant pull » est rattrapé au prochain `1f` utilisateur.
+    if tick_post_pull_stream_settling(state) {
+        clear_stale_pending_after_post_pull_settling(state);
+    }
+
+    if state.hw_model_pull_capture_deadline.is_none()
+        && crate::helix::preset_dump_stream_ack::is_preset_dump_stream_chunk_in(data)
+    {
+        touch_post_pull_stream_settling(state);
+        if slot_model_hw_pull_debug_enabled() {
+            pull_trace(&format!(
+                "chunk 272 post-finalize — prolonge settling ({} ms)",
+                PULL_POST_PULL_SETTLING_MS
+            ));
+        }
+        return None;
+    }
+
     if is_hw_model_change_notify_loose(data) {
         pull_trace_hex("notify IN", data);
+        if data[0] == 0x21 && is_hw_model_post_assign_21(data) {
+            pull_trace("notify 21 post-assign — ignorée (stomp unidirectionnel)");
+            return None;
+        }
         if data[0] == 0x1d {
+            arm_pull_post_finalize_quiet(state);                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
             pull_trace(
                 "notify 1d — ignorée (paire modèle ; pull uniquement sur 1f, même batch USB possible)",
             );
@@ -640,16 +1035,17 @@ fn emit_slot_cleared_from_hw_notify(
 
 fn ingest_slot_model_hw_notify(state: &mut HelixState, data: &[u8]) -> bool {
     debug_assert_eq!(data.first(), Some(&0x1f));
+    if state.init_usb_settle_active() {
+        pull_trace("notify 1f ignorée : init USB settle (ACK seulement)");
+        return true;
+    }
+    if state.preset_usb_read_in_progress() {
+        pull_trace("notify 1f ignorée : lecture preset USB (pas de pull modèle)");
+        return true;
+    }
     if state.preset_content_only {
         pull_trace("notify ignorée : preset_content_only");
         return true;
-    }
-    let now = Instant::now();
-    if let Some(last) = state.hw_model_pull_last_at {
-        if now.duration_since(last) < Duration::from_millis(PULL_DEBOUNCE_MS) {
-            pull_trace(&format!("debounced 1f (within {} ms)", PULL_DEBOUNCE_MS));
-            return true;
-        }
     }
     let Some(slot_bus) = slot_bus_for_model_pull(state, data) else {
         pull_trace("notify 0x1f : pas de 81:62 dans la trame ni slot hw_active — ignorée");
@@ -662,9 +1058,24 @@ fn ingest_slot_model_hw_notify(state: &mut HelixState, data: &[u8]) -> bool {
             state.hw_active_slot_bus = Some(slot_bus);
         }
     }
-    if state.hw_model_pull_capture_deadline.is_some() {
-        pull_trace("pull déjà en cours — notify 1f ignorée");
+    // Pas de debounce temps sur `1f` : le settling post-pull (272 dump) remplace ce rôle ;
+    // ignorer un `1f` à 50 ms faisait rater le scroll réel du Stomp.
+    if post_pull_stream_settling_active(state) {
+        pull_trace(
+            "post-pull settling — notify 1f ignorée (pas de file ; prochain 1f après silence 272)",
+        );
         return true;
+    }
+    if state.hw_model_pull_capture_deadline.is_some() {
+        pull_trace("pull déjà en cours — notify 1f → file");
+        queue_pending_hw_model_pull(state, slot_bus);
+        return true;
+    }
+    if state.hw_model_pull_pending_slot_bus.take().is_some() {
+        pull_trace(&format!(
+            "pending rattrapé par 1f slot_bus={slot_bus:02x} (kempline {:?})",
+            slot_bus_to_kempline_index(slot_bus),
+        ));
     }
     pull_trace(&format!(
         "pull slot_bus={:02x} (kempline {:?}) depuis notif 0x1f",
@@ -672,7 +1083,6 @@ fn ingest_slot_model_hw_notify(state: &mut HelixState, data: &[u8]) -> bool {
         slot_bus_to_kempline_index(slot_bus),
     ));
     send_pull_sequence(state, slot_bus);
-    state.hw_model_pull_last_at = Some(now);
     true
 }
 
@@ -714,6 +1124,28 @@ mod tests {
         0x19, 0xcd, 0x01, 0xfe, 0x1a, 0xff, 0x09, 0x01, 0x0a, 0xc3, 0x0b, 0x83, 0x02, 0x04, 0x03,
         0x04, 0x04, 0x94,
     ];
+
+    const IN68_META: &[u8] = &[
+        0x39, 0x00, 0x00, 0x18, 0xed, 0x03, 0x80, 0x10, 0x00, 0x35, 0x00, 0x04, 0xb5, 0x02, 0x00,
+        0x00, 0x00, 0x00, 0x06, 0x00, 0x29, 0x00, 0x00, 0x00, 0x83, 0x66, 0xcd, 0x03, 0xfc, 0x67,
+        0x00, 0x68, 0x86, 0x6b, 0xcd, 0x00, 0x00, 0x6c, 0xcd, 0x00, 0x20, 0x6d, 0xac, 0x50, 0x72,
+        0x65, 0x73, 0x65, 0x00,
+    ];
+
+    fn test_final_bulk_272(module: &[u8; 3]) -> Vec<u8> {
+        let mut buf = vec![0u8; 272];
+        buf[0] = 0x08;
+        buf[1] = 0x01;
+        buf[2..5].copy_from_slice(&[0x00, 0x00, 0x18]);
+        buf[6..10].copy_from_slice(&[0xed, 0x03, 0x80, 0x10]);
+        let off = 200;
+        buf[off..off + 3].copy_from_slice(&[0x83, 0x66, 0xcd]);
+        buf[off + 3] = 0x03;
+        buf[off + 10] = 0x19;
+        buf[off + 11..off + 14].copy_from_slice(module);
+        buf[off + 14] = 0x1a;
+        buf
+    }
 
     #[test]
     fn detects_1d_and_1f_notify() {
@@ -763,6 +1195,121 @@ mod tests {
     }
 
     #[test]
+    fn pull_f0_interstitial_uses_hw_model_scroll_ack_double() {
+        let mut state = HelixState::new();
+        state.hw_model_scroll_ack_ctr = 0x108f;
+        let ctr_before = state.hw_model_scroll_ack_ctr;
+        let pkt = build_pull_f0_interstitial(&mut state);
+        assert_eq!(pkt[12], 0x8f);
+        assert_eq!(pkt[13], 0x10);
+        assert_eq!(state.hw_model_scroll_ack_ctr, ctr_before);
+    }
+
+    #[test]
+    fn advance_scroll_ack_after_interstitial_f0_matches_hx_second_f0() {
+        let mut state = HelixState::new();
+        state.hw_model_scroll_ack_ctr = 0x1035;
+        advance_scroll_ack_after_pull_interstitial_f0(&mut state);
+        assert_eq!(state.hw_model_scroll_ack_ctr, 0x1063);
+    }
+
+    #[test]
+    fn ack_pull_interstitial_echo_16o() {
+        const IN_ECHO: &[u8] = &[
+            0x08, 0x00, 0x00, 0x18, 0xed, 0x03, 0x80, 0x10, 0x00, 0x40, 0x00, 0x08, 0xea, 0x02, 0x00,
+            0x00,
+        ];
+        let mut state = HelixState::new();
+        state.hw_model_pull_step = 1;
+        try_ack_pull_interstitial_echo(&mut state, IN_ECHO);
+        // Pas de panic ; envoi ignoré si tx absent.
+    }
+
+    #[test]
+    fn post_assign_21_matches_user_capture() {
+        const IN21_POST: &[u8] = &[
+            0x21, 0x00, 0x00, 0x18, 0xf0, 0x03, 0x02, 0x10, 0x00, 0x23, 0x00, 0x04, 0x09, 0x02, 0x00,
+            0x00, 0x00, 0x00, 0x04, 0x00, 0x11, 0x00, 0x00, 0x00, 0x82, 0x69, 0x27, 0x6a, 0x84, 0x52,
+            0x01, 0x44, 0x03, 0x79, 0x13, 0x6a, 0x82, 0x62, 0x01, 0x1a, 0x00, 0x6d, 0xac, 0x50,
+        ];
+        assert!(is_hw_model_post_assign_21(IN21_POST));
+    }
+
+    #[test]
+    fn pull_trigger_1f_skips_scroll_ack_lane_unchanged() {
+        let mut state = HelixState::new();
+        state.tx = None;
+        state.preset_content_only = false;
+        state.hw_active_slot_bus = Some(0x01);
+        state.hw_model_scroll_ack_ctr = 0x1035;
+        assert!(!ack_hw_model_scroll_in(&mut state, IN1D));
+        assert!(state.hw_model_scroll_deferred_1d.is_some());
+        assert_eq!(state.hw_model_scroll_ack_ctr, 0x1035);
+        assert_eq!(state.hw_model_scroll_ack_prev, None);
+        assert!(!ack_hw_model_scroll_in(&mut state, IN1F));
+        assert!(state.hw_model_scroll_deferred_1d.is_none());
+        assert_eq!(state.hw_model_scroll_ack_ctr, 0x1035);
+        assert_eq!(state.hw_model_scroll_ack_prev, None);
+        let pkt = build_pull_f0_interstitial(&mut state);
+        assert_eq!(pkt[12], 0x35);
+        assert_eq!(pkt[13], 0x10);
+    }
+
+    #[test]
+    fn deferred_1d_flushed_when_1f_not_pull_trigger() {
+        let mut state = HelixState::new();
+        state.tx = None;
+        state.preset_content_only = false;
+        state.hw_active_slot_bus = Some(0x01);
+        state.hw_model_scroll_ack_ctr = 0x1035;
+        assert!(!ack_hw_model_scroll_in(&mut state, IN1D));
+        assert!(ack_hw_model_scroll_in(&mut state, IN1F_NONE));
+        assert!(state.hw_model_scroll_deferred_1d.is_none());
+        assert_eq!(state.hw_model_scroll_ack_ctr, 0x104c); // +0x17 après 1d puis 1f None
+        assert_eq!(state.hw_model_scroll_ack_prev, Some(0x1f));
+    }
+
+    #[test]
+    fn ack_1d_suppressed_during_active_pull() {
+        let mut state = HelixState::new();
+        state.tx = None;
+        state.hw_model_pull_capture_deadline =
+            Some(Instant::now() + Duration::from_millis(PULL_CAPTURE_MS));
+        let ctr_before = state.hw_model_scroll_ack_ctr;
+        assert!(!ack_hw_model_scroll_in(&mut state, IN1D));
+        assert_eq!(state.hw_model_scroll_ack_ctr, ctr_before);
+        assert_eq!(state.hw_model_scroll_ack_prev, None);
+    }
+
+    #[test]
+    fn ack_scroll_ignores_21_44o_post_assign() {
+        const IN21_POST: &[u8] = &[
+            0x21, 0x00, 0x00, 0x18, 0xf0, 0x03, 0x02, 0x10, 0x00, 0x30, 0x00, 0x04, 0x09, 0x02, 0x00,
+            0x00, 0x00, 0x00, 0x04, 0x00, 0x11, 0x00, 0x00, 0x00, 0x82, 0x69, 0x27, 0x6a, 0x84, 0x52,
+            0x01, 0x44, 0x03, 0x79, 0x13, 0x6a, 0x82, 0x62, 0x01, 0x1a, 0x00, 0x6d, 0xac, 0x50,
+        ];
+        let mut state = HelixState::new();
+        state.tx = None;
+        assert!(!ack_hw_model_scroll_in(&mut state, IN21_POST));
+        assert_eq!(state.hw_model_scroll_ack_prev, None);
+    }
+
+    #[test]
+    fn ingest_hw_slot_notify_ignores_post_assign_21() {
+        const IN21_POST: &[u8] = &[
+            0x21, 0x00, 0x00, 0x18, 0xf0, 0x03, 0x02, 0x10, 0x00, 0x30, 0x00, 0x04, 0x09, 0x02, 0x00,
+            0x00, 0x00, 0x00, 0x04, 0x00, 0x11, 0x00, 0x00, 0x00, 0x82, 0x69, 0x27, 0x6a, 0x84, 0x52,
+            0x01, 0x44, 0x03, 0x79, 0x13, 0x6a, 0x82, 0x62, 0x01, 0x1a, 0x00, 0x6d, 0xac, 0x50,
+        ];
+        let mut state = HelixState::new();
+        state.hw_active_slot_bus = Some(0x02);
+        state.hw_active_slot_sequence = 5;
+        assert!(state.ingest_hw_slot_notify_in(IN21_POST).is_none());
+        assert_eq!(state.hw_active_slot_sequence, 5);
+        assert_eq!(state.hw_active_slot_bus, Some(0x02));
+    }
+
+    #[test]
     fn ingest_21_preset_frame_does_not_trigger_pull() {
         const IN21: &[u8] = &[
             0x21, 0x00, 0x00, 0x18, 0xf0, 0x03, 0x02, 0x10, 0x00, 0x29, 0x00, 0x04, 0x09, 0x02, 0x00,
@@ -799,11 +1346,107 @@ mod tests {
     #[test]
     fn ingest_1f_arms_capture() {
         let mut state = HelixState::new();
+        state.preset_data_ready = true;
         state.preset_content_only = false;
         state.hw_active_slot_index = Some(0);
         state.hw_active_slot_bus = Some(0x01);
         assert!(ingest_slot_model_hw_in(&mut state, IN1F).is_none());
-        assert!(state.hw_model_pull_last_at.is_some());
+        assert!(state.hw_model_pull_last_at.is_none());
+        assert_eq!(state.hw_model_pull_step, 1);
+    }
+
+    #[test]
+    fn pull_final_272_is_not_first_reply() {
+        let mut buf = vec![0u8; 272];
+        buf[0] = 0x08;
+        buf[4..8].copy_from_slice(&[0xed, 0x03, 0x80, 0x10]);
+        buf[24..28].copy_from_slice(&[0x83, 0x66, 0xcd, 0x03]);
+        buf[28..32].copy_from_slice(&[0x19, 0xcd, 0x01, 0xfe]);
+        assert!(!looks_like_first_pull_reply(&buf));
+        assert!(!looks_like_second_pull_reply(&buf));
+    }
+
+    #[test]
+    fn rapid_1f_after_finalize_ignored_during_settling_not_immediate_pull() {
+        let mut state = HelixState::new();
+        state.preset_data_ready = true;
+        state.preset_content_only = false;
+        state.hw_active_slot_index = Some(0);
+        state.hw_active_slot_bus = Some(0x01);
+        ingest_slot_model_hw_in(&mut state, IN1F);
+        assert!(ingest_slot_model_hw_in(&mut state, IN92_ASSIGN).is_none());
+        assert!(ingest_slot_model_hw_in(&mut state, IN68_META).is_none());
+        let _ = ingest_slot_model_hw_in(&mut state, &test_final_bulk_272(&[0xcd, 0x01, 0xfe]))
+            .expect("payload");
+        assert!(state.hw_model_post_pull_settling);
+        ingest_slot_model_hw_in(&mut state, IN1F);
+        assert!(state.hw_model_pull_pending_slot_bus.is_none());
+        assert!(state.hw_model_pull_capture_deadline.is_none());
+    }
+
+    #[test]
+    fn ingest_1f_during_pull_queues_pending_then_flushes() {
+        let mut state = HelixState::new();
+        state.preset_data_ready = true;
+        state.preset_content_only = false;
+        state.hw_active_slot_index = Some(0);
+        state.hw_active_slot_bus = Some(0x01);
+        ingest_slot_model_hw_in(&mut state, IN1F);
+        assert_eq!(state.hw_model_pull_step, 1);
+        ingest_slot_model_hw_in(&mut state, IN1F);
+        assert_eq!(state.hw_model_pull_pending_slot_bus, Some(0x01));
+        assert!(ingest_slot_model_hw_in(&mut state, IN92_ASSIGN).is_none());
+        assert!(ingest_slot_model_hw_in(&mut state, IN68_META).is_none());
+        let payload =
+            ingest_slot_model_hw_in(&mut state, &test_final_bulk_272(&[0xcd, 0x01, 0xfe]))
+                .expect("payload");
+        assert_eq!(payload.module_hex.as_deref(), Some("cd01fe"));
+        assert_eq!(state.hw_model_pull_pending_slot_bus, Some(0x01));
+        state.hw_model_post_pull_settling = false;
+        state.hw_model_post_pull_deadline = None;
+        state.hw_model_pull_quiet_until = Some(Instant::now());
+        state.hw_model_pull_last_at =
+            Some(Instant::now() - Duration::from_millis(PULL_COOLDOWN_AFTER_DONE_MS + 10));
+        ingest_slot_model_hw_in(&mut state, IN1F);
+        assert_eq!(state.hw_model_pull_step, 1);
+        assert!(state.hw_model_pull_pending_slot_bus.is_none());
+    }
+
+    #[test]
+    fn post_pull_settling_ignores_1f_then_drops_pending_without_pull() {
+        let mut state = HelixState::new();
+        state.preset_data_ready = true;
+        state.preset_content_only = false;
+        state.hw_active_slot_index = Some(0);
+        state.hw_active_slot_bus = Some(0x01);
+        arm_post_pull_stream_settling(&mut state);
+        state.hw_model_pull_pending_slot_bus = Some(0x01);
+        ingest_slot_model_hw_in(&mut state, IN1F);
+        assert_eq!(state.hw_model_pull_pending_slot_bus, Some(0x01));
+        assert!(state.hw_model_pull_capture_deadline.is_none());
+        state.hw_model_post_pull_deadline =
+            Some(Instant::now() - Duration::from_millis(1));
+        ingest_slot_model_hw_in(&mut state, &[0x08, 0x00, 0x00, 0x18, 0xef, 0x03, 0x01, 0x10]);
+        assert_eq!(state.hw_model_pull_step, 0);
+        assert!(state.hw_model_pull_pending_slot_bus.is_none());
+    }
+
+    #[test]
+    fn fresh_1f_after_settling_starts_pull_not_stale_pending_flush() {
+        let mut state = HelixState::new();
+        state.preset_data_ready = true;
+        state.preset_content_only = false;
+        state.hw_active_slot_index = Some(0);
+        state.hw_active_slot_bus = Some(0x01);
+        arm_post_pull_stream_settling(&mut state);
+        state.hw_model_pull_pending_slot_bus = Some(0x01);
+        state.hw_model_post_pull_deadline =
+            Some(Instant::now() - Duration::from_millis(1));
+        ingest_slot_model_hw_in(&mut state, &[0x08, 0x00, 0x00, 0x18, 0xef, 0x03, 0x01, 0x10]);
+        assert!(state.hw_model_pull_pending_slot_bus.is_none());
+        state.hw_model_pull_last_at =
+            Some(Instant::now() - Duration::from_millis(PULL_COOLDOWN_AFTER_DONE_MS + 10));
+        ingest_slot_model_hw_in(&mut state, IN1F);
         assert_eq!(state.hw_model_pull_step, 1);
     }
 
@@ -824,6 +1467,52 @@ mod tests {
     }
 
     #[test]
+    fn cd_lane_04_survives_arm_pull_capture_after_finalize() {
+        let mut state = HelixState::new();
+        state.hw_model_pull_cd_lane = Some(0x04);
+        arm_pull_capture(&mut state, 0x01);
+        assert_eq!(state.hw_model_pull_cd_lane, Some(0x04));
+        let pkt = build_pull_1b(&mut state, 0x01);
+        assert_eq!(pkt[27], 0x04);
+    }
+
+    #[test]
+    fn cd_lane_switches_to_04_on_editor_double_wrap() {
+        let mut state = HelixState::new();
+        state.editor_ed03_double = 0x64fd;
+        let p = build_pull_1b(&mut state, 0x01);
+        assert_eq!(p[27], 0x04);
+        assert_eq!(p[28], 0x00);
+        assert_eq!(state.hw_model_pull_cd_lane, Some(0x04));
+        state.hw_model_pull_cd_lane = None;
+        state.editor_ed03_double = 0x6403;
+        let p2 = build_pull_19(&mut state, false);
+        assert_eq!(p2[27], 0x03);
+        state.hw_model_pull_cd_lane = Some(0x04);
+        let p3 = build_pull_19(&mut state, false);
+        assert_eq!(p3[27], 0x04);
+    }
+
+    #[test]
+    fn pull_1b_advances_editor_double_by_three_19_reuses_same() {
+        let mut state = HelixState::new();
+        state.editor_ed03_double = 0x64ee;
+        let p1b = build_pull_1b(&mut state, 0x01);
+        assert_eq!(p1b[28], 0xf1);
+        assert_eq!(p1b[29], 0x64);
+        let p19 = build_pull_19(&mut state, false);
+        assert_eq!(p19[28], 0xf1);
+        assert_eq!(p19[29], 0x64);
+        let p1b2 = build_pull_1b(&mut state, 0x01);
+        assert_eq!(p1b2[28], 0xf4);
+        assert_eq!(p1b2[29], 0x64);
+        state.editor_ed03_double = 0x64fd;
+        let p_wrap = build_pull_1b(&mut state, 0x01);
+        assert_eq!(p_wrap[28], 0x00);
+        assert_eq!(p_wrap[29], 0x64);
+    }
+
+    #[test]
     fn pull_19_uses_hw_model_pull_ctr_and_advances() {
         let mut state = HelixState::new();
         state.hw_model_pull_ctr = 0x413f;
@@ -841,6 +1530,7 @@ mod tests {
     #[test]
     fn ingest_1d_then_1f_single_pull() {
         let mut state = HelixState::new();
+        state.preset_data_ready = true;
         state.preset_content_only = false;
         state.hw_active_slot_index = Some(0);
         state.hw_active_slot_bus = Some(0x01);
@@ -854,11 +1544,18 @@ mod tests {
     #[test]
     fn capture_finalize_on_assign_bulk() {
         let mut state = HelixState::new();
+        state.preset_data_ready = true;
         state.preset_content_only = false;
         state.hw_active_slot_index = Some(0);
         state.hw_active_slot_bus = Some(0x01);
         ingest_slot_model_hw_in(&mut state, IN1F);
-        let payload = ingest_slot_model_hw_in(&mut state, IN92_ASSIGN).expect("payload");
+        assert!(ingest_slot_model_hw_in(&mut state, IN92_ASSIGN).is_none());
+        assert_eq!(state.hw_model_pull_step, 2);
+        assert!(ingest_slot_model_hw_in(&mut state, IN68_META).is_none());
+        assert_eq!(state.hw_model_pull_step, 3);
+        assert!(!state.hw_model_pull_saw_final_bulk);
+        let final272 = test_final_bulk_272(&[0xcd, 0x01, 0xfe]);
+        let payload = ingest_slot_model_hw_in(&mut state, &final272).expect("payload");
         assert_eq!(payload.slot_index, 0);
         assert_eq!(payload.module_hex.as_deref(), Some("cd01fe"));
         assert_eq!(state.hw_model_pull_step, 0);

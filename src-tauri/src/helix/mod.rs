@@ -16,8 +16,10 @@ pub mod slot_focus_in;
 pub mod slot_param_in;
 pub mod slot_watch;
 pub mod slot_model_hw_pull;
+pub mod preset_dump_stream_ack;
 pub mod model_catalog;
 pub mod editor_phase4_bootstrap;
+pub mod init_trace;
 
 use std::sync::mpsc::Sender;
 use std::time::Instant;
@@ -83,9 +85,11 @@ pub enum ModeRequest {
     ReconfigureX1,
     RequestPresetName,
     RequestPresetNames,
+    /// Attente `POST_PHASE4_SETTLE_MS` après bootstrap phase 4, puis `RequestPresetNames`.
+    AwaitPostBootstrapSettle,
     Standard,
-    /// bool = content_only : true = lecture déclenchée par l'UI (revient à Standard),
-    /// false = flux de démarrage (revient à RequestPresetNames).
+    /// bool = content_only : true = lecture UI (revient à Standard) ;
+    /// false = dump corps preset actif (revient à Standard).
     RequestPreset(bool),
     /// Fin de lecture preset émise par le timer/watchdog interne de RequestPreset.
     /// Le u64 est la génération de la lecture qui a armé le timer ; si elle ne correspond
@@ -111,9 +115,9 @@ pub struct HelixState {
     /// Dernier double ACK chunk preset (lane dump) — conservé pour debug / FDT ; le pull modèle utilise [`Self::editor_ed03_double`].
     pub preset_last_ack_double: [u8; 2],
 
-    /// Compteur dédié aux ACK chunks preset (bytes 12-13 des ACK sub=08 sur ed:03).
-    /// Octet haut = session (aléatoire, stable par dump), octet bas s'incrémente de +1.
-    /// Lane distincte de [`Self::editor_ed03_double`] (0x64xx) — plage observée HX Edit : 9d:11, 9d:12...
+    /// Lane ACK chunks preset (`80:10:ed:03` sub=`08`, octets 12–13 sur le fil).
+    /// u16 LE : octet 12 = session (HX Edit varie ; expérience HW : fixe [`Self::request_preset_session_id`]),
+    /// octet 13 = compteur global (+1 / ACK via +`0x0100`). Distinct de [`Self::editor_ed03_double`].
     pub preset_dump_ack_ctr: u16,
 
     /// Lane ACK scroll modèle HW (`1d` / `1f` 40 o → OUT `f0:03` sub=08, octets 12–13 LE).
@@ -122,6 +126,8 @@ pub struct HelixState {
     pub hw_model_scroll_ack_prev: Option<u8>,
     /// Après `1f` « None », le premier `1d` suivant réémet le même double (step 0 une fois).
     pub hw_model_scroll_skip_inc_once: bool,
+    /// `1d` modèle en attente : HX Edit n’ACK pas la paire `1d`/`1f` avant le `1b` pull.
+    pub hw_model_scroll_deferred_1d: Option<Vec<u8>>,
 
     /// Octets 12–13 (LE) des OUT pull modèle `1b`/`19` — distinct de [`Self::live_write_ctr`]
     /// (sonde UI / live write / picker) pour éviter qu’un `probe_slot_model_usb` désynchronise le pull HW.
@@ -171,7 +177,7 @@ pub struct HelixState {
     pub preset_data_ready: bool,
 
     // Si true : RequestPreset revient à Standard (clic utilisateur)
-    // Si false : RequestPreset revient à RequestPresetNames (démarrage)
+    // Si false : RequestPreset revient à Standard (corps preset après noms + nom actif)
     pub preset_content_only: bool,
 
     /// Génération courante de lecture preset. Incrémentée à chaque démarrage de
@@ -226,20 +232,38 @@ pub struct HelixState {
     pub hw_slot_content_sequence: u32,
     /// Déduplication des événements paramètre IN (`85:62…1c:PP:77`).
     pub slot_param_emit: slot_param_in::SlotParamEmitState,
-    /// Dernier envoi pull modèle HW après notif `1d`/`1f`.
+    /// Fin du dernier pull modèle HW (cooldown scroll rapide).
     pub hw_model_pull_last_at: Option<Instant>,
+    /// `1f` reçu pendant pull/cooldown : un pull sera relancé dès que possible (dernier slot gagne).
+    pub hw_model_pull_pending_slot_bus: Option<u8>,
+    /// Avant cet instant : pas de flush pending ni d’ACK `1d` (laisse finir bulks / `21` post-pull).
+    pub hw_model_pull_quiet_until: Option<Instant>,
+    /// Après finalize : 272 dump peuvent encore arriver — pas de nouveau `1b` avant silence.
+    pub hw_model_post_pull_settling: bool,
+    pub hw_model_post_pull_deadline: Option<Instant>,
     /// Collecte des IN bulk après pull modèle HW (parse `module_hex`).
     pub hw_model_pull_capture_deadline: Option<Instant>,
     pub hw_model_pull_capture: Vec<Vec<u8>>,
     pub hw_model_pull_slot_bus: Option<u8>,
     /// Machine d’états pull HX Edit : 0=off, 1=après `1b`+`f0`, 2=après 1er `19`, 3=après 2e `19`.
     pub hw_model_pull_step: u8,
+    /// IN ~272 o reçu après `19` #2 (obligatoire avant finalize — sinon Stomp figé).
+    pub hw_model_pull_saw_final_bulk: bool,
     /// Octet « voie » après `83:66:cd` vu dans la dernière IN stub (`02`/`03`/`04`…).
     pub hw_model_pull_cd_lane: Option<u8>,
     /// Octets après `83:66:cd:PP` renvoyés par l’IN `1c` (ex. `f7:67`) — recollés sur le retry `1b`.
     pub hw_model_pull_echo_double: Option<[u8; 2]>,
     /// Un retry `1b`+`f0` a déjà été tenté avec lane/double issus du `1c`.
     pub hw_model_pull_retried_1b: bool,
+    /// Dernier IN scroll modèle (`1d`/`1f`) — évite `request_preset_content` en parallèle.
+    pub hw_model_last_scroll_in_at: Option<Instant>,
+    /// Fenêtre post bootstrap phase 4 (~700 ms HX Edit) : le host n’envoie **aucune** requête
+    /// proactive (noms, dump, pull modèle, keep-alive poll) — seulement des ACK sur le trafic IN.
+    pub init_usb_settle_until: Option<Instant>,
+    /// IN `1d` = notif d’état firmware (scroll molette **ou** sync preset/slots), pas seulement l’utilisateur.
+    /// `true` pendant `RequestPresetNames` / `RequestPresetName` / `RequestPreset` : ne pas ACK les `1d`
+    /// (priorité dump sur la file OUT — HX Edit). `false` en Standard / init settle → ACK immédiat.
+    pub suppress_1d_firmware_notify_ack: bool,
 }
 
 // ===========================================================
@@ -317,6 +341,11 @@ pub(crate) fn hw_model_scroll_ack_step(
         (Some(0x1d), 0x1f) => 0x0017,
         (Some(0x1f), 0x1d) => 0x002e,
         (Some(0x1f), 0x1f) => 0x0017,
+        // Après pull modèle : IN `21` 44 o puis reprise scroll `1d` (captures terrain).
+        (Some(0x1f), 0x21) => 0x0015,
+        (Some(0x21), 0x1d) => 0x002e,
+        (Some(0x21), 0x1f) => 0x0017,
+        (Some(0x21), 0x21) => 0x0015,
         _ => 0x0015,
     };
     (step, skip_inc_once)
@@ -345,10 +374,11 @@ impl HelixState {
             preset_read_generation: 0,
             connecting:         true,
             got_preset:         false,
-            preset_dump_ack_ctr: 0x119d, // session=0x9d, ctr_bas=0x11 (observé HX Edit cold boot)
-            hw_model_scroll_ack_ctr: 0x6561, // scroll modèle HW (milieu session, capture none)
+            preset_dump_ack_ctr: ((0x1d_u16) << 8) | (0xf4_u16), // fil f4:1d — session = request_preset_session_id
+            hw_model_scroll_ack_ctr: 0x1009, // scroll modèle HW (milieu session, capture none) // cold boot HXEdit (09:10 sur le fil)
             hw_model_scroll_ack_prev: None,
             hw_model_scroll_skip_inc_once: false,
+            hw_model_scroll_deferred_1d: None,
             hw_model_pull_ctr: 0x6cbd, // aligné live_write au boot ; diverge après sonde UI
             editor_ed03_double: Self::preset_ed03_transaction_counter_before_first(),
             preset_last_ack_double: [0, 0],
@@ -374,14 +404,79 @@ impl HelixState {
             hw_slot_content_sequence: 0,
             slot_param_emit: slot_param_in::SlotParamEmitState::default(),
             hw_model_pull_last_at: None,
+            hw_model_pull_pending_slot_bus: None,
+            hw_model_pull_quiet_until: None,
+            hw_model_post_pull_settling: false,
+            hw_model_post_pull_deadline: None,
             hw_model_pull_capture_deadline: None,
             hw_model_pull_capture: Vec::new(),
             hw_model_pull_slot_bus: None,
             hw_model_pull_step: 0,
+            hw_model_pull_saw_final_bulk: false,
             hw_model_pull_cd_lane: None,
             hw_model_pull_echo_double: None,
             hw_model_pull_retried_1b: false,
+            hw_model_last_scroll_in_at: None,
+            init_usb_settle_until: None,
+            suppress_1d_firmware_notify_ack: false,
         }
+    }
+
+    /// ACK immédiat des IN `1d` (ne pas figer le Stomp) sauf pendant la lecture preset USB.
+    pub fn should_ack_firmware_1d_notify(&self) -> bool {
+        if self.init_usb_settle_active() {
+            return true;
+        }
+        !self.suppress_1d_firmware_notify_ack
+    }
+
+    /// Lecture noms/corps preset en cours (modes dédiés, pas le runtime Standard).
+    pub fn preset_usb_read_in_progress(&self) -> bool {
+        self.suppress_1d_firmware_notify_ack
+    }
+
+    pub fn set_preset_usb_read_modes_active(&mut self, active: bool) {
+        self.suppress_1d_firmware_notify_ack = active;
+        init_trace::trace_fmt(format_args!(
+            "suppress_1d_firmware_notify_ack={active} (RequestPreset* : pas d'ACK 1d scroll)"
+        ));
+    }
+
+    /// Début de la fenêtre « init USB » (aligné HX Edit après bootstrap phase 4).
+    pub fn begin_init_usb_settle(&mut self) {
+        self.init_usb_settle_until = Some(
+            Instant::now() + std::time::Duration::from_millis(keep_alive::POST_PHASE4_SETTLE_MS),
+        );
+        init_trace::trace_fmt(format_args!(
+            "init_usb_settle BEGIN ({} ms, ACK 1d autorisé)",
+            keep_alive::POST_PHASE4_SETTLE_MS
+        ));
+    }
+
+    pub fn end_init_usb_settle(&mut self) {
+        self.init_usb_settle_until = None;
+        init_trace::trace("init_usb_settle END → requêtes host autorisées");
+    }
+
+    pub fn init_usb_settle_active(&self) -> bool {
+        self.init_usb_settle_until
+            .is_some_and(|deadline| Instant::now() < deadline)
+    }
+
+    fn init_usb_settle_blocks_mode_request(req: &ModeRequest) -> bool {
+        matches!(
+            req,
+            ModeRequest::RequestPreset(_)
+                | ModeRequest::RequestPresetName
+                | ModeRequest::RequestPresetNames
+                | ModeRequest::ReconfigureX1
+                | ModeRequest::Connect
+        )
+    }
+
+    /// ACK flux IN `08:01:ed:03:80:10` sub=`04` (scroll HW / état slot) — lane `preset_dump_ack_ctr`.
+    pub fn try_ack_preset_dump_stream_chunk_in(&mut self, data: &[u8]) -> bool {
+        preset_dump_stream_ack::ack_preset_dump_stream_chunk(self, data)
     }
 
     /// Slot actif : notif `1d`/`1f` → pull échelonné (`1b` → `f0` → `19` ×2) → parse IN (hors `preset_data`).
@@ -460,6 +555,9 @@ impl HelixState {
     /// le même traitement dupliqué. Les paires courtes `ed:03:80:10` + `ef:03:01:10` (16 o) sont
     /// mémorisées en plus pour le debug protocole.
     pub fn ingest_hw_slot_notify_in(&mut self, data: &[u8]) -> Option<HardwareSlotChangedPayload> {
+        if crate::helix::slot_model_hw_pull::is_hw_model_post_assign_21(data) {
+            return None;
+        }
         let mut slot_bus_changed: Option<HardwareSlotChangedPayload> = None;
         // Marqueur sélection / preset : `82:62:SS:1a` (≠ `81:62` des notifs changement modèle).
         for i in 0..=data.len().saturating_sub(4) {
@@ -563,17 +661,19 @@ impl HelixState {
         self.editor_ed03_double_val()
     }
 
-    /// Double pour les ACK chunks preset (lane dump, pas lane éditeur).
-    /// Octet haut = session stable, octet bas s'incrémente de +1.
+    /// Double pour les ACK chunks preset (octets 12–13 du paquet `80:10:ed:03` sub=`08`).
     pub fn preset_dump_ack_double(&self) -> [u8; 2] {
         let lo = (self.preset_dump_ack_ctr & 0xFF) as u8;
         let hi = ((self.preset_dump_ack_ctr >> 8) & 0xFF) as u8;
         [lo, hi]
     }
 
+    /// Valeur courante puis +`0x0100` sur l’octet 13 uniquement (session 12 figée).
     pub fn next_preset_dump_ack_double(&mut self) -> [u8; 2] {
-        self.preset_dump_ack_ctr = self.preset_dump_ack_ctr.wrapping_add(1);
-        self.preset_dump_ack_double()
+        let out = self.preset_dump_ack_double();
+        self.preset_dump_ack_ctr = (self.preset_dump_ack_ctr.wrapping_add(0x0100) & 0xff00)
+            | (self.request_preset_session_id as u16);
+        out
     }
 
     pub fn hw_model_scroll_ack_double(&self) -> [u8; 2] {
@@ -609,9 +709,20 @@ impl HelixState {
         self.editor_ed03_double_val()
     }
 
+    /// Lane éditeur pour un pull modèle HW (`1b` puis `19`×2) : +3 sur l’**octet bas** uniquement
+    /// (capture `3_scroll_HXEdit.json` : `fd:64` → `00:64` → `03:64`, haut `0x64` fixe).
+    /// Les deux `19` du même pull réutilisent la même valeur ([`editor_ed03_double_val`]).
+    pub fn next_editor_ed03_double_for_hw_model_pull(&mut self) -> [u8; 2] {
+        const ED03_DOUBLE_HI: u8 = 0x64;
+        let lo = ((self.editor_ed03_double & 0xFF) as u8).wrapping_add(3);
+        self.editor_ed03_double = (ED03_DOUBLE_HI as u16) << 8 | u16::from(lo);
+        [lo, ED03_DOUBLE_HI]
+    }
+
 
     /// Envoie un paquet USB vers le HX
     pub fn send(&self, packet: OutPacket) {
+        init_trace::trace_out(&packet.data, "send");
         if let Some(tx) = &self.tx {
             let _ = tx.send(packet);
         }
@@ -620,6 +731,20 @@ impl HelixState {
     /// Demande un changement de mode
     /// Kempline : self.helix_usb.switch_mode()
     pub fn switch_mode(&self, req: ModeRequest) {
+        if self.init_usb_settle_active() && Self::init_usb_settle_blocks_mode_request(&req) {
+            init_trace::trace_fmt(format_args!(
+                "switch_mode BLOCKED {:?} (init settle)",
+                req
+            ));
+            if preset_debug_verbose_enabled() {
+                eprintln!(
+                    "[PresetDebug][init] switch_mode {req:?} ignoré (fenêtre {POST} ms ACK seulement)",
+                    POST = keep_alive::POST_PHASE4_SETTLE_MS
+                );
+            }
+            return;
+        }
+        init_trace::trace_fmt(format_args!("switch_mode enqueue {:?}", req));
         if let Some(tx) = &self.mode_tx {
             let _ = tx.send(req);
         }
@@ -684,5 +809,21 @@ mod hw_model_scroll_ack_tests {
     #[test]
     fn scroll_ack_step_1d_to_1d_is_0x15() {
         assert_eq!(hw_model_scroll_ack_step(Some(0x1d), 0x1d, false).0, 0x0015);
+    }
+}
+
+#[cfg(test)]
+mod editor_ed03_pull_double_tests {
+    use super::HelixState;
+
+    #[test]
+    fn hw_model_pull_double_plus_three_on_low_byte_only_hi_stays_64() {
+        let mut state = HelixState::new();
+        state.editor_ed03_double = 0x64fd;
+        let d = state.next_editor_ed03_double_for_hw_model_pull();
+        assert_eq!(d, [0x00, 0x64]);
+        assert_eq!(state.editor_ed03_double, 0x6400);
+        let d2 = state.next_editor_ed03_double_for_hw_model_pull();
+        assert_eq!(d2, [0x03, 0x64]);
     }
 }

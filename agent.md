@@ -13,6 +13,11 @@ HXLinux is a Tauri 2 desktop application (Rust backend + TypeScript/Vite fronten
 ```bash
 # Development
 npm run tauri dev        # Launch full app (frontend + Rust backend)
+
+# Init USB timeline (correlate with Wireshark): HW off → start app + capture → power on HW
+HX_INIT_TRACE=1 npm run tauri dev
+# Optional log file:
+HX_INIT_TRACE=1 HX_INIT_TRACE_FILE=/tmp/hxlinux-init.trace npm run tauri dev
 npm run dev              # Vite dev server only (port 1420, HMR on 1421)
 
 # Build

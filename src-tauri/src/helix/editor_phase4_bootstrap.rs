@@ -15,6 +15,7 @@ const INTER_PACKET_DELAY_MS: u64 = 20;
 
 /// Envoie les requêtes longues `ed` / `ef` qui amorcent l'état preset + liste (phase 4).
 pub fn send(state: &mut HelixState) {
+    crate::helix::init_trace::trace("editor_phase4_bootstrap BEGIN (3×19 ed + 1a ef)");
     // Repositionne editor_ed03_double à 0x64e7 → prochain next() = 0x64e8
     state.editor_ed03_double = HelixState::PRESET_ED03_TRANSACTION_FIRST.wrapping_sub(1);
 

@@ -52,7 +52,7 @@ impl RequestPresetNames {
                 match cancel_rx.recv_timeout(Duration::from_millis(750)) {
                     Ok(_)  => {}
                     Err(_) => {
-                        let _ = mode_tx.send(ModeRequest::Standard);
+                        let _ = mode_tx.send(ModeRequest::RequestPresetName);
                     }
                 }
             });
@@ -332,10 +332,14 @@ decoded_by_index={} fallback_count={} suffix_len={}",
         }
 
         state.preset_names     = names;
+        crate::helix::init_trace::trace_fmt(format_args!(
+            "RequestPresetNames::finish count={} → RequestPresetName",
+            state.preset_names.len()
+        ));
         state.got_preset_names = true;
         state.just_fetched_preset_names = true;
         state.new_session_no();
-        // Plus de switch_mode ici — c'est lib.rs qui switche
+        state.switch_mode(ModeRequest::RequestPresetName);
     }
 
     /// Ajoute le payload d'un paquet au stream
@@ -376,6 +380,10 @@ impl Mode for RequestPresetNames {
             0x82, 0x6b, 0x00, 0x65,
             0x02, 0x00, 0x00, 0x00,
         ]);
+        crate::helix::init_trace::trace_out(&pkt.data, "RequestPresetNames::start");
+        crate::helix::init_trace::trace(
+            "RequestPresetNames::start — OUT 1d ef:03 (commande liste noms, ≠ scroll IN)",
+        );
         state.send(pkt);
 
         // Armer le watchdog

@@ -57,7 +57,8 @@ impl Mode for ReconfigureX1 {
             // Phase 4 HX Edit : requêtes `19` ed + `1a` ef avant le polling `08…f0:03` régulier.
             crate::helix::editor_phase4_bootstrap::send(state);
             state.start_keepalive(KeepAliveCommand::StartOrdered);
-            state.switch_mode(ModeRequest::RequestPresetName);
+            // HX Edit : bootstrap phase 4 → ~700 ms → RequestPresetNames (pas dump/noms avant).
+            state.switch_mode(ModeRequest::AwaitPostBootstrapSettle);
 
         } else if Standard::check_keep_alive(data, state) {
             return false;

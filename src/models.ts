@@ -356,23 +356,44 @@ const hwModelHexCatalogCache = new Map<
   { catalogModelIdTrimmed: string; slot: SlotDebug }
 >();
 
-let hwParamsHeavyGeneration = 0;
+const MODELS_DEBUG_HW_MODEL_FAST_FLAG = "models_debug_hw_model_fast";
+
+let hwModelSettleGeneration = 0;
 let lastCompletedHwParamsHeavyKey = "";
 let lastHwPickerCatalogId: string | null = null;
+/** Dernier event modèle HW pendant un geste (utilisé au settle). */
+let pendingHwModelSettle: { payload: SlotModelHwChangedPayload; ki: number } | null = null;
 
-function scheduleHwParamsHeavyJob(job: () => void | Promise<void>): void {
-  const gen = ++hwParamsHeavyGeneration;
+function hwModelFastDebugEnabled(): boolean {
+  return localStorage.getItem(MODELS_DEBUG_HW_MODEL_FAST_FLAG) === "1";
+}
+
+function scheduleHwModelSettleJob(job: () => void | Promise<void>): void {
+  const gen = ++hwModelSettleGeneration;
   hwUi.scheduleAfterHwGesture("params", async () => {
-    if (gen !== hwParamsHeavyGeneration) {
+    if (gen !== hwModelSettleGeneration) {
       emitModelsSyncTraceThrottled(
-        "hw_params_heavy_stale",
-        `params heavy ignoré (geste plus récent) gen=${gen} cur=${hwParamsHeavyGeneration}`,
+        "hw_model_settle_stale",
+        `settle modèle ignoré (geste plus récent) gen=${gen} cur=${hwModelSettleGeneration}`,
         800,
       );
       return;
     }
     await job();
   });
+}
+
+/** Aperçu scroll : pas d’await catalogue ; cache hex si déjà résolu. */
+function slotDebugPreviewFromHex(hex: string): SlotDebug {
+  if (!hex) {
+    return { category: "", name: "<empty>" };
+  }
+  const cached = hwModelHexCatalogCache.get(hex);
+  if (cached) {
+    return cached.slot;
+  }
+  const label = hex.length <= 6 ? hex.toUpperCase() : `…${hex.slice(-6).toUpperCase()}`;
+  return { category: "…", name: label, moduleHex: hex };
 }
 
 async function slotDebugFromHwModelPayload(p: SlotModelHwChangedPayload): Promise<{
@@ -411,7 +432,25 @@ async function slotDebugFromHwModelPayload(p: SlotModelHwChangedPayload): Promis
   };
 }
 
-/** Grille + picker : immédiat (`hwUi.runImmediate`). */
+/** Scroll modèle : matrice + titre seulement (pas de picker / pas de catalogue). */
+function applyHardwareSlotModelVisualLight(ki: number, slot: SlotDebug): void {
+  hwUi.runImmediate("grid", () => {
+    if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16) {
+      const next = lastHwSyncNormalizedSlots.map((s, i) => (i === ki ? { ...slot } : { ...s }));
+      lastHwSyncNormalizedSlots = next;
+      lastHwSyncChainSignature = chainLayoutSignature(next);
+    }
+    patchMatrixSlotVisualFromSlot(ki, slot);
+    patchMatrixCategoryDescFromSlot(ki, slot);
+    const titleEl = document.getElementById("models-params-pane-title");
+    if (titleEl) {
+      const label = slot.name?.trim();
+      titleEl.textContent = label ? `${label} …` : "Modèle…";
+    }
+  });
+}
+
+/** Après settle : grille + picker + noms catalogue. */
 function applyHardwareSlotModelVisualFast(
   ki: number,
   slot: SlotDebug,
@@ -464,10 +503,10 @@ async function applyHardwareSlotModelParamsHeavy(
 }
 
 /**
- * Changement de modèle HW : visuel liste/matrice tout de suite ; panneau params après calme (~200 ms).
- * Bus Rust inchangé — debounce uniquement côté webview.
+ * Changement de modèle HW : aperçu léger à chaque event ; catalogue + picker + params au settle (~200 ms).
+ * Bus Rust inchangé — debounce côté webview (voir logs `models_debug_hw_model_fast`).
  */
-async function applyHardwareSlotModelChanged(p: SlotModelHwChangedPayload): Promise<void> {
+function applyHardwareSlotModelChanged(p: SlotModelHwChangedPayload): void {
   const activeKi = activeEffectKemplineSlotIndex();
   if (activeKi === null) {
     emitModelsSyncTraceThrottled(
@@ -478,26 +517,52 @@ async function applyHardwareSlotModelChanged(p: SlotModelHwChangedPayload): Prom
     return;
   }
   const ki = activeKi;
-  const { slot, catalogModelIdTrimmed, hex } = await slotDebugFromHwModelPayload(p);
+  const hex = (p.moduleHex ?? "").trim();
+  pendingHwModelSettle = { payload: p, ki };
 
-  applyHardwareSlotModelVisualFast(ki, slot, catalogModelIdTrimmed);
+  applyHardwareSlotModelVisualLight(ki, slotDebugPreviewFromHex(hex));
+  if (hwModelFastDebugEnabled()) {
+    console.log(
+      `[hwModelFast] preview seq=${p.sequence} hex=${hex || "(none)"} cache=${hwModelHexCatalogCache.has(hex)}`,
+    );
+  }
 
-  const heavyKey = `${currentPresetIndex}|${ki}|${catalogModelIdTrimmed}|${hex}`;
-  scheduleHwParamsHeavyJob(async () => {
+  scheduleHwModelSettleJob(async () => {
+    const pending = pendingHwModelSettle;
+    if (!pending || pending.ki !== ki) return;
+
+    const t0 = hwModelFastDebugEnabled() ? performance.now() : 0;
+    const { slot, catalogModelIdTrimmed, hex: settledHex } =
+      await slotDebugFromHwModelPayload(pending.payload);
+    const tCatalog = hwModelFastDebugEnabled() ? performance.now() : 0;
+
+    applyHardwareSlotModelVisualFast(ki, slot, catalogModelIdTrimmed);
+    const tVisual = hwModelFastDebugEnabled() ? performance.now() : 0;
+
+    const heavyKey = `${currentPresetIndex}|${ki}|${catalogModelIdTrimmed}|${settledHex}`;
     if (
-      heavyKey === lastCompletedHwParamsHeavyKey &&
-      selectedParamsKemplineSlotIndex === ki &&
-      selectedParamsInPlaceUpdater
+      heavyKey !== lastCompletedHwParamsHeavyKey ||
+      selectedParamsKemplineSlotIndex !== ki ||
+      !selectedParamsInPlaceUpdater
     ) {
+      await applyHardwareSlotModelParamsHeavy(ki, slot, catalogModelIdTrimmed, settledHex);
+      lastCompletedHwParamsHeavyKey = heavyKey;
+    } else {
       emitModelsSyncTraceThrottled(
         "hw_params_heavy_skip_dup",
         `params heavy skip (déjà affiché) key=${heavyKey}`,
         1_500,
       );
-      return;
     }
-    await applyHardwareSlotModelParamsHeavy(ki, slot, catalogModelIdTrimmed, hex);
-    lastCompletedHwParamsHeavyKey = heavyKey;
+
+    if (hwModelFastDebugEnabled()) {
+      const tEnd = performance.now();
+      console.log(
+        `[hwModelFast] settle seq=${pending.payload.sequence} hex=${settledHex || "(none)"} ` +
+          `catalog=${Math.round(tCatalog - t0)}ms visual=${Math.round(tVisual - tCatalog)}ms ` +
+          `params=${Math.round(tEnd - tVisual)}ms total=${Math.round(tEnd - t0)}ms`,
+      );
+    }
   });
 }
 
@@ -863,7 +928,8 @@ function startLoadingHeartbeat(baseText: string): void {
 
 function armQueuedPresetLoadAfterCooldown(): void {
   if (queuedPresetLoadTimer !== null) return;
-  const waitMs = requestPresetCooldownRemainingMs() + 5;
+  // Après report « scroll HW », attendre la fin de la fenêtre busy Rust (~700 ms).
+  const waitMs = Math.max(requestPresetCooldownRemainingMs() + 5, 750);
   queuedPresetLoadTimer = window.setTimeout(() => {
     queuedPresetLoadTimer = null;
     if (loading) return;
@@ -1026,6 +1092,15 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
     }
 
     if (wantUsbPresetDump) {
+      const initSettling = await invoke<boolean>("is_helix_usb_init_settling").catch(() => false);
+      if (initSettling) {
+        emitModelsSyncTraceThrottled(
+          "softSync_skip_init_settle",
+          "request_preset_content reporté : init USB ~700 ms (ACK seulement)",
+          2_000,
+        );
+        return;
+      }
       pendingForceUsbPresetContent = false;
       didUsbPresetDumpThisCycle = true;
       lastRequestPresetInvokeAt = Date.now();
@@ -5635,6 +5710,17 @@ async function requestLoadForPreset(index: number) {
     armQueuedPresetLoadAfterCooldown();
     return;
   }
+  const initSettling = await invoke<boolean>("is_helix_usb_init_settling").catch(() => false);
+  if (initSettling) {
+    pendingPresetIndex = index;
+    emitModelsSyncTraceThrottled(
+      "preset_load_defer_init_settle",
+      `requestLoadForPreset reporté (init USB ~700 ms) preset=${index}`,
+      2_000,
+    );
+    armQueuedPresetLoadAfterCooldown();
+    return;
+  }
 
   loading = true;
   hardwareSyncPausedForPresetLoad = true;
@@ -5655,6 +5741,25 @@ async function requestLoadForPreset(index: number) {
     lastRequestPresetInvokeAt = Date.now();
     await invoke("request_preset_content");
   } catch (e) {
+    const msg = String(e);
+    if (
+      msg.includes("molette modèle") ||
+      msg.includes("scroll/pull") ||
+      msg.includes("Initialisation USB")
+    ) {
+      pendingPresetIndex = index;
+      loading = false;
+      hardwareSyncPausedForPresetLoad = false;
+      emitModelsSyncTraceThrottled(
+        msg.includes("Initialisation USB") ? "preset_load_defer_init_settle" : "preset_load_defer_hw_scroll",
+        msg.includes("Initialisation USB")
+          ? `requestLoadForPreset reporté (init USB) preset=${index} -> retry`
+          : `requestLoadForPreset reporté (scroll HW) preset=${index} -> retry après cooldown`,
+        2_000,
+      );
+      armQueuedPresetLoadAfterCooldown();
+      return;
+    }
     console.error("[PresetDebug][models] request_preset_content error", e);
     loading = false;
     pendingPresetIndex = currentPresetIndex >= 0 ? currentPresetIndex : index;
@@ -5830,11 +5935,18 @@ async function refresh() {
       loadedPresetIndex = -1;
       clearSelectedParamsContext();
       renderEmpty("Chargement des modeles...");
-      scheduleLoadForPreset(active, true);
+      const initSettling = await invoke<boolean>("is_helix_usb_init_settling").catch(() => false);
+      if (!initSettling) {
+        scheduleLoadForPreset(active, true);
+      } else {
+        pendingPresetIndex = active;
+        armQueuedPresetLoadAfterCooldown();
+      }
     } else {
       mainWindowPresetDriftStreak = 0;
     }
-    if (!loading && loadedPresetIndex !== currentPresetIndex) {
+    const initSettling = await invoke<boolean>("is_helix_usb_init_settling").catch(() => false);
+    if (!initSettling && !loading && loadedPresetIndex !== currentPresetIndex) {
       scheduleLoadForPreset(currentPresetIndex, false);
     }
   } catch {
@@ -5933,7 +6045,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (hwSlotDebugEnabled() || modelsSyncTraceEnabled()) {
       console.info("[HxLinux] models:slot-model-changed", p);
     }
-    void applyHardwareSlotModelChanged(p);
+    applyHardwareSlotModelChanged(p);
   });
 
   void refresh();

@@ -22,14 +22,29 @@ const ENDPOINT_OUT: u8 = 0x01;
 const WRITE_TIMEOUT_MS: u64 = 150;
 static USB_WRITE_SEQ: AtomicU64 = AtomicU64::new(1);
 
-/// Délai minimal entre deux envois OUT contenant l’opcode ED03 (`80 10 ed 03` aux octets 4–7).
-/// Les captures HX Edit montrent moins de rafales que HXLinux ; sans cette garde, les ACK
-/// Phase preset / LED / keep-alive x80 peuvent partir en salves et saturer le device (timeouts).
+/// Délai minimal entre deux envois OUT **commande** ED03 (`1b`, `19`, keep-alive `ed`, etc.).
+/// Les ACK flux 272 (`ed:03` sub=`08`, 16 o) sont exclus : HX Edit les enchaîne sans 14 ms
+/// entre chaque chunk (sinon 10×14 ms bloque le writer pendant la rafale post-pull).
 const MIN_ED03_OUT_GAP_MS: u64 = 14;
 
 #[inline]
 fn out_payload_has_ed03(data: &[u8]) -> bool {
     data.len() >= 8 && data[4..8] == [0x80, 0x10, 0xed, 0x03]
+}
+
+/// OUT ACK chunk preset/slot (`preset_dump_stream_ack`) — pas soumis à [`MIN_ED03_OUT_GAP_MS`].
+#[inline]
+fn is_preset_dump_stream_ack_out(data: &[u8]) -> bool {
+    data.len() == 16
+        && data.get(0..4) == Some(&[0x08, 0x00, 0x00, 0x18])
+        && data[4..8] == [0x80, 0x10, 0xed, 0x03]
+        && data.get(11) == Some(&0x08)
+}
+
+/// `ed:03` soumis au pacing inter-paquets (exclut les ACK sub=`08` du flux 272).
+#[inline]
+fn out_payload_subject_to_ed03_gap(data: &[u8]) -> bool {
+    out_payload_has_ed03(data) && !is_preset_dump_stream_ack_out(data)
 }
 
 pub fn start_writer(
@@ -91,7 +106,7 @@ pub fn start_writer(
                         thread::sleep(Duration::from_millis(pkt.delay_ms));
                     }
 
-                    if out_payload_has_ed03(&pkt.data) {
+                    if out_payload_subject_to_ed03_gap(&pkt.data) {
                         if let Some(prev) = last_ed03_out {
                             let min_gap = Duration::from_millis(MIN_ED03_OUT_GAP_MS);
                             let elapsed = prev.elapsed();
@@ -113,7 +128,7 @@ pub fn start_writer(
                     wire_chunks.extend(pkt.tail_burst.iter().cloned());
 
                     for (bi, chunk) in wire_chunks.iter().enumerate() {
-                        if bi > 0 && out_payload_has_ed03(chunk) {
+                        if bi > 0 && out_payload_subject_to_ed03_gap(chunk) {
                             if let Some(prev) = last_ed03_out {
                                 let min_gap = Duration::from_millis(MIN_ED03_OUT_GAP_MS);
                                 let elapsed = prev.elapsed();
@@ -129,7 +144,7 @@ pub fn start_writer(
                         ) {
                             Ok(written) => {
                                 consecutive_errors = 0;
-                                if out_payload_has_ed03(chunk) {
+                                if out_payload_subject_to_ed03_gap(chunk) {
                                     last_ed03_out = Some(Instant::now());
                                 }
                                 if usb_io_diag_enabled() {
@@ -152,7 +167,7 @@ pub fn start_writer(
                                     e,
                                     consecutive_errors
                                 );
-                                if out_payload_has_ed03(chunk) {
+                                if out_payload_subject_to_ed03_gap(chunk) {
                                     last_ed03_out = Some(Instant::now());
                                 }
                                 if usb_io_diag_enabled() {
@@ -181,4 +196,32 @@ pub fn start_writer(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ACK_272: [u8; 16] = [
+        0x08, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, 0x01, 0x00, 0x08, 0xf8, 0x6d, 0x00,
+        0x00,
+    ];
+
+    #[test]
+    fn preset_dump_ack_out_skips_ed03_gap() {
+        assert!(out_payload_has_ed03(&ACK_272));
+        assert!(is_preset_dump_stream_ack_out(&ACK_272));
+        assert!(!out_payload_subject_to_ed03_gap(&ACK_272));
+    }
+
+    #[test]
+    fn pull_1b_still_subject_to_ed03_gap() {
+        let pull_1b = [
+            0x1b, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, 0x90, 0x00, 0x04, 0x00, 0x00,
+            0x00, 0x00, 0x01, 0x00, 0x06, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x83, 0x66, 0xcd, 0x03,
+            0x02, 0x65, 0x2d, 0x65, 0x81, 0x62, 0x01, 0x00,
+        ];
+        assert!(out_payload_subject_to_ed03_gap(&pull_1b));
+        assert!(!is_preset_dump_stream_ack_out(&pull_1b));
+    }
 }

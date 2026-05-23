@@ -16,10 +16,9 @@ use crate::helix::packet::OutPacket;
 const KEEP_ALIVE_CYCLE_MS: u64 = 1040;
 /// Pause entre deux OUT du même cycle (laisser le device / la pile répondre sur 0x81).
 const BETWEEN_OPCODE_MS: u64 = 28;
-/// HX Edit attend ~688 ms après le bootstrap phase 4 avant le premier poll `f0:03` court.
-/// Sans ce délai, le Stomp peut encore dumper le preset sur `0x81` et ignorer le `f0`.
-/// Ref. `src/Paquets Json/connect_device_30s_HXEdit.json`, frames #3447 → #3761.
-const POST_PHASE4_SETTLE_MS: u64 = 700;
+/// Délai HX Edit après bootstrap phase 4 (~688 ms, frames #3447→#3761) avant le 1er poll
+/// `f0:03` **et** avant `RequestPresetNames`. Évite trames qui se croisent sur `0x81`.
+pub const POST_PHASE4_SETTLE_MS: u64 = 700;
 
 // ===========================================================
 // Structure — un seul thread

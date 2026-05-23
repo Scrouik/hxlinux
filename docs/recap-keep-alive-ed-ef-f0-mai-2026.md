@@ -85,7 +85,8 @@ Problèmes traités dans cette série de changements :
 
 ```
 subscribe → handshake (cnt 02) → poll activation (cnt 03, sub 08) → IN f0 16o
-→ phase 4 bootstrap → dump preset → sleep 700ms
+→ phase 4 bootstrap → sleep 700ms (en parallèle : démarrage thread keep-alive)
+→ RequestPresetNames → RequestPresetName → dump preset actif → Standard
 → boucle keep-alive ed / ef / f0 (sub 10) → IN f0 16o (+ 44o si changement slot HW)
 ```
 

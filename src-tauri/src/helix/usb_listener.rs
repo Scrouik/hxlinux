@@ -24,6 +24,16 @@ use crate::helix::packet::{classify_in_packet, packet_counter};
 const ENDPOINT_IN: u8 = 0x81;
 const READ_TIMEOUT_MS: u64 = 500;
 const BUFFER_SIZE: usize = 512;
+/// Log si acquisition ou section critique HelixState dépasse ce seuil (contention / travail long).
+const STATE_LOCK_WARN_MS: u128 = 10;
+
+fn warn_slow_lock(label: &str, wait_ms: u128, hold_ms: u128, in_len: usize) {
+    if wait_ms > STATE_LOCK_WARN_MS || hold_ms > STATE_LOCK_WARN_MS {
+        eprintln!(
+            "[WARN] {label} wait={wait_ms}ms hold={hold_ms}ms (IN len={in_len})"
+        );
+    }
+}
 
 pub fn start_listener(
     handle: Arc<DeviceHandle<GlobalContext>>,
@@ -106,7 +116,10 @@ pub fn start_listener(
                     // Dispatcher vers le mode actif
                     // On lock state et mode séparément pour éviter deadlock
                     let hw_slot_changed = {
+                        let lock_start = Instant::now();
                         let mut s = state.lock().unwrap();
+                        let state_wait_ms = lock_start.elapsed().as_millis();
+                        let hold_start = Instant::now();
                         if let Some(deadline) = s.usb_slot_focus_capture_deadline {
                             if Instant::now() < deadline && s.usb_slot_focus_capture.len() < 40 {
                                 s.usb_slot_focus_capture.push(data.clone());
@@ -116,12 +129,25 @@ pub fn start_listener(
                         s.ingest_ed03_param_echo(&data);
                         // Slot actif unique (`hw_active_slot_*`) : `ingest_hw_slot_notify_in` — preset/HW/UI.
                         let ev = s.ingest_hw_slot_notify_in(&data);
-                        // ACK scroll modèle : toujours (même pendant RequestPresetNames — sinon le HW se fige).
+                        crate::helix::init_trace::trace_in(&data);
+                        // ACK `1d`/`1f` selon politique mode (Standard oui ; RequestPreset* : `1d` non).
                         let _ = crate::helix::slot_model_hw_pull::ack_hw_model_scroll_in(&mut s, &data);
                         let param_events = s.ingest_slot_param_in(&data);
+                        let mode_lock_start = Instant::now();
                         let mut m = mode.lock().unwrap();
+                        let mode_wait_ms = mode_lock_start.elapsed().as_millis();
                         m.data_in(&data, &mut s);
+                        if mode_wait_ms > STATE_LOCK_WARN_MS {
+                            eprintln!(
+                                "[WARN] mode.lock() wait={mode_wait_ms}ms (IN len={}, HelixState déjà tenu)",
+                                data.len()
+                            );
+                        }
+                        // Chunks 272 o du flux preset/slot (HX Edit ~1 ACK par chunk pendant scroll HW).
+                        let _ = s.try_ack_preset_dump_stream_chunk_in(&data);
                         let model_changed = s.ingest_slot_model_hw_in(&data);
+                        let state_hold_ms = hold_start.elapsed().as_millis();
+                        warn_slow_lock("HelixState.lock()", state_wait_ms, state_hold_ms, data.len());
                         (ev, param_events, model_changed)
                     };
                     if let (Some(app), Some(payload)) = (app_handle.as_ref(), hw_slot_changed.0) {
@@ -159,7 +185,12 @@ pub fn start_listener(
                 }
                 Err(rusb::Error::NoDevice) => {
                     eprintln!("[UsbListener] HX déconnecté");
+                    let lock_start = Instant::now();
                     let mut s = state.lock().unwrap();
+                    let wait_ms = lock_start.elapsed().as_millis();
+                    if wait_ms > STATE_LOCK_WARN_MS {
+                        eprintln!("[WARN] HelixState.lock() wait={wait_ms}ms (NoDevice)");
+                    }
                     s.connected = false;
                     break;
                 }

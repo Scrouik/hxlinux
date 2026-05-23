@@ -21,54 +21,62 @@ const SUPPORTED_DEVICES: &[(u16, u16)] = &[
 // Intervalle de polling (kempline : POLLING_INTERVAL_IN_SEC = 1)
 const POLL_INTERVAL_MS: u64 = 1000;
 
+fn device_visible() -> bool {
+    rusb::devices()
+        .ok()
+        .and_then(|list| {
+            list.iter().find(|d| {
+                d.device_descriptor()
+                    .map(|desc| {
+                        SUPPORTED_DEVICES
+                            .iter()
+                            .any(|(vid, pid)| desc.vendor_id() == *vid && desc.product_id() == *pid)
+                    })
+                    .unwrap_or(false)
+            })
+            .map(|_| true)
+        })
+        .unwrap_or(false)
+}
+
 pub fn start_monitor(
-    state:        Arc<Mutex<HelixState>>,
-    stop:         Arc<AtomicBool>,
+    state: Arc<Mutex<HelixState>>,
+    stop: Arc<AtomicBool>,
+    // `true` seulement après `start_helix` a ouvert le USB avec succès.
+    helix_attached: Arc<AtomicBool>,
+    // `true` pendant qu’un `start_helix` est en cours (évite les doublons).
+    helix_connecting: Arc<AtomicBool>,
     on_connected: Arc<dyn Fn() + Send + Sync>,
-    on_lost:      Arc<dyn Fn() + Send + Sync>,
+    on_lost: Arc<dyn Fn() + Send + Sync>,
 ) {
     thread::spawn(move || {
-        let mut was_connected = false;
-
         loop {
             if stop.load(Ordering::SeqCst) {
                 break;
             }
 
-            // Chercher le HX parmi les devices USB connectés
-            let found = rusb::devices()
-                .ok()
-                .and_then(|list| {
-                    list.iter().find(|d| {
-                        d.device_descriptor()
-                            .map(|desc| {
-                                SUPPORTED_DEVICES
-                                    .iter()
-                                    .any(|(vid, pid)| desc.vendor_id() == *vid && desc.product_id() == *pid)
-                            })
-                            .unwrap_or(false)
-                    })
-                    .map(|_| true)
-                })
-                .unwrap_or(false);
+            let found = device_visible();
+            let attached = helix_attached.load(Ordering::SeqCst);
+            let connecting = helix_connecting.load(Ordering::SeqCst);
 
-            match (was_connected, found) {
-                // HX vient d'être branché
-                (false, true) => {
-                    was_connected = true;
-                    on_connected();
-                }
-                // HX vient d'être débranché
-                (true, false) => {
-                    was_connected = false;
+            if !found {
+                if attached {
+                    helix_attached.store(false, Ordering::SeqCst);
+                    helix_connecting.store(false, Ordering::SeqCst);
                     {
                         let mut s = state.lock().unwrap();
                         s.connected = false;
                     }
                     on_lost();
                 }
-                // Pas de changement
-                _ => {}
+            } else if !attached && !connecting {
+                // Visible mais pas encore de session (ou échec open précédent) → (re)lancer.
+                if helix_connecting
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    on_connected();
+                }
             }
 
             thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));

@@ -6,7 +6,15 @@
 
 use crate::helix::{Mode, HelixState, ModeRequest};
 use crate::helix::packet::{OutPacket, byte_cmp};
+use crate::helix::slot_model_hw_pull;
 use crate::pattern;
+
+/// Pas d’OUT `02:10:f0:03 sub=08` avec lane [`HelixState::preset_dump_ack_ctr`] pendant pull modèle
+/// ou settling 272 — évite les doubles `f8:XX` parasites (cf. `scroll_problem_HXLinux.json`).
+fn suppress_preset_dump_in_scroll_envelope(state: &HelixState) -> bool {
+    state.hw_model_pull_capture_deadline.is_some()
+        || slot_model_hw_pull::post_pull_stream_settling_active(state)
+}
 
 pub struct Standard;
 
@@ -80,6 +88,9 @@ impl Mode for Standard {
             0x00, XX, 0x00, 0x04,
             0x09, 0x02, 0x00, 0x00
         ], 16) {
+            if suppress_preset_dump_in_scroll_envelope(state) {
+                return true;
+            }
             let cnt = state.next_x2_cnt();
             let double = state.next_preset_dump_ack_double();
             state.send(OutPacket::with_delay(vec![
@@ -138,6 +149,13 @@ impl Mode for Standard {
             0x82, 0x69, 0x04, 0x6a,
             0x84, 0x52
         ], 30) {
+            if suppress_preset_dump_in_scroll_envelope(state) {
+                eprintln!(
+                    "[WARN] standard.rs 0x21 preset switch (principal) supprimé pendant pull/settling (len={})",
+                    data.len()
+                );
+                return true;
+            }
             let cnt = state.next_x2_cnt();
             let double = state.next_preset_dump_ack_double();
             state.send(OutPacket::new(vec![
@@ -159,8 +177,12 @@ impl Mode for Standard {
             return true;
         }
 
-        // PRESET SWITCH — pattern secondaire (pré-notification, arrive avant 0x04:6a)
-        // HXEdit : ACK avec preset_dump_ack_ctr
+        // IN `21` 44 o post-assign modèle (stomp → host) : pas d’ACK host ; pas de dump preset.
+        if crate::helix::slot_model_hw_pull::is_hw_model_post_assign_21(data) {
+            return false;
+        }
+
+        // PRESET SWITCH — pattern secondaire (pré-notification preset, pas post-assign modèle)
         if byte_cmp(data, &pattern![
             0x21, 0x00, 0x00, 0x18,
             0xf0, 0x03, 0x02, 0x10,
@@ -173,6 +195,13 @@ impl Mode for Standard {
             0x03, 0x79, 0x13, 0x6a,
             0x82, 0x62
         ], 38) {
+            if suppress_preset_dump_in_scroll_envelope(state) {
+                eprintln!(
+                    "[WARN] standard.rs 0x21 preset switch (secondaire) supprimé pendant pull/settling (len={})",
+                    data.len()
+                );
+                return true;
+            }
             let cnt = state.next_x2_cnt();
             let double = state.next_preset_dump_ack_double();
             state.send(OutPacket::with_delay(vec![

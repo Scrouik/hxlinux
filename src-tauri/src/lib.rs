@@ -44,6 +44,7 @@ use helix::edit_slot_model::{
     SlotModelProbeOp,
 };
 use helix::keep_alive::KeepAliveManager;
+use helix::modes::await_post_bootstrap_settle::AwaitPostBootstrapSettle;
 use helix::modes::connect::Connect;
 use helix::modes::request_preset_name::RequestPresetName;
 use helix::modes::request_preset_names::RequestPresetNames;
@@ -322,8 +323,30 @@ fn request_active_preset_name(
     };
 
     let s = helix_arc.lock().unwrap();
+    if s.init_usb_settle_active() {
+        return Err(format!(
+            "Initialisation USB en cours (~{} ms) — réessayer",
+            helix::keep_alive::POST_PHASE4_SETTLE_MS
+        ));
+    }
     s.switch_mode(ModeRequest::RequestPresetName);
     Ok(())
+}
+
+/// `true` pendant la fenêtre post bootstrap (~700 ms) où le host n’envoie que des ACK (HX Edit).
+#[tauri::command]
+fn is_helix_usb_init_settling(state: tauri::State<Arc<Mutex<AppState>>>) -> bool {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let Some(helix_arc) = helix_arc else {
+        return false;
+    };
+    helix_arc
+        .lock()
+        .map(|s| s.init_usb_settle_active())
+        .unwrap_or(false)
 }
 
 /// Renomme un preset sur le HX.
@@ -854,6 +877,12 @@ fn probe_slot_model_usb(
     .ok_or_else(|| "HX non connecté".to_string())?;
 
     let mut s = helix_arc.lock().unwrap();
+    if s.init_usb_settle_active() {
+        return Err(format!(
+            "probe_slot_model_usb ignoré (init USB ~{} ms, ACK seulement)",
+            helix::keep_alive::POST_PHASE4_SETTLE_MS
+        ));
+    }
     if !s.connected || s.preset_content_only {
         return Err(
             "probe_slot_model_usb ignoré (HX non prêt ou lecture preset en cours)".to_string(),
@@ -1187,8 +1216,33 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
         )
     };
     let mut s = helix_arc.lock().unwrap();
+    helix::init_trace::trace_fmt(format_args!(
+        "request_preset_content UI active_preset={active_preset}"
+    ));
+    if s.init_usb_settle_active() {
+        return Err(format!(
+            "Initialisation USB en cours (~{} ms) — aucune requête preset",
+            helix::keep_alive::POST_PHASE4_SETTLE_MS
+        ));
+    }
     if s.preset_content_only {
         return Ok(());
+    }
+    if helix::slot_model_hw_pull::hw_model_usb_busy(&s) {
+        let reason = if s.init_usb_settle_active() {
+            "init USB settle"
+        } else if s.hw_model_pull_capture_deadline.is_some() {
+            "pull modèle HW"
+        } else {
+            "scroll modèle HW"
+        };
+        eprintln!(
+            "[PresetDebug] request_preset_content reporté : {reason} (preset_data_ready={})",
+            s.preset_data_ready
+        );
+        return Err(format!(
+            "Lecture preset reportée : {reason} (réessayer dans un instant)"
+        ));
     }
     // L'UI met à jour `active_preset` (ex. après `activate_preset` + MIDI PC) avant cette
     // commande, alors que `preset_index` côté Helix ne bouge qu'avec les paquets USB x2 ou
@@ -3042,6 +3096,7 @@ pub fn run() {
         helix::slot_model_hw_pull::set_slot_model_hw_pull_debug(true);
         eprintln!("[SlotModelHwPull] debug activé (HX_SLOT_MODEL_HW_PULL_DEBUG)");
     }
+    helix::init_trace::init_from_env();
 
     let app_state = Arc::new(Mutex::new(AppState::default()));
     let app_state_clone = Arc::clone(&app_state);
@@ -3072,6 +3127,7 @@ pub fn run() {
             probe_hardware_slot_focus_usb,
             sync_hardware_slot_focus_usb,
             request_preset_content,
+            is_helix_usb_init_settling,
             force_recover_preset_reader,
             probe_live_param_write,
             probe_slot_model_usb,
@@ -3131,19 +3187,26 @@ fn start_monitor(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) 
     let state_for_connect = Arc::clone(&app_state);
     let state_for_lost = Arc::clone(&app_state);
     let ah_for_helix = app_handle.clone();
+    let helix_attached = Arc::new(AtomicBool::new(false));
+    let helix_connecting = Arc::new(AtomicBool::new(false));
 
     helix::usb_monitor::start_monitor(
         Arc::new(Mutex::new(HelixState::new())),
         Arc::clone(&stop_monitor),
+        Arc::clone(&helix_attached),
+        Arc::clone(&helix_connecting),
         Arc::new(move || {
+            helix::init_trace::mark_origin("hw_detected_usb_poll");
             let state = Arc::clone(&state_for_connect);
             let ah = ah_for_helix.clone();
+            let attached = Arc::clone(&helix_attached);
+            let connecting = Arc::clone(&helix_connecting);
             {
                 let mut app = state.lock().unwrap();
                 app.connection_issue_hint = None;
             }
             thread::spawn(move || {
-                start_helix(state, ah);
+                start_helix(state, ah, attached, connecting);
             });
         }),
         Arc::new(move || {
@@ -3159,22 +3222,41 @@ fn start_monitor(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) 
 // ===========================================================
 // Connexion complète au HX et boucle de traitement
 // ===========================================================
-fn start_helix(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) {
+fn start_helix(
+    app_state: Arc<Mutex<AppState>>,
+    app_handle: tauri::AppHandle,
+    helix_attached: Arc<AtomicBool>,
+    helix_connecting: Arc<AtomicBool>,
+) {
+    helix::init_trace::trace("start_helix BEGIN (open USB, claim, flush)");
     // Ouvrir le premier device supporté trouvé (HX Stomp XL / Stomp / Floor / LT).
-    let (device_name, handle) = match find_supported_device_handle() {
+    let (device_name, handle) = match find_supported_device_handle_with_retry() {
         Some(tuple) => tuple,
         None => {
-            eprintln!("[Helix] Aucun device HX supporté trouvé");
+            eprintln!("[Helix] Aucun device HX supporté trouvé (open USB échoué — nouvel essai au prochain poll)");
+            helix::init_trace::trace(
+                "start_helix ABORT: device visible mais device.open() a échoué (busy/permissions?)",
+            );
+            helix_connecting.store(false, Ordering::SeqCst);
+            helix_attached.store(false, Ordering::SeqCst);
             let mut app = app_state.lock().unwrap();
-            app.connection_issue_hint = None;
+            app.connection_issue_hint = Some(
+                "HX visible mais accès USB impossible (autre app, permissions, ou énumération)".to_string(),
+            );
             return;
         }
     };
+    helix_connecting.store(false, Ordering::SeqCst);
+    helix_attached.store(true, Ordering::SeqCst);
+    helix::init_trace::trace("start_helix USB open OK");
     eprintln!("[Helix] Device connecté: {}", device_name);
+    helix::init_trace::trace_fmt(format_args!("start_helix device={device_name}"));
 
     // Réclamer l'interface USB
     if let Err(e) = handle.claim_interface(0) {
         eprintln!("[Helix] erreur claim_interface : {}", e);
+        helix::init_trace::trace_fmt(format_args!("start_helix ABORT claim_interface(0): {e}"));
+        helix_attached.store(false, Ordering::SeqCst);
         let mut app = app_state.lock().unwrap();
         app.connected_device_name = Some(device_name.to_string());
         app.connection_issue_hint =
@@ -3191,6 +3273,7 @@ fn start_helix(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) {
             _ => break,
         }
     }
+    helix::init_trace::trace("start_helix flush 0x81 done");
     // Réclamer l'interface MIDI (interface 4)
     if let Err(_e) = handle.kernel_driver_active(4) {
         eprintln!("[Helix] kernel_driver_active(4) : {}", _e);
@@ -3244,6 +3327,7 @@ fn start_helix(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) {
     {
         let mut s = state.lock().unwrap();
         let mut m = current_mode.lock().unwrap();
+        helix::init_trace::trace_mode_switch("Connect", "::start");
         m.start(&mut s);
     }
 
@@ -3360,6 +3444,10 @@ fn start_helix(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) {
     loop {
         match mode_rx.recv() {
             Ok(ModeRequest::RequestPreset(content_only)) => {
+                helix::init_trace::trace_mode_switch(
+                    "RequestPreset",
+                    &format!(" content_only={content_only}"),
+                );
                 // Dédupliquer les RequestPreset consécutifs (course avec flux auto).
                 // On garde le content_only du DERNIER message (le plus récent = intention UI).
                 let mut effective_content_only = content_only;
@@ -3395,10 +3483,12 @@ fn start_helix(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) {
                 // Incrémenter la génération : tout StandardPresetRead(gen) avec l'ancienne
                 // génération sera ignoré comme orphelin (watchdog/timer d'une lecture précédente).
                 s.preset_read_generation = s.preset_read_generation.wrapping_add(1);
+                s.set_preset_usb_read_modes_active(true);
                 *m = Box::new(RequestPreset::new());
                 m.start(&mut s);
             }
             Ok(ModeRequest::RequestPresetName) => {
+                helix::init_trace::trace_mode_switch("RequestPresetName", "");
                 // Dédupliquer les RequestPresetName consécutifs (souvent émis en rafale
                 // par plusieurs chemins: sync front + événements async backend).
                 let mut dropped = 0usize;
@@ -3431,6 +3521,7 @@ fn start_helix(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) {
                 }
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
+                s.set_preset_usb_read_modes_active(true);
                 *m = Box::new(RequestPresetName::new());
                 {
                     let mut app = app_state.lock().unwrap();
@@ -3438,14 +3529,32 @@ fn start_helix(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) {
                 }
                 m.start(&mut s);
             }
-            Ok(ModeRequest::RequestPresetNames) => {
+            Ok(ModeRequest::AwaitPostBootstrapSettle) => {
+                helix::init_trace::trace_mode_switch("AwaitPostBootstrapSettle", "");
                 let mut s = state.lock().unwrap();
+                let mut m = current_mode.lock().unwrap();
+                m.shutdown(&mut s);
+                s.set_preset_usb_read_modes_active(false);
+                *m = Box::new(AwaitPostBootstrapSettle::new());
+                m.start(&mut s);
+            }
+            Ok(ModeRequest::RequestPresetNames) => {
+                helix::init_trace::trace_mode_switch("RequestPresetNames", "");
+                let mut s = state.lock().unwrap();
+                s.end_init_usb_settle();
+                s.set_preset_usb_read_modes_active(true);
+                if preset_debug_verbose_enabled() {
+                    eprintln!(
+                        "[PresetDebug][init] fin fenêtre settle → RequestPresetNames (requêtes host autorisées)"
+                    );
+                }
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
                 *m = Box::new(RequestPresetNames::new());
                 m.start(&mut s);
             }
             Ok(ModeRequest::Standard) => {
+                helix::init_trace::trace_mode_switch("Standard", "");
                 let mut s = state.lock().unwrap();
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
@@ -3464,11 +3573,13 @@ fn start_helix(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) {
                     s.preset_content_only = true;
                     s.switch_mode(ModeRequest::RequestPreset(true));
                 } else {
+                    s.set_preset_usb_read_modes_active(false);
                     *m = Box::new(Standard);
                     m.start(&mut s);
                 }
             }
             Ok(ModeRequest::StandardPresetRead(gen)) => {
+                helix::init_trace::trace_mode_switch("StandardPresetRead", &format!(" gen={gen}"));
                 // Message émis par le timer (20ms) ou watchdog (2000ms) interne de RequestPreset.
                 // Si gen != génération courante, c'est un orphelin d'une lecture précédente → ignorer.
                 let mut s = state.lock().unwrap();
@@ -3491,20 +3602,25 @@ fn start_helix(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) {
                     s.got_preset = false;
                     app.connection_issue_hint = None;
                 }
+                s.set_preset_usb_read_modes_active(false);
                 *m = Box::new(Standard);
                 m.start(&mut s);
             }
             Ok(ModeRequest::Connect) => {
+                helix::init_trace::trace_mode_switch("Connect", " (re-entry)");
                 let mut s = state.lock().unwrap();
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
+                s.set_preset_usb_read_modes_active(false);
                 *m = Box::new(Connect::new());
                 m.start(&mut s);
             }
             Ok(ModeRequest::ReconfigureX1) => {
+                helix::init_trace::trace_mode_switch("ReconfigureX1", "");
                 let mut s = state.lock().unwrap();
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
+                s.set_preset_usb_read_modes_active(false);
                 *m = Box::new(ReconfigureX1::new());
                 m.start(&mut s);
             }
@@ -3546,19 +3662,51 @@ fn start_helix(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) {
     }
 }
 
-fn find_supported_device_handle() -> Option<(&'static str, Arc<rusb::DeviceHandle<rusb::GlobalContext>>)> {
+const USB_OPEN_RETRY_ATTEMPTS: u32 = 20;
+const USB_OPEN_RETRY_DELAY_MS: u64 = 150;
+
+fn find_supported_device_handle_with_retry(
+) -> Option<(&'static str, Arc<rusb::DeviceHandle<rusb::GlobalContext>>)> {
+    for attempt in 1..=USB_OPEN_RETRY_ATTEMPTS {
+        if let Some(tuple) = find_supported_device_handle_once() {
+            if attempt > 1 {
+                helix::init_trace::trace_fmt(format_args!(
+                    "device.open OK at attempt {attempt}/{USB_OPEN_RETRY_ATTEMPTS}"
+                ));
+            }
+            return Some(tuple);
+        }
+        if attempt < USB_OPEN_RETRY_ATTEMPTS {
+            helix::init_trace::trace_fmt(format_args!(
+                "device.open retry {attempt}/{USB_OPEN_RETRY_ATTEMPTS} in {USB_OPEN_RETRY_DELAY_MS}ms"
+            ));
+            thread::sleep(Duration::from_millis(USB_OPEN_RETRY_DELAY_MS));
+        }
+    }
+    None
+}
+
+fn find_supported_device_handle_once(
+) -> Option<(&'static str, Arc<rusb::DeviceHandle<rusb::GlobalContext>>)> {
     let devices = rusb::devices().ok()?;
     for device in devices.iter() {
         let desc = match device.device_descriptor() {
             Ok(d) => d,
             Err(_) => continue,
         };
+        let vid = desc.vendor_id();
+        let pid = desc.product_id();
         if let Some((name, _, _)) = SUPPORTED_DEVICES
             .iter()
-            .find(|(_, vid, pid)| desc.vendor_id() == *vid && desc.product_id() == *pid)
+            .find(|(_, ev, ep)| vid == *ev && pid == *ep)
         {
-            if let Ok(handle) = device.open() {
-                return Some((*name, Arc::new(handle)));
+            match device.open() {
+                Ok(handle) => return Some((*name, Arc::new(handle))),
+                Err(e) => {
+                    helix::init_trace::trace_fmt(format_args!(
+                        "device.open failed name={name} vid={vid:04x} pid={pid:04x} err={e}"
+                    ));
+                }
             }
         }
     }

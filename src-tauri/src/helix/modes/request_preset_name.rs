@@ -44,6 +44,7 @@ impl RequestPresetName {
 impl Mode for RequestPresetName {
 
     fn start(&mut self, state: &mut HelixState) {
+        crate::helix::init_trace::trace("RequestPresetName::start (nom preset actif)");
         self.preset_name_data.clear();
         // `active_preset_name` sera mis à jour lors de la réception complète.
 
@@ -135,12 +136,24 @@ impl Mode for RequestPresetName {
                     state.preset_index,
                     state.active_preset_name.as_ref().unwrap()
                 );
-                // Au démarrage, on garde la séquence historique complète.
-                // En mode nominal (noms déjà chargés), on évite de relancer
-                // RequestPreset/RequestPresetNames à chaque changement preset.
+                // Noms déjà chargés (init HX Edit) : lire le corps du preset actif si absent.
+                // Sinon retour Standard (changement preset nominal).
                 if state.got_preset_names {
-                    state.switch_mode(ModeRequest::Standard);
+                    if !state.preset_data_ready || state.preset_data.is_empty() {
+                        crate::helix::init_trace::trace(
+                            "RequestPresetName::done → switch RequestPreset(false)",
+                        );
+                        state.switch_mode(ModeRequest::RequestPreset(false));
+                    } else {
+                        crate::helix::init_trace::trace(
+                            "RequestPresetName::done → switch Standard (corps déjà en RAM)",
+                        );
+                        state.switch_mode(ModeRequest::Standard);
+                    }
                 } else {
+                    crate::helix::init_trace::trace(
+                        "RequestPresetName::done → switch RequestPreset(false)",
+                    );
                     state.switch_mode(ModeRequest::RequestPreset(false));
                 }
             }
