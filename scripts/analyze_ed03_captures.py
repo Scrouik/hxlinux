@@ -267,7 +267,7 @@ def compare_pair(hx: Path, linux: Path):
 
 
 def main(argv: list[str]) -> int:
-    base = Path(__file__).resolve().parents[1] / "src/Paquets Json"
+    base = Path(__file__).resolve().parents[1] / "captures/usb-wireshark"
     pairs = [
         ("Start_Model_change.json", "Start_Model_change_Linux.json"),
     ]

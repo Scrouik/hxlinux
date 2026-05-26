@@ -16,9 +16,15 @@ dist-ssr
 tmp_*.txt
 tmp_*.tsv
 
+# Captures Wireshark / USBPcap (volumineuses, hors build Tauri)
+captures/usb-wireshark/*.json
+
 # Ressources tierces (non versionnées)
 Kempline/
 Line 6 files/
+# Ancien emplacement captures (ne pas recréer sous src-tauri)
+src-tauri/paquets JSON/
+src/Paquets Json/
 # Miroir / exports HX Edit hors bundle Tauri — ne pas versionner (sources : src-tauri/resources/)
 External files/
 packages.microsoft.gpg

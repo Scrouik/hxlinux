@@ -75,7 +75,7 @@ Ce fichier sert de **mémo locale** quand l’historique de chat ou le contexte 
 3. Tester scroll : logs doivent montrer hi **`0x10`**, echo **`XX:67`**, bulk 92 o avec `module_hex`.
 4. Optionnel : ne pas effacer `pending` sur pull échoué (rattrapage).
 
-**Captures utiles** (`src-tauri/paquets JSON/`) :
+**Captures utiles** (`captures/usb-wireshark/`) :
 
 - `3_scroll_HXEdit.json` — référence HX (pull OK, doubles `35:10`…)
 - `3_scroll_HXLinux.json`, `scroll_problem_HXLinux.json` — échecs Linux
