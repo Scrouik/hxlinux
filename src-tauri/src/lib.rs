@@ -1228,22 +1228,6 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
     if s.preset_content_only {
         return Ok(());
     }
-    if helix::slot_model_hw_pull::hw_model_usb_busy(&s) {
-        let reason = if s.init_usb_settle_active() {
-            "init USB settle"
-        } else if s.hw_model_pull_capture_deadline.is_some() {
-            "pull modèle HW"
-        } else {
-            "scroll modèle HW"
-        };
-        eprintln!(
-            "[PresetDebug] request_preset_content reporté : {reason} (preset_data_ready={})",
-            s.preset_data_ready
-        );
-        return Err(format!(
-            "Lecture preset reportée : {reason} (réessayer dans un instant)"
-        ));
-    }
     // L'UI met à jour `active_preset` (ex. après `activate_preset` + MIDI PC) avant cette
     // commande, alors que `preset_index` côté Helix ne bouge qu'avec les paquets USB x2 ou
     // l'écoute MIDI — parfois après le dump, ou jamais si `RequestPresetName` est ignoré
@@ -3088,13 +3072,6 @@ pub fn run() {
     }
     if std::env::var("USB_IO_DIAG").map(|v| v == "1").unwrap_or(false) {
         set_usb_io_diag_enabled(true);
-    }
-    if std::env::var("HX_SLOT_MODEL_HW_PULL_DEBUG")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-    {
-        helix::slot_model_hw_pull::set_slot_model_hw_pull_debug(true);
-        eprintln!("[SlotModelHwPull] debug activé (HX_SLOT_MODEL_HW_PULL_DEBUG)");
     }
     helix::init_trace::init_from_env();
 

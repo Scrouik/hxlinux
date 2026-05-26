@@ -2,27 +2,30 @@
 
 ## Décision
 
-La couche `slot_model_hw_pull` (pull `1b`/`19`/272, pending, quarantaine, settling)
-est **désactivée** pour repartir sur une implémentation calquée sur **HX Edit**.
+Toute la couche scroll modèle (pull, ACK lane, pending, quarantaine, garde-fous preset)
+a été **retirée** du code actif pour repartir depuis les captures HX Edit.
 
-Checkpoint git juste avant ce reset : voir le commit
-`chore: checkpoint scroll HW WIP before HX Edit replay reset`.
+Historique git : commits `ac6cfb9` (stub pull) puis purge complète (champs `HelixState`,
+ACK `1d`/`1f`, heuristiques `21`).
 
-## État actuel du code
+## État actuel
 
 | Composant | Comportement |
 |-----------|----------------|
-| `ack_hw_model_scroll_in` | ACK `f0 sub=08` sur `1d`/`1f` (lane scroll conservée) |
-| `ingest_slot_model_hw_in` | **Ne fait rien** — pas de pull, pas d’event `models:slot-model-changed` |
-| UI models | Scroll molette Stomp **ne met plus à jour** le modèle affiché |
+| `slot_model_hw_pull.rs` | Type payload + `ingest` → `None` uniquement |
+| `usb_listener` | Plus d’ACK scroll sur `1d`/`1f` |
+| `HelixState` | Plus de champs `hw_model_*` |
+| UI models | Molette Stomp **ne met pas à jour** le modèle affiché |
 
-## Captures de référence
+Le handshake connect envoie toujours `f0:03` sub=08 avec `09:10` en dur (`connect.rs`) —
+indépendant de la future lane scroll.
 
-`captures/usb-wireshark/` — ex. `3_scroll_HXEdit.json` (un scroll, ~72 ms).
+## Captures
 
-## Prochaine implémentation (spec)
+`captures/usb-wireshark/` — référence : `3_scroll_HXEdit.json`.
 
-1. Analyser **un** scroll HX Edit (ordre exact IN/OUT, compteurs, délais).
-2. Machine à états minimale : pas de `pending`, pas de double pull.
-3. UI : un seul `models:slot-model-changed` à la fin (hex depuis 272, règle à définir).
-4. Tests : replay binaire contre la capture avant branchement UI.
+## Prochaine implémentation
+
+1. Analyser **un** scroll HX Edit (ordre IN/OUT, compteurs, délais).
+2. Réintroduire lane + ACK + pull dans un module dédié, sans réutiliser l’ancien design.
+3. Tests replay binaire sur la capture avant branchement UI.

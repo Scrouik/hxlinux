@@ -43,7 +43,6 @@ pub fn start_listener(
     app_handle: Option<tauri::AppHandle>,
 ) {
     thread::spawn(move || {
-        crate::helix::slot_model_hw_pull::init_slot_model_hw_pull_debug_from_env();
         let mut buf = vec![0u8; BUFFER_SIZE];
         let mut seen_fingerprints: HashSet<Vec<u8>> = HashSet::new();
         let mut suppressed_repeats: u64 = 0;
@@ -130,8 +129,6 @@ pub fn start_listener(
                         // Slot actif unique (`hw_active_slot_*`) : `ingest_hw_slot_notify_in` — preset/HW/UI.
                         let ev = s.ingest_hw_slot_notify_in(&data);
                         crate::helix::init_trace::trace_in(&data);
-                        // ACK `1d`/`1f` selon politique mode (Standard oui ; RequestPreset* : `1d` non).
-                        let _ = crate::helix::slot_model_hw_pull::ack_hw_model_scroll_in(&mut s, &data);
                         let param_events = s.ingest_slot_param_in(&data);
                         let mode_lock_start = Instant::now();
                         let mut m = mode.lock().unwrap();

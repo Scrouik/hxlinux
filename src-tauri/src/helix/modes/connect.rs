@@ -186,9 +186,6 @@ impl Mode for Connect {
             self.received_x11_on_x2 = true;
             // Arme le canal f0:03 (HX Edit #3255 : cnt=0x03 après handshake cnt=0x02, ~15 ms plus tard).
             let cnt = state.next_x2_cnt();
-            // Bootstrap lane scroll (captures connect HX Edit : `09:10` = ctr 0x1009).
-            state.hw_model_scroll_ack_ctr = 0x1009;
-            state.hw_model_scroll_ack_prev = None;
             let pkt = OutPacket::with_delay(
                 vec![
                     0x08, 0x00, 0x00, 0x18,

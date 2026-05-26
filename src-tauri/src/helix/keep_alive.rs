@@ -58,7 +58,7 @@ impl KeepAliveManager {
             while !stop.load(Ordering::SeqCst) {
                 let skip_cycle = {
                     let s = state.lock().unwrap();
-                    s.preset_content_only || s.hw_model_pull_capture_deadline.is_some()
+                    s.preset_content_only
                 };
                 if skip_cycle {
                     thread::sleep(Duration::from_millis(KEEP_ALIVE_CYCLE_MS));
