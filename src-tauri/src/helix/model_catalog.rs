@@ -1,4 +1,6 @@
 //! Résolution `chainHex` → nom modèle depuis `HX_ModelCatalog.json`.
+//! Réservé au scroll / catalogue — utilisé par les tests unitaires pour l’instant.
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::OnceLock;

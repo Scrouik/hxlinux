@@ -12,7 +12,7 @@ mod preset_chain_params;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::mpsc::TryRecvError;
+use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -144,10 +144,65 @@ struct AppState {
     helix_state:   Option<Arc<Mutex<HelixState>>>,
     // Handle USB pour les commandes directes (ex: MIDI Program Change sur 0x02)
     usb_handle:    Option<Arc<rusb::DeviceHandle<rusb::GlobalContext>>>,
+    /// Arrêt de la boucle de modes / threads de la session `start_helix` en cours.
+    helix_session_stop: Option<Arc<AtomicBool>>,
+    /// Arrêt du thread `usb_listener` (lecture bulk 0x81).
+    helix_stop_listener: Option<Arc<AtomicBool>>,
+    /// `true` pendant toute la durée de `start_helix` (ouverture USB → libération interfaces).
+    helix_session_busy: Option<Arc<AtomicBool>>,
     // Garde-fous backend anti-spam de recovery preset.
     preset_recover_in_flight: bool,
-    last_preset_recover_at: Option<Instant>,
-    last_preset_request_at: Option<Instant>,
+    last_preset_recover_at: Option<std::time::Instant>,
+    last_preset_request_at: Option<std::time::Instant>,
+}
+
+const HELIX_SESSION_JOIN_TIMEOUT_MS: u64 = 3500;
+
+/// Coupe la session USB active, purge l’état exposé à l’UI et notifie le frontend.
+fn disconnect_helix_session(app: &mut AppState, app_handle: &tauri::AppHandle, reason: &str) {
+    if let Some(stop) = &app.helix_session_stop {
+        stop.store(true, Ordering::SeqCst);
+    }
+    if let Some(stop) = &app.helix_stop_listener {
+        stop.store(true, Ordering::SeqCst);
+    }
+    if let Some(hs) = app.helix_state.take() {
+        let mut s = hs.lock().unwrap();
+        s.connected = false;
+        s.tx = None;
+        s.mode_tx = None;
+        if let Some(ka) = &s.keepalive_tx {
+            let _ = ka.send(KeepAliveCommand::StopAll);
+        }
+        s.keepalive_tx = None;
+        s.editor_ready = false;
+        s.post_arm_sequence_started = false;
+    }
+    app.usb_handle = None;
+    app.connected_device_name = None;
+    app.connection_issue_hint = None;
+    app.preset_names.clear();
+    app.active_preset = 0;
+    app.preset_recover_in_flight = false;
+    eprintln!("[Helix] session déconnectée ({reason})");
+    if let Err(e) = app_handle.emit("helix-device-lost", reason) {
+        eprintln!("[Helix] emit helix-device-lost: {e}");
+    }
+}
+
+fn wait_previous_helix_session_end(busy: &AtomicBool, stop: Option<&AtomicBool>) {
+    if let Some(s) = stop {
+        s.store(true, Ordering::SeqCst);
+    }
+    let deadline = Instant::now() + Duration::from_millis(HELIX_SESSION_JOIN_TIMEOUT_MS);
+    while busy.load(Ordering::SeqCst) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(50));
+    }
+    if busy.load(Ordering::SeqCst) {
+        eprintln!(
+            "[Helix] WARN: session précédente encore active après {HELIX_SESSION_JOIN_TIMEOUT_MS} ms"
+        );
+    }
 }
 
 /// Copie `preset_names` / `active_preset` depuis `HelixState` vers `AppState`.
@@ -3164,34 +3219,35 @@ fn start_monitor(app_state: Arc<Mutex<AppState>>, app_handle: tauri::AppHandle) 
     let state_for_connect = Arc::clone(&app_state);
     let state_for_lost = Arc::clone(&app_state);
     let ah_for_helix = app_handle.clone();
+    let ah_for_lost = app_handle.clone();
     let helix_attached = Arc::new(AtomicBool::new(false));
     let helix_connecting = Arc::new(AtomicBool::new(false));
+    let helix_session_busy = Arc::new(AtomicBool::new(false));
 
     helix::usb_monitor::start_monitor(
         Arc::new(Mutex::new(HelixState::new())),
         Arc::clone(&stop_monitor),
         Arc::clone(&helix_attached),
         Arc::clone(&helix_connecting),
+        Arc::clone(&helix_session_busy),
         Arc::new(move || {
             helix::init_trace::mark_origin("hw_detected_usb_poll");
             let state = Arc::clone(&state_for_connect);
             let ah = ah_for_helix.clone();
             let attached = Arc::clone(&helix_attached);
             let connecting = Arc::clone(&helix_connecting);
+            let session_busy = Arc::clone(&helix_session_busy);
             {
                 let mut app = state.lock().unwrap();
                 app.connection_issue_hint = None;
             }
             thread::spawn(move || {
-                start_helix(state, ah, attached, connecting);
+                start_helix(state, ah, attached, connecting, session_busy);
             });
         }),
         Arc::new(move || {
             let mut app = state_for_lost.lock().unwrap();
-            app.helix_state = None;
-            app.usb_handle = None;
-            app.connected_device_name = None;
-            app.connection_issue_hint = None;
+            disconnect_helix_session(&mut app, &ah_for_lost, "usb_unplugged");
         }),
     );
 }
@@ -3204,7 +3260,21 @@ fn start_helix(
     app_handle: tauri::AppHandle,
     helix_attached: Arc<AtomicBool>,
     helix_connecting: Arc<AtomicBool>,
+    helix_session_busy: Arc<AtomicBool>,
 ) {
+    {
+        let (prev_busy, prev_stop) = {
+            let app = app_state.lock().unwrap();
+            (
+                app.helix_session_busy.clone(),
+                app.helix_session_stop.clone(),
+            )
+        };
+        if let Some(busy) = prev_busy.as_ref() {
+            wait_previous_helix_session_end(busy, prev_stop.as_deref());
+        }
+    }
+    helix_session_busy.store(true, Ordering::SeqCst);
     helix::init_trace::trace("start_helix BEGIN (open USB, claim, flush)");
     // Ouvrir le premier device supporté trouvé (HX Stomp XL / Stomp / Floor / LT).
     let (device_name, handle) = match find_supported_device_handle_with_retry() {
@@ -3216,6 +3286,7 @@ fn start_helix(
             );
             helix_connecting.store(false, Ordering::SeqCst);
             helix_attached.store(false, Ordering::SeqCst);
+            helix_session_busy.store(false, Ordering::SeqCst);
             let mut app = app_state.lock().unwrap();
             app.connection_issue_hint = Some(
                 "HX visible mais accès USB impossible (autre app, permissions, ou énumération)".to_string(),
@@ -3234,6 +3305,7 @@ fn start_helix(
         eprintln!("[Helix] erreur claim_interface : {}", e);
         helix::init_trace::trace_fmt(format_args!("start_helix ABORT claim_interface(0): {e}"));
         helix_attached.store(false, Ordering::SeqCst);
+        helix_session_busy.store(false, Ordering::SeqCst);
         let mut app = app_state.lock().unwrap();
         app.connected_device_name = Some(device_name.to_string());
         app.connection_issue_hint =
@@ -3295,6 +3367,14 @@ fn start_helix(
     }
 
     // -- Démarrer usb_writer --
+    let session_stop = Arc::new(AtomicBool::new(false));
+    let stop_listener = Arc::new(AtomicBool::new(false));
+    {
+        let mut app = app_state.lock().unwrap();
+        app.helix_session_stop = Some(Arc::clone(&session_stop));
+        app.helix_stop_listener = Some(Arc::clone(&stop_listener));
+        app.helix_session_busy = Some(Arc::clone(&helix_session_busy));
+    }
     helix::usb_writer::start_writer(Arc::clone(&handle), usb_rx);
 
     // -- Mode initial : Connect --
@@ -3303,19 +3383,20 @@ fn start_helix(
 
     {
         let mut s = state.lock().unwrap();
+        s.connected = true;
         let mut m = current_mode.lock().unwrap();
         helix::init_trace::trace_mode_switch("Connect", "::start");
         m.start(&mut s);
     }
 
     // -- Démarrer usb_listener --
-    let stop_listener = Arc::new(AtomicBool::new(false));
     helix::usb_listener::start_listener(
         Arc::clone(&handle),
         Arc::clone(&state),
         Arc::clone(&current_mode),
         Arc::clone(&stop_listener),
-        Some(app_handle),
+        Arc::clone(&session_stop),
+        Some(app_handle.clone()),
     );
 
     // -- KeepAlive manager --
@@ -3344,11 +3425,15 @@ fn start_helix(
         let handle_midi  = Arc::clone(&handle);
         let mode_tx_midi = mode_tx.clone();
         let state_midi   = Arc::clone(&state);
+        let session_stop_midi = Arc::clone(&session_stop);
         thread::spawn(move || {
             let mut buf = vec![0u8; 64];
             let mut seen_fingerprints: HashSet<Vec<u8>> = HashSet::new();
             let mut suppressed_repeats: u64 = 0;
             loop {
+                if session_stop_midi.load(Ordering::SeqCst) {
+                    break;
+                }
                 match handle_midi.read_bulk(0x82, &mut buf, Duration::from_millis(500)) {
                     Ok(n) if n >= 4 => {
                         {
@@ -3411,6 +3496,7 @@ fn start_helix(
                         }
                     }
                     Ok(_) => {}
+                    Err(rusb::Error::NoDevice) => break,
                     Err(_) => {}
                 }
             }
@@ -3419,7 +3505,12 @@ fn start_helix(
 
     // -- Boucle principale : changements de mode --
     loop {
-        match mode_rx.recv() {
+        if session_stop.load(Ordering::SeqCst) {
+            let mut app = app_state.lock().unwrap();
+            disconnect_helix_session(&mut app, &app_handle, "usb_lost");
+            break;
+        }
+        match mode_rx.recv_timeout(Duration::from_millis(250)) {
             Ok(ModeRequest::RequestPreset(content_only)) => {
                 helix::init_trace::trace_mode_switch(
                     "RequestPreset",
@@ -3508,6 +3599,24 @@ fn start_helix(
             }
             Ok(ModeRequest::AwaitPostBootstrapSettle) => {
                 helix::init_trace::trace_mode_switch("AwaitPostBootstrapSettle", "");
+                let should_spawn = {
+                    let mut s = state.lock().unwrap();
+                    if s.post_arm_sequence_started {
+                        false
+                    } else {
+                        s.post_arm_sequence_started = true;
+                        true
+                    }
+                };
+                if should_spawn {
+                    let mode_tx = {
+                        let s = state.lock().unwrap();
+                        s.mode_tx.clone()
+                    };
+                    if let Some(tx) = mode_tx {
+                        helix::amorcage::spawn_post_arm_sequence(Arc::clone(&state), tx);
+                    }
+                }
                 let mut s = state.lock().unwrap();
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
@@ -3601,7 +3710,15 @@ fn start_helix(
                 *m = Box::new(ReconfigureX1::new());
                 m.start(&mut s);
             }
-            Err(_) => {
+            Err(RecvTimeoutError::Timeout) => {
+                let connected = state.lock().unwrap().connected;
+                if session_stop.load(Ordering::SeqCst) || !connected {
+                    let mut app = app_state.lock().unwrap();
+                    disconnect_helix_session(&mut app, &app_handle, "usb_lost");
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => {
                 let mut app = app_state.lock().unwrap();
                 if app.connected_device_name.is_some() {
                     app.connection_issue_hint =
@@ -3614,6 +3731,7 @@ fn start_helix(
 
     // -- Nettoyage --
     stop_listener.store(true, Ordering::SeqCst);
+    session_stop.store(true, Ordering::SeqCst);
     ka_manager.stop_all();
     thread::sleep(Duration::from_millis(1100));
     let _ = handle.release_interface(0);
@@ -3627,16 +3745,17 @@ fn start_helix(
         eprintln!("[Helix] attach_kernel_driver(4) : {}", e);
     }
 
-    // Effacer le HelixState de l'AppState à la déconnexion
+    helix_attached.store(false, Ordering::SeqCst);
     {
         let mut app = app_state.lock().unwrap();
-        app.helix_state = None;
-        app.usb_handle = None;
-        if app.connected_device_name.is_none() {
-            app.connection_issue_hint = None;
+        if app.helix_state.is_some() || app.connected_device_name.is_some() {
+            disconnect_helix_session(&mut app, &app_handle, "session_ended");
         }
-        app.connected_device_name = None;
+        app.helix_session_stop = None;
+        app.helix_stop_listener = None;
+        app.helix_session_busy = None;
     }
+    helix_session_busy.store(false, Ordering::SeqCst);
 }
 
 const USB_OPEN_RETRY_ATTEMPTS: u32 = 20;

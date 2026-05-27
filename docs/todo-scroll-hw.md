@@ -103,6 +103,77 @@ Fenêtre optionnelle à capturer si doute : **ouverture HX Edit → branchement 
 2. **`EditorReady`** — checkpoint explicite.
 3. **Fond** — Stomp pousse `1d` ; host ACK (`f0/08`) ; keep-alive `f0 sub=10` en parallèle (dialogue host distinct).
 
+### Fenêtre post-`ARM_ef` → phase4 → keep-alive (`01_connect_*`)
+
+**Captures** : `01_connect_HXEdit.json` (~12 s) vs `01_connect_HXLinux.json` (~30 s).  
+**Procédure** : app ouverte → Stomp branché/allumé (≠ `stomp_running_*`).  
+**Référence temps** : `OUT ARM_ef` (`01:10:ef:03` sub=`08` lane `09:10`) = **t = 0**.  
+`ARM_f0` est à **−16 ms** (HX) / **−31 ms** (Linux) avant `ARM_ef`.
+
+#### Trois phases sur le fil
+
+| Phase | Δt typique | Contenu |
+|-------|------------|---------|
+| **A — silence host** | 0 → ~220 ms | Après `ARM_ef`, le host n’envoie rien jusqu’au 1er `19` phase 4. IN `short08` device possibles. |
+| **B — phase 4 + dump** | ~220 → ~350 ms | Host : 3× OUT `19` ed + 1× OUT `1a` ef. Stomp : rafale IN **272** + écho `19` ; host ACK **ed sub=`08`** (lane dump, ≠ fond scroll). |
+| **C — settle + polling** | ~350 ms → ~1000 ms | ~700 ms sans requête host proactive ; puis 1er cycle keep-alive (poll `f0` sub=`10`). |
+
+#### Jalons comparés (Δ ms depuis `ARM_ef`)
+
+| Jalon | HX Edit | Linux | Verdict |
+|-------|---------|-------|---------|
+| Silence host → 1er `phase4_19` | **+219** (#1545) | **+224** (#261) | **OK** (+5 ms) |
+| `phase4_1a` | +344 (#1651) | +284 (#281) | OK (Linux un peu plus tôt) |
+| 1er keep-alive `f0` sub=`10` | **+1047** (#1971) | **+960** (#363) | **OK** (`1a` + ~700 ms settle) |
+| IN scroll fond `1d`/`1f` 40 o `f0:02:10` | **0** | **0** | **OK** (fond pas attendu en connect) |
+| `#` `phase4_19` dans 0–2 s | 6 | 8 | Linux +2 (2e vague, voir ci-dessous) |
+| `#` keep-alive `f0`/10 (fichier entier) | 6 | 14 | Linux = capture plus longue |
+
+**Formule settle** : fin phase 4 (`1a` ~+284–344 ms) + **700 ms** ≈ 1er poll `f0`/10 (~+960–1047 ms) — **`amorcage.rs` aligné** sur cette fenêtre pour `01_connect`.
+
+#### Phase A — détail
+
+- HX Edit : 1× IN `short08` **ef** à +179 ms.
+- Linux : triplet IN `short08` **ef + ed + f0** à +137 ms (réaction device post triple ARM batch).
+
+#### Phase B — détail
+
+- Écart ~20 ms entre chaque OUT `19` : identique des deux côtés.
+- Dès ~+284 ms : rafale IN **272** ; host enchaîne OUT `08` **ed** sub=`08` (ACK chunks preset — **pas** lane fond `f0:03` sub=`08` scroll).
+
+#### Phase C — détail
+
+- Intervalle 1er → 2e poll `f0` sub=`10` : **~1062 ms** (HX) / **~1040 ms** (Linux) — proche du cycle `keep_alive.rs` (~1040 ms).
+- Linux : poll **ed** sub=`10` à +904 ms **avant** le 1er poll **f0** sub=`10` (+960 ms).
+
+#### Écart Linux : 2e vague `phase4_19`
+
+Vers **+1140 ms** et **+1360 ms**, Linux envoie encore des OUT `19` ed (#431, #441, #509…) — absents sur HX Edit dans la même fenêtre sur capture ~12 s. Hypothèse : chevauchement **`RequestPresetNames`** / requêtes preset après settle. À re-vérifier sur capture Linux **coupée ~12 s** post-connect.
+
+#### Conclusion (ne pas mélanger avec le bug fond idle)
+
+Sur **`01_connect_*`**, la fenêtre post-`ARM_ef` → phase4 → keep-alive est **déjà très proche** de HX Edit.  
+Le blocage fond (**0** IN `1d` sur `stomp_running_*`) vient surtout **en amont** :
+
+- OUT connect **[7–11]** : ARM **entrelacé** HX Edit (`ARM_ed → x11 x2 → Reconfigure ef → ARM_f0 → x11 x1 → ARM_ef`) vs Linux (Reconfigure fini **puis** batch ARM dans `amorcage.rs`).
+- Voir journal **amorçage** / captures `stomp_running_start_hxedit.json` ↔ `stomp_running_start_hxlinux.json`.
+
+**Fix prioritaire code** : entrelacement ARM dans `Connect` / `ReconfigureX1` — **pas** retoucher les délais phase4 (+224 ms) ni settle (+960 ms) sur `01_connect`.
+
+#### Correctif code (mai 2026) — entrelacement ARM
+
+Remplacer le **batch** `amorcage::schedule_triple_arm` par la séquence HX Edit :
+
+| Étape | Module | OUT |
+|-------|--------|-----|
+| Réponse init x2 | `connect.rs` | `ARM_ed` → ack x11 x2 |
+| Reconfigure fin (x11 ef) | `reconfigure_x1.rs` | `ARM_f0` → ack x11 → `ARM_ef` |
+| +235 ms | `amorcage::spawn_post_arm_sequence` | phase4 → settle 700 ms → keep-alive → `RequestPresetNames` |
+
+Fichiers : `amorcage.rs` (`send_arm_ed` / `send_arm_f0` / `send_arm_ef`), `connect.rs`, `reconfigure_x1.rs`.
+
+**Test** : capture `stomp_running_start_hxlinux.json` — OUT [7–12] doit matcher HX Edit ; critère fond : IN `1d` scroll ≥ 200 / 27 s, ratio ACK ≈ 1.
+
 ---
 
 ## Pipeline USB — contrat des couches (figé mai 2026)
@@ -320,6 +391,15 @@ IN 1f → OUT 1b → OUT f0/08 (fond) → IN ~92 → OUT 19 → IN ~68 → IN 21
 | 2026-05-27 | 1b | **Couche ACK mini** : `firmware_scroll_ack.rs` — voir commit local / branche en cours. |
 | 2026-05-27 | 1c | **Validation idle Linux V2** : `stomp_runnig_start_hxlinux_V2.json` — post-boot ~22,5 s : IN `1d`×259, OUT `f0 sub08`×258 (ratio **1,00**), 99 % ACK &lt;300 ms ; lane `0x1009`→`0x1048` (+`0x3f`) comme HX Edit. vs V1 : 1 ACK / 195 `1d`. Reste : keep-alive `sub=10`×21 (HX Edit idle = 0). |
 | 2026-05-27 | 1d | **Validation terrain amorçage** : alerte front/back `debug:fond-amorcage` activée ; test connect réel sans action utilisateur = **aucune alerte**. Décision figée : fond OFF en `Bootstrapping`, ON en `EditorReady` ; filtre fond strict (`1d`/`1f` 40 o + `f0:03:02:10`). |
+| 2026-05-27 | 4a | **Incident pull minimal** (ancienne capture même fichier, session bug) : 1×`1f` → OUT `1b`+`f0` puis **`19`×2 sans IN** → freeze. Pull re-désactivé. |
+| 2026-05-27 | 4b | **Capture Linux passif** (`one_scroll_hxlinux.json`, ~7,5 s) : rafale t≈0,75–1,26 s — IN **`1d`×9 / `1f`×7** + **`21`×7** (44 o) ; OUT **`f0` sub=`08`×30** (ACK fond, délai 0–10 ms) ; **0×`1b` / 0×`19` / 0×272**. Stomp non figé ; baseline valide avant phase 4. |
+| 2026-05-27 | 4d | **Lanes pull séparées** : `12–13` (`7e:1c`…) ≠ `28–29` (`f1:64`…) ≠ `editor_ed03_double`. Pull auto OFF ; probe terrain `HX_SCROLL_PULL_PROBE=1` (1 cran / capture, logs `[ScrollPull][probe]`). |
+| 2026-05-27 | 4d | **Lanes pull séparées** : octets `12–13` (`7e:1c`…) ≠ `28–29` (`f1:64`…). Pull auto OFF ; probe `HX_SCROLL_PULL_PROBE=1` (logs `[ScrollPull][probe]`, 1 cran/capture). |
+| 2026-05-27 | 4c | **1 cran lent** (`one_slow_notch_Linux.json`, 5,6 s) : **`1f`×1** isolé — séquence t≈1,75 s : `IN 1d` → OUT `f0/08` (+0 ms) → `IN 1f` (+11 ms) → OUT `f0/08` (+0 ms) → `IN 21` (+24 ms) → `IN 1d` (+0 ms) → OUT `f0/08`×2 (+10 ms) ; **0×`1b`/`19`/272**. Référence phase 4 « entrée épisode » = premier `1f` après `1d`. |
+| 2026-05-27 | amorçage-fix | **Entrelacement ARM** implémenté (`send_arm_ed` / `send_arm_f0` / `send_arm_ef` + `spawn_post_arm_sequence`) — à valider capture `stomp_running_*`. |
+| 2026-05-27 | amorçage | **Paires capture à ne pas mélanger** : `01_connect_*` = app ouverte → Stomp branché/allumé ; `stomp_running_*` = Stomp ON → capture → lancement app → idle ~30 s. **Fix batch `amorcage.rs` insuffisant** : sur `stomp_running_*` (procédure identique), HX Edit = ARM **entrelacé** (`ARM_ed → x11 x2 → Reconfigure ef → ARM_f0 → x11 x1 → ARM_ef`) ; Linux = Reconfigure **puis** batch ARM. **À implémenter** avant prochaine capture idle. |
+| 2026-05-27 | connect | **`01_connect_HXLinux.json`** (~30 s) vs `01_connect_HXEdit.json` (~12 s) : OUT [0–6] identiques ; [7–11] entrelacement ARM manquant ; post-`ARM_ef` phase4/settle/keep-alive **alignés** — voir § *Fenêtre post-ARM_ef → phase4 → keep-alive*. |
+| 2026-05-27 | déconnexion/reconnexion | **Fix cycle de vie session USB** : arrêt explicite session (`session_stop` + `recv_timeout`), purge `AppState` (`preset_names`, `connected_device_name`, handles), arrêt writer sur `NoDevice`, garde-fou `helix_session_busy` pour empêcher les sessions concurrentes, événement front `helix-device-lost` + purge UI (`main.ts`, `models.ts`). **Symptômes ciblés** : bandeau “HX connecté” persistant après unplug, grille/presets non purgés, boucle `[UsbWriter] ... No such device`, reconnexion sans lecture preset. **Validation terrain en attente** (test unplug/replug réel + capture). |
 
 ### Détail comparatif (après bootstrap `09:10`)
 
@@ -343,7 +423,9 @@ Fichiers : `stomp_running_start_hxedit.json`, `stomp_runnig_start_hxlinux.json` 
 1. [x] Phase 1 — connect / idle : UX OK + **fil fond V2 ≈ HX Edit** (`stomp_runnig_start_hxlinux_V2.json`)
 2. [x] Phase 2 — capture `one_scroll_hxedit.json`  
 3. [~] Phase 3 — couches 1/2 + entrelacement documentés (affiner si capture 1 cran strict)  
-4. [ ] Phase 4 — code minimal + capture Linux + diff  
+4. [~] Stabilité session USB — **fix déconnexion/reconnexion codé**, validation terrain/capture en attente  
+5. [ ] Parité pré-scroll avec HX Edit — re-capture `stomp_running_start_hxlinux.json` (post-fix) et vérification OUT [7–12] + démarrage fond idle  
+6. [ ] Phase 4 — code minimal scroll + capture Linux + diff  
 
 ---
 

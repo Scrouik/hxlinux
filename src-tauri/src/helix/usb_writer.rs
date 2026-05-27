@@ -184,6 +184,9 @@ pub fn start_writer(
                                     eprintln!("[UsbWriter] pipe stall détecté → clear_halt 0x01");
                                     let _ = handle.clear_halt(ENDPOINT_OUT);
                                 }
+                                if e == rusb::Error::NoDevice || consecutive_errors >= 5 {
+                                    return;
+                                }
                                 break;
                             }
                         }

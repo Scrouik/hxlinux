@@ -15,12 +15,12 @@ pub mod edit_slot_model;
 pub mod slot_focus_in;
 pub mod slot_param_in;
 pub mod slot_watch;
-pub mod slot_model_hw_pull;
 pub mod firmware_scroll_ack;
 pub mod usb_in_pipeline;
 pub mod preset_dump_stream_ack;
 pub mod model_catalog;
 pub mod editor_phase4_bootstrap;
+pub mod amorcage;
 pub mod init_trace;
 
 use std::sync::mpsc::Sender;
@@ -134,6 +134,8 @@ pub struct HelixState {
     pub firmware_scroll_ack_prev: Option<u8>,
     /// Après `1f` « None », le premier `1d` suivant peut réémettre le même double (step 0 une fois).
     pub firmware_scroll_skip_inc_once: bool,
+    /// `true` après OUT bootstrap `09:10` (`note_firmware_scroll_bootstrap_sent`) — autorise l’ACK fond.
+    pub firmware_scroll_armed: bool,
 
     /// Compteur dédié à la lane éditeur ed:03 36 bytes (bytes 28-29, cd:03).
     /// Valeur initiale : 0x64e8 (observée HX Edit cold boot, Start_Model_change.json).
@@ -210,7 +212,7 @@ pub struct HelixState {
     pub hw_slot_notify_ef_in: Option<[u8; 16]>,
     /// +1 à chaque réception d’un EF03 court **alors qu’un** ED03 court était déjà mémorisé (cycle complet).
     pub hw_slot_notify_sequence: u32,
-    /// **Source unique** du slot actif côté host (cadre orange UI + `slot_bus` des OUT pull modèle).
+    /// **Source unique** du slot actif côté host (cadre orange UI).
     ///
     /// Mis à jour uniquement par [`Self::ingest_hw_slot_notify_in`] quand une trame IN contient
     /// `82:62:SS:1a` (sélection HW/UI, ou preset chargé — souvent IN 44 o head `21` + `f0:03:02:10`,
@@ -235,12 +237,15 @@ pub struct HelixState {
     /// Déduplication des événements paramètre IN (`85:62…1c:PP:77`).
     pub slot_param_emit: slot_param_in::SlotParamEmitState,
     /// Fenêtre post bootstrap phase 4 (~700 ms HX Edit) : le host n’envoie **aucune** requête
-    /// proactive (noms, dump, pull modèle, keep-alive poll) — seulement des ACK sur le trafic IN.
+    /// proactive (noms, dump, keep-alive poll) — seulement des ACK sur le trafic IN.
     pub init_usb_settle_until: Option<Instant>,
-    /// IN `1d` = notif d’état firmware (scroll molette **ou** sync preset/slots), pas seulement l’utilisateur.
-    /// `true` pendant `RequestPresetNames` / `RequestPresetName` / `RequestPreset` : ne pas ACK les `1d`
-    /// (priorité dump sur la file OUT — HX Edit). `false` en Standard / init settle → ACK immédiat.
+    /// Legacy : utilisé par d’autres chemins ; le fond scroll (`firmware_scroll_ack`) ignore ce flag.
     pub suppress_1d_firmware_notify_ack: bool,
+    /// `false` jusqu’à fin amorçage (`amorcage::spawn_post_arm_sequence`) — gate épisodes host proactifs.
+    pub editor_ready: bool,
+    /// Empêche de lancer deux fois la séquence `amorcage::spawn_post_arm_sequence`
+    /// si `ModeRequest::AwaitPostBootstrapSettle` est demandé plusieurs fois.
+    pub post_arm_sequence_started: bool,
 }
 
 // ===========================================================
@@ -330,6 +335,7 @@ impl HelixState {
             firmware_scroll_ack_ctr: firmware_scroll_ack::SCROLL_LANE_BOOT,
             firmware_scroll_ack_prev: None,
             firmware_scroll_skip_inc_once: false,
+            firmware_scroll_armed: false,
             editor_ed03_double: Self::preset_ed03_transaction_counter_before_first(),
             preset_last_ack_double: [0, 0],
             request_preset_session_id: 0xf4,
@@ -355,6 +361,8 @@ impl HelixState {
             slot_param_emit: slot_param_in::SlotParamEmitState::default(),
             init_usb_settle_until: None,
             suppress_1d_firmware_notify_ack: false,
+            editor_ready: false,
+            post_arm_sequence_started: false,
         }
     }
 
@@ -368,7 +376,7 @@ impl HelixState {
 
     /// Phase de session protocolaire : amorçage unique, puis runtime éditeur prêt.
     pub fn session_phase(&self) -> SessionPhase {
-        if self.connecting || self.init_usb_settle_active() {
+        if self.connecting || !self.editor_ready {
             SessionPhase::Bootstrapping
         } else {
             SessionPhase::EditorReady
@@ -419,22 +427,9 @@ impl HelixState {
         )
     }
 
-    /// ACK flux IN `08:01:ed:03:80:10` sub=`04` (scroll HW / état slot) — lane `preset_dump_ack_ctr`.
-    pub fn try_ack_preset_dump_stream_chunk_in(&mut self, data: &[u8]) -> bool {
-        preset_dump_stream_ack::ack_preset_dump_stream_chunk(self, data)
-    }
-
-    /// Pipeline couches actives (fond scroll, pull, ACK dump 272) — voir `usb_in_pipeline`.
+    /// Pipeline couches actives (fond scroll, ACK dump 272) — voir `usb_in_pipeline`.
     pub fn run_usb_in_active_layers(&mut self, data: &[u8]) -> usb_in_pipeline::ActivePipelineOutcome {
         usb_in_pipeline::run_active_layers(self, data)
-    }
-
-    /// Scroll modèle HW (molette Stomp) — désactivé ; voir `slot_model_hw_pull` / `docs/SCROLL_HW_RESET.md`.
-    pub fn ingest_slot_model_hw_in(
-        &mut self,
-        data: &[u8],
-    ) -> Option<slot_model_hw_pull::SlotModelHwChangedPayload> {
-        slot_model_hw_pull::ingest_slot_model_hw_in(self, data)
     }
 
     /// Parse les trames IN bulk pour changements de paramètre live (`85:62…77:ca|c2|c3|…`).
@@ -668,6 +663,10 @@ impl HelixState {
 
     /// Démarre un keep-alive
     pub fn start_keepalive(&self, cmd: KeepAliveCommand) {
+        if !self.editor_ready && matches!(cmd, KeepAliveCommand::StartOrdered) {
+            init_trace::trace("start_keepalive BLOCKED (not EditorReady)");
+            return;
+        }
         if let Some(tx) = &self.keepalive_tx {
             let _ = tx.send(cmd);
         }

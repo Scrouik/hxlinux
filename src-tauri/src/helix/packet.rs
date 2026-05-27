@@ -33,6 +33,7 @@ impl OutPacket {
     }
 
     /// `head` puis chaque élément de `tail` en rafale USB (une seule entrée de file).
+    #[allow(dead_code)] // phase 4 scroll (`1b` + ACK fond en rafale)
     pub fn with_tail_burst(head: Vec<u8>, tail: Vec<Vec<u8>>) -> Self {
         Self {
             data: head,
@@ -130,4 +131,16 @@ macro_rules! pattern {
     ($($item:tt),* $(,)?) => {
         vec![$( $crate::pattern!(@item $item) ),*]
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OutPacket;
+
+    #[test]
+    fn with_tail_burst_keeps_head_and_tail() {
+        let pkt = OutPacket::with_tail_burst(vec![0x1b], vec![vec![0xf0], vec![0x08]]);
+        assert_eq!(pkt.data, vec![0x1b]);
+        assert_eq!(pkt.tail_burst.len(), 2);
+    }
 }

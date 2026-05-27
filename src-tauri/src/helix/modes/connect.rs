@@ -32,6 +32,9 @@ impl Mode for Connect {
         state.x2_cnt  = 0x02;
         state.x80_cnt = 0x02;
         state.connecting = true;
+        state.editor_ready = false;
+        state.firmware_scroll_armed = false;
+        state.post_arm_sequence_started = false;
 
         self.received_x11_on_x2  = false;
         self.received_x11_on_x80 = false;
@@ -156,7 +159,7 @@ impl Mode for Connect {
             ]);
             state.send(pkt);
 
-        // -- Réponse init x2 → ack x2
+        // -- Réponse init x2 → ARM_ed puis ack x2 (HX Edit #1455 → #1457)
         } else if byte_cmp(data, &pattern![
             0x0c, 0x00, 0x00, 0x28,
             0xf0, 0x03, 0x02, 0x10,
@@ -164,6 +167,7 @@ impl Mode for Connect {
             0x00, 0x01, 0x00, 0x01,
             0x00, 0x02, 0x00, 0x00
         ], 20) {
+            crate::helix::amorcage::send_arm_ed(state);
             let cnt = state.next_x2_cnt();
             let pkt = OutPacket::new(vec![
                 0x11, 0x00, 0x00, 0x18,
@@ -176,7 +180,7 @@ impl Mode for Connect {
             ]);
             state.send(pkt);
 
-        // -- x11 reçu sur x2 (handshake f0 OK) → poll d’activation sub=08 (HX Edit #3255)
+        // -- x11 reçu sur x2 (handshake f0 OK) — ARM `09:10` reporté à `amorcage` post-ReconfigureX1
         } else if byte_cmp(data, &pattern![
             0x11, 0x00, 0x00, 0x18,
             0xf0, 0x03, 0x02, 0x10,
@@ -184,37 +188,6 @@ impl Mode for Connect {
             0x09, 0x02
         ], 14) {
             self.received_x11_on_x2 = true;
-            // Arme le canal f0:03 (HX Edit #3255 : cnt=0x03 après handshake cnt=0x02, ~15 ms plus tard).
-            let cnt = state.next_x2_cnt();
-            let pkt = OutPacket::with_delay(
-                vec![
-                    0x08, 0x00, 0x00, 0x18,
-                    0x02, 0x10, 0xf0, 0x03,
-                    0x00, cnt, 0x00, 0x08,
-                    0x09, 0x10, 0x00, 0x00,
-                ],
-                15,
-            );
-            state.send(pkt);
-            state.note_firmware_scroll_bootstrap_sent();
-        } else if byte_cmp(data, &pattern![
-            0x08, 0x00, 0x00, 0x18,
-            0xf0, 0x03, 0x02, 0x10,
-            0x00, 0x03, 0x00, 0x08,
-            0x09, 0x02, 0x00, 0x00
-        ], 16) {
-            let pkt = OutPacket::with_delay(vec![
-                0x19, 0x00, 0x00, 0x18,
-                0x80, 0x10, 0xed, 0x03,
-                0x00, state.x80_cnt, 0x00, 0x04,
-                0x09, 0x10, 0x00, 0x00,
-                0x01, 0x00, 0x06, 0x00,
-                0x09, 0x00, 0x00, 0x00,
-                0x83, 0x66, 0xcd, 0x03,
-                0xe8, 0x64, 0x4c, 0x65,
-                0x80, 0x00, 0x00, 0x00,
-            ], 140);
-            state.send(pkt);
 
         // -- Paquet 0x54 sur x80
         } else if byte_cmp(data, &pattern![

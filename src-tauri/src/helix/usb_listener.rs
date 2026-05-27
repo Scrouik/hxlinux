@@ -40,6 +40,7 @@ pub fn start_listener(
     state: Arc<Mutex<HelixState>>,
     mode: Arc<Mutex<Box<dyn Mode>>>,
     stop: Arc<AtomicBool>,
+    session_stop: Arc<AtomicBool>,
     app_handle: Option<tauri::AppHandle>,
 ) {
     thread::spawn(move || {
@@ -161,19 +162,13 @@ pub fn start_listener(
                                 data.len()
                             );
                         }
-                        let model_changed = s.ingest_slot_model_hw_in(&data);
                         let state_hold_ms = hold_start.elapsed().as_millis();
                         warn_slow_lock("HelixState.lock()", state_wait_ms, state_hold_ms, data.len());
-                        ((ev, param_events, model_changed), fond_bootstrap_alert)
+                        ((ev, param_events), fond_bootstrap_alert)
                     };
                     if let (Some(app), Some(payload)) = (app_handle.as_ref(), hw_slot_changed.0) {
                         if let Err(e) = app.emit("models:hardware-slot-changed", payload) {
                             eprintln!("[UsbListener] emit models:hardware-slot-changed: {e}");
-                        }
-                    }
-                    if let (Some(app), Some(payload)) = (app_handle.as_ref(), hw_slot_changed.2) {
-                        if let Err(e) = app.emit("models:slot-model-changed", payload) {
-                            eprintln!("[UsbListener] emit models:slot-model-changed: {e}");
                         }
                     }
                     if let Some(app) = app_handle.as_ref() {
@@ -182,7 +177,7 @@ pub fn start_listener(
                                 eprintln!("[UsbListener] emit debug:fond-amorcage: {e}");
                             }
                         }
-                        for payload in hw_slot_changed.1 {
+                        for payload in hw_slot_changed.1.iter() {
                             if preset_debug_verbose_enabled() {
                                 eprintln!(
                                     "[SlotParamIn] emit slot={} pp={} type={} val={}",
@@ -206,6 +201,7 @@ pub fn start_listener(
                 }
                 Err(rusb::Error::NoDevice) => {
                     eprintln!("[UsbListener] HX déconnecté");
+                    session_stop.store(true, Ordering::SeqCst);
                     let lock_start = Instant::now();
                     let mut s = state.lock().unwrap();
                     let wait_ms = lock_start.elapsed().as_millis();
@@ -213,6 +209,10 @@ pub fn start_listener(
                         eprintln!("[WARN] HelixState.lock() wait={wait_ms}ms (NoDevice)");
                     }
                     s.connected = false;
+                    s.tx = None;
+                    if let Some(ka) = &s.keepalive_tx {
+                        let _ = ka.send(crate::helix::KeepAliveCommand::StopAll);
+                    }
                     break;
                 }
                 Err(e) => {

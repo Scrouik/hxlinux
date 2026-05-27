@@ -1,8 +1,7 @@
 //! ACK scroll firmware — IN `1d` / `1f` 40 o → OUT `f0:03` sub=`08` (lane dédiée).
 //!
-//! Couche **minimale** : pas de pull modèle, pas d’UI. Calquée sur
-//! `captures/usb-wireshark/stomp_running_start_hxedit.json` (idle post-connect).
-//! Le pull (`slot_model_hw_pull`) pourra s’appuyer sur cette lane plus tard sans la remplacer.
+//! Couche **minimale** : parité idle HX Edit (`stomp_running_start_hxedit.json`).
+//! Pas de pull modèle, pas d’UI scroll.
 
 use crate::helix::{HelixState, SessionPhase};
 use crate::helix::init_trace;
@@ -18,7 +17,6 @@ pub(crate) fn scroll_ack_step(prev: Option<u8>, head: u8, skip_inc_once: bool) -
         return (0, false);
     }
     let step = match (prev, head) {
-        // Premier `1d` après bootstrap wire `09:10` : premier ACK host ≈ `48:10` (+0x3f).
         (None, 0x1d) => 0x003f,
         (None, 0x1f) => 0x0017,
         (Some(0x1d), 0x1d) => 0x0015,
@@ -41,7 +39,6 @@ impl HelixState {
         [lo, hi]
     }
 
-    /// Avance la lane **puis** renvoie le double à émettre (aligné capture : premier ACK après bootstrap = `48:10`).
     pub fn next_firmware_scroll_ack_out(&mut self, head: u8) -> [u8; 2] {
         let (step, skip_next) = scroll_ack_step(
             self.firmware_scroll_ack_prev,
@@ -54,35 +51,40 @@ impl HelixState {
         self.firmware_scroll_lane_double()
     }
 
-    /// Après envoi du bootstrap connect `09:10` (valeur fil = lane courante, pas encore de `1d` vu).
     pub fn note_firmware_scroll_bootstrap_sent(&mut self) {
         self.firmware_scroll_ack_ctr = SCROLL_LANE_BOOT;
         self.firmware_scroll_ack_prev = None;
         self.firmware_scroll_skip_inc_once = false;
+        self.firmware_scroll_armed = true;
     }
 }
 
-/// Couche active « fond » : IN `1d` / `1f` 40 o → lane scroll + ACK `f0:03` sub=`08`.
+fn is_scroll_fond_notify(data: &[u8]) -> bool {
+    data.len() == 40
+        && matches!(data.first(), Some(0x1d | 0x1f))
+        && data.get(4..8) == Some(&[0xf0, 0x03, 0x02, 0x10])
+}
+
+/// Couche fond : IN `1d` / `1f` scroll → lane + ACK `f0:03` sub=`08`.
+///
+/// ACK si ancre scroll + `firmware_scroll_armed` (post `09:10`). Pas de gate preset / pull / probe.
 pub fn handle_in_layer(state: &mut HelixState, data: &[u8]) -> LayerResult {
-    let head = data.first().copied().unwrap_or(0);
-    if head != 0x1d && head != 0x1f || data.len() != 40 {
+    if !is_scroll_fond_notify(data) {
         return LayerResult::Ignored;
     }
-    if data.get(4..8) != Some(&[0xf0, 0x03, 0x02, 0x10]) {
-        return LayerResult::Ignored;
-    }
-    if matches!(state.session_phase(), SessionPhase::Bootstrapping) {
+    if state.session_phase() != SessionPhase::EditorReady {
         init_trace::trace_1d_ack_decision(false, "bootstrapping");
         return LayerResult::Ignored;
     }
-    if state.preset_usb_read_in_progress() {
+    if !state.should_ack_firmware_1d_notify() {
         init_trace::trace_1d_ack_decision(false, "preset_usb_read");
         return LayerResult::Ignored;
     }
-    if head == 0x1d && !state.should_ack_firmware_1d_notify() {
-        init_trace::trace_1d_ack_decision(false, "suppress_1d");
+    if !state.firmware_scroll_armed {
+        init_trace::trace_1d_ack_decision(false, "scroll_not_armed");
         return LayerResult::Ignored;
     }
+    let head = data.first().copied().unwrap_or(0);
     let cnt = state.next_x2_cnt();
     let double = state.next_firmware_scroll_ack_out(head);
     state.send(OutPacket::new(vec![
@@ -95,15 +97,6 @@ pub fn handle_in_layer(state: &mut HelixState, data: &[u8]) -> LayerResult {
     LayerResult::Consumed {
         effect: LayerEffect::ScrollLaneAndAck,
     }
-}
-
-/// ACK immédiat sur notif scroll / firmware (`1d` / `1f`). Retourne `true` si head == `1f`.
-#[allow(dead_code)]
-pub fn ack_firmware_scroll_in(state: &mut HelixState, data: &[u8]) -> bool {
-    matches!(
-        handle_in_layer(state, data),
-        LayerResult::Consumed { .. }
-    ) && data.first() == Some(&0x1f)
 }
 
 #[cfg(test)]
@@ -127,5 +120,39 @@ mod tests {
     #[test]
     fn scroll_ack_step_none_1d_is_0x3f() {
         assert_eq!(scroll_ack_step(None, 0x1d, false).0, 0x003f);
+    }
+
+    fn sample_scroll_1d() -> Vec<u8> {
+        let mut b = vec![0u8; 40];
+        b[0] = 0x1d;
+        b[4..8].copy_from_slice(&[0xf0, 0x03, 0x02, 0x10]);
+        b
+    }
+
+    #[test]
+    fn fond_skips_during_preset_read() {
+        let mut state = HelixState::new();
+        state.editor_ready = true;
+        state.note_firmware_scroll_bootstrap_sent();
+        state.set_preset_usb_read_modes_active(true);
+        let r = handle_in_layer(&mut state, &sample_scroll_1d());
+        assert!(matches!(r, LayerResult::Ignored));
+        assert_eq!(state.firmware_scroll_ack_ctr, 0x1009);
+    }
+
+    #[test]
+    fn fond_skips_before_editor_ready() {
+        let mut state = HelixState::new();
+        state.note_firmware_scroll_bootstrap_sent();
+        let r = handle_in_layer(&mut state, &sample_scroll_1d());
+        assert!(matches!(r, LayerResult::Ignored));
+    }
+
+    #[test]
+    fn fond_silent_before_bootstrap_arm() {
+        let mut state = HelixState::new();
+        let r = handle_in_layer(&mut state, &sample_scroll_1d());
+        assert!(matches!(r, LayerResult::Ignored));
+        assert_eq!(state.firmware_scroll_ack_ctr, 0x1009);
     }
 }

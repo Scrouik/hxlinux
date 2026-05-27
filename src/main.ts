@@ -150,13 +150,31 @@ function render(names: string[], active: number) {
 
 // ─── Load presets ─────────────────────────────────────────────────────────────
 
+function purgePresetUi() {
+  presetNames = [];
+  activePreset = -1;
+  selectedIndex = -1;
+  render([], -1);
+  updateAppWidth([]);
+}
+
 async function loadPresets() {
   const firmwareHint =
     "If your HX is connected but still not detected, your firmware may be unsupported. Please update device firmware and retry.";
   try {
-    const names = await invoke<string[]>("get_preset_names");
     const deviceName = await invoke<string | null>("get_connected_device_name");
     const connectionHint = await invoke<string>("get_connection_hint_text");
+
+    if (!deviceName) {
+      if (presetNames.length > 0 || activePreset >= 0) {
+        purgePresetUi();
+      }
+      const showHint = connectionHint.startsWith("No HX detected");
+      setStatus("waiting", connectionHint, showHint ? firmwareHint : undefined);
+      return;
+    }
+
+    const names = await invoke<string[]>("get_preset_names");
 
     if (names.length === 0) {
       const showHint = connectionHint.startsWith("No HX detected");
@@ -175,7 +193,7 @@ async function loadPresets() {
       render(presetNames, activePreset);
     }
 
-    setStatus("connected", deviceName ?? "HX connecté");
+    setStatus("connected", deviceName);
 
     // Scroll vers le preset actif au premier chargement
     const activeEl = list.querySelector(".active") as HTMLElement | null;
@@ -475,6 +493,10 @@ window.addEventListener("DOMContentLoaded", () => {
   updateAppWidth([]);
   loadPresets();
   window.setInterval(loadPresets, 1500);
+  void listen<string>("helix-device-lost", () => {
+    purgePresetUi();
+    setStatus("waiting", "HX déconnecté");
+  });
   void listen<string>("debug:fond-amorcage", (event) => {
     const msg = event.payload ?? "ALERT fond pendant amorcage";
     barHint.textContent = msg;

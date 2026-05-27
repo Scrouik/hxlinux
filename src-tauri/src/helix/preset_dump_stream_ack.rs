@@ -61,11 +61,6 @@ pub fn handle_in_layer(state: &mut HelixState, data: &[u8]) -> LayerResult {
     }
 }
 
-/// Envoie l’ACK observé HX Edit pour un chunk flux (hors mode `RequestPreset*`).
-pub fn ack_preset_dump_stream_chunk(state: &mut HelixState, data: &[u8]) -> bool {
-    matches!(handle_in_layer(state, data), LayerResult::Consumed { .. })
-}
-
 fn preset_dump_stream_ack_debug_enabled() -> bool {
     std::env::var_os("HX_PRESET_DUMP_STREAM_ACK_DEBUG").is_some_and(|v| {
         let s = v.to_string_lossy();
@@ -101,7 +96,10 @@ mod tests {
     fn ack_increments_lane_hi_byte() {
         let mut state = HelixState::new();
         assert_eq!(state.preset_dump_ack_ctr, 0x1df4);
-        assert!(ack_preset_dump_stream_chunk(&mut state, &sample_272()));
+        assert!(matches!(
+            handle_in_layer(&mut state, &sample_272()),
+            LayerResult::Consumed { .. }
+        ));
         assert_eq!(state.preset_dump_ack_double(), [0xf4, 0x1e]);
         assert_eq!(state.preset_dump_ack_ctr, 0x1ef4);
     }
@@ -113,7 +111,7 @@ mod tests {
             let [s, c] = state.preset_dump_ack_double();
             assert_eq!(s, 0xf4, "ACK #{i} session");
             assert_eq!(c, 0x1d + i, "ACK #{i} counter");
-            let _ = ack_preset_dump_stream_chunk(&mut state, &sample_272());
+            let _ = handle_in_layer(&mut state, &sample_272());
         }
     }
 
@@ -121,7 +119,10 @@ mod tests {
     fn skips_during_request_preset() {
         let mut state = HelixState::new();
         state.set_preset_usb_read_modes_active(true);
-        assert!(!ack_preset_dump_stream_chunk(&mut state, &sample_272()));
+        assert!(matches!(
+            handle_in_layer(&mut state, &sample_272()),
+            LayerResult::Ignored
+        ));
         assert_eq!(state.preset_dump_ack_ctr, 0x1df4);
     }
 

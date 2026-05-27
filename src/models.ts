@@ -2356,6 +2356,19 @@ function setStatus(text: string) {
   statusEl.textContent = text;
 }
 
+function purgeModelsUi() {
+  connectedDeviceName = null;
+  currentPresetIndex = -1;
+  loadedPresetIndex = -1;
+  lastRequestedPresetIndex = -1;
+  lastPresetNamesSig = "";
+  mainWindowPresetDriftStreak = 0;
+  stopLoadingHeartbeat();
+  presetLabelEl.textContent = "--";
+  renderEmpty("En attente du HX...");
+  setStatus("HX déconnecté.");
+}
+
 function renderEmpty(text: string) {
   if (modelsSyncTraceEnabled()) {
     const st =
@@ -5899,6 +5912,17 @@ function scheduleLoadForPreset(index: number, force = false) {
 async function refresh() {
   try {
     connectedDeviceName = await invoke<string | null>("get_connected_device_name");
+    if (!connectedDeviceName) {
+      if (currentPresetIndex >= 0 || loadedPresetIndex >= 0) {
+        purgeModelsUi();
+      } else {
+        connectedDeviceName = null;
+        setStatus("HX non connecté.");
+        presetLabelEl.textContent = "--";
+        renderEmpty("En attente du HX...");
+      }
+      return;
+    }
     const names = await invoke<string[]>("get_preset_names");
     const active = await invoke<number>("get_active_preset");
 
@@ -6046,6 +6070,10 @@ window.addEventListener("DOMContentLoaded", () => {
       console.info("[HxLinux] models:slot-model-changed", p);
     }
     applyHardwareSlotModelChanged(p);
+  });
+
+  void listen<string>("helix-device-lost", () => {
+    purgeModelsUi();
   });
 
   void refresh();

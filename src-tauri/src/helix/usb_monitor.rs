@@ -46,6 +46,7 @@ pub fn start_monitor(
     helix_attached: Arc<AtomicBool>,
     // `true` pendant qu’un `start_helix` est en cours (évite les doublons).
     helix_connecting: Arc<AtomicBool>,
+    helix_session_busy: Arc<AtomicBool>,
     on_connected: Arc<dyn Fn() + Send + Sync>,
     on_lost: Arc<dyn Fn() + Send + Sync>,
 ) {
@@ -58,9 +59,10 @@ pub fn start_monitor(
             let found = device_visible();
             let attached = helix_attached.load(Ordering::SeqCst);
             let connecting = helix_connecting.load(Ordering::SeqCst);
+            let session_busy = helix_session_busy.load(Ordering::SeqCst);
 
             if !found {
-                if attached {
+                if attached || session_busy {
                     helix_attached.store(false, Ordering::SeqCst);
                     helix_connecting.store(false, Ordering::SeqCst);
                     {
@@ -69,7 +71,7 @@ pub fn start_monitor(
                     }
                     on_lost();
                 }
-            } else if !attached && !connecting {
+            } else if !attached && !connecting && !session_busy {
                 // Visible mais pas encore de session (ou échec open précédent) → (re)lancer.
                 if helix_connecting
                     .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)

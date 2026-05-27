@@ -46,7 +46,7 @@ impl KeepAliveManager {
         stop.store(false, Ordering::SeqCst);
 
         thread::spawn(move || {
-            thread::sleep(Duration::from_millis(POST_PHASE4_SETTLE_MS));
+            // Le settle post phase4 est géré par `amorcage::spawn_post_arm_sequence` avant StartOrdered.
 
             // Snapshot unique — valeur fixe pour toute la durée du polling
             // (aligné HX Edit : double figé à ee:1c après init, Δ=0 entre cycles)
