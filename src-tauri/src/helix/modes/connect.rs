@@ -196,6 +196,7 @@ impl Mode for Connect {
                 15,
             );
             state.send(pkt);
+            state.note_firmware_scroll_bootstrap_sent();
         } else if byte_cmp(data, &pattern![
             0x08, 0x00, 0x00, 0x18,
             0xf0, 0x03, 0x02, 0x10,

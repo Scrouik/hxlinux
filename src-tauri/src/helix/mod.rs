@@ -16,6 +16,8 @@ pub mod slot_focus_in;
 pub mod slot_param_in;
 pub mod slot_watch;
 pub mod slot_model_hw_pull;
+pub mod firmware_scroll_ack;
+pub mod usb_in_pipeline;
 pub mod preset_dump_stream_ack;
 pub mod model_catalog;
 pub mod editor_phase4_bootstrap;
@@ -97,6 +99,12 @@ pub enum ModeRequest {
     StandardPresetRead(u64),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPhase {
+    Bootstrapping,
+    EditorReady,
+}
+
 // ===========================================================
 // HelixState — état partagé entre tous les threads
 // ===========================================================
@@ -119,6 +127,13 @@ pub struct HelixState {
     /// u16 LE : octet 12 = session (HX Edit varie ; expérience HW : fixe [`Self::request_preset_session_id`]),
     /// octet 13 = compteur global (+1 / ACK via +`0x0100`). Distinct de [`Self::editor_ed03_double`].
     pub preset_dump_ack_ctr: u16,
+
+    /// Lane ACK scroll firmware (`1d` / `1f` → OUT `f0:03` sub=`08`, octets 12–13 LE).
+    /// Distinct de [`Self::preset_dump_ack_ctr`] et [`Self::editor_ed03_double`].
+    pub firmware_scroll_ack_ctr: u16,
+    pub firmware_scroll_ack_prev: Option<u8>,
+    /// Après `1f` « None », le premier `1d` suivant peut réémettre le même double (step 0 une fois).
+    pub firmware_scroll_skip_inc_once: bool,
 
     /// Compteur dédié à la lane éditeur ed:03 36 bytes (bytes 28-29, cd:03).
     /// Valeur initiale : 0x64e8 (observée HX Edit cold boot, Start_Model_change.json).
@@ -312,6 +327,9 @@ impl HelixState {
             connecting:         true,
             got_preset:         false,
             preset_dump_ack_ctr: ((0x1d_u16) << 8) | (0xf4_u16), // fil f4:1d — session = request_preset_session_id
+            firmware_scroll_ack_ctr: firmware_scroll_ack::SCROLL_LANE_BOOT,
+            firmware_scroll_ack_prev: None,
+            firmware_scroll_skip_inc_once: false,
             editor_ed03_double: Self::preset_ed03_transaction_counter_before_first(),
             preset_last_ack_double: [0, 0],
             request_preset_session_id: 0xf4,
@@ -346,6 +364,15 @@ impl HelixState {
             return true;
         }
         !self.suppress_1d_firmware_notify_ack
+    }
+
+    /// Phase de session protocolaire : amorçage unique, puis runtime éditeur prêt.
+    pub fn session_phase(&self) -> SessionPhase {
+        if self.connecting || self.init_usb_settle_active() {
+            SessionPhase::Bootstrapping
+        } else {
+            SessionPhase::EditorReady
+        }
     }
 
     /// Lecture noms/corps preset en cours (modes dédiés, pas le runtime Standard).
@@ -395,6 +422,11 @@ impl HelixState {
     /// ACK flux IN `08:01:ed:03:80:10` sub=`04` (scroll HW / état slot) — lane `preset_dump_ack_ctr`.
     pub fn try_ack_preset_dump_stream_chunk_in(&mut self, data: &[u8]) -> bool {
         preset_dump_stream_ack::ack_preset_dump_stream_chunk(self, data)
+    }
+
+    /// Pipeline couches actives (fond scroll, pull, ACK dump 272) — voir `usb_in_pipeline`.
+    pub fn run_usb_in_active_layers(&mut self, data: &[u8]) -> usb_in_pipeline::ActivePipelineOutcome {
+        usb_in_pipeline::run_active_layers(self, data)
     }
 
     /// Scroll modèle HW (molette Stomp) — désactivé ; voir `slot_model_hw_pull` / `docs/SCROLL_HW_RESET.md`.

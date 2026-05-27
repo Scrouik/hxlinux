@@ -9,6 +9,7 @@
 //! plusieurs scrolls sans freeze, la session n’est pas contrainte côté firmware.
 
 use crate::helix::{HelixState, packet::OutPacket};
+use crate::helix::usb_in_pipeline::{LayerEffect, LayerResult};
 
 /// Trame IN bulk du flux dump (preset ou état slot pendant scroll HW).
 pub fn is_preset_dump_stream_chunk_in(data: &[u8]) -> bool {
@@ -31,13 +32,13 @@ pub fn is_preset_dump_stream_chunk_in(data: &[u8]) -> bool {
     true
 }
 
-/// Envoie l’ACK observé HX Edit pour un chunk flux (hors mode `RequestPreset*`).
-pub fn ack_preset_dump_stream_chunk(state: &mut HelixState, data: &[u8]) -> bool {
+/// Couche active « ACK chunks 272 » (`preset_dump_ack_ctr`).
+pub fn handle_in_layer(state: &mut HelixState, data: &[u8]) -> LayerResult {
     if !is_preset_dump_stream_chunk_in(data) {
-        return false;
+        return LayerResult::Ignored;
     }
     if state.init_usb_settle_active() || state.preset_usb_read_in_progress() {
-        return false;
+        return LayerResult::Ignored;
     }
     let cnt = state.next_x80_cnt();
     let double = state.next_preset_dump_ack_double();
@@ -55,7 +56,14 @@ pub fn ack_preset_dump_stream_chunk(state: &mut HelixState, data: &[u8]) -> bool
             double[1]
         );
     }
-    true
+    LayerResult::Consumed {
+        effect: LayerEffect::PresetDumpLaneAndAck,
+    }
+}
+
+/// Envoie l’ACK observé HX Edit pour un chunk flux (hors mode `RequestPreset*`).
+pub fn ack_preset_dump_stream_chunk(state: &mut HelixState, data: &[u8]) -> bool {
+    matches!(handle_in_layer(state, data), LayerResult::Consumed { .. })
 }
 
 fn preset_dump_stream_ack_debug_enabled() -> bool {

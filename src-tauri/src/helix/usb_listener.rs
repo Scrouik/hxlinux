@@ -114,7 +114,7 @@ pub fn start_listener(
 
                     // Dispatcher vers le mode actif
                     // On lock state et mode séparément pour éviter deadlock
-                    let hw_slot_changed = {
+                    let (hw_slot_changed, fond_bootstrap_alert) = {
                         let lock_start = Instant::now();
                         let mut s = state.lock().unwrap();
                         let state_wait_ms = lock_start.elapsed().as_millis();
@@ -129,6 +129,27 @@ pub fn start_listener(
                         // Slot actif unique (`hw_active_slot_*`) : `ingest_hw_slot_notify_in` — preset/HW/UI.
                         let ev = s.ingest_hw_slot_notify_in(&data);
                         crate::helix::init_trace::trace_in(&data);
+                        let _active = s.run_usb_in_active_layers(&data);
+                        let fond_bootstrap_alert = if (s.connecting || s.init_usb_settle_active())
+                            && data.len() == 40
+                            && matches!(data.first(), Some(0x1d | 0x1f))
+                            && data.get(4..8) == Some(&[0xf0, 0x03, 0x02, 0x10])
+                        {
+                            let preview = data
+                                .iter()
+                                .take(16)
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<Vec<_>>()
+                                .join(":");
+                            Some(format!(
+                                "ALERT fond pendant amorcage: head={:02x} len={} preview={}...",
+                                data.first().copied().unwrap_or(0),
+                                data.len(),
+                                preview
+                            ))
+                        } else {
+                            None
+                        };
                         let param_events = s.ingest_slot_param_in(&data);
                         let mode_lock_start = Instant::now();
                         let mut m = mode.lock().unwrap();
@@ -140,12 +161,10 @@ pub fn start_listener(
                                 data.len()
                             );
                         }
-                        // Chunks 272 o du flux preset/slot (HX Edit ~1 ACK par chunk pendant scroll HW).
-                        let _ = s.try_ack_preset_dump_stream_chunk_in(&data);
                         let model_changed = s.ingest_slot_model_hw_in(&data);
                         let state_hold_ms = hold_start.elapsed().as_millis();
                         warn_slow_lock("HelixState.lock()", state_wait_ms, state_hold_ms, data.len());
-                        (ev, param_events, model_changed)
+                        ((ev, param_events, model_changed), fond_bootstrap_alert)
                     };
                     if let (Some(app), Some(payload)) = (app_handle.as_ref(), hw_slot_changed.0) {
                         if let Err(e) = app.emit("models:hardware-slot-changed", payload) {
@@ -158,6 +177,11 @@ pub fn start_listener(
                         }
                     }
                     if let Some(app) = app_handle.as_ref() {
+                        if let Some(msg) = fond_bootstrap_alert {
+                            if let Err(e) = app.emit("debug:fond-amorcage", msg) {
+                                eprintln!("[UsbListener] emit debug:fond-amorcage: {e}");
+                            }
+                        }
                         for payload in hw_slot_changed.1 {
                             if preset_debug_verbose_enabled() {
                                 eprintln!(

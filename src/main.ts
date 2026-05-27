@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -475,6 +475,14 @@ window.addEventListener("DOMContentLoaded", () => {
   updateAppWidth([]);
   loadPresets();
   window.setInterval(loadPresets, 1500);
+  void listen<string>("debug:fond-amorcage", (event) => {
+    const msg = event.payload ?? "ALERT fond pendant amorcage";
+    barHint.textContent = msg;
+    console.warn(`[HxLinux] ${msg}`);
+    setTimeout(() => {
+      barHint.textContent = "Right-click for options · Drag to reorder";
+    }, 6000);
+  });
 });
 
 window.addEventListener("resize", () => {

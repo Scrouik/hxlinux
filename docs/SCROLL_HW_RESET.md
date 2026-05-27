@@ -12,9 +12,11 @@ ACK `1d`/`1f`, heuristiques `21`).
 
 | Composant | Comportement |
 |-----------|----------------|
-| `slot_model_hw_pull.rs` | Type payload + `ingest` → `None` uniquement |
-| `usb_listener` | Plus d’ACK scroll sur `1d`/`1f` |
-| `HelixState` | Plus de champs `hw_model_*` |
+| `usb_in_pipeline.rs` | Couches actives IN : fond scroll → pull (stub) → ACK dump 272 |
+| `usb_listener.rs` | `run_usb_in_active_layers` (plus d’ACK scroll/dump en direct) |
+| `firmware_scroll_ack.rs` | Couche 1 — `handle_in_layer` : ACK `1d`/`1f` (lane scroll, sans pull) |
+| `slot_model_hw_pull.rs` | Couche 2 — `handle_in_layer` → `Ignored` ; `ingest` → `None` |
+| `HelixState` | `firmware_scroll_ack_*` uniquement (pas de pull) |
 | UI models | Molette Stomp **ne met pas à jour** le modèle affiché |
 
 Le handshake connect envoie toujours `f0:03` sub=08 avec `09:10` en dur (`connect.rs`) —
@@ -24,8 +26,8 @@ indépendant de la future lane scroll.
 
 `captures/usb-wireshark/` — référence : `3_scroll_HXEdit.json`.
 
-## Prochaine implémentation
+## Suite du travail
 
-1. Analyser **un** scroll HX Edit (ordre IN/OUT, compteurs, délais).
-2. Réintroduire lane + ACK + pull dans un module dédié, sans réutiliser l’ancien design.
-3. Tests replay binaire sur la capture avant branchement UI.
+Contrat pipeline : **`todo-scroll-hw.md` § Pipeline USB**. Pull scroll **non réactivé** tant que les règles `1f` ne sont pas calées sur capture.
+
+Feuille de route détaillée (phases, critères, checklist) : **[`todo-scroll-hw.md`](todo-scroll-hw.md)**.
