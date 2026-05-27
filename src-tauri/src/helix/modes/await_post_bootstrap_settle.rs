@@ -19,6 +19,8 @@ impl Mode for AwaitPostBootstrapSettle {
     }
 
     fn data_in(&mut self, data: &[u8], state: &mut HelixState) -> bool {
+        state.tick_post_ef_arm_gate(data);
+
         if Standard::check_keep_alive(data, state) {
             return false;
         }

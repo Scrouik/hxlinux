@@ -13,6 +13,13 @@ use crate::helix::packet::OutPacket;
 
 const INTER_PACKET_DELAY_MS: u64 = 20;
 
+/// Fin de rafale phase 4 observée HX (`01_connect`, `stomp_running`) : bulk **132 o**, tête `7a`.
+pub fn is_phase4_bootstrap_trailer_in(data: &[u8]) -> bool {
+    data.len() == 132
+        && data.first() == Some(&0x7a)
+        && data.get(4..8) == Some(&[0xed, 0x03, 0x80, 0x10])
+}
+
 /// Envoie les requêtes longues `ed` / `ef` qui amorcent l'état preset + liste (phase 4).
 pub fn send(state: &mut HelixState) {
     crate::helix::init_trace::trace("editor_phase4_bootstrap BEGIN (3×19 ed + 1a ef)");
@@ -90,4 +97,25 @@ pub fn send(state: &mut HelixState) {
         ],
         INTER_PACKET_DELAY_MS,
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase4_trailer_7a_132() {
+        let mut b = vec![0u8; 132];
+        b[0] = 0x7a;
+        b[1] = 0x00;
+        b[2] = 0x00;
+        b[3] = 0x18;
+        b[4] = 0xed;
+        b[5] = 0x03;
+        b[6] = 0x80;
+        b[7] = 0x10;
+        assert!(is_phase4_bootstrap_trailer_in(&b));
+        b[0] = 0x08;
+        assert!(!is_phase4_bootstrap_trailer_in(&b));
+    }
 }

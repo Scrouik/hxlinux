@@ -131,6 +131,16 @@ pub fn start_listener(
                         let ev = s.ingest_hw_slot_notify_in(&data);
                         crate::helix::init_trace::trace_in(&data);
                         let _active = s.run_usb_in_active_layers(&data);
+                        if s.phase4_bootstrap_active
+                            && crate::helix::editor_phase4_bootstrap::is_phase4_bootstrap_trailer_in(
+                                &data,
+                            )
+                        {
+                            s.note_phase4_bootstrap_complete();
+                        }
+                        if s.post_ef_arm_gate_active {
+                            s.tick_post_ef_arm_gate(&data);
+                        }
                         let fond_bootstrap_alert = if (s.connecting || s.init_usb_settle_active())
                             && data.len() == 40
                             && matches!(data.first(), Some(0x1d | 0x1f))

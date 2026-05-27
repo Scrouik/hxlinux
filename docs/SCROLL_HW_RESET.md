@@ -12,10 +12,10 @@ ACK `1d`/`1f`, heuristiques `21`).
 
 | Composant | Comportement |
 |-----------|----------------|
-| `usb_in_pipeline.rs` | Couches actives IN : fond scroll → pull (stub) → ACK dump 272 |
+| `usb_in_pipeline.rs` | Couches actives IN : fond scroll → ACK dump 272 |
 | `usb_listener.rs` | `run_usb_in_active_layers` (plus d’ACK scroll/dump en direct) |
 | `firmware_scroll_ack.rs` | Couche 1 — `handle_in_layer` : ACK `1d`/`1f` (lane scroll, sans pull) |
-| `slot_model_hw_pull.rs` | Couche 2 — `handle_in_layer` → `Ignored` ; `ingest` → `None` |
+| `slot_model_hw_pull.rs` | **Supprimé** — pull scroll non réactivé (phase 4) |
 | `HelixState` | `firmware_scroll_ack_*` uniquement (pas de pull) |
 | UI models | Molette Stomp **ne met pas à jour** le modèle affiché |
 

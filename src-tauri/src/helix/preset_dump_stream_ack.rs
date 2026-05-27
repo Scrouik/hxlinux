@@ -37,7 +37,9 @@ pub fn handle_in_layer(state: &mut HelixState, data: &[u8]) -> LayerResult {
     if !is_preset_dump_stream_chunk_in(data) {
         return LayerResult::Ignored;
     }
-    if state.init_usb_settle_active() || state.preset_usb_read_in_progress() {
+    // Pendant `init_usb_settle` le host n'envoie pas de requêtes proactives mais doit
+    // continuer à ACKer les IN 272 (phase 4 + queue device). Seul RequestPreset* coupe.
+    if state.preset_usb_read_in_progress() {
         return LayerResult::Ignored;
     }
     let cnt = state.next_x80_cnt();

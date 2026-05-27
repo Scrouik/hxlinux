@@ -10,7 +10,7 @@
 |-----------|-------------|
 | `usb_in_pipeline.rs` | Ordre + `Ignored`/`Observed`/`Consumed` des couches actives |
 | `firmware_scroll_ack.rs` | Couche 1 fond — `handle_in_layer` |
-| `slot_model_hw_pull.rs` | Couche 2 scroll — `handle_in_layer` → `Ignored` ; `ingest` → `None` |
+| `slot_model_hw_pull.rs` | **Supprimé** — pull scroll phase 4 (non réactivé) |
 | `HelixState` | `firmware_scroll_ack_*` seulement |
 | UI `models` | Molette Stomp **ne met pas à jour** le modèle affiché |
 
@@ -174,6 +174,28 @@ Fichiers : `amorcage.rs` (`send_arm_ed` / `send_arm_f0` / `send_arm_ef`), `conne
 
 **Test** : capture `stomp_running_start_hxlinux.json` — OUT [7–12] doit matcher HX Edit ; critère fond : IN `1d` scroll ≥ 200 / 27 s, ratio ACK ≈ 1.
 
+### Relecture code amorçage (27 mai 2026)
+
+Séquence implémentée (alignée `todo` / captures `01_connect`) :
+
+| Étape | Fichier | OUT |
+|-------|---------|-----|
+| Réponse init x2 | `connect.rs` | `ARM_ed` → ack `0x11` f0 |
+| Fin Reconfigure | `reconfigure_x1.rs` | `ARM_f0` → ack `0x11` ef → `ARM_ef` (+16 ms) |
+| +235 ms thread | `amorcage::spawn_post_arm_sequence` | phase4 → settle 700 ms → `editor_ready` → keep-alive → `RequestPresetNames` |
+
+Points validés en lecture :
+
+- `spawn_post_arm_sequence` déclenché une seule fois via `AwaitPostBootstrapSettle` (`lib.rs`).
+- Fond scroll : filtre strict `1d`/`1f` 40 o + `f0:03:02:10` ; ACK dès `firmware_scroll_armed` (post `ARM_f0`), **sans** gate `EditorReady` — HX envoie des `1d` ~+20 ms après `ARM_ef` avant la fin phase 4.
+- « x11 x2 » dans les captures = canal **f0** (pas deux acks) ; le 2ᵉ `x11` f0 (`09:02`) ne déclenche plus d’ARM local (reporté à Reconfigure).
+
+Écart mineur connu (non bloquant sur V2 idle) : keep-alive envoie `f0` sub=`10` avec double figé `09:10` (~21×/session) ; HX Edit idle = 0 poll `sub=10` — à surveiller sur prochaine capture.
+
+**Script validation capture** : `scripts/analyze_stomp_running_compare.py` (ARM + métriques fond).
+
+**Référence terrain déjà verte** : `stomp_runnig_start_hxlinux_V2.json` — 259 `1d`, ratio ACK 1,00 (le fil fond **peut** tourner sur Linux ; le jalon ouvert = reproduire après fix entrelacement ARM sur procédure `stomp_running_*` fraîche).
+
 ---
 
 ## Pipeline USB — contrat des couches (figé mai 2026)
@@ -196,8 +218,9 @@ Règle protocolaire : **Consumed = lane + ACK** pour le fond sur `1d`/`1f` 40 o.
 ### Ordre des couches actives (2026-05-27)
 
 1. **Fond** (`FirmwareScroll`) — `firmware_scroll_ack::handle_in_layer` (`1d`/`1f` → `f0/08`, lane scroll)
-2. **ScrollPull** — `slot_model_hw_pull::handle_in_layer` (**Ignored** tant que pull désactivé)
-3. **PresetDumpStream** — `preset_dump_stream_ack::handle_in_layer` (IN 272 → `ed/08`, lane preset)
+2. **PresetDumpStream** — `preset_dump_stream_ack::handle_in_layer` (IN 272 → `ed/08`, lane preset)
+
+(Pull scroll = couche future, hors pipeline tant que phase 4 non validée.)
 
 Passives (hors pipeline, toujours appelées) : `ingest_hw_slot_notify_in`, `ingest_slot_param_in`,
 `mode.data_in`, `ingest_slot_model_hw_in` (UI / état sans OUT concurrent sur le même gabarit).
@@ -382,6 +405,86 @@ IN 1f → OUT 1b → OUT f0/08 (fond) → IN ~92 → OUT 19 → IN ~68 → IN 21
 
 ---
 
+## Analyse `stomp_running_start_hxlinux.json` (27 mai 2026 — post-fix entrelacement ARM)
+
+Capture : ~30,7 s, 294 paquets `capdata` (capture démarre ~3,6 s après bruit USB initial).
+
+### Verdict global
+
+| Critère | Cible | Mesuré | Statut |
+|---------|-------|--------|--------|
+| Entrelacement ARM | `ARM_ed` → x11 f0 → … → `ARM_f0` → x11 ef → `ARM_ef` | Présent (#283 → #285 → #297 → #299 → #303, Δt ≈ +70–88 ms depuis 1er OUT connect) | **OK** |
+| Phase 4 + settle | 3×`19` + `1a` puis ~700 ms | #327–345 (+326–387 ms) ; 1er `f0` poll sub=`10` #429 (+1063 ms) | **OK** (ordre de grandeur) |
+| Fond idle | IN `1d` fond ≥ ~200 / ~22 s idle | **0** IN `1d` / `1f` 40 o `f0:02:10` | **KO** |
+| ACK fond réactif | OUT `f0` sub=`08` ≈ IN `1d` | **1** OUT `f0/08` (bootstrap `09:10` #297 seul) | **KO** |
+
+**Conclusion** : l’amorçage OUT ressemble enfin à HX Edit sur la fenêtre connect, mais le Stomp **n’ouvre pas** le dialogue fond scroll (pas un problème de classification pipeline — il n’y a rien à classer).
+
+### Séquence bootstrap (depuis 1er OUT host #247, t = 0)
+
+| Δt (ms) | Frame | Dir | Rôle |
+|--------:|------:|-----|------|
+| 0 | 247 | OUT | init x1 ef |
+| 69 | 276 | OUT | init x2 f0 |
+| 70 | 283 | OUT | **ARM_ed** `80:10:ed:03` lane `09:10` |
+| 71 | 285 | OUT | ack x11 f0 |
+| 71–72 | 289–297 | OUT | reconfigure x1 + **ARM_f0** |
+| 72 | 299 | OUT | ack x11 ef |
+| 88 | 303 | OUT | **ARM_ef** |
+| 326–387 | 327–345 | OUT/IN | phase 4 (3×`19` + `1a`) + rafale IN 272 |
+| 1063 | 429 | OUT | 1er keep-alive `f0` sub=`10` lane `09:10` figée |
+| 1225+ | 497+ | OUT | 2ᵉ vague `19`×6 + rafale OUT `ed` sub=`08` (lecture preset) |
+
+### Fenêtre idle (~8,6 s → 30,7 s, ~22 s)
+
+- IN : uniquement triplet keep-alive **16 o** sub=`10` (`ef` / `f0` / `ed`) — **22× chacun**, **0×40 o**.
+- OUT : **21×** `f0` sub=`10` avec lane **`09:10` figée** ; pas de boucle `1d` → `f0/08` évolutive (`48:10`…).
+
+### Écart vs `stomp_runnig_start_hxlinux_V2.json` (référence verte todo)
+
+| Métrique | V2 (idle OK) | Cette capture |
+|----------|--------------|---------------|
+| IN `1d` fond | 259 | **0** |
+| OUT `f0/08` | 258 | **1** |
+
+Même procédure nominale, résultat **opposé** au niveau device → vérifier conditions terrain : Stomp déjà lié à HX Edit / autre host, reboot Stomp avant capture, filtre Wireshark, ou régression OUT non visible sur la seule fenêtre ARM.
+
+### Pistes (par priorité)
+
+1. **Terrain** : reboot Stomp, fermer HX Edit, recapture identique.
+2. **Keep-alive** : `f0` sub=`10` envoie `09:10` (lane scroll) au lieu d’un double poll dédié — HX Edit idle = 0× sub=`10` ; à tester sur capture suivante.
+3. **2ᵉ vague `19`** (+1,2 s) : chevauchement `RequestPresetNames` — déjà noté sur `01_connect` ; ne explique pas à elle seule l’absence totale de `1d`, mais à corréler si le Stomp reste en mode « lecture preset ».
+
+Script : `python3 scripts/analyze_stomp_running_compare.py captures/.../stomp_running_start_hxlinux.json`
+
+### Comparaison paire `stomp_running_start_hxedit.json` (27 mai 2026)
+
+| Métrique | HX Edit | Linux (post-fix ARM) |
+|----------|---------|----------------------|
+| Durée / capdata | 30,7 s / **801** | 30,7 s / **294** |
+| Ordre ARM | `ARM_ed` → `ARM_f0` → `ARM_ef` | **identique** |
+| Octets ARM `09:10` | identiques (cnt x1 diffère : `03` vs `04` sur `ARM_ef`) | idem |
+| IN `1d` fond | **303** | **0** |
+| OUT `f0` sub=`08` | **302** (lane `48:10`… après bootstrap) | **1** (bootstrap seul) |
+| OUT `f0` sub=`10` | **0** | **25** (`09:10` figé) |
+| Ratio ACK / `1d` | **0,997** | — |
+
+**Aligné sur `ARM_ef` (t = 0)** :
+
+| Δt | HX Edit | Linux |
+|----|---------|-------|
+| +20 ms | 1er **IN `1d`** fond (#8582) | — |
+| +166 ms | — | IN courts `ef`/`ed`/`f0` sub=`08` (échos, pas `1d`) |
+| +203 ms | 1er **OUT `f0/08` réactif** lane `48:10` | — |
+| +218 / +239 ms | phase 4 (`19`…) | phase 4 (`19`…) |
+| +976 ms | — | 1er **`f0` sub=`10` poll** (`09:10`) |
+
+**Lecture** : les triples ARM sont la **même forme** ; l’écart décisif n’est pas l’ordre ARM mais (1) le Stomp **ne pousse jamais** les `1d` 40 o côté Linux, (2) HX Edit **ne poll jamais** `f0` sub=`10` alors que Linux le faisait ~1/s.
+
+**Correctif code (27 mai)** : `keep_alive.rs` — boucle réduite au seul poll `ed` sub=`10` + `editor_ed03_double_val()` (plus de `ef` `72:1e` ni `f0` `09:10` figés). `live_write.rs` : prélude `f0` utilise `firmware_scroll_lane_double()`.
+
+---
+
 ## Notes terrain
 
 | Date | Phase | Observation |
@@ -399,6 +502,9 @@ IN 1f → OUT 1b → OUT f0/08 (fond) → IN ~92 → OUT 19 → IN ~68 → IN 21
 | 2026-05-27 | amorçage-fix | **Entrelacement ARM** implémenté (`send_arm_ed` / `send_arm_f0` / `send_arm_ef` + `spawn_post_arm_sequence`) — à valider capture `stomp_running_*`. |
 | 2026-05-27 | amorçage | **Paires capture à ne pas mélanger** : `01_connect_*` = app ouverte → Stomp branché/allumé ; `stomp_running_*` = Stomp ON → capture → lancement app → idle ~30 s. **Fix batch `amorcage.rs` insuffisant** : sur `stomp_running_*` (procédure identique), HX Edit = ARM **entrelacé** (`ARM_ed → x11 x2 → Reconfigure ef → ARM_f0 → x11 x1 → ARM_ef`) ; Linux = Reconfigure **puis** batch ARM. **À implémenter** avant prochaine capture idle. |
 | 2026-05-27 | connect | **`01_connect_HXLinux.json`** (~30 s) vs `01_connect_HXEdit.json` (~12 s) : OUT [0–6] identiques ; [7–11] entrelacement ARM manquant ; post-`ARM_ef` phase4/settle/keep-alive **alignés** — voir § *Fenêtre post-ARM_ef → phase4 → keep-alive*. |
+| 2026-05-27 | fond-ack | **`firmware_scroll_ack.rs`** : ACK `1d`/`1f` dès `firmware_scroll_armed` (post `ARM_f0`), plus de gate `EditorReady` — aligné HX `stomp_running` (+20 ms `1d` avant fin phase 4). |
+| 2026-05-27 | keep-alive | **`keep_alive.rs`** : fin du triplet `ed→ef→f0` hardcodé ; seul poll `ed` sub=`10` + lane éditeur dynamique (captures HX : pas de `f0/10` en idle). |
+| 2026-05-27 | stomp_running (post-fix ARM) | **`stomp_running_start_hxlinux.json`** (~27 s utile, analyse agent) — voir § *Analyse stomp_running_start_hxlinux.json* ci-dessous. |
 | 2026-05-27 | déconnexion/reconnexion | **Fix cycle de vie session USB** : arrêt explicite session (`session_stop` + `recv_timeout`), purge `AppState` (`preset_names`, `connected_device_name`, handles), arrêt writer sur `NoDevice`, garde-fou `helix_session_busy` pour empêcher les sessions concurrentes, événement front `helix-device-lost` + purge UI (`main.ts`, `models.ts`). **Symptômes ciblés** : bandeau “HX connecté” persistant après unplug, grille/presets non purgés, boucle `[UsbWriter] ... No such device`, reconnexion sans lecture preset. **Validation terrain en attente** (test unplug/replug réel + capture). |
 
 ### Détail comparatif (après bootstrap `09:10`)

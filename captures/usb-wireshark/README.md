@@ -11,7 +11,9 @@ lourds ou des blocages quand on y copiait de gros fichiers pendant `npm run taur
 
 - Copier ici les nouvelles captures ; elles ne sont **pas** compilées ni bundlées.
 - Fichiers en général **non versionnés** (voir `.gitignore`).
-- Scripts : `scripts/analyze_ed03_captures.py` (chemin par défaut ci-dessous).
+- Scripts :
+  - `scripts/analyze_ed03_captures.py` — lanes ED03 / preset
+  - `scripts/analyze_stomp_running_compare.py` — amorçage ARM + fond scroll (`stomp_running_*`)
 
 ## Convention de nommage
 

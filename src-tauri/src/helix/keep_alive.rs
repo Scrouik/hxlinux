@@ -1,7 +1,11 @@
 // ===========================================================
 // helix/keep_alive.rs
-// Un seul thread keep-alive : cycle ordonné ed → ef → f0 (captures HX Edit),
-// au lieu de 4 threads aux rythmes indépendants (compteurs mélangés, ed dynamique).
+// Thread keep-alive : poll `ed:03` sub=`10` (~1,04 s).
+//
+// Captures HX Edit (`01_connect`, `stomp_running` idle) : après settle,
+// seul OUT périodique = `80:10:ed:03` sub=`10` + double éditeur figé (`ee:1c` / `7e:1c`).
+// Pas de poll `ef` sub=`08` ni `f0` sub=`10` en boucle — le fond scroll = IN `1d` →
+// OUT `f0` sub=`08` via `firmware_scroll_ack` (lane qui avance).
 // ===========================================================
 
 use std::sync::{Arc, Mutex};
@@ -12,17 +16,11 @@ use std::time::Duration;
 use crate::helix::HelixState;
 use crate::helix::packet::OutPacket;
 
-/// Période entre deux cycles complets (kempline ~1.04 s).
+/// Période entre deux polls `ed` (kempline / HX Edit ~1,04 s).
 const KEEP_ALIVE_CYCLE_MS: u64 = 1040;
-/// Pause entre deux OUT du même cycle (laisser le device / la pile répondre sur 0x81).
-const BETWEEN_OPCODE_MS: u64 = 28;
-/// Délai HX Edit après bootstrap phase 4 (~688 ms, frames #3447→#3761) avant le 1er poll
-/// `f0:03` **et** avant `RequestPresetNames`. Évite trames qui se croisent sur `0x81`.
+/// Délai HX Edit après bootstrap phase 4 avant le 1er poll `ed` et `RequestPresetNames`.
 pub const POST_PHASE4_SETTLE_MS: u64 = 700;
 
-// ===========================================================
-// Structure — un seul thread
-// ===========================================================
 pub struct KeepAliveManager {
     stop_ordered: Arc<AtomicBool>,
 }
@@ -34,27 +32,14 @@ impl KeepAliveManager {
         }
     }
 
-    /// Boucle `ed:03` → `ef:03` → `f0:03`.
-    ///
-    /// Sur `ed` sub=10 : `double` = snapshot de `editor_ed03_double_val()` pris **une seule fois**
-    /// avant la boucle — HX Edit utilise une valeur fixe `ee:1c` tout au long du polling
-    /// (ref. `01_connect_HXEdit.json` : Δ=0 sur tous les cycles).
-    /// Ne pas appeler `preset_data_packet_double()` dans la boucle — ça ferait varier le double
-    /// à chaque cycle, ce qui n'est pas le comportement HX Edit.
+    /// Poll `ed:03` sub=`10` — double = [`HelixState::editor_ed03_double_val`] (lane éditeur,
+    /// pas la lane scroll `09:10`). Relu à chaque cycle pour suivre phase 4 / preset sans
+    /// hardcoder `72:1e` ou réutiliser la lane scroll sur `f0`.
     pub fn start_ordered(&self, state: Arc<Mutex<HelixState>>) {
         let stop = Arc::clone(&self.stop_ordered);
         stop.store(false, Ordering::SeqCst);
 
         thread::spawn(move || {
-            // Le settle post phase4 est géré par `amorcage::spawn_post_arm_sequence` avant StartOrdered.
-
-            // Snapshot unique — valeur fixe pour toute la durée du polling
-            // (aligné HX Edit : double figé à ee:1c après init, Δ=0 entre cycles)
-            let (ed03_session, ed03_double) = {
-                let s = state.lock().unwrap();
-                (s.session_no, s.editor_ed03_double_val())
-            };
-
             while !stop.load(Ordering::SeqCst) {
                 let skip_cycle = {
                     let s = state.lock().unwrap();
@@ -68,44 +53,18 @@ impl KeepAliveManager {
                 {
                     let mut s = state.lock().unwrap();
                     let cnt = s.next_x80_cnt();
+                    let session = s.session_no;
+                    let double = s.editor_ed03_double_val();
                     let pkt = OutPacket::new(vec![
                         0x08, 0x00, 0x00, 0x18,
                         0x80, 0x10, 0xed, 0x03,
                         0x00, cnt, 0x00, 0x10,
-                        ed03_session, ed03_double[0], ed03_double[1], 0x00,
-                    ]);
-                    s.send(pkt);
-                }
-                thread::sleep(Duration::from_millis(BETWEEN_OPCODE_MS));
-
-                {
-                    let mut s = state.lock().unwrap();
-                    let cnt = s.next_x1_cnt();
-                    let pkt = OutPacket::new(vec![
-                        0x08, 0x00, 0x00, 0x18,
-                        0x01, 0x10, 0xef, 0x03,
-                        0x00, cnt, 0x00, 0x08,
-                        0x72, 0x1e, 0x00, 0x00,
-                    ]);
-                    s.send(pkt);
-                }
-                thread::sleep(Duration::from_millis(BETWEEN_OPCODE_MS));
-
-                {
-                    let mut s = state.lock().unwrap();
-                    let cnt = s.next_x2_cnt();
-                    let pkt = OutPacket::new(vec![
-                        0x08, 0x00, 0x00, 0x18,
-                        0x02, 0x10, 0xf0, 0x03,
-                        0x00, cnt, 0x00, 0x10,
-                        0x09, 0x10, 0x00, 0x00,
+                        session, double[0], double[1], 0x00,
                     ]);
                     s.send(pkt);
                 }
 
-                let step_budget = BETWEEN_OPCODE_MS.saturating_mul(2);
-                let tail = KEEP_ALIVE_CYCLE_MS.saturating_sub(step_budget);
-                thread::sleep(Duration::from_millis(tail.max(1)));
+                thread::sleep(Duration::from_millis(KEEP_ALIVE_CYCLE_MS));
             }
         });
     }

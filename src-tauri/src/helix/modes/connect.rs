@@ -35,6 +35,13 @@ impl Mode for Connect {
         state.editor_ready = false;
         state.firmware_scroll_armed = false;
         state.post_arm_sequence_started = false;
+        state.post_ef_arm_ack_mask = 0;
+        state.post_ef_arm_gate_active = false;
+        state.post_ef_gate_rx = None;
+        state.post_ef_gate_tx = None;
+        state.phase4_bootstrap_active = false;
+        state.phase4_complete_rx = None;
+        state.phase4_complete_tx = None;
 
         self.received_x11_on_x2  = false;
         self.received_x11_on_x80 = false;

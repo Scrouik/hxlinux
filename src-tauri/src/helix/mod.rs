@@ -87,6 +87,8 @@ pub enum ModeRequest {
     ReconfigureX1,
     RequestPresetName,
     RequestPresetNames,
+    /// Finalise `RequestPresetNames` (watchdog / secours) puis enchaîne `RequestPresetName` si possible.
+    FinalizePresetNames,
     /// Attente `POST_PHASE4_SETTLE_MS` après bootstrap phase 4, puis `RequestPresetNames`.
     AwaitPostBootstrapSettle,
     Standard,
@@ -100,6 +102,7 @@ pub enum ModeRequest {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // réservé debug / front ; le fond scroll ne gate plus sur cette phase
 pub enum SessionPhase {
     Bootstrapping,
     EditorReady,
@@ -243,9 +246,21 @@ pub struct HelixState {
     pub suppress_1d_firmware_notify_ack: bool,
     /// `false` jusqu’à fin amorçage (`amorcage::spawn_post_arm_sequence`) — gate épisodes host proactifs.
     pub editor_ready: bool,
-    /// Empêche de lancer deux fois la séquence `amorcage::spawn_post_arm_sequence`
+    /// Empêche de lancer deux fois la séquence post-ARM
     /// si `ModeRequest::AwaitPostBootstrapSettle` est demandé plusieurs fois.
     pub post_arm_sequence_started: bool,
+    /// Gate post-ARM_ef : bitmap des ACK reçus après ARM_ef (bit0=ef, bit1=ed, bit2=f0).
+    pub post_ef_arm_ack_mask: u8,
+    /// `true` après ARM_ef tant que la gate n'est pas complète.
+    pub post_ef_arm_gate_active: bool,
+    /// Receiver gate — créé dans `arm_post_ef_gate`, consommé dans `lib.rs`.
+    pub post_ef_gate_rx: Option<std::sync::mpsc::Receiver<()>>,
+    /// Sender gate — signal phase 4 quand les 3 ACK sont reçus.
+    pub post_ef_gate_tx: Option<std::sync::mpsc::SyncSender<()>>,
+    /// `true` entre envoi des OUT phase 4 et réception du trailer IN `7a` 132 o.
+    pub phase4_bootstrap_active: bool,
+    pub phase4_complete_rx: Option<std::sync::mpsc::Receiver<()>>,
+    pub phase4_complete_tx: Option<std::sync::mpsc::SyncSender<()>>,
 }
 
 // ===========================================================
@@ -363,6 +378,13 @@ impl HelixState {
             suppress_1d_firmware_notify_ack: false,
             editor_ready: false,
             post_arm_sequence_started: false,
+            post_ef_arm_ack_mask: 0,
+            post_ef_arm_gate_active: false,
+            post_ef_gate_rx: None,
+            post_ef_gate_tx: None,
+            phase4_bootstrap_active: false,
+            phase4_complete_rx: None,
+            phase4_complete_tx: None,
         }
     }
 
@@ -375,6 +397,7 @@ impl HelixState {
     }
 
     /// Phase de session protocolaire : amorçage unique, puis runtime éditeur prêt.
+    #[allow(dead_code)]
     pub fn session_phase(&self) -> SessionPhase {
         if self.connecting || !self.editor_ready {
             SessionPhase::Bootstrapping
@@ -424,6 +447,13 @@ impl HelixState {
                 | ModeRequest::RequestPresetNames
                 | ModeRequest::ReconfigureX1
                 | ModeRequest::Connect
+        )
+    }
+
+    fn editor_ready_blocks_mode_request(req: &ModeRequest) -> bool {
+        matches!(
+            req,
+            ModeRequest::RequestPresetName | ModeRequest::RequestPresetNames
         )
     }
 
@@ -631,6 +661,29 @@ impl HelixState {
         self.editor_ed03_double_val()
     }
 
+    /// Aligne `preset_index` sur le nom lu par `RequestPresetName` (octet [24] seul est
+    /// souvent 0 — le nom est à [27..] et la liste est déjà dans `preset_names`).
+    pub fn resolve_preset_index_from_active_name(&mut self) {
+        const SLOT_COUNT: usize = 125;
+        if !self.got_preset_names || self.preset_names.len() < SLOT_COUNT {
+            return;
+        }
+        let Some(ref name) = self.active_preset_name else {
+            return;
+        };
+        let Some(idx) = self.preset_names.iter().position(|n| n == name) else {
+            return;
+        };
+        if self.preset_index != idx {
+            eprintln!(
+                "[PresetDebug] preset_index {} → {} (nom actif '{}')",
+                self.preset_index, idx, name
+            );
+        }
+        self.preset_index = idx;
+        self.active_preset_name_index = Some(idx);
+    }
+
     /// Envoie un paquet USB vers le HX
     pub fn send(&self, packet: OutPacket) {
         init_trace::trace_out(&packet.data, "send");
@@ -642,6 +695,13 @@ impl HelixState {
     /// Demande un changement de mode
     /// Kempline : self.helix_usb.switch_mode()
     pub fn switch_mode(&self, req: ModeRequest) {
+        if !self.editor_ready && Self::editor_ready_blocks_mode_request(&req) {
+            init_trace::trace_fmt(format_args!(
+                "switch_mode BLOCKED {:?} (editor not ready)",
+                req
+            ));
+            return;
+        }
         if self.init_usb_settle_active() && Self::init_usb_settle_blocks_mode_request(&req) {
             init_trace::trace_fmt(format_args!(
                 "switch_mode BLOCKED {:?} (init settle)",
@@ -670,6 +730,83 @@ impl HelixState {
         if let Some(tx) = &self.keepalive_tx {
             let _ = tx.send(cmd);
         }
+    }
+
+    /// Gate fin phase 4 — trailer IN `7a` 132 o (consommé par le thread amorcage).
+    pub fn arm_phase4_complete_gate(&mut self) {
+        use std::sync::mpsc::sync_channel;
+        let (tx, rx) = sync_channel::<()>(1);
+        self.phase4_bootstrap_active = false;
+        self.phase4_complete_tx = Some(tx);
+        self.phase4_complete_rx = Some(rx);
+        init_trace::trace("gate phase4 armée — attend trailer IN 7a 132o");
+    }
+
+    /// OUT phase 4 (3×`19` + `1a`) — la fin est signalée par [`Self::note_phase4_bootstrap_complete`].
+    pub fn start_phase4_bootstrap(&mut self) {
+        self.phase4_bootstrap_active = true;
+        crate::helix::editor_phase4_bootstrap::send(self);
+    }
+
+    /// Appelé sur le trailer `7a` 132 o (usb_listener / preset_dump).
+    pub fn note_phase4_bootstrap_complete(&mut self) {
+        if !self.phase4_bootstrap_active {
+            return;
+        }
+        self.phase4_bootstrap_active = false;
+        init_trace::trace("gate phase4 complète (trailer 7a 132o) — settle 700ms peut démarrer");
+        if let Some(tx) = self.phase4_complete_tx.take() {
+            let _ = tx.try_send(());
+        }
+    }
+
+    /// Arme la gate post-ARM_ef (après `send_arm_ef` dans `reconfigure_x1`).
+    pub fn arm_post_ef_gate(&mut self) {
+        use std::sync::mpsc::sync_channel;
+        let (tx, rx) = sync_channel::<()>(1);
+        self.post_ef_arm_ack_mask = 0;
+        self.post_ef_arm_gate_active = true;
+        self.post_ef_gate_tx = Some(tx);
+        self.post_ef_gate_rx = Some(rx);
+        init_trace::trace("gate post-ARM_ef armée — attend 3× IN 08/16o (ef+ed+f0)");
+    }
+
+    /// Compte les ACK `IN 08/16o` sub=`08` (ef, ed, f0). Signale la gate si complète.
+    pub fn tick_post_ef_arm_gate(&mut self, data: &[u8]) -> bool {
+        if !self.post_ef_arm_gate_active {
+            return false;
+        }
+        if data.len() != 16
+            || !data.starts_with(&[0x08, 0x00, 0x00, 0x18])
+            || data[11] != 0x08
+        {
+            return false;
+        }
+        let ep = &data[4..8];
+        // IN device→host : `ef:03:01:10` / `ed:03:80:10` / `f0:03:02:10` (≠ ordre OUT host→device).
+        let bit: u8 = if ep == &[0xef, 0x03, 0x01, 0x10] {
+            0b001
+        } else if ep == &[0xed, 0x03, 0x80, 0x10] {
+            0b010
+        } else if ep == &[0xf0, 0x03, 0x02, 0x10] {
+            0b100
+        } else {
+            return false;
+        };
+        self.post_ef_arm_ack_mask |= bit;
+        init_trace::trace_fmt(format_args!(
+            "gate post-ARM_ef tick mask={:03b}",
+            self.post_ef_arm_ack_mask
+        ));
+        if self.post_ef_arm_ack_mask == 0b111 {
+            self.post_ef_arm_gate_active = false;
+            init_trace::trace("gate post-ARM_ef complète (ef+ed+f0) — signal phase 4");
+            if let Some(tx) = self.post_ef_gate_tx.take() {
+                let _ = tx.try_send(());
+            }
+            return true;
+        }
+        false
     }
 
     /// Incrémente compteur x1

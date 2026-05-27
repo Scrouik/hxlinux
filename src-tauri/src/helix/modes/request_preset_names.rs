@@ -15,6 +15,8 @@ use crate::helix::modes::standard::Standard;
 use crate::pattern;
 
 const EXPECTED_PRESET_COUNT: usize = 125;
+/// Après phase 4 le Stomp peut mettre >750 ms avant le 1er chunk ef:03 noms.
+const PRESET_NAMES_IDLE_WATCHDOG_MS: u64 = 2000;
 
 static DEBUG_EXTRACT_PRESET_INDEX_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
@@ -42,17 +44,21 @@ impl RequestPresetNames {
     }
 
     /// Arme le watchdog — kempline : _arm_idle_watchdog()
-    /// Si aucun paquet reçu pendant 750ms → on finalise
+    /// Si aucun paquet reçu pendant `PRESET_NAMES_IDLE_WATCHDOG_MS` → `FinalizePresetNames`
+    /// (ne pas utiliser `RequestPresetName` : le guard MIDI/content_only bloquerait sans finaliser).
     fn arm_watchdog(&mut self) {
         self.cancel_watchdog();
         if let Some(mode_tx) = self.mode_tx.clone() {
             let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
             self.watchdog_cancel_tx = Some(cancel_tx);
             thread::spawn(move || {
-                match cancel_rx.recv_timeout(Duration::from_millis(750)) {
-                    Ok(_)  => {}
+                match cancel_rx.recv_timeout(Duration::from_millis(PRESET_NAMES_IDLE_WATCHDOG_MS)) {
+                    Ok(_) => {}
                     Err(_) => {
-                        let _ = mode_tx.send(ModeRequest::RequestPresetName);
+                        crate::helix::init_trace::trace(
+                            "RequestPresetNames watchdog — FinalizePresetNames",
+                        );
+                        let _ = mode_tx.send(ModeRequest::FinalizePresetNames);
                     }
                 }
             });
@@ -331,6 +337,12 @@ decoded_by_index={} fallback_count={} suffix_len={}",
             );
         }
 
+        let non_empty = names.iter().filter(|n| n != &"<empty>").count();
+        eprintln!(
+            "[RequestPresetNames] finish_transfer: {} slots, {} non-empty",
+            names.len(),
+            non_empty
+        );
         state.preset_names     = names;
         crate::helix::init_trace::trace_fmt(format_args!(
             "RequestPresetNames::finish count={} → RequestPresetName",
@@ -339,7 +351,12 @@ decoded_by_index={} fallback_count={} suffix_len={}",
         state.got_preset_names = true;
         state.just_fetched_preset_names = true;
         state.new_session_no();
-        state.switch_mode(ModeRequest::RequestPresetName);
+        // mode_tx (pas switch_mode) : évite le drop silencieux pendant init_usb_settle.
+        if let Some(tx) = self.mode_tx.clone() {
+            let _ = tx.send(ModeRequest::RequestPresetName);
+        } else {
+            state.switch_mode(ModeRequest::RequestPresetName);
+        }
     }
 
     /// Ajoute le payload d'un paquet au stream
@@ -383,6 +400,10 @@ impl Mode for RequestPresetNames {
         crate::helix::init_trace::trace_out(&pkt.data, "RequestPresetNames::start");
         crate::helix::init_trace::trace(
             "RequestPresetNames::start — OUT 1d ef:03 (commande liste noms, ≠ scroll IN)",
+        );
+        eprintln!(
+            "[RequestPresetNames] start OUT 1d ef:03 cnt={:#04x}",
+            pkt.data.get(9).copied().unwrap_or(0)
         );
         state.send(pkt);
 

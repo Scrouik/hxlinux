@@ -3,7 +3,7 @@
 //! Couche **minimale** : parité idle HX Edit (`stomp_running_start_hxedit.json`).
 //! Pas de pull modèle, pas d’UI scroll.
 
-use crate::helix::{HelixState, SessionPhase};
+use crate::helix::HelixState;
 use crate::helix::init_trace;
 use crate::helix::packet::OutPacket;
 use crate::helix::usb_in_pipeline::{LayerEffect, LayerResult};
@@ -67,21 +67,19 @@ fn is_scroll_fond_notify(data: &[u8]) -> bool {
 
 /// Couche fond : IN `1d` / `1f` scroll → lane + ACK `f0:03` sub=`08`.
 ///
-/// ACK si ancre scroll + `firmware_scroll_armed` (post `09:10`). Pas de gate preset / pull / probe.
+/// ACK dès `firmware_scroll_armed` (post `ARM_f0` / `09:10`) — **sans** attendre `EditorReady`.
+/// HX Edit (`stomp_running`) pousse des `1d` ~+20 ms après `ARM_ef` et reçoit `f0/08` avant la fin
+/// de la phase 4 ; ignorer les `1d` jusqu’à `EditorReady` fait se taire le Stomp.
 pub fn handle_in_layer(state: &mut HelixState, data: &[u8]) -> LayerResult {
     if !is_scroll_fond_notify(data) {
         return LayerResult::Ignored;
     }
-    if state.session_phase() != SessionPhase::EditorReady {
-        init_trace::trace_1d_ack_decision(false, "bootstrapping");
+    if !state.firmware_scroll_armed {
+        init_trace::trace_1d_ack_decision(false, "scroll_not_armed");
         return LayerResult::Ignored;
     }
     if !state.should_ack_firmware_1d_notify() {
         init_trace::trace_1d_ack_decision(false, "preset_usb_read");
-        return LayerResult::Ignored;
-    }
-    if !state.firmware_scroll_armed {
-        init_trace::trace_1d_ack_decision(false, "scroll_not_armed");
         return LayerResult::Ignored;
     }
     let head = data.first().copied().unwrap_or(0);
@@ -141,11 +139,13 @@ mod tests {
     }
 
     #[test]
-    fn fond_skips_before_editor_ready() {
+    fn fond_acks_after_arm_before_editor_ready() {
         let mut state = HelixState::new();
+        state.editor_ready = false;
         state.note_firmware_scroll_bootstrap_sent();
         let r = handle_in_layer(&mut state, &sample_scroll_1d());
-        assert!(matches!(r, LayerResult::Ignored));
+        assert!(matches!(r, LayerResult::Consumed { .. }));
+        assert_eq!(state.firmware_scroll_ack_ctr, 0x1048);
     }
 
     #[test]

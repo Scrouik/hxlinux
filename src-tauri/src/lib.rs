@@ -177,6 +177,13 @@ fn disconnect_helix_session(app: &mut AppState, app_handle: &tauri::AppHandle, r
         s.keepalive_tx = None;
         s.editor_ready = false;
         s.post_arm_sequence_started = false;
+        s.post_ef_arm_ack_mask = 0;
+        s.post_ef_arm_gate_active = false;
+        s.post_ef_gate_rx = None;
+        s.post_ef_gate_tx = None;
+        s.phase4_bootstrap_active = false;
+        s.phase4_complete_rx = None;
+        s.phase4_complete_tx = None;
     }
     app.usb_handle = None;
     app.connected_device_name = None;
@@ -220,6 +227,12 @@ fn sync_app_presets_from_helix(app: &mut AppState, s: &HelixState) -> bool {
                 s.preset_index
             );
         }
+    } else if s.got_preset_names {
+        eprintln!(
+            "[PresetDebug][sync] skip: got_preset_names mais len={} (< {})",
+            s.preset_names.len(),
+            EXPECTED_PRESET_COUNT
+        );
     }
     if app.active_preset != s.preset_index {
         app.active_preset = s.preset_index;
@@ -383,6 +396,9 @@ fn request_active_preset_name(
             "Initialisation USB en cours (~{} ms) — réessayer",
             helix::keep_alive::POST_PHASE4_SETTLE_MS
         ));
+    }
+    if !s.editor_ready {
+        return Err("Amorçage USB en cours — preset actif pas encore disponible".to_string());
     }
     s.switch_mode(ModeRequest::RequestPresetName);
     Ok(())
@@ -3545,6 +3561,10 @@ fn start_helix(
                 let mut s = state.lock().unwrap();
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
+                {
+                    let mut app = app_state.lock().unwrap();
+                    sync_app_presets_from_helix(&mut app, &s);
+                }
                 // Restaurer preset_content_only depuis l'intention du message, APRÈS shutdown()
                 // qui le remet toujours à false — c'est la correction de la race condition.
                 s.preset_content_only = effective_content_only;
@@ -3587,14 +3607,45 @@ fn start_helix(
                         s.preset_content_only, s.want_content_only_after_x2);
                     continue;
                 }
+                if !s.editor_ready {
+                    eprintln!(
+                        "[PresetDebug][ModeLoop] ignore RequestPresetName (editor_ready=false)"
+                    );
+                    continue;
+                }
                 let mut m = current_mode.lock().unwrap();
                 m.shutdown(&mut s);
                 s.set_preset_usb_read_modes_active(true);
                 *m = Box::new(RequestPresetName::new());
+                m.start(&mut s);
+            }
+            Ok(ModeRequest::FinalizePresetNames) => {
+                helix::init_trace::trace_mode_switch("FinalizePresetNames", "");
+                let mut s = state.lock().unwrap();
+                let mut m = current_mode.lock().unwrap();
+                m.shutdown(&mut s);
                 {
                     let mut app = app_state.lock().unwrap();
-                    app.active_preset = s.preset_index;
+                    sync_app_presets_from_helix(&mut app, &s);
                 }
+                if s.preset_content_only || s.want_content_only_after_x2 {
+                    eprintln!(
+                        "[PresetDebug][ModeLoop] FinalizePresetNames: liste prête, RequestPresetName différé (content_only={} want_x2={})",
+                        s.preset_content_only, s.want_content_only_after_x2
+                    );
+                    continue;
+                }
+                if !s.got_preset_names {
+                    eprintln!(
+                        "[PresetDebug][ModeLoop] FinalizePresetNames: got_preset_names=false — retry RequestPresetNames"
+                    );
+                    s.set_preset_usb_read_modes_active(true);
+                    *m = Box::new(RequestPresetNames::new());
+                    m.start(&mut s);
+                    continue;
+                }
+                s.set_preset_usb_read_modes_active(true);
+                *m = Box::new(RequestPresetName::new());
                 m.start(&mut s);
             }
             Ok(ModeRequest::AwaitPostBootstrapSettle) => {
@@ -3613,8 +3664,34 @@ fn start_helix(
                         let s = state.lock().unwrap();
                         s.mode_tx.clone()
                     };
+                    let gate_rx = {
+                        let mut s = state.lock().unwrap();
+                        s.post_ef_gate_rx.take()
+                    };
                     if let Some(tx) = mode_tx {
-                        helix::amorcage::spawn_post_arm_sequence(Arc::clone(&state), tx);
+                        if let Some(rx) = gate_rx {
+                            helix::init_trace::trace(
+                                "AwaitPostBootstrapSettle — spawn_post_gate_sequence (gate événementielle)",
+                            );
+                            eprintln!("[Helix] spawn_post_gate_sequence");
+                            helix::amorcage::spawn_post_gate_sequence(
+                                Arc::clone(&state),
+                                tx,
+                                rx,
+                            );
+                        } else {
+                            helix::init_trace::trace(
+                                "AwaitPostBootstrapSettle — spawn_post_arm_sequence (fallback timer)",
+                            );
+                            eprintln!("[Helix] spawn_post_arm_sequence (pas de gate_rx)");
+                            helix::amorcage::spawn_post_arm_sequence(Arc::clone(&state), tx);
+                        }
+                    } else {
+                        eprintln!(
+                            "[Helix] ERREUR: mode_tx absent — post-ARM / RequestPresetNames non démarré"
+                        );
+                        let mut s = state.lock().unwrap();
+                        s.post_arm_sequence_started = false;
                     }
                 }
                 let mut s = state.lock().unwrap();
@@ -3626,7 +3703,14 @@ fn start_helix(
             }
             Ok(ModeRequest::RequestPresetNames) => {
                 helix::init_trace::trace_mode_switch("RequestPresetNames", "");
+                eprintln!("[Helix] mode RequestPresetNames");
                 let mut s = state.lock().unwrap();
+                if !s.editor_ready {
+                    eprintln!(
+                        "[PresetDebug][ModeLoop] ignore RequestPresetNames (editor_ready=false)"
+                    );
+                    continue;
+                }
                 s.end_init_usb_settle();
                 s.set_preset_usb_read_modes_active(true);
                 if preset_debug_verbose_enabled() {
@@ -3648,9 +3732,7 @@ fn start_helix(
                     s.got_preset_names && !s.preset_data_ready && s.preset_data.is_empty();
                 {
                     let mut app = app_state.lock().unwrap();
-                    if s.just_fetched_preset_names || app.preset_names.len() < EXPECTED_PRESET_COUNT {
-                        sync_app_presets_from_helix(&mut app, &s);
-                    }
+                    sync_app_presets_from_helix(&mut app, &s);
                     s.just_fetched_preset_names = false;
                     s.got_preset = false;
                     app.connection_issue_hint = None;

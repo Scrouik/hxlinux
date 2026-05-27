@@ -130,7 +130,7 @@ impl Mode for RequestPresetName {
                 }
                 let decoded = if decoded.is_empty() { "<empty>".to_string() } else { decoded };
                 state.active_preset_name = Some(decoded);
-                state.active_preset_name_index = Some(state.preset_index);
+                state.resolve_preset_index_from_active_name();
                 eprintln!(
                     "[PresetDebug][RequestPresetName] active preset={} name='{}'",
                     state.preset_index,
