@@ -13,11 +13,12 @@ use crate::helix::packet::OutPacket;
 
 const INTER_PACKET_DELAY_MS: u64 = 20;
 
-/// Fin de rafale phase 4 observée HX (`01_connect`, `stomp_running`) : bulk **132 o**, tête `7a`.
+/// Fin de rafale phase 4 : **132 o** `7a` (habituel) ou **116 o** `6a` (variante Stomp/preset).
 pub fn is_phase4_bootstrap_trailer_in(data: &[u8]) -> bool {
-    data.len() == 132
-        && data.first() == Some(&0x7a)
-        && data.get(4..8) == Some(&[0xed, 0x03, 0x80, 0x10])
+    let ep_ok = data.get(4..8) == Some(&[0xed, 0x03, 0x80, 0x10]);
+    ep_ok
+        && ((data.len() == 132 && data.first() == Some(&0x7a))
+            || (data.len() == 116 && data.first() == Some(&0x6a)))
 }
 
 /// Envoie les requêtes longues `ed` / `ef` qui amorcent l'état preset + liste (phase 4).
@@ -117,5 +118,19 @@ mod tests {
         assert!(is_phase4_bootstrap_trailer_in(&b));
         b[0] = 0x08;
         assert!(!is_phase4_bootstrap_trailer_in(&b));
+    }
+
+    #[test]
+    fn phase4_trailer_6a_116() {
+        let mut b = vec![0u8; 116];
+        b[0] = 0x6a;
+        b[1] = 0x00;
+        b[2] = 0x00;
+        b[3] = 0x18;
+        b[4] = 0xed;
+        b[5] = 0x03;
+        b[6] = 0x80;
+        b[7] = 0x10;
+        assert!(is_phase4_bootstrap_trailer_in(&b));
     }
 }

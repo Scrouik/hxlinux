@@ -21,6 +21,7 @@ pub mod preset_dump_stream_ack;
 pub mod model_catalog;
 pub mod editor_phase4_bootstrap;
 pub mod amorcage;
+pub mod phase4_state;
 pub mod init_trace;
 
 use std::sync::mpsc::Sender;
@@ -261,6 +262,13 @@ pub struct HelixState {
     pub phase4_bootstrap_active: bool,
     pub phase4_complete_rx: Option<std::sync::mpsc::Receiver<()>>,
     pub phase4_complete_tx: Option<std::sync::mpsc::SyncSender<()>>,
+    /// Machine à états phase 4 (passive en étape 2).
+    pub phase4_step: phase4_state::Phase4Step,
+    /// `true` si le `IN 19/36o ef` post-`1a` a été vu avant l'entrée en `PostArm`.
+    pub phase4_seen_19ef_pre_postarm: bool,
+    /// Timeout global dialogue post-1a (armé à l'entrée de `PostArm`).
+    /// Si expiré, la FSM passe en `Done` pour ne pas bloquer l'amorçage.
+    pub phase4_post1a_timeout: Option<Instant>,
 }
 
 // ===========================================================
@@ -385,6 +393,9 @@ impl HelixState {
             phase4_bootstrap_active: false,
             phase4_complete_rx: None,
             phase4_complete_tx: None,
+            phase4_step: phase4_state::Phase4Step::Idle,
+            phase4_seen_19ef_pre_postarm: false,
+            phase4_post1a_timeout: None,
         }
     }
 

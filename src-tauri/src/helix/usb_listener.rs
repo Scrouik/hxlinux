@@ -131,6 +131,77 @@ pub fn start_listener(
                         let ev = s.ingest_hw_slot_notify_in(&data);
                         crate::helix::init_trace::trace_in(&data);
                         let _active = s.run_usb_in_active_layers(&data);
+                        // Etape 2 — FSM passive phase4 (logs seulement, aucun OUT).
+                        if s.phase4_step.is_active() {
+                            let prev_phase4_step = s.phase4_step;
+                            // Le IN 19/36o ef (réponse au 1a) peut arriver avant le trailer 7a.
+                            if prev_phase4_step == crate::helix::phase4_state::Phase4Step::WaitingDump
+                                && data.len() == 36
+                                && data.first().copied() == Some(0x19)
+                                && data.get(4).copied() == Some(0xef)
+                                && data.get(5).copied() == Some(0x03)
+                            {
+                                s.phase4_seen_19ef_pre_postarm = true;
+                                let dbl = (
+                                    data.get(28).copied().unwrap_or(0),
+                                    data.get(29).copied().unwrap_or(0),
+                                );
+                                crate::helix::init_trace::trace_fmt(format_args!(
+                                    "[post1a] pre-PostArm IN 19/36o ef mémorisé (double={:02x}:{:02x})",
+                                    dbl.0, dbl.1
+                                ));
+                            }
+                            crate::helix::phase4_state::handle_in_passive(&mut s.phase4_step, &data);
+                            if prev_phase4_step == crate::helix::phase4_state::Phase4Step::WaitAck2
+                                && s.phase4_step == crate::helix::phase4_state::Phase4Step::WaitIn1f
+                            {
+                                crate::helix::phase4_state::on_enter_wait_in_1f(&mut s);
+                            }
+                            if prev_phase4_step == crate::helix::phase4_state::Phase4Step::WaitIn1f
+                                && s.phase4_step
+                                    == crate::helix::phase4_state::Phase4Step::WaitIn1b26
+                            {
+                                crate::helix::phase4_state::on_enter_wait_in_1b26(&mut s);
+                            }
+                            if s.phase4_step == crate::helix::phase4_state::Phase4Step::PostArm
+                                && prev_phase4_step
+                                    != crate::helix::phase4_state::Phase4Step::PostArm
+                                && s.phase4_post1a_timeout.is_none()
+                            {
+                                // Le 19/36o ef a déjà été reçu avant le trailer: rattrapage d'état.
+                                if s.phase4_seen_19ef_pre_postarm {
+                                    s.phase4_step = crate::helix::phase4_state::Phase4Step::WaitAck2;
+                                    s.phase4_seen_19ef_pre_postarm = false;
+                                    crate::helix::init_trace::trace(
+                                        "[post1a] rattrapage: PostArm -> WaitAck2 (19/36o ef déjà vu avant trailer)",
+                                    );
+                                }
+                                s.phase4_post1a_timeout =
+                                    Some(Instant::now() + Duration::from_millis(2000));
+                                crate::helix::init_trace::trace("[post1a] timeout secours armé (2s)");
+                                crate::helix::phase4_state::on_enter_post_arm(&mut s);
+                            }
+                        }
+                        // Timeout secours post-1a.
+                        if matches!(
+                            s.phase4_step,
+                            crate::helix::phase4_state::Phase4Step::PostArm
+                                | crate::helix::phase4_state::Phase4Step::WaitAck2
+                                | crate::helix::phase4_state::Phase4Step::WaitIn1f
+                                | crate::helix::phase4_state::Phase4Step::WaitIn1b26
+                                | crate::helix::phase4_state::Phase4Step::WaitPresetAck
+                        ) {
+                            if let Some(t) = s.phase4_post1a_timeout {
+                                if Instant::now() >= t {
+                                    crate::helix::init_trace::trace_fmt(format_args!(
+                                        "[post1a] timeout secours -> Done (état={})",
+                                        s.phase4_step.label()
+                                    ));
+                                    s.phase4_step = crate::helix::phase4_state::Phase4Step::Done;
+                                    s.phase4_post1a_timeout = None;
+                                }
+                            }
+                        }
                         if s.phase4_bootstrap_active
                             && crate::helix::editor_phase4_bootstrap::is_phase4_bootstrap_trailer_in(
                                 &data,

@@ -95,7 +95,10 @@ fn run_phase4_then_settle(state: &Arc<Mutex<HelixState>>, phase4_rx: Receiver<()
         if !s.connected {
             return;
         }
+        s.phase4_seen_19ef_pre_postarm = false;
+        s.phase4_post1a_timeout = None;
         crate::helix::init_trace::trace("amorcage phase4 OUT BEGIN (3×19 + 1a)");
+        crate::helix::phase4_state::arm(&mut s.phase4_step);
         s.start_phase4_bootstrap();
     }
 
@@ -126,6 +129,32 @@ fn run_phase4_then_settle(state: &Arc<Mutex<HelixState>>, phase4_rx: Receiver<()
     }
 
     thread::sleep(Duration::from_millis(POST_PHASE4_SETTLE_MS));
+
+    // Attendre la fin de la FSM post-1a (secours max 3s) pour éviter
+    // d'entrelacer RequestPresetNames avec un dialogue encore en cours.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3000);
+    loop {
+        {
+            let s = state.lock().unwrap();
+            if !matches!(
+                s.phase4_step,
+                crate::helix::phase4_state::Phase4Step::PostArm
+                    | crate::helix::phase4_state::Phase4Step::WaitAck2
+                    | crate::helix::phase4_state::Phase4Step::WaitIn1f
+                    | crate::helix::phase4_state::Phase4Step::WaitIn1b26
+                    | crate::helix::phase4_state::Phase4Step::WaitPresetAck
+            ) {
+                break;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            crate::helix::init_trace::trace(
+                "[amorcage] timeout attente FSM post-1a -> RequestPresetNames forcé",
+            );
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(10));
+    }
 
     {
         let mut s = state.lock().unwrap();
