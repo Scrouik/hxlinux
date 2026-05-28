@@ -351,6 +351,13 @@ decoded_by_index={} fallback_count={} suffix_len={}",
         state.got_preset_names = true;
         state.just_fetched_preset_names = true;
         state.new_session_no();
+
+        // « Go live » éditeur : HX Edit envoie 2 commandes ED03/ef03 ICI
+        // (après les noms, avant la lecture du preset actif). Hypothèse :
+        // elles activent le flux IN 1d de fond et permettent au scroll de
+        // dumper. Gardé par HX_EDITOR_GO_LIVE=1 (désactivé par défaut).
+        crate::helix::editor_go_live::send_if_enabled(state);
+
         // mode_tx (pas switch_mode) : évite le drop silencieux pendant init_usb_settle.
         if let Some(tx) = self.mode_tx.clone() {
             let _ = tx.send(ModeRequest::RequestPresetName);

@@ -359,5 +359,6 @@ impl Mode for RequestPreset {
                 state.ed03_cmd_type
             );
         }
+
     }
 }

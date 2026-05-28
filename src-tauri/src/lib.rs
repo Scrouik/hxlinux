@@ -33,7 +33,9 @@ use helix::{
     kempline_index_to_slot_bus,
     preset_debug_verbose_enabled, set_preset_debug_verbose_enabled,
     set_usb_packet_trace_delta_only, set_usb_io_diag_enabled, set_usb_packet_trace_enabled,
-    usb_packet_trace_delta_only, usb_packet_trace_enabled,
+    set_usb_packet_trace_defer_until_ready, set_usb_packet_trace_max_len,
+    usb_packet_trace_active, usb_packet_trace_delta_only,
+    usb_packet_trace_max_len, usb_packet_trace_should_log,
 };
 use helix::packet::OutPacket;
 use helix::live_write::build_live_write_frames_from_state;
@@ -184,6 +186,7 @@ fn disconnect_helix_session(app: &mut AppState, app_handle: &tauri::AppHandle, r
         s.phase4_bootstrap_active = false;
         s.phase4_complete_rx = None;
         s.phase4_complete_tx = None;
+        s.reset_hw_model_pull_state();
     }
     app.usb_handle = None;
     app.connected_device_name = None;
@@ -1295,6 +1298,11 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
             "Initialisation USB en cours (~{} ms) — aucune requête preset",
             helix::keep_alive::POST_PHASE4_SETTLE_MS
         ));
+    }
+    if helix::scroll_model_pull::hw_model_usb_busy(&s) {
+        return Err(
+            "Scroll modèle hardware en cours — reportez request_preset_content".to_string(),
+        );
     }
     if s.preset_content_only {
         return Ok(());
@@ -3140,11 +3148,41 @@ pub fn run() {
     }
     if std::env::var("USB_PACKET_TRACE").map(|v| v == "1").unwrap_or(false) {
         set_usb_packet_trace_enabled(true);
+        if std::env::var("USB_PACKET_TRACE_DELTA_ONLY")
+            .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
+            .unwrap_or(false)
+        {
+            set_usb_packet_trace_delta_only(false);
+        }
+        if let Ok(v) = std::env::var("USB_PACKET_TRACE_MAX_LEN") {
+            if let Ok(n) = v.parse::<u32>() {
+                set_usb_packet_trace_max_len(n);
+            }
+        }
+        if std::env::var("USB_PACKET_TRACE_BOOT")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+        {
+            set_usb_packet_trace_defer_until_ready(false);
+        }
+        let max_len = usb_packet_trace_max_len()
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        eprintln!(
+            "[UsbTrace] armé — USB_PACKET_TRACE=1 (delta_only={}, max_len={}, defer_until_ready={})",
+            usb_packet_trace_delta_only(),
+            max_len,
+            !std::env::var("USB_PACKET_TRACE_BOOT")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+        );
     }
     if std::env::var("USB_IO_DIAG").map(|v| v == "1").unwrap_or(false) {
         set_usb_io_diag_enabled(true);
     }
     helix::init_trace::init_from_env();
+    helix::scroll_model_pull::init_from_env();
+    helix::keep_alive::init_from_env();
 
     let app_state = Arc::new(Mutex::new(AppState::default()));
     let app_state_clone = Arc::clone(&app_state);
@@ -3458,23 +3496,28 @@ fn start_helix(
                             // On tente l'ingestion ED03 ici aussi pour alimenter le mode live `in_echo_strict`.
                             s.ingest_ed03_param_echo(&buf[..n]);
                         }
-                        if usb_packet_trace_enabled() {
+                        if usb_packet_trace_active() {
                             let delta_only = usb_packet_trace_delta_only();
                             let data = buf[..n].to_vec();
                             let fingerprint = helix::usb_trace_fingerprint(&data);
-                            if delta_only {
-                                if !seen_fingerprints.insert(fingerprint.clone()) {
+                            let log_in = if delta_only {
+                                if !seen_fingerprints.insert(fingerprint) {
                                     suppressed_repeats = suppressed_repeats.saturating_add(1);
-                                    continue;
-                                } else if suppressed_repeats > 0 {
-                                    eprintln!(
-                                        "[UsbTrace][IN  0x82] known patterns suppressed total={}",
-                                        suppressed_repeats
-                                    );
-                                    suppressed_repeats = 0;
+                                    false
+                                } else {
+                                    if suppressed_repeats > 0 {
+                                        eprintln!(
+                                            "[UsbTrace][IN  0x82] known patterns suppressed total={}",
+                                            suppressed_repeats
+                                        );
+                                        suppressed_repeats = 0;
+                                    }
+                                    true
                                 }
-                            }
-                            if !delta_only || seen_fingerprints.contains(&fingerprint) {
+                            } else {
+                                true
+                            };
+                            if log_in && usb_packet_trace_should_log(&data) {
                                 let hex = data
                                     .iter()
                                     .map(|b| format!("{:02x}", b))

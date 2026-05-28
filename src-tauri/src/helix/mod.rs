@@ -16,17 +16,19 @@ pub mod slot_focus_in;
 pub mod slot_param_in;
 pub mod slot_watch;
 pub mod firmware_scroll_ack;
+pub mod scroll_model_pull;
 pub mod usb_in_pipeline;
 pub mod preset_dump_stream_ack;
 pub mod model_catalog;
 pub mod editor_phase4_bootstrap;
+pub mod editor_go_live;
 pub mod amorcage;
 pub mod phase4_state;
 pub mod init_trace;
 
 use std::sync::mpsc::Sender;
 use std::time::Instant;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use serde::Serialize;
 use crate::helix::packet::OutPacket;
 
@@ -147,6 +149,22 @@ pub struct HelixState {
     /// NE PAS mélanger avec preset_dump_ack_ctr ni live_write_ctr.
     pub editor_ed03_double: u16,
 
+    /// Compteur "lane ED03" (octets 12-13 des OUT 80:10:ed:03), distinct du
+    /// double cd:03 (octets 28-29 = `editor_ed03_double`).
+    ///
+    /// u16 little-endian = lo (octet 12) + hi (octet 13), deux sous-compteurs
+    /// logés dans un même mot, observés byte-pour-byte sur 3 captures HX :
+    ///   - lo (octet 12) : position de transaction. += 0x17 par commande
+    ///     19/1b/1c de PHASE B ; figé pendant les rafales d'ACK chunks.
+    ///   - hi (octet 13) : compteur de chunks. += 1 (=+0x0100) par ACK
+    ///     chunk `08 sub=08` émis ; inchangé sinon.
+    ///
+    /// Valeur initiale 0x1009 (lo=09, hi=10) — point d'ancrage FIXE observé
+    /// au 1er `19 e8` du bootstrap, identique sur tous les presets/slots.
+    /// Distinct de `preset_dump_ack_ctr` (qui force lo=f4, vision tronquée
+    /// réservée aux ACK hors RequestPreset) et de `editor_ed03_double`.
+    pub editor_ed03_lane: u16,
+
     // Compteurs keep-alive
     pub x1_cnt:  u8,
     pub x2_cnt:  u8,
@@ -238,6 +256,31 @@ pub struct HelixState {
     /// Empreinte précédente pour surveillance contenu slot (modèle / vide / params).
     pub slot_watch_prev: [slot_watch::SlotWatchSnapshot; 16],
     pub hw_slot_content_sequence: u32,
+
+    // ── Scroll modèle hardware (pull 1b/19) ──────────────────────────────
+    /// Double éditeur dédié pull scroll (séparé de `editor_ed03_double`).
+    /// Sentinelle `0xFFFF` = pas encore snapé depuis `editor_ed03_double_val()`.
+    pub hw_model_pull_ed03_double: u16,
+    pub hw_model_pull_ctr: u16,
+    /// 0=idle, 1=attend 1ère rép, 2=attend 2ème, 3=attend bulk 272.
+    pub hw_model_pull_step: u8,
+    pub hw_model_pull_slot_bus: Option<u8>,
+    pub hw_model_pull_capture: Vec<Vec<u8>>,
+    pub hw_model_pull_capture_deadline: Option<Instant>,
+    /// `None` = cd:03, `Some(0x04)` après wrap bas du double.
+    pub hw_model_pull_cd_lane: Option<u8>,
+    pub hw_model_pull_echo_double: Option<[u8; 2]>,
+    pub hw_model_pull_retried_1b: bool,
+    pub hw_model_pull_saw_final_bulk: bool,
+    pub hw_model_pull_pending_slot_bus: Option<u8>,
+    pub hw_model_pull_last_at: Option<Instant>,
+    pub hw_model_pull_quiet_until: Option<Instant>,
+    pub hw_model_post_pull_settling: bool,
+    pub hw_model_post_pull_deadline: Option<Instant>,
+    pub hw_model_last_scroll_in_at: Option<Instant>,
+    /// Dernier `IN 1d` scroll en attente d’ACK (paire 1d→1f avant pull).
+    pub hw_model_scroll_deferred_1d: Option<Vec<u8>>,
+
     /// Déduplication des événements paramètre IN (`85:62…1c:PP:77`).
     pub slot_param_emit: slot_param_in::SlotParamEmitState,
     /// Fenêtre post bootstrap phase 4 (~700 ms HX Edit) : le host n’envoie **aucune** requête
@@ -284,6 +327,11 @@ pub enum KeepAliveCommand {
 
 static USB_PACKET_TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
 static USB_PACKET_TRACE_DELTA_ONLY: AtomicBool = AtomicBool::new(true);
+/// Trace effective après `EditorReady` (évite de ralentir phase 4 / settle).
+static USB_PACKET_TRACE_LIVE: AtomicBool = AtomicBool::new(false);
+static USB_PACKET_TRACE_DEFER_UNTIL_READY: AtomicBool = AtomicBool::new(true);
+/// 0 = pas de limite ; sinon ne loggue pas les paquets plus longs (évite le flood 272o en delta_only=0).
+static USB_PACKET_TRACE_MAX_LEN: AtomicU32 = AtomicU32::new(0);
 static PRESET_DEBUG_VERBOSE_ENABLED: AtomicBool = AtomicBool::new(false);
 static USB_IO_DIAG_ENABLED: AtomicBool = AtomicBool::new(false);
 
@@ -301,6 +349,47 @@ pub fn set_usb_packet_trace_delta_only(enabled: bool) {
 
 pub fn usb_packet_trace_delta_only() -> bool {
     USB_PACKET_TRACE_DELTA_ONLY.load(Ordering::Relaxed)
+}
+
+pub fn set_usb_packet_trace_defer_until_ready(defer: bool) {
+    USB_PACKET_TRACE_DEFER_UNTIL_READY.store(defer, Ordering::Relaxed);
+    if !defer {
+        USB_PACKET_TRACE_LIVE.store(true, Ordering::Relaxed);
+    }
+}
+
+pub fn activate_usb_packet_trace_live() {
+    if !usb_packet_trace_enabled() {
+        return;
+    }
+    if USB_PACKET_TRACE_LIVE.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    eprintln!("[UsbTrace] live — tracing actif (post EditorReady)");
+}
+
+/// Trace USB effective (respecte le report jusqu'à `EditorReady` sauf `USB_PACKET_TRACE_BOOT=1`).
+pub fn usb_packet_trace_active() -> bool {
+    usb_packet_trace_enabled()
+        && (USB_PACKET_TRACE_LIVE.load(Ordering::Relaxed)
+            || !USB_PACKET_TRACE_DEFER_UNTIL_READY.load(Ordering::Relaxed))
+}
+
+pub fn set_usb_packet_trace_max_len(max_len: u32) {
+    USB_PACKET_TRACE_MAX_LEN.store(max_len, Ordering::Relaxed);
+}
+
+pub fn usb_packet_trace_max_len() -> Option<usize> {
+    match USB_PACKET_TRACE_MAX_LEN.load(Ordering::Relaxed) {
+        0 => None,
+        n => Some(n as usize),
+    }
+}
+
+/// Filtre longueur pour `USB_PACKET_TRACE` — n'affecte que le log, pas l'envoi/réception.
+pub fn usb_packet_trace_should_log(data: &[u8]) -> bool {
+    usb_packet_trace_max_len()
+        .is_none_or(|max| data.len() <= max)
 }
 
 pub fn set_preset_debug_verbose_enabled(enabled: bool) {
@@ -360,6 +449,7 @@ impl HelixState {
             firmware_scroll_skip_inc_once: false,
             firmware_scroll_armed: false,
             editor_ed03_double: Self::preset_ed03_transaction_counter_before_first(),
+            editor_ed03_lane:   Self::EDITOR_ED03_LANE_FIRST,
             preset_last_ack_double: [0, 0],
             request_preset_session_id: 0xf4,
             ed03_cmd_type:      0x01,
@@ -381,6 +471,23 @@ impl HelixState {
             last_slot_focus_capsule: std::array::from_fn(|_| None),
             slot_watch_prev: std::array::from_fn(|_| slot_watch::SlotWatchSnapshot::default()),
             hw_slot_content_sequence: 0,
+            hw_model_pull_ed03_double: 0xFFFF,
+            hw_model_pull_ctr: 0x6cbd, // base ctr pull scroll couplé (d6eb2b1)
+            hw_model_pull_step: 0,
+            hw_model_pull_slot_bus: None,
+            hw_model_pull_capture: Vec::new(),
+            hw_model_pull_capture_deadline: None,
+            hw_model_pull_cd_lane: None,
+            hw_model_pull_echo_double: None,
+            hw_model_pull_retried_1b: false,
+            hw_model_pull_saw_final_bulk: false,
+            hw_model_pull_pending_slot_bus: None,
+            hw_model_pull_last_at: None,
+            hw_model_pull_quiet_until: None,
+            hw_model_post_pull_settling: false,
+            hw_model_post_pull_deadline: None,
+            hw_model_last_scroll_in_at: None,
+            hw_model_scroll_deferred_1d: None,
             slot_param_emit: slot_param_in::SlotParamEmitState::default(),
             init_usb_settle_until: None,
             suppress_1d_firmware_notify_ack: false,
@@ -468,9 +575,30 @@ impl HelixState {
         )
     }
 
-    /// Pipeline couches actives (fond scroll, ACK dump 272) — voir `usb_in_pipeline`.
+    /// Pipeline couches actives (pull scroll, fond scroll, ACK dump 272) — voir `usb_in_pipeline`.
     pub fn run_usb_in_active_layers(&mut self, data: &[u8]) -> usb_in_pipeline::ActivePipelineOutcome {
         usb_in_pipeline::run_active_layers(self, data)
+    }
+
+    /// Remet à zéro l’état pull modèle HW (déconnexion USB).
+    pub fn reset_hw_model_pull_state(&mut self) {
+        self.hw_model_pull_ed03_double = 0xFFFF;
+        self.hw_model_pull_ctr = 0x0000;
+        self.hw_model_pull_step = 0;
+        self.hw_model_pull_slot_bus = None;
+        self.hw_model_pull_capture.clear();
+        self.hw_model_pull_capture_deadline = None;
+        self.hw_model_pull_cd_lane = None;
+        self.hw_model_pull_echo_double = None;
+        self.hw_model_pull_retried_1b = false;
+        self.hw_model_pull_saw_final_bulk = false;
+        self.hw_model_pull_pending_slot_bus = None;
+        self.hw_model_pull_last_at = None;
+        self.hw_model_pull_quiet_until = None;
+        self.hw_model_post_pull_settling = false;
+        self.hw_model_post_pull_deadline = None;
+        self.hw_model_last_scroll_in_at = None;
+        self.hw_model_scroll_deferred_1d = None;
     }
 
     /// Parse les trames IN bulk pour changements de paramètre live (`85:62…77:ca|c2|c3|…`).
@@ -670,6 +798,53 @@ impl HelixState {
     pub fn next_editor_ed03_double(&mut self) -> [u8; 2] {
         self.editor_ed03_double = self.editor_ed03_double.wrapping_add(1);
         self.editor_ed03_double_val()
+    }
+
+    // ── Compteur lane ED03 (octets 12-13 des OUT 80:10:ed:03) ────────────────
+    //
+    // Décodé byte-pour-byte sur 3 captures HX (1 preset × 2, 1 slot différent) :
+    // lo (octet 12) = position transaction (+0x17/commande, figé pendant ACK),
+    // hi (octet 13) = compteur chunks (+1/ACK chunk). Voir `editor_ed03_lane`.
+
+    /// Valeur d'ancrage du compteur lane ED03 au 1er OUT bootstrap (`19 e8`).
+    /// Observée fixe (`09:10`) sur toutes les captures HX.
+    pub const EDITOR_ED03_LANE_FIRST: u16 = 0x1009;
+
+    /// Pas du lo (octet 12) pour une commande PHASE B (`19`/`1b`/`1c` courte).
+    pub const EDITOR_ED03_LANE_CMD_DELTA: u16 = 0x0017;
+
+    /// Pas du lo pour le `1c` de lecture preset initiale (double `e9`).
+    pub const EDITOR_ED03_LANE_PRESET_1C_DELTA: u16 = 0x004c;
+
+    /// Octets 12-13 courants (lo, hi) pour insertion dans un paquet.
+    pub fn editor_ed03_lane_bytes(&self) -> [u8; 2] {
+        [
+            (self.editor_ed03_lane & 0xff) as u8,
+            ((self.editor_ed03_lane >> 8) & 0xff) as u8,
+        ]
+    }
+
+    /// Avance le lo (octet 12) de `delta` (hi inchangé), et renvoie les octets
+    /// **avant** avance : le paquet courant porte la valeur courante, puis on
+    /// incrémente pour le suivant (sémantique observée sur le fil HX).
+    pub fn advance_editor_ed03_lane_lo(&mut self, delta: u16) -> [u8; 2] {
+        let out = self.editor_ed03_lane_bytes();
+        let lo = (self.editor_ed03_lane & 0xff).wrapping_add(delta) & 0xff;
+        self.editor_ed03_lane = (self.editor_ed03_lane & 0xff00) | lo;
+        out
+    }
+
+    /// Avance le hi (octet 13) de +1 (=+0x0100, ACK chunk), lo inchangé.
+    /// Renvoie les octets **avant** avance.
+    pub fn advance_editor_ed03_lane_hi(&mut self) -> [u8; 2] {
+        let out = self.editor_ed03_lane_bytes();
+        self.editor_ed03_lane = self.editor_ed03_lane.wrapping_add(0x0100);
+        out
+    }
+
+    /// Repositionne le compteur lane au démarrage de la phase 4 (ancrage fixe).
+    pub fn reset_editor_ed03_lane(&mut self) {
+        self.editor_ed03_lane = Self::EDITOR_ED03_LANE_FIRST;
     }
 
     /// Aligne `preset_index` sur le nom lu par `RequestPresetName` (octet [24] seul est

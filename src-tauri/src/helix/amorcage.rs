@@ -136,14 +136,7 @@ fn run_phase4_then_settle(state: &Arc<Mutex<HelixState>>, phase4_rx: Receiver<()
     loop {
         {
             let s = state.lock().unwrap();
-            if !matches!(
-                s.phase4_step,
-                crate::helix::phase4_state::Phase4Step::PostArm
-                    | crate::helix::phase4_state::Phase4Step::WaitAck2
-                    | crate::helix::phase4_state::Phase4Step::WaitIn1f
-                    | crate::helix::phase4_state::Phase4Step::WaitIn1b26
-                    | crate::helix::phase4_state::Phase4Step::WaitPresetAck
-            ) {
+            if !s.phase4_step.is_phase_b() {
                 break;
             }
         }
@@ -165,11 +158,12 @@ fn run_phase4_then_settle(state: &Arc<Mutex<HelixState>>, phase4_rx: Receiver<()
         s.editor_ready = true;
         s.end_init_usb_settle();
         s.start_keepalive(KeepAliveCommand::StartOrdered);
+        crate::helix::activate_usb_packet_trace_live();
         crate::helix::init_trace::trace("amorcage EditorReady");
     }
 }
 
-fn finish_editor_bootstrap(state: &Arc<Mutex<HelixState>>, mode_tx: &Sender<ModeRequest>) {
+fn finish_editor_bootstrap(_state: &Arc<Mutex<HelixState>>, mode_tx: &Sender<ModeRequest>) {
     eprintln!("[amorcage] → RequestPresetNames (post settle)");
     if mode_tx.send(ModeRequest::RequestPresetNames).is_err() {
         eprintln!("[amorcage] ERREUR: mode_tx.send(RequestPresetNames) failed");

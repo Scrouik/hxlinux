@@ -7,10 +7,10 @@
 
 use crate::helix::firmware_scroll_ack;
 use crate::helix::preset_dump_stream_ack;
+use crate::helix::scroll_model_pull;
 use crate::helix::HelixState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // `None` / `Observed` : contrat phase 4 pull scroll
 pub enum LayerEffect {
     None,
     ScrollLaneAndAck,
@@ -18,7 +18,6 @@ pub enum LayerEffect {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum LayerResult {
     Ignored,
     Observed { effect: LayerEffect },
@@ -34,6 +33,7 @@ impl LayerResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveLayerId {
+    ScrollModelPull,
     FirmwareScroll,
     PresetDumpStream,
 }
@@ -55,7 +55,12 @@ impl ActivePipelineOutcome {
 
 type ActiveHandler = fn(&mut HelixState, &[u8]) -> LayerResult;
 
-const ACTIVE_LAYERS: [(ActiveLayerId, ActiveHandler); 2] = [
+fn scroll_model_pull_handler(state: &mut HelixState, data: &[u8]) -> LayerResult {
+    scroll_model_pull::handle_in_layer_trigger(data, state)
+}
+
+const ACTIVE_LAYERS: [(ActiveLayerId, ActiveHandler); 3] = [
+    (ActiveLayerId::ScrollModelPull, scroll_model_pull_handler),
     (ActiveLayerId::FirmwareScroll, firmware_scroll_ack::handle_in_layer),
     (
         ActiveLayerId::PresetDumpStream,

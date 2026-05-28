@@ -14,7 +14,10 @@ use rusb::DeviceHandle;
 use rusb::GlobalContext;
 
 use crate::helix::packet::{OutPacket, classify_out_packet, packet_counter};
-use crate::helix::{usb_io_diag_enabled, usb_packet_trace_delta_only, usb_packet_trace_enabled, usb_trace_fingerprint};
+use crate::helix::{
+    usb_io_diag_enabled, usb_packet_trace_active, usb_packet_trace_delta_only,
+    usb_packet_trace_should_log, usb_trace_fingerprint,
+};
 
 const ENDPOINT_OUT: u8 = 0x01;
 // kempline utilise 100ms ; 150ms laisse une marge sans bloquer le canal trop longtemps
@@ -73,31 +76,11 @@ pub fn start_writer(
                             cnt.map(|v| format!("{:02x}", v)).unwrap_or_else(|| "--".to_string())
                         );
                     }
-                    if usb_packet_trace_enabled() {
-                        let delta_only = usb_packet_trace_delta_only();
-                        let fingerprint = usb_trace_fingerprint(&pkt.data);
-                        if delta_only {
-                            if !seen_fingerprints.insert(fingerprint.clone()) {
-                                suppressed_repeats = suppressed_repeats.saturating_add(1);
-                                continue;
-                            } else if suppressed_repeats > 0 {
-                                eprintln!(
-                                    "[UsbTrace][OUT 0x01] known patterns suppressed total={}",
-                                    suppressed_repeats
-                                );
-                                suppressed_repeats = 0;
-                            }
-                        }
-                        if !delta_only || seen_fingerprints.contains(&fingerprint) {
-                            let hex = pkt
-                                .data
-                                .iter()
-                                .map(|b| format!("{:02x}", b))
-                                .collect::<Vec<_>>()
-                                .join(" ");
-                            eprintln!("[UsbTrace][OUT 0x01][len={}] {}", pkt.data.len(), hex);
-                        }
-                    } else {
+                    // La trace OUT par paquet est faite plus bas, DANS la boucle wire_chunks,
+                    // pour rendre visible chaque chunk réellement écrit (data ET tail_burst).
+                    // Ici on se contente de réinitialiser l'état delta-only quand le trace
+                    // est inactif (sinon des fingerprints obsolètes traîneraient).
+                    if !usb_packet_trace_active() {
                         seen_fingerprints.clear();
                         suppressed_repeats = 0;
                     }
@@ -137,6 +120,45 @@ pub fn start_writer(
                                 }
                             }
                         }
+
+                        // Trace OUT par chunk : rend visible le `data` (bi==0) ET chaque
+                        // élément du `tail_burst` (bi>0, taggé). Dédup delta-only par chunk.
+                        if usb_packet_trace_active() {
+                            let delta_only = usb_packet_trace_delta_only();
+                            let fingerprint = usb_trace_fingerprint(chunk);
+                            let log_out = if delta_only {
+                                if !seen_fingerprints.insert(fingerprint) {
+                                    suppressed_repeats = suppressed_repeats.saturating_add(1);
+                                    false
+                                } else {
+                                    if suppressed_repeats > 0 {
+                                        eprintln!(
+                                            "[UsbTrace][OUT 0x01] known patterns suppressed total={}",
+                                            suppressed_repeats
+                                        );
+                                        suppressed_repeats = 0;
+                                    }
+                                    true
+                                }
+                            } else {
+                                true
+                            };
+                            if log_out && usb_packet_trace_should_log(chunk) {
+                                let tag = if bi == 0 { "" } else { " [tail_burst]" };
+                                let hex = chunk
+                                    .iter()
+                                    .map(|b| format!("{:02x}", b))
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                eprintln!(
+                                    "[UsbTrace][OUT 0x01][len={}]{} {}",
+                                    chunk.len(),
+                                    tag,
+                                    hex
+                                );
+                            }
+                        }
+
                         match handle.write_bulk(
                             ENDPOINT_OUT,
                             chunk,

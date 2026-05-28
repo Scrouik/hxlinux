@@ -10,6 +10,21 @@ use crate::helix::modes::standard::Standard;
 use crate::pattern;
 use crate::helix::ModeRequest;
 
+/// [TEST] Si `HX_F0_ARM_EARLY=1`, on envoie l'ARM f0 `09:10` dès la phase Connect
+/// (juste après le `11 f0`, en miroir exact de la capture HX Edit paquet [19]),
+/// au lieu de le laisser uniquement à `amorcage` post-ReconfigureX1.
+///
+/// Objectif : vérifier si cet ARM précoce déclenche le flux `IN 1d` de fond
+/// (lane `f0:03:02:10` = état « éditeur vivant ») que le report n'obtient pas, et
+/// qui conditionne le dump modèle au scroll. Voir `docs/scroll-dump-analysis.md`.
+///
+/// Désactivé par défaut → comportement strictement inchangé sans le flag.
+fn f0_arm_early_enabled() -> bool {
+    std::env::var("HX_F0_ARM_EARLY")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(false)
+}
+
 pub struct Connect {
     received_x11_on_x2:   bool,
     received_x11_on_x80:  bool,
@@ -149,14 +164,14 @@ impl Mode for Connect {
             ]);
             state.send(pkt);
 
-        // -- x11 reçu sur x80 → init x2 + démarrage keep-alive x80
+        // -- x11 reçu sur x80 → init x2 (subscribe f0:03)
         } else if byte_cmp(data, &pattern![
             0x11, 0x00, 0x00, 0x18,
             0xed, 0x03, 0x80, 0x10,
             0x00, 0x02
         ], 10) {
             self.received_x11_on_x80 = true;
-            // Keep-alive `ed` : désormais dans le cycle ordonné après ReconfigureX1 (un seul thread).
+            // Poll `ed` démarré après `EditorReady` dans `amorcage` (`StartOrdered`).
             let pkt = OutPacket::new(vec![
                 0x0c, 0x00, 0x00, 0x28,
                 0x02, 0x10, 0xf0, 0x03,
@@ -195,6 +210,32 @@ impl Mode for Connect {
             0x09, 0x02
         ], 14) {
             self.received_x11_on_x2 = true;
+
+            // ── [TEST HX_F0_ARM_EARLY] ───────────────────────────────────────
+            // HX Edit envoie l'ARM f0 `09:10` ICI (capture [19]), dans la foulée
+            // du `11 f0` et AVANT la phase 4 ; son device démarre alors le flux
+            // `IN 1d` de fond (lane f0:03:02:10) dès le paquet [23]. Chez nous cet
+            // ARM est reporté à `amorcage` et le flux ne démarre jamais → le scroll
+            // ne dumpe pas. On teste l'ARM précoce, additif et flag-gardé.
+            //
+            // cnt = next_x2_cnt() → 0x03 à ce point (le `11 f0` ci-dessus a pris
+            // 0x02), soit exactement HX [19]. L'ARM différé dans `amorcage` reste
+            // en place : si le flux démarre puis est perturbé, on l'aura quand même
+            // VU apparaître au bootstrap, ce qui suffit à valider l'hypothèse.
+            if f0_arm_early_enabled() {
+                let cnt = state.next_x2_cnt();
+                let pkt = OutPacket::new(vec![
+                    0x08, 0x00, 0x00, 0x18,
+                    0x02, 0x10, 0xf0, 0x03,
+                    0x00, cnt,  0x00, 0x08,
+                    0x09, 0x10, 0x00, 0x00,
+                ]);
+                crate::helix::init_trace::trace(
+                    "[HX_F0_ARM_EARLY] ARM f0 09:10 précoce (miroir HX [19])",
+                );
+                state.send(pkt);
+            }
+            // ─────────────────────────────────────────────────────────────────
 
         // -- Paquet 0x54 sur x80
         } else if byte_cmp(data, &pattern![

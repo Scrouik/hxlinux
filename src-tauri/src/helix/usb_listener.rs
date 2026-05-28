@@ -17,7 +17,8 @@ use tauri::Emitter;
 
 use crate::helix::{
     HelixState, Mode, preset_debug_verbose_enabled, usb_io_diag_enabled,
-    usb_packet_trace_delta_only, usb_packet_trace_enabled, usb_trace_fingerprint,
+    usb_packet_trace_active, usb_packet_trace_delta_only, usb_packet_trace_should_log,
+    usb_trace_fingerprint,
 };
 use crate::helix::packet::{classify_in_packet, packet_counter};
 
@@ -72,11 +73,11 @@ pub fn start_listener(
                                 .unwrap_or_else(|| "--".to_string())
                         );
                     }
-                    if usb_packet_trace_enabled() {
+                    if usb_packet_trace_active() {
                         let delta_only = usb_packet_trace_delta_only();
                         let fingerprint = usb_trace_fingerprint(&data);
-                        if delta_only {
-                            if !seen_fingerprints.insert(fingerprint.clone()) {
+                        let log_in = if delta_only {
+                            if !seen_fingerprints.insert(fingerprint) {
                                 suppressed_repeats = suppressed_repeats.saturating_add(1);
                                 if suppressed_repeats % 250 == 0 {
                                     eprintln!(
@@ -84,29 +85,36 @@ pub fn start_listener(
                                         suppressed_repeats
                                     );
                                 }
-                                continue;
-                            } else if suppressed_repeats > 0 {
-                                eprintln!(
-                                    "[UsbTrace][IN  0x81] known patterns suppressed total={}",
-                                    suppressed_repeats
-                                );
-                                suppressed_repeats = 0;
+                                false
+                            } else {
+                                if suppressed_repeats > 0 {
+                                    eprintln!(
+                                        "[UsbTrace][IN  0x81] known patterns suppressed total={}",
+                                        suppressed_repeats
+                                    );
+                                    suppressed_repeats = 0;
+                                }
+                                true
                             }
+                        } else {
+                            true
+                        };
+                        if log_in && usb_packet_trace_should_log(&data) {
+                            let hex = data
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            // Paquets courts 16o = souvent keep-alive / acquittements ; les changements
+                            // de paramètre matériel peuvent être des trames plus longues (ou sur 0x82).
+                            if data.len() != 16 {
+                                eprintln!(
+                                    "[UsbTrace][IN  0x81][len={}][non-16 — possible param / UI]",
+                                    data.len()
+                                );
+                            }
+                            eprintln!("[UsbTrace][IN  0x81][len={}] {}", data.len(), hex);
                         }
-                        let hex = data
-                            .iter()
-                            .map(|b| format!("{:02x}", b))
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        // Paquets courts 16o = souvent keep-alive / acquittements ; les changements
-                        // de paramètre matériel peuvent être des trames plus longues (ou sur 0x82).
-                        if data.len() != 16 {
-                            eprintln!(
-                                "[UsbTrace][IN  0x81][len={}][non-16 — possible param / UI]",
-                                data.len()
-                            );
-                        }
-                        eprintln!("[UsbTrace][IN  0x81][len={}] {}", data.len(), hex);
                     } else {
                         // Reset de l'état de dédup quand la trace est désactivée.
                         seen_fingerprints.clear();
@@ -115,7 +123,7 @@ pub fn start_listener(
 
                     // Dispatcher vers le mode actif
                     // On lock state et mode séparément pour éviter deadlock
-                    let (hw_slot_changed, fond_bootstrap_alert) = {
+                    let (hw_slot_changed, fond_bootstrap_alert, slot_model_changed) = {
                         let lock_start = Instant::now();
                         let mut s = state.lock().unwrap();
                         let state_wait_ms = lock_start.elapsed().as_millis();
@@ -131,70 +139,61 @@ pub fn start_listener(
                         let ev = s.ingest_hw_slot_notify_in(&data);
                         crate::helix::init_trace::trace_in(&data);
                         let _active = s.run_usb_in_active_layers(&data);
-                        // Etape 2 — FSM passive phase4 (logs seulement, aucun OUT).
+                        let slot_model_changed =
+                            if s.hw_model_pull_capture_deadline.is_some() {
+                                crate::helix::scroll_model_pull::ingest_pull_capture(&mut s, &data)
+                            } else {
+                                None
+                            };
+                        // ── FSM phase 4 (passive) + PHASE B (réactive : OUT via on_enter_*). ──
                         if s.phase4_step.is_active() {
                             let prev_phase4_step = s.phase4_step;
-                            // Le IN 19/36o ef (réponse au 1a) peut arriver avant le trailer 7a.
-                            if prev_phase4_step == crate::helix::phase4_state::Phase4Step::WaitingDump
-                                && data.len() == 36
-                                && data.first().copied() == Some(0x19)
-                                && data.get(4).copied() == Some(0xef)
-                                && data.get(5).copied() == Some(0x03)
-                            {
-                                s.phase4_seen_19ef_pre_postarm = true;
-                                let dbl = (
-                                    data.get(28).copied().unwrap_or(0),
-                                    data.get(29).copied().unwrap_or(0),
-                                );
-                                crate::helix::init_trace::trace_fmt(format_args!(
-                                    "[post1a] pre-PostArm IN 19/36o ef mémorisé (double={:02x}:{:02x})",
-                                    dbl.0, dbl.1
-                                ));
-                            }
                             crate::helix::phase4_state::handle_in_passive(&mut s.phase4_step, &data);
-                            if prev_phase4_step == crate::helix::phase4_state::Phase4Step::WaitAck2
-                                && s.phase4_step == crate::helix::phase4_state::Phase4Step::WaitIn1f
-                            {
-                                crate::helix::phase4_state::on_enter_wait_in_1f(&mut s);
-                            }
-                            if prev_phase4_step == crate::helix::phase4_state::Phase4Step::WaitIn1f
-                                && s.phase4_step
-                                    == crate::helix::phase4_state::Phase4Step::WaitIn1b26
-                            {
-                                crate::helix::phase4_state::on_enter_wait_in_1b26(&mut s);
-                            }
-                            if s.phase4_step == crate::helix::phase4_state::Phase4Step::PostArm
-                                && prev_phase4_step
-                                    != crate::helix::phase4_state::Phase4Step::PostArm
-                                && s.phase4_post1a_timeout.is_none()
-                            {
-                                // Le 19/36o ef a déjà été reçu avant le trailer: rattrapage d'état.
-                                if s.phase4_seen_19ef_pre_postarm {
-                                    s.phase4_step = crate::helix::phase4_state::Phase4Step::WaitAck2;
-                                    s.phase4_seen_19ef_pre_postarm = false;
+
+                            // OUT émis À L'ENTRÉE de chaque état (déclenchement proactif PHASE B :
+                            // PostArm envoie déjà le 1b 76:0e ; chaque IN 1f/19 enchaîne la requête
+                            // suivante). Les IN 1d / ACK 08 entrelacés sont ignorés par la FSM.
+                            if s.phase4_step != prev_phase4_step {
+                                use crate::helix::phase4_state::Phase4Step as P;
+                                // Armer le timeout secours à l'entrée de PostArm (début PHASE B).
+                                if s.phase4_step == P::PostArm && s.phase4_post1a_timeout.is_none() {
+                                    s.phase4_post1a_timeout =
+                                        Some(Instant::now() + Duration::from_millis(2000));
                                     crate::helix::init_trace::trace(
-                                        "[post1a] rattrapage: PostArm -> WaitAck2 (19/36o ef déjà vu avant trailer)",
+                                        "[PhaseB] timeout secours armé (2s)",
                                     );
                                 }
-                                s.phase4_post1a_timeout =
-                                    Some(Instant::now() + Duration::from_millis(2000));
-                                crate::helix::init_trace::trace("[post1a] timeout secours armé (2s)");
-                                crate::helix::phase4_state::on_enter_post_arm(&mut s);
+                                match s.phase4_step {
+                                    P::PostArm => {
+                                        crate::helix::phase4_state::on_enter_post_arm(&mut s)
+                                    }
+                                    P::PbWait49 => {
+                                        crate::helix::phase4_state::on_enter_pb_wait49(&mut s)
+                                    }
+                                    P::PbWaitCc => {
+                                        crate::helix::phase4_state::on_enter_pb_waitcc(&mut s)
+                                    }
+                                    P::PbWait1a => {
+                                        crate::helix::phase4_state::on_enter_pb_wait1a(&mut s)
+                                    }
+                                    P::PbWait1b => {
+                                        crate::helix::phase4_state::on_enter_pb_wait1b(&mut s)
+                                    }
+                                    P::WaitIn1b26 => {
+                                        crate::helix::phase4_state::on_enter_wait_in_1b26(&mut s)
+                                    }
+                                    _ => {}
+                                }
                             }
                         }
-                        // Timeout secours post-1a.
-                        if matches!(
-                            s.phase4_step,
-                            crate::helix::phase4_state::Phase4Step::PostArm
-                                | crate::helix::phase4_state::Phase4Step::WaitAck2
-                                | crate::helix::phase4_state::Phase4Step::WaitIn1f
-                                | crate::helix::phase4_state::Phase4Step::WaitIn1b26
-                                | crate::helix::phase4_state::Phase4Step::WaitPresetAck
-                        ) {
+                        // Timeout secours PHASE B : si le dialogue reste bloqué, on force Done
+                        // pour ne pas empêcher la suite (RequestPresetNames). Presets OK,
+                        // scroll/dialogue éditeur éventuellement incomplet.
+                        if s.phase4_step.is_phase_b() {
                             if let Some(t) = s.phase4_post1a_timeout {
                                 if Instant::now() >= t {
                                     crate::helix::init_trace::trace_fmt(format_args!(
-                                        "[post1a] timeout secours -> Done (état={})",
+                                        "[PhaseB] timeout secours -> Done (état={})",
                                         s.phase4_step.label()
                                     ));
                                     s.phase4_step = crate::helix::phase4_state::Phase4Step::Done;
@@ -245,11 +244,16 @@ pub fn start_listener(
                         }
                         let state_hold_ms = hold_start.elapsed().as_millis();
                         warn_slow_lock("HelixState.lock()", state_wait_ms, state_hold_ms, data.len());
-                        ((ev, param_events), fond_bootstrap_alert)
+                        ((ev, param_events), fond_bootstrap_alert, slot_model_changed)
                     };
                     if let (Some(app), Some(payload)) = (app_handle.as_ref(), hw_slot_changed.0) {
                         if let Err(e) = app.emit("models:hardware-slot-changed", payload) {
                             eprintln!("[UsbListener] emit models:hardware-slot-changed: {e}");
+                        }
+                    }
+                    if let (Some(app), Some(payload)) = (app_handle.as_ref(), slot_model_changed) {
+                        if let Err(e) = app.emit("models:slot-model-changed", &payload) {
+                            eprintln!("[UsbListener] emit models:slot-model-changed: {e}");
                         }
                     }
                     if let Some(app) = app_handle.as_ref() {
