@@ -8,8 +8,10 @@
 >
 > Dernière révision : juin 2026. Auteur : Scrouik + assistance reverse-engineering.
 >
-> **Commit d'analyse (clôture chantier) :** `Scroll_model_pull_handoff` — branche
-> `fix/none-sur-3894283` (repérer le SHA avec `git log -1 --oneline` sur cette branche).
+> **Commit d'analyse (clôture chantier) :** [`Scroll_model_pull_handoff`](https://github.com/Scrouik/hxlinux/commit/b94508e39d6536702159275cb689b8de351e38a8)
+> — branche `fix/none-sur-3894283` (`b94508e`).
+>
+> **English:** [Scroll_model_pull_handoff.en.md](./Scroll_model_pull_handoff.en.md)
 >
 > **Commit témoin** (pull scroll qui dumpe parfois, ACK 272) : `d6eb2b1` —
 > `fix(helix): pull scroll modèle HW, ACK flux 272 et garde standard`. Archives extraites :
@@ -95,6 +97,11 @@ HX one_notch, octet par octet (référence canonique) :
 Le device **tolère la valeur absolue du double** (un pull qui dumpe peut partir de `f1`
 comme de `f8`). Ce qui compte est la **cohérence avec sa session**. Le `ctr`, lui, est le
 nœud du problème (§5).
+
+**Note (53 vs 272) :** sur le fil, le `IN 53` arrive **avant** les 272 ; le chainHex y est
+déjà lisible. En revanche, **s’arrêter au 53 sans clôturer la transaction** (`19`, drain/ACK
+des 272 comme HX) **fige le hardware** — ce n’est pas « pas de 53 sans 272 », mais « pas de
+53 seul exploitable sans risque ».
 
 ---
 
