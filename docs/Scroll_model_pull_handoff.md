@@ -1,5 +1,13 @@
 # Scroll → dump modèle (HX Stomp XL) — Document de transmission / impasse
 
+> **Addendum juin 2026 (grab-53) :** les sections **§0, §5, §6 et §12** de ce document sont
+> **remplacées** par
+> [scroll_model_pull_handoff_addendum.md](./scroll_model_pull_handoff_addendum.md).
+> Garder **les deux fichiers** côte à côte : ce handoff conserve l'historique du
+> raisonnement et l'impasse d'origine ; l'addendum fige l'état validé sur matériel.
+>
+> **English:** [scroll_model_pull_handoff_addendum.en.md](./scroll_model_pull_handoff_addendum.en.md)
+
 > **Statut : SUSPENDU.** La fonctionnalité « refléter en direct dans l'éditeur le modèle
 > changé à la molette sur le Stomp » est **désactivée par défaut**. Le code reste dans le
 > repo (derrière le flag `HX_PULL_COUPLE_LANE`, OFF par défaut) mais n'est pas branché en
@@ -12,6 +20,10 @@
 > — branche `fix/none-sur-3894283` (`b94508e`).
 >
 > **English:** [Scroll_model_pull_handoff.en.md](./Scroll_model_pull_handoff.en.md)
+>
+> **Addendum (juin 2026, grab-53) :**
+> [scroll_model_pull_handoff_addendum.md](./scroll_model_pull_handoff_addendum.md) ·
+> [scroll_model_pull_handoff_addendum.en.md](./scroll_model_pull_handoff_addendum.en.md)
 >
 > **Commit témoin** (pull scroll qui dumpe parfois, ACK 272) : `d6eb2b1` —
 > `fix(helix): pull scroll modèle HW, ACK flux 272 et garde standard`. Archives extraites :

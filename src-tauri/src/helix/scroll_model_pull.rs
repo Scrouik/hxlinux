@@ -29,32 +29,45 @@
 //!
 //! ## Modes (flag `HX_PULL_COUPLE_LANE=1`)
 //!
-//! Le mécanisme du double est désormais **identique** dans les deux modes (+1/OUT, hi
-//! figé 0x64, wrap cd_lane). Seule la GRAINE initiale du pull diffère, posée UNE fois
-//! par session (sentinelle `0xFFFF`) :
-//! - **couplé** (`HX_PULL_COUPLE_LANE=1`) : double = `editor_ed03_double` VIVANT, ctr =
-//!   `editor_ed03_lane` VIVANT (≈ 0x1cf9). Le device rejette tout ctr périmé sous sa lane,
-//!   donc une constante figée (0x1c7e) est refusée : il faut continuer la lane réelle.
+//! Le mécanisme du double est **identique** dans les deux modes (+1/OUT, hi figé 0x64,
+//! wrap cd_lane). Seule la GRAINE du pull diffère, posée une fois par session (sentinelle
+//! `0xFFFF`) :
+//! - **couplé** (`HX_PULL_COUPLE_LANE=1`) : double = `editor_ed03_double` VIVANT ; ctr =
+//!   `0x6cbd` (page 0x6c) — EMPIRIQUEMENT la seule famille qui fait partir le `IN 53`
+//!   (dump) sur notre session. La page 0x1c (lane vivante, ou constante 0x1c7e) ne dumpe
+//!   jamais ici. La règle exacte des octets 12-13 reste inconnue (pas de specs Line 6).
 //! - **figé** (défaut, témoin) : graine = `editor_ed03_double` + `HX_PULL_DOUBLE_DELTA`,
-//!   ctr base figée `0x1c7e` (valeur HX one_notch — peut être périmée selon la session).
+//!   ctr base figée `0x1c7e`.
+//!
+//! ## Mode GRAB-53 (depuis juin 2026)
+//!
+//! On n'a besoin QUE du `chainHex`, et il est **entièrement dans le `IN 53`** (92 o,
+//! motif `… 19 <id> 1a …`). Le `272` ne porte que les paramètres du modèle (inutiles).
+//! Donc dès qu'on reçoit le `53`, on **extrait le chainHex et on finalise** : on n'envoie
+//! **jamais** les `19`, on ne poursuit **jamais** le `272`. Ça supprime la traîne
+//! `19/272` qui (a) gelait le device et (b) causait très probablement les rejects
+//! intermittents (device en retard sur le tail du pull précédent). Un `IN 21` (reject)
+//! s'aborte proprement → l'utilisateur re-scrolle. Cf. `scroll_model_pull_HANDOFF.md`.
+//!
+//! ## Modèle du double — capture canonique HX Edit (one_notch, juin 2026)
+//!
+//! `stomp_running_start_hxedit_one_notch.json` : le dump (`IN 53`) part sur le `1b` SEUL,
+//! avant tout `19`. Le double avance +1 par OUT (le hi reste `0x64`, le `cd_lane` octet 27
+//! passe 03→04 au wrap bas du lo). Le device tolère la valeur absolue du double.
 //!
 //! ## Historique du correctif (juin 2026)
-//! - SUPPRIMÉ le `+3` aveugle en finalize : il avançait le double même sur un pull
-//!   RATÉ (run multi_notch_crash : `avancé +3 → 64f8` juste avant `pull échoué`),
-//!   causant une désync cumulative → freeze device (reboot obligatoire). Remplacé par
-//!   +1 sur chaque OUT effectivement construit.
-//! - AJOUT abort propre sur `IN 21` reçu à l'étape 1 (reject device) : on ne laisse
-//!   plus la transaction `1b` pendante en attendant le timeout 600 ms.
-//! - Wrap `cd 03→04` désormais géré dans LES DEUX modes (avant : bypassé en couplé).
-//! - Les DEUX `19` partent ensemble dès la première réponse device (miroir HX
-//!   `1b→53→19#1→19#2→bulks`), sans attendre une 2ᵉ trame IN. Avant : on n'envoyait
-//!   `19#2` qu'au reçu d'une 2ᵉ réponse, mais le device n'envoyait celle-ci qu'APRÈS
-//!   notre `19#2` → retard ~2,3 s (capture `multi_notch_crash`, echo `f4:67` arrivant
-//!   au cran suivant) → collision → `IN 21` reject → désync → freeze.
+//! - SUPPRIMÉ le `+3` aveugle en finalize (avançait le double même sur pull RATÉ →
+//!   désync → freeze). Remplacé par +1 sur chaque OUT effectivement émis.
+//! - AJOUT abort propre sur `IN 21` (reject) à l'étape 1 : plus de transaction pendante.
+//! - Wrap `cd 03→04` géré dans les deux modes.
+//! - PASSAGE en mode GRAB-53 : finalisation sur le `IN 53`, plus aucun `19` ni `272`
+//!   émis (la traîne était la source du freeze ET des rejects intermittents).
+//!   `send_pull_both_19s` conservée `#[allow(dead_code)]` comme référence du handshake
+//!   complet pour qui voudrait les paramètres du modèle.
 //!
 //! ## Référence captures
-//! `stomp_running_start_hxedit_one_notch.json` (HX, dumpe), `stomp_running_start_linux_d6eb2b1.json`,
-//! `stomp_running_start_linux_multi_notch_crash.json` (run du freeze).
+//! `stomp_running_start_hxedit_one_notch.json` (HX, dumpe),
+//! `stomp_running_start_linux_multi_notch_crash.json` (run du freeze, ancien chemin 19/272).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -171,16 +184,16 @@ pub fn handle_in_layer_trigger(data: &[u8], state: &mut HelixState) -> LayerResu
     if state.hw_model_pull_ed03_double == 0xFFFF {
         let base = state.editor_ed03_double;
         if couple_lane_enabled() {
-            // Couplé : double ET ctr continuent les lanes ED03 VIVANTES.
-            //   double = editor_ed03_double (≈ 0x64f2 après PHASE B),
-            //   ctr    = editor_ed03_lane   (≈ 0x1cf9 après PHASE B, octets 12-13 OUT ed03).
-            // Le device accepte un ctr en avance, rejette un ctr périmé : une constante
-            // figée (0x1c7e) est EN DESSOUS de notre lane → reject systématique. La lane
-            // vivante est pile à la position attendue par le device.
+            // Couplé : double = editor_ed03_double VIVANT (≈ 0x64f2 après PHASE B).
+            //   ctr = 0x6cbd (page 0x6c). C'est EMPIRIQUEMENT la seule famille de valeurs
+            //   qui fait partir le `IN 53` (dump) ; la page 0x1c ne dumpe jamais sur notre
+            //   session (cf. handoff §5 — règle exacte inconnue, pas de specs Line 6).
+            //   Le freeze qu'on associait à 0x6cbd venait de la TRAÎNE 19/272, qu'on
+            //   n'émet plus (on s'arrête au 53, cf. ingest_pull_capture).
             state.hw_model_pull_ed03_double = base;
-            state.hw_model_pull_ctr = state.editor_ed03_lane;
+            state.hw_model_pull_ctr = 0x6cbd;
             pull_trace(&format!(
-                "[couple] graine double={:04x} ctr={:04x} (editor_ed03_double / editor_ed03_lane vivants)",
+                "[couple] graine double={:04x} ctr={:04x} (mode grab-53)",
                 state.hw_model_pull_ed03_double, state.hw_model_pull_ctr,
             ));
         } else {
@@ -480,13 +493,11 @@ fn send_pull_1b_f0_burst(state: &mut HelixState, slot_bus: u8) {
     state.send(pkt);
 }
 
-/// Envoie `19#1` PUIS `19#2` d'affilée, dès la première réponse device (`53`/`4c`/…),
-/// **sans attendre une 2ᵉ trame IN** — miroir exact de HX one_notch
-/// (`1b → 53 → 19#1 → 19#2 → bulks`). Draine la transaction immédiatement : supprime
-/// le « deadlock mou » où le device attendait notre `19#2` pour répondre (retard ~2,3 s
-/// → collision du cran suivant → `IN 21` reject → désync cumulative → freeze).
-/// Capture `multi_notch_crash` : Pull 3 dumpait justement parce que les deux `19`
-/// partaient ensemble ; Pull 1 stallait car un seul `19` partait.
+/// [RÉFÉRENCE — non utilisée en mode grab-53] Envoie `19#1` puis `19#2` d'affilée pour
+/// poursuivre le handshake vers le `272` (paramètres). On ne l'appelle plus : on s'arrête
+/// au `IN 53` (chainHex), car la traîne `19/272` gelait le device. Conservée pour un
+/// repreneur qui voudrait les paramètres du modèle (cf. handoff §6).
+#[allow(dead_code)]
 fn send_pull_both_19s(state: &mut HelixState) {
     let pkt1 = build_pull_19(state, false);
     pull_trace(&format!("OUT 19 #1 double={:02x}:{:02x}", pkt1[28], pkt1[29]));
@@ -783,15 +794,26 @@ pub fn ingest_pull_capture(
         return finalize_pull_capture(state, None);
     }
 
-    // Première réponse device (`53`/`4c`/…) → on enchaîne les DEUX `19` tout de suite
-    // (miroir HX), puis on passe direct en étape 3 (attente bulk). On n'attend plus une
-    // « 2ᵉ réponse » pour émettre `19#2` : c'était la cause du retard device / freeze.
-    // Le stub `1c` n'est pas une vraie première réponse : on patiente.
+    // Mode GRAB-53 : la première réponse device qui porte le model-id est le `IN 53`
+    // (92 o). Le chainHex est DEDANS — c'est tout ce qu'on veut. On l'extrait et on
+    // FINALISE immédiatement : on n'envoie JAMAIS les `19`, on ne poursuit JAMAIS le
+    // `272` (paramètres inutiles). La traîne 19/272 était la source du freeze ET, très
+    // probablement, des rejects intermittents (device en retard sur le tail précédent).
+    // Le stub `1c` n'est pas une vraie réponse : on patiente.
     if state.hw_model_pull_step == 1
         && looks_like_first_pull_reply(data)
         && !is_in_1c_stub(data)
     {
-        send_pull_both_19s(state);
+        let payload = finalize_pull_capture(state, None);
+        if let Some(ref p) = payload {
+            if let Some(ref hex) = p.module_hex {
+                log_hw_model_changed(hex);
+            }
+            return payload;
+        }
+        // Première réponse sans model-id extractible (cas anormal) : on laisse le
+        // timeout finaliser. On n'enchaîne PAS les 19 (mode grab-53).
+        return None;
     }
 
     if is_pull_final_meta_bulk(data) {
@@ -907,18 +929,6 @@ mod tests {
         0x00, 0x44, 0x05, 0x79, 0x0e, 0x6a, 0x81, 0x62, 0x01, 0xc0,
     ];
 
-    fn test_final_bulk_272(module: &[u8; 3]) -> Vec<u8> {
-        let mut buf = vec![0u8; 272];
-        buf[0] = 0x08; buf[1] = 0x01;
-        let off = 200;
-        buf[off..off+3].copy_from_slice(&[0x83, 0x66, 0xcd]);
-        buf[off+3] = 0x03;
-        buf[off+10] = 0x19;
-        buf[off+11..off+14].copy_from_slice(module);
-        buf[off+14] = 0x1a;
-        buf
-    }
-
     /// +1 par OUT sur le double (motif HX f1→f2→f3), valable dans les deux modes.
     #[test]
     fn pull_double_plus1_each_out() {
@@ -1018,29 +1028,31 @@ mod tests {
         );
     }
 
-    /// Première réponse device → les DEUX `19` partent ensemble (f+1, f+2) et on passe
-    /// direct en étape 3 (attente bulk), sans attendre une 2ᵉ trame IN (miroir HX).
+    /// Mode grab-53 : la première réponse (`IN 53`) porte le chainHex → on FINALISE
+    /// immédiatement (payload émis), sans envoyer aucun `19`, et l'étape retombe à 0.
     #[test]
-    fn first_reply_sends_both_19s_and_steps_to_3() {
+    fn first_reply_53_grabs_chainhex_no_19s() {
         std::env::remove_var("HX_PULL_COUPLE_LANE");
         let mut state = HelixState::new();
         state.hw_active_slot_bus = Some(0x01);
-        state.hw_model_pull_ed03_double = 0x64f2; // 1b émettra f3
+        state.hw_active_slot_index = Some(0);
+        state.hw_model_pull_ed03_double = 0x64f2;
 
         arm_pull_capture(&mut state, 0x01);
-        let p1b = build_pull_1b(&mut state, 0x01);
-        assert_eq!(p1b[28], 0xf3, "1b double lo");
+        let _ = build_pull_1b(&mut state, 0x01);
 
-        // Première réponse (53, 92o) → doit envoyer 19#1 (f4) ET 19#2 (f5) → étape 3.
-        let in92 = {
+        // 53 (92o) avec marqueur d'assignation + bloc model-id `19 cd 01 fe 1a`.
+        let in53 = {
             let mut v = vec![0x53u8; 92];
             v[24..28].copy_from_slice(&[0x83, 0x66, 0xcd, 0x03]);
+            v[44..49].copy_from_slice(&[0x19, 0xcd, 0x01, 0xfe, 0x1a]);
             v
         };
-        ingest_pull_capture(&mut state, &in92);
-        assert_eq!(state.hw_model_pull_step, 3, "les deux 19 partent → étape 3");
-        // Le double a avancé de +1 (1b) +1 (19#1) +1 (19#2) = +3 vs la graine f2 → f5.
-        assert_eq!(state.hw_model_pull_ed03_double & 0xff, 0xf5);
+        let payload = ingest_pull_capture(&mut state, &in53).expect("chainHex extrait du 53");
+        assert_eq!(payload.module_hex.as_deref(), Some("cd01fe"));
+        assert_eq!(payload.slot_index, 0);
+        assert_eq!(state.hw_model_pull_step, 0, "finalisé sur le 53, aucun 19 envoyé");
+        assert!(state.hw_model_pull_capture_deadline.is_none());
     }
 
     /// Un stub `1c` en première réponse n'est PAS une vraie réponse : on patiente (étape 1).
@@ -1071,41 +1083,5 @@ mod tests {
             extract_first_module_hex_from_bulk(IN92).as_deref(),
             Some("cd01fe")
         );
-    }
-
-    #[test]
-    fn full_capture_finalize() {
-        std::env::remove_var("HX_PULL_COUPLE_LANE");
-        let mut state = HelixState::new();
-        state.hw_active_slot_bus = Some(0x01);
-        state.hw_active_slot_index = Some(0);
-        state.hw_model_pull_ed03_double = 0x64ee;
-
-        arm_pull_capture(&mut state, 0x01);
-        assert_eq!(state.hw_model_pull_step, 1);
-
-        let in92 = {
-            let mut v = vec![0x53u8; 92];
-            v[24..28].copy_from_slice(&[0x83, 0x66, 0xcd, 0x03]);
-            v
-        };
-        ingest_pull_capture(&mut state, &in92);
-        // Première réponse → les DEUX 19 partent ensemble → étape 3 directement.
-        assert_eq!(state.hw_model_pull_step, 3);
-
-        let in68 = {
-            let mut v = vec![0x39u8; 68];
-            v[24..28].copy_from_slice(&[0x83, 0x66, 0xcd, 0x03]);
-            v
-        };
-        // Frame intermédiaire : capturée, ne change pas l'étape (déjà en attente bulk).
-        ingest_pull_capture(&mut state, &in68);
-        assert_eq!(state.hw_model_pull_step, 3);
-
-        let payload = ingest_pull_capture(&mut state, &test_final_bulk_272(&[0xcd, 0x01, 0xfe]))
-            .expect("payload attendu");
-        assert_eq!(payload.module_hex.as_deref(), Some("cd01fe"));
-        assert_eq!(payload.slot_index, 0);
-        assert_eq!(state.hw_model_pull_step, 0);
     }
 }

@@ -1,5 +1,13 @@
 # Scroll → model dump (HX Stomp XL) — Handoff / dead end
 
+> **June 2026 addendum (grab-53):** sections **§0, §5, §6, and §12** in this document are
+> **superseded** by
+> [scroll_model_pull_handoff_addendum.en.md](./scroll_model_pull_handoff_addendum.en.md).
+> Keep **both files** side by side: this handoff preserves the original reasoning and
+> dead-end analysis; the addendum records hardware-validated state.
+>
+> **French (source):** [scroll_model_pull_handoff_addendum.md](./scroll_model_pull_handoff_addendum.md)
+
 > **Status: SUSPENDED.** The feature “reflect in the editor, in real time, the model
 > changed via the Stomp encoder wheel” is **disabled by default**. The code remains in the
 > repo (behind `HX_PULL_COUPLE_LANE`, OFF by default) but is **not wired for production**.
@@ -16,6 +24,10 @@
 > `docs/reference/*_d6eb2b1.rs`.
 >
 > **French (source):** [Scroll_model_pull_handoff.md](./Scroll_model_pull_handoff.md)
+>
+> **Addendum (June 2026, grab-53):**
+> [scroll_model_pull_handoff_addendum.en.md](./scroll_model_pull_handoff_addendum.en.md) ·
+> [scroll_model_pull_handoff_addendum.md](./scroll_model_pull_handoff_addendum.md)
 
 ---
 
