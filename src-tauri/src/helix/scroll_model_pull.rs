@@ -64,6 +64,14 @@
 //!   émis (la traîne était la source du freeze ET des rejects intermittents).
 //!   `send_pull_both_19s` conservée `#[allow(dead_code)]` comme référence du handshake
 //!   complet pour qui voudrait les paramètres du modèle.
+//! - AJOUT retry-once-on-reject — RETIRÉ ensuite : la capture a montré que le `IN 21`
+//!   n'est PAS un reject (le device l'envoie parfois AVANT le dump, qui arrive ~2-16 ms
+//!   après). Le retry réémettait donc un `1b` inutile. Remplacé par : on n'agit plus sur
+//!   le `21` (il ne porte aucun model-id), on attend simplement le dump.
+//! - CORRECTION reconnaissance du dump : on finalise dès qu'une trame porte un MODEL-ID
+//!   (marqueur + `19…1a`), quel que soit le head/la longueur. Le device dumpe sous des
+//!   formats très variés (head 0x44..0x6c, 76-116 o) ; l'ancien filtre par head ratait
+//!   p.ex. 0x44/76o (notch 22 → modèle émis en retard via timeout → « UI décalée »).
 //!
 //! ## Référence captures
 //! `stomp_running_start_hxedit_one_notch.json` (HX, dumpe),
@@ -348,15 +356,6 @@ pub fn is_hw_model_post_assign_21(data: &[u8]) -> bool {
         && data.windows(3).any(|w| w == [0x82, 0x62, 0x01, 0x1a])
 }
 
-/// `IN 21` 44 o sur la lane scroll `f0:03:02:10` = **reject device** quand il arrive
-/// AVANT tout first-reply (le pull n'a pas dumpé). Volontairement plus large que
-/// [`is_hw_model_post_assign_21`] (pas de filtre slot) : sert au seul abort de pull.
-fn is_scroll_pull_reject_21(data: &[u8]) -> bool {
-    data.len() == 44
-        && data.first() == Some(&0x21)
-        && data.get(4..8) == Some(&[0xf0, 0x03, 0x02, 0x10])
-}
-
 // ── Résolution slot_bus ───────────────────────────────────────────────────────
 
 pub fn active_effect_slot_bus(state: &HelixState) -> Option<u8> {
@@ -532,7 +531,6 @@ fn arm_pull_capture(state: &mut HelixState, slot_bus: u8) {
         state.hw_model_pull_cd_lane = None;
     }
     state.hw_model_pull_echo_double = None;
-    state.hw_model_pull_retried_1b = false;
     state.hw_model_pull_saw_final_bulk = false;
     state.hw_model_pull_capture_deadline =
         Some(Instant::now() + Duration::from_millis(PULL_CAPTURE_MS));
@@ -579,14 +577,14 @@ fn frame_has_assign_marker(data: &[u8]) -> bool {
     data.windows(3).any(|w| w == [0x83, 0x66, 0xcd])
 }
 
-fn looks_like_first_pull_reply(data: &[u8]) -> bool {
-    if is_pull_final_meta_bulk(data) {
-        return false;
-    }
-    matches!(data.first(), Some(0x53) | Some(0x51) | Some(0x47) | Some(0x6c) | Some(0x50))
-        || (data.len() >= 90 && data.len() < 120 && data.first() == Some(&0x56))
-        || (data.len() >= 80 && data.len() < 120 && frame_has_assign_marker(data))
-        || is_in_1c_stub(data)
+/// Une trame de DUMP : porte le marqueur d'assignation `83 66 cd` ET un model-id
+/// extractible (`19…1a`). Robuste à TOUS les formats observés (head 0x44..0x6c, 76-116 o)
+/// — on se fie au contenu, pas au head. Exclut le bulk `272` (paramètres) et — par nature
+/// — le `IN 21` (44 o, aucun model-id) et les keep-alives.
+fn frame_carries_model_id(data: &[u8]) -> bool {
+    !is_pull_final_meta_bulk(data)
+        && frame_has_assign_marker(data)
+        && extract_first_module_hex_from_bulk(data).is_some()
 }
 
 fn is_in_1c_stub(data: &[u8]) -> bool {
@@ -640,13 +638,32 @@ fn try_ack_pull_interstitial_echo(state: &mut HelixState, data: &[u8]) {
     ]));
 }
 
+/// Extrait le premier model-id (`19 <1..N o> 1a`) d'une trame de dump.
+///
+/// **Correctif anti-collision écho-double (juin 2026).** Juste après le marqueur
+/// d'assignation `83 66 cd <cd_lane>`, le device place l'ÉCHO du double host :
+/// `<double_lo> 67 00 68 …`. Quand `double_lo == 0x19`, cet octet se faisait passer
+/// pour un marqueur de model-id : l'ancien code cherchait alors le `1a` SUIVANT dans
+/// **tout** le buffer, tombait sur le `1a` du VRAI model-id ~20 o plus loin, jugeait
+/// l'« id » trop long (>12 o) et l'abandonnait — mais le curseur avait déjà sauté
+/// par-dessus le vrai marqueur → `None` → « pull échoué » alors que le dump était bon.
+/// C'était la cause du décrochage déterministe vers le 38ᵉ/39ᵉ cran (double semé à
+/// `0xf3`, +1/cran → atteint `0x19` après 38 incréments), et de la fausse impression
+/// de « plafond ctr 0x7794 » de l'addendum.
+///
+/// Deux garde-fous : (1) on borne la recherche du `1a` à `MODEL_ID_MAX_LEN` octets
+/// (un model-id réel fait 1 à ~4 o) ; (2) si pas de `1a` dans la fenêtre, ce `19`
+/// est une collision → on n'avance QUE de 1 (jamais par-dessus un marqueur ultérieur).
 pub fn extract_first_module_hex_from_bulk(buf: &[u8]) -> Option<String> {
+    /// Longueur max plausible d'un model-id entre `19` et `1a` (marge : observés ≤ 3 o).
+    const MODEL_ID_MAX_LEN: usize = 8;
     let mut cursor = 0usize;
     while cursor < buf.len() {
         if buf[cursor] != 0x19 {
             cursor += 1;
             continue;
         }
+        // Garde format alternatif : `83 17 c3 19 …` n'est pas un model-id.
         if cursor >= 3
             && buf[cursor - 3] == 0x83
             && buf[cursor - 2] == 0x17
@@ -656,13 +673,16 @@ pub fn extract_first_module_hex_from_bulk(buf: &[u8]) -> Option<String> {
             continue;
         }
         let id_start = cursor + 1;
-        let Some(rel_end) = buf[id_start..].iter().position(|&b| b == 0x1a) else {
+        let search_end = (id_start + MODEL_ID_MAX_LEN).min(buf.len());
+        // Cherche le `1a` UNIQUEMENT dans la fenêtre : au-delà, ce `19` n'est pas un
+        // marqueur (typiquement l'écho du double, p.ex. `double_lo == 0x19`).
+        let Some(rel_end) = buf[id_start..search_end].iter().position(|&b| b == 0x1a) else {
             cursor += 1;
             continue;
         };
         let id_bytes = &buf[id_start..id_start + rel_end];
-        cursor = id_start + rel_end + 1;
-        if id_bytes.is_empty() || id_bytes.len() > 12 {
+        if id_bytes.is_empty() {
+            cursor += 1;
             continue;
         }
         let mut id_hex = String::with_capacity(id_bytes.len() * 2);
@@ -718,7 +738,6 @@ fn finalize_pull_capture(
         state.hw_model_pull_cd_lane = None;
     }
     state.hw_model_pull_echo_double = None;
-    state.hw_model_pull_retried_1b = false;
     state.hw_model_pull_saw_final_bulk = false;
 
     // NB : aucune avance « entre pulls » ici. Le double a déjà été avancé de +1 par
@@ -784,25 +803,21 @@ pub fn ingest_pull_capture(
         try_ack_pull_interstitial_echo(state, data);
     }
 
-    // Reject device : `IN 21` sur la lane scroll AVANT tout first-reply (step encore 1).
-    // Le device a refusé le pull (pas de dump). On abandonne PROPREMENT tout de suite —
-    // on ne laisse plus la transaction `1b` pendante jusqu'au timeout 600 ms, ce qui
-    // empilait des transactions ed03 non refermées (suspect du freeze). Le double n'a
-    // avancé que du `1b` réellement émis (+1), donc pas de sur-avance.
-    if state.hw_model_pull_step == 1 && is_scroll_pull_reject_21(data) {
-        pull_trace("IN 21 (reject) à l'étape 1 → abort propre du pull, pas de transaction pendante");
-        return finalize_pull_capture(state, None);
-    }
+    // Le `IN 21` (44 o) n'est PAS un reject : le device l'envoie parfois AVANT le dump
+    // (livraison réordonnée), et le dump suit ~2-16 ms après (vérifié sur capture : notch
+    // 11 → 21 puis IN 47/80o ; notch 22 → 21 puis IN 44/76o). Le `21` ne porte AUCUN
+    // model-id, donc il ne déclenche pas la finalisation ci-dessous : on continue
+    // simplement d'attendre le vrai dump. (On a retiré l'ancien retry-on-reject, fondé sur
+    // la fausse prémisse « 21 = reject » — il réémettait un `1b` inutile.)
 
-    // Mode GRAB-53 : la première réponse device qui porte le model-id est le `IN 53`
-    // (92 o). Le chainHex est DEDANS — c'est tout ce qu'on veut. On l'extrait et on
-    // FINALISE immédiatement : on n'envoie JAMAIS les `19`, on ne poursuit JAMAIS le
-    // `272` (paramètres inutiles). La traîne 19/272 était la source du freeze ET, très
-    // probablement, des rejects intermittents (device en retard sur le tail précédent).
-    // Le stub `1c` n'est pas une vraie réponse : on patiente.
+    // Grab-53 : on finalise dès qu'une trame porte un MODEL-ID (marqueur `83 66 cd` +
+    // `19…1a`), QUEL QUE SOIT son head/sa longueur. Le device dumpe sous des formats très
+    // variés (head 0x44/0x47/0x4c/0x4e/0x4f/0x50/0x51/0x53/0x54/0x55/0x56/0x68/0x6c, 76-116 o)
+    // — se fier au model-id, pas au head, capte tous les cas (l'ancien `looks_like_first_pull_reply`
+    // ratait p.ex. 0x44/76o → modèle émis en retard via le timeout). Le stub `1c` est exclu.
     if state.hw_model_pull_step == 1
-        && looks_like_first_pull_reply(data)
         && !is_in_1c_stub(data)
+        && frame_carries_model_id(data)
     {
         let payload = finalize_pull_capture(state, None);
         if let Some(ref p) = payload {
@@ -811,8 +826,6 @@ pub fn ingest_pull_capture(
             }
             return payload;
         }
-        // Première réponse sans model-id extractible (cas anormal) : on laisse le
-        // timeout finaliser. On n'enchaîne PAS les 19 (mode grab-53).
         return None;
     }
 
@@ -1002,30 +1015,60 @@ mod tests {
         );
     }
 
-    /// Reject `IN 21` à l'étape 1 → abort immédiat, pas d'attente du timeout.
+    /// Le `IN 21` (44 o) n'est PAS un reject : il ne porte aucun model-id → on ne finalise
+    /// pas, on RESTE armé. Le dump qui suit (même AVEC un head/longueur inhabituels) finalise.
     #[test]
-    fn reject_21_aborts_pull_cleanly() {
+    fn in_21_is_not_reject_then_dump_finalizes() {
         std::env::remove_var("HX_PULL_COUPLE_LANE");
         let mut state = HelixState::new();
         state.hw_active_slot_bus = Some(0x01);
         state.hw_active_slot_index = Some(0);
         state.hw_model_pull_ed03_double = 0x64f0;
-
         arm_pull_capture(&mut state, 0x01);
-        assert_eq!(state.hw_model_pull_step, 1);
 
-        // 44 o, head 0x21, lane f0:03:02:10 = reject.
-        let mut reject = vec![0u8; 44];
-        reject[0] = 0x21;
-        reject[4..8].copy_from_slice(&[0xf0, 0x03, 0x02, 0x10]);
+        // 21 (44 o, lane scroll, AUCUN model-id) → on attend, toujours armé.
+        let mut notif = vec![0u8; 44];
+        notif[0] = 0x21;
+        notif[4..8].copy_from_slice(&[0xf0, 0x03, 0x02, 0x10]);
+        let p = ingest_pull_capture(&mut state, &notif);
+        assert!(p.is_none(), "le 21 ne finalise pas (pas de model-id)");
+        assert_eq!(state.hw_model_pull_step, 1, "toujours armé, on attend le dump");
+        assert!(state.hw_model_pull_capture_deadline.is_some());
 
-        let payload = ingest_pull_capture(&mut state, &reject);
-        assert!(payload.is_none(), "un reject ne produit pas de payload");
-        assert_eq!(state.hw_model_pull_step, 0, "pull abandonné, plus armé");
-        assert!(
-            state.hw_model_pull_capture_deadline.is_none(),
-            "deadline relâchée (pas d'attente du timeout)"
-        );
+        // Le dump arrive juste après → finalise avec le chainHex.
+        let in53 = {
+            let mut v = vec![0x53u8; 92];
+            v[24..28].copy_from_slice(&[0x83, 0x66, 0xcd, 0x03]);
+            v[44..49].copy_from_slice(&[0x19, 0xcd, 0x01, 0xfe, 0x1a]);
+            v
+        };
+        let payload = ingest_pull_capture(&mut state, &in53).expect("dump après le 21");
+        assert_eq!(payload.module_hex.as_deref(), Some("cd01fe"));
+        assert_eq!(state.hw_model_pull_step, 0);
+    }
+
+    /// Régression notch 22 : un dump au head/longueur inhabituels (`0x44`, 76 o) doit être
+    /// reconnu (on se fie au model-id, pas au head) et finaliser immédiatement.
+    #[test]
+    fn short_unusual_head_dump_is_recognized() {
+        std::env::remove_var("HX_PULL_COUPLE_LANE");
+        let mut state = HelixState::new();
+        state.hw_active_slot_bus = Some(0x01);
+        state.hw_active_slot_index = Some(0);
+        state.hw_model_pull_ed03_double = 0x64f0;
+        arm_pull_capture(&mut state, 0x01);
+
+        // Dump head 0x44, 76 o (cf. capture notch 22) : marqueur + `19 cd 02 a5 1a`.
+        let in44 = {
+            let mut v = vec![0x44u8; 76];
+            v[24..28].copy_from_slice(&[0x83, 0x66, 0xcd, 0x03]);
+            v[44..49].copy_from_slice(&[0x19, 0xcd, 0x02, 0xa5, 0x1a]);
+            v
+        };
+        assert!(frame_carries_model_id(&in44), "0x44/76o doit être vu comme un dump");
+        let payload = ingest_pull_capture(&mut state, &in44).expect("dump 0x44/76 reconnu");
+        assert_eq!(payload.module_hex.as_deref(), Some("cd02a5"));
+        assert_eq!(state.hw_model_pull_step, 0);
     }
 
     /// Mode grab-53 : la première réponse (`IN 53`) porte le chainHex → on FINALISE
@@ -1082,6 +1125,34 @@ mod tests {
         assert_eq!(
             extract_first_module_hex_from_bulk(IN92).as_deref(),
             Some("cd01fe")
+        );
+    }
+
+    /// Régression « décrochage ~38ᵉ cran » : dump réel #3875 (capture
+    /// `stomp_running_start_linux_multi_one_notch.json`) où l'écho du double vaut
+    /// `0x19` (octet 28, juste après `83 66 cd 04`). L'ancien parseur prenait ce `19`
+    /// pour un marqueur, engloutissait jusqu'au `1a` du vrai model-id (20 o plus loin),
+    /// le rejetait (>12 o) en ayant sauté le vrai marqueur → `None` → « pull échoué ».
+    /// Le device avait pourtant bien dumpé (`cd0209`). Doit désormais réussir.
+    #[test]
+    fn echo_double_0x19_does_not_mask_model_id() {
+        const DUMP_3875: &[u8] = &[
+            0x53, 0x00, 0x00, 0x18, 0xed, 0x03, 0x80, 0x10, 0x00, 0x8b, 0x00, 0x04, 0xe8, 0x05,
+            0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x43, 0x00, 0x00, 0x00, 0x83, 0x66, 0xcd, 0x04,
+            0x19, 0x67, 0x00, 0x68, 0x82, 0x0d, 0x01, 0x18, 0x82, 0x13, 0x06, 0x14, 0x85, 0x18,
+            0x83, 0x17, 0xc2, 0x19, 0xcd, 0x02, 0x09, 0x1a, 0xff, 0x09, 0x01, 0x0a, 0xc3, 0x0b,
+            0x83, 0x02, 0x04, 0x03, 0x04, 0x04, 0x94, 0xca, 0x3f, 0x42, 0x8f, 0x5c, 0xca, 0x3f,
+            0x21, 0x47, 0xae, 0xca, 0x3e, 0xd7, 0x0a, 0x3d, 0xca, 0x3f, 0x28, 0xf5, 0xc3, 0x0c,
+            0x83, 0x02, 0x00, 0x03, 0x00, 0x04, 0x90, 0x00,
+        ];
+        assert_eq!(
+            extract_first_module_hex_from_bulk(DUMP_3875).as_deref(),
+            Some("cd0209"),
+            "le model-id doit être lu malgré l'écho double 0x19 en tête"
+        );
+        assert!(
+            frame_carries_model_id(DUMP_3875),
+            "la trame doit être reconnue comme un dump"
         );
     }
 }
