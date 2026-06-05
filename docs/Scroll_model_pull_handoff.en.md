@@ -28,6 +28,16 @@
 > **Addendum (June 2026, grab-53):**
 > [scroll_model_pull_handoff_addendum.en.md](./scroll_model_pull_handoff_addendum.en.md) ·
 > [scroll_model_pull_handoff_addendum.md](./scroll_model_pull_handoff_addendum.md)
+>
+> **Analysis lineage (historical — partially wrong conclusions; useful for intellectual
+> trajectory):** read in order
+> [1](./scroll_dump_analysis_1.md) →
+> [2](./scroll_dump_analysis_2.md) →
+> [3](./scroll_dump_analysis_3.md) →
+> [4](./scroll_dump_analysis_4.md) →
+> [5](./scroll_dump_analysis_5.md), then this handoff, then the addendum and
+> [§9 parser](./addendum_section_decrochage_38.md) /
+> [§10 multi-notch](./Addendum_section_gel_multinotch.md) for validated state.
 
 ---
 
@@ -281,8 +291,12 @@ If someone resumes this specific topic:
   protocol: `1b` ctr=`0x1c7e`, double `f1`, → `IN 53`).
 - `stomp_running_start_linux_multi_notch_crash.json` — HXLinux, successive runs (intermittent
   dump + freeze on page `0x6c`; stable reject on page `0x1c`).
-- Prior analysis line: `scroll_dump_analysis_1..5.md` (false trail history — useful to avoid
-  loops, ignore conclusions).
+- Prior analysis line (hypothesis chronology — **do not treat conclusions as final**):
+  [scroll_dump_analysis_1.md](./scroll_dump_analysis_1.md) ·
+  [2](./scroll_dump_analysis_2.md) ·
+  [3](./scroll_dump_analysis_3.md) ·
+  [4](./scroll_dump_analysis_4.md) ·
+  [5](./scroll_dump_analysis_5.md)
 
 ## 14. Key files / code entry points
 

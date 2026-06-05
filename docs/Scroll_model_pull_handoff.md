@@ -25,6 +25,16 @@
 > [scroll_model_pull_handoff_addendum.md](./scroll_model_pull_handoff_addendum.md) ·
 > [scroll_model_pull_handoff_addendum.en.md](./scroll_model_pull_handoff_addendum.en.md)
 >
+> **Lignée d'analyse (historique — conclusions partiellement fausses, utile pour la trajectoire
+> intellectuelle) :** lire dans l'ordre
+> [1](./scroll_dump_analysis_1.md) →
+> [2](./scroll_dump_analysis_2.md) →
+> [3](./scroll_dump_analysis_3.md) →
+> [4](./scroll_dump_analysis_4.md) →
+> [5](./scroll_dump_analysis_5.md), puis ce handoff, puis l'addendum et
+> [§9 parseur](./addendum_section_decrochage_38.md) /
+> [§10 multi-cran](./Addendum_section_gel_multinotch.md) pour l'état validé.
+>
 > **Commit témoin** (pull scroll qui dumpe parfois, ACK 272) : `d6eb2b1` —
 > `fix(helix): pull scroll modèle HW, ACK flux 272 et garde standard`. Archives extraites :
 > `docs/reference/*_d6eb2b1.rs`.
@@ -295,8 +305,13 @@ Si quelqu'un veut reprendre ce point précis :
   protocole canonique : `1b` ctr=`0x1c7e`, double `f1`, → `IN 53`).
 - `stomp_running_start_linux_multi_notch_crash.json` — HXLinux, runs successifs (dump
   intermittent + freeze en page `0x6c` ; rejet stable en page `0x1c`).
-- Lignée d'analyse antérieure : `scroll_dump_analysis_1..5.md` (historique des fausses pistes
-  — utile pour ne pas reboucler, mais conclusions à ignorer).
+- Lignée d'analyse antérieure (chronologie des hypothèses — **ne pas prendre les conclusions
+  pour acquises**) :
+  [scroll_dump_analysis_1.md](./scroll_dump_analysis_1.md) ·
+  [2](./scroll_dump_analysis_2.md) ·
+  [3](./scroll_dump_analysis_3.md) ·
+  [4](./scroll_dump_analysis_4.md) ·
+  [5](./scroll_dump_analysis_5.md)
 
 ## 14. Fichiers / points de code clés
 
