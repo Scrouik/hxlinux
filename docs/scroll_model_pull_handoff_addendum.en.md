@@ -17,8 +17,10 @@
 > [Addendum_section_gel_multinotch.md](./Addendum_section_gel_multinotch.md) §10).
 >
 > **Supplements:**
-> [§9 parser decoupling](./addendum_section_decrochage_38.md) ·
-> [§10 multi-notch freeze](./Addendum_section_gel_multinotch.md)
+> [§9 parser decoupling](./addendum_section_decrochage_38.en.md) ·
+> [§9 FR](./addendum_section_decrochage_38.md) ·
+> [§10 multi-notch freeze](./Addendum_section_gel_multinotch.en.md) ·
+> [§10 FR](./Addendum_section_gel_multinotch.md)
 
 ---
 

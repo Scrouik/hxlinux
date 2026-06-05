@@ -36,8 +36,10 @@
 > [3](./scroll_dump_analysis_3.md) →
 > [4](./scroll_dump_analysis_4.md) →
 > [5](./scroll_dump_analysis_5.md), then this handoff, then the addendum and
-> [§9 parser](./addendum_section_decrochage_38.md) /
-> [§10 multi-notch](./Addendum_section_gel_multinotch.md) for validated state.
+> [§9 parser](./addendum_section_decrochage_38.en.md) /
+> [§9 FR](./addendum_section_decrochage_38.md) /
+> [§10 multi-notch](./Addendum_section_gel_multinotch.en.md) /
+> [§10 FR](./Addendum_section_gel_multinotch.md) for validated state.
 
 ---
 

@@ -33,7 +33,9 @@
 > [4](./scroll_dump_analysis_4.md) →
 > [5](./scroll_dump_analysis_5.md), puis ce handoff, puis l'addendum et
 > [§9 parseur](./addendum_section_decrochage_38.md) /
-> [§10 multi-cran](./Addendum_section_gel_multinotch.md) pour l'état validé.
+> [§9 EN](./addendum_section_decrochage_38.en.md) /
+> [§10 multi-cran](./Addendum_section_gel_multinotch.md) /
+> [§10 EN](./Addendum_section_gel_multinotch.en.md) pour l'état validé.
 >
 > **Commit témoin** (pull scroll qui dumpe parfois, ACK 272) : `d6eb2b1` —
 > `fix(helix): pull scroll modèle HW, ACK flux 272 et garde standard`. Archives extraites :

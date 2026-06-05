@@ -6,6 +6,8 @@
 > d'une seule fonction (`extract_first_module_hex_from_bulk`) suffit, vérifié sur octets
 > réels. Le scroll 1-cran est désormais **illimité**.
 >
+> **English:** [addendum_section_decrochage_38.en.md](./addendum_section_decrochage_38.en.md)
+>
 > **Capture de référence :** `stomp_running_start_linux_multi_one_notch.json` (run 1-notch
 > qui « décrochait » au 39ᵉ pull). **Code :** `src-tauri/src/helix/scroll_model_pull.rs`,
 > fonction `extract_first_module_hex_from_bulk`. **Test :** `echo_double_0x19_does_not_mask_model_id`.

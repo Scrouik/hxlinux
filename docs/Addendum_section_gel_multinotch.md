@@ -8,6 +8,8 @@
 > Validé : 24 pulls / 10 balayages, wrap `ff→00` franchi, **0 gel**. Le vrai remède (fermer
 > la transaction comme HX Edit) reste bloqué sur la règle du `ctr` des `19` (cf. §5, §11).
 >
+> **English:** [Addendum_section_gel_multinotch.en.md](./Addendum_section_gel_multinotch.en.md)
+>
 > **Remplace** le point 2 de
 > [scroll_model_pull_handoff_addendum.md](./scroll_model_pull_handoff_addendum.md) §6
 > (« coalescing — conçu, non implémenté »).

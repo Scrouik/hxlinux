@@ -18,7 +18,9 @@
 >
 > **Compléments :**
 > [§9 décrochage parseur](./addendum_section_decrochage_38.md) ·
-> [§10 gel multi-cran](./Addendum_section_gel_multinotch.md)
+> [§9 EN](./addendum_section_decrochage_38.en.md) ·
+> [§10 gel multi-cran](./Addendum_section_gel_multinotch.md) ·
+> [§10 EN](./Addendum_section_gel_multinotch.en.md)
 
 ---
 
