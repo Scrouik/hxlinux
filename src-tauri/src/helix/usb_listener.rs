@@ -145,6 +145,11 @@ pub fn start_listener(
                             } else {
                                 None
                             };
+                        // Coalescing multi-cran : pull différé en fin de settling (dernier cran
+                        // coalescé). No-op si HX_PULL_COALESCE_LAST=0 (coalescing désactivé ;
+                        // défaut = activé). Indépendant de la capture ci-dessus — appelé à
+                        // chaque IN (seul endroit qui « bat » hors capture).
+                        crate::helix::scroll_model_pull::tick_hw_model_pull(&mut s);
                         // ── FSM phase 4 (passive) + PHASE B (réactive : OUT via on_enter_*). ──
                         if s.phase4_step.is_active() {
                             let prev_phase4_step = s.phase4_step;

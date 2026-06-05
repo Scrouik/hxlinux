@@ -8,6 +8,13 @@
 
 _Raison : éviter que des développeurs optimisant ou modifiant le dépôt comparent avec Kempline et concluent à tort à une erreur d’implémentation._
 
+## Scroll modèle HW — UX et robustesse (plus tard)
+
+- [ ] **Popup consigne utilisateur** : au premier scroll / commande matérielle détectée pendant une session éditeur active, afficher une popup du type « évitez d’utiliser les commandes du Stomp pendant l’utilisation du programme ; préférez l’éditeur » (aligné handoff §0). **Prévoir un flag dev** (`HX_SKIP_HW_SCROLL_WARNING=1` ou équivalent) pour ne **pas** déclencher la popup pendant les tests terrain — sinon galère à valider le multi-cran.
+- [ ] **Chargement preset sans flags debug** : sans `HX_PULL_COUPLE_LANE=1` (et session « normale », sans les env de trace), la lecture des presets au bootstrap **échoue** observé en dev. Causes probables : couche `ScrollModelPull` toujours active (doc disait OFF), pas de gate `editor_ready` / bootstrap sur le pull, graine figée `0x1c7e` vs couplée `0x6cbd`. À corriger avant usage « production » : vrai OFF par défaut **ou** gate explicite + chemin preset isolé. Voir analyse chat juin 2026 ; compléments [`scroll_model_pull_handoff_addendum.md`](docs/scroll_model_pull_handoff_addendum.md), [`Addendum_section_gel_multinotch.md`](docs/Addendum_section_gel_multinotch.md).
+
+_Raison : l’utilisateur final ne lancera pas l’app avec une ligne d’env ; le scroll HW reste expérimental — la popup et le bootstrap preset doivent tenir sans flags._
+
 ## `HX_ModelUsbAssign.json` — complétude, schéma, alignement catalogue
 
 - [ ] **Campagne hardware** : vérifier les **autres familles de modèles** (au-delà des distorsions / ce qui est déjà capturé), captures USB si besoin, et **ajouter / valider** les entrées dans **`src-tauri/resources/HX_ModelUsbAssign.json`** (une ligne `id` + `variant` + `bulkHex` valide par cas testé).

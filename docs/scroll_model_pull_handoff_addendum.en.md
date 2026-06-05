@@ -12,8 +12,13 @@
 >
 > **French (source):** [scroll_model_pull_handoff_addendum.md](./scroll_model_pull_handoff_addendum.md)
 >
-> **Revised status: single-notch RESOLVED and stable.** Fast multi-notch: works with known
-> lost detents (non-blocking), to be addressed next.
+> **Revised status: single-notch RESOLVED and stable.** Fast multi-notch: **MITIGATED**
+> (coalescing + 500 ms throttle — see
+> [Addendum_section_gel_multinotch.md](./Addendum_section_gel_multinotch.md) §10).
+>
+> **Supplements:**
+> [§9 parser decoupling](./addendum_section_decrochage_38.md) ·
+> [§10 multi-notch freeze](./Addendum_section_gel_multinotch.md)
 
 ---
 
@@ -110,21 +115,23 @@ IN 1f → OUT 1b → IN 21 (before any dump) → clean abort (no pending transac
 
 ---
 
-## 6. What remains (NOT done — next steps, in order)
+## 6. What remains / supplements
 
 1. **(1-notch) retry-once-on-reject** — on step-1 `IN 21`, re-send **one** fresh `1b`
    (normal `ctr`/double continuation). The device very likely dumps on the 2nd attempt
    → detent recovered, no visible lag. Low risk in grab-53 (back-to-back pulls OK).
-   *Status: proposed, not implemented.*
-2. **(multi-notch) coalesce `1f` during settling** — currently a `1f` arriving inside
-   `PULL_POST_PULL_SETTLING_MS` (50 ms) is **discarded** (`1f pendant settling —
-   ignoré (pas de file)`) → detent lost during fast scroll. Proposed fix: remember the
-   latest `1f` as *pending* (`hw_model_pull_pending_slot_bus`) and trigger **one** pull at
-   end of settling → we always read the FINAL model. Requires the end-of-settling tick to
-   be called from `usb_listener` (current tick lives in `ingest_pull_capture`, which no
-   longer runs once the pull is finalized). *Status: designed, not implemented.*
+   *Status: proposed, not implemented.* (Note: since June 2026 captures, pre-dump `IN 21` is
+   no longer treated as a reject — this track is probably **obsolete**; revalidate before
+   implementing.)
+2. **(multi-notch) coalesce `1f` during settling** — *formerly “designed, not implemented”
+   here.* **→ Superseded and detailed in
+   [Addendum_section_gel_multinotch.md](./Addendum_section_gel_multinotch.md) §10**:
+   coalescing ON by default (`HX_PULL_COALESCE_LAST=0` for legacy behavior), 500 ms
+   throttle, `tick_hw_model_pull` from `usb_listener`. *Status: **implemented and validated**
+   (24 pulls / 10 sweeps, 0 freeze; device freeze mitigated, not cured).*
 
-Both items are **host-side** improvements, with no hardware risk (no `19/272` chain).
+Item 1 remains an optional **host-side** polish. Item 2 is covered by supplement §10 (no
+`19/272` chain).
 
 ---
 
@@ -147,6 +154,7 @@ Both items are **host-side** improvements, with no hardware risk (no `19/272` ch
 ---
 
 *Summary: scroll-time model read went from “suspended / unstable / freeze” to
-“single-notch stable ~92%, zero freeze”. The root cause of both walls was the 19/272 chain,
-which we never needed to send. Residual rejects are benign (self-correcting). Two optional
-host-side polish items remain (§6).*
+“single-notch stable, zero freeze” (§9: parser) and “fast multi-notch mitigated” (§10:
+coalescing + throttle). The 19/272 chain was not needed for chainHex. What remains is mainly
+retry-on-reject (§6.1, probably obsolete) and HX-style closure (§10.3, blocked on `19`
+`ctr`).*

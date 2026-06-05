@@ -102,8 +102,12 @@ const PULL_1B_DELAY_AFTER_1F_MS: u64 = 14;
 const PULL_COOLDOWN_AFTER_DONE_MS: u64 = 40;
 /// Fenêtre silence post-finalize (évite 272 tardif pris pour 1ère réponse `1b`).
 const PULL_POST_FINALIZE_QUIET_MS: u64 = 85;
-/// Settling post-pull (272 dump tardifs).
+/// Settling post-pull court (272 dump tardifs), utilisé quand le coalescing est désactivé.
 const PULL_POST_PULL_SETTLING_MS: u64 = 50;
+/// Settling post-pull en mode coalescing = THROTTLE. Valeur MESURÉE sur matériel :
+/// le gel de scroll rapide réapparaît vers ~300 ms d'espacement (fenêtre de drainage
+/// ED03 du device ≈ 300-400 ms), tient à 500 ms → ~1,3-1,6× de marge. Voir addendum §10.
+const PULL_THROTTLE_SETTLING_MS: u64 = 500;
 /// Timeout capture (attend le bulk ~272).
 const PULL_CAPTURE_MS: u64 = 600;
 const PULL_CAPTURE_MAX_FRAMES: usize = 48;
@@ -131,6 +135,45 @@ fn couple_lane_enabled() -> bool {
     std::env::var("HX_PULL_COUPLE_LANE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
         .unwrap_or(false)
+}
+
+// ── Coalescing multi-cran (DÉFAUT ON) ───────────────────────────────────────
+//
+// En scroll rapide, un `1f` arrivant pendant le settling n'est pas jeté mais mémorisé
+// (le DERNIER gagne) ; un pull différé est tiré en fin de settling par `tick_hw_model_pull`
+// (appelé depuis `usb_listener`). On lit toujours le modèle FINAL d'un balayage, et le
+// settling allongé (cf. post_pull_settling_ms) agit comme THROTTLE qui plafonne les
+// transactions ED03 non fermées en vol → plus de gel (cf. addendum §10).
+//
+// Host-side PUR : aucun nouveau paquet n'est envoyé au device. Ne FERME PAS la transaction
+// (cf. handoff §6 / proposition A, bloquée sur la règle du `ctr` des `19`).
+//
+// DÉFAUT : activé (comportement validé). `HX_PULL_COALESCE_LAST=0` pour revenir à l'ancien
+// comportement (1f jeté pendant le settling, settling court de 50 ms).
+fn coalesce_last_enabled() -> bool {
+    std::env::var("HX_PULL_COALESCE_LAST")
+        .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("no")))
+        .unwrap_or(true)
+}
+
+// Durée (ms) de la fenêtre de settling post-pull.
+//
+// - Override explicite `HX_PULL_SETTLING_MS=<n>` toujours prioritaire (tuning / mesure du
+//   seuil device).
+// - Sinon : 500 ms (throttle) si le coalescing est actif, 50 ms (historique) sinon.
+fn post_pull_settling_ms() -> u64 {
+    if let Some(v) = std::env::var("HX_PULL_SETTLING_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&v| v > 0)
+    {
+        return v;
+    }
+    if coalesce_last_enabled() {
+        PULL_THROTTLE_SETTLING_MS
+    } else {
+        PULL_POST_PULL_SETTLING_MS
+    }
 }
 
 // ── [TEST] Offset double cd:03 du pull (mode figé uniquement) ─────────────────
@@ -182,7 +225,14 @@ pub fn handle_in_layer_trigger(data: &[u8], state: &mut HelixState) -> LayerResu
     };
 
     if post_pull_stream_settling_active(state) {
-        pull_trace("1f pendant settling — ignoré (pas de file)");
+        if coalesce_last_enabled() {
+            // Coalescing : on ne jette plus le `1f`, on retient le DERNIER slot demandé.
+            // Le pull différé partira en fin de settling (tick_hw_model_pull, usb_listener),
+            // de sorte qu'on lise toujours le modèle FINAL du balayage.
+            queue_pending_hw_model_pull(state, slot_bus);
+        } else {
+            pull_trace("1f pendant settling — ignoré (pas de file)");
+        }
         return LayerResult::Ignored;
     }
 
@@ -241,6 +291,8 @@ pub fn handle_in_layer_trigger(data: &[u8], state: &mut HelixState) -> LayerResu
         lane[0], lane[1]
     ));
 
+    // Ce `1f` hors-settling supersède tout pull coalescé encore en attente.
+    state.hw_model_pull_pending_slot_bus = None;
     send_pull_sequence(state, slot_bus);
     LayerResult::Consumed {
         effect: LayerEffect::None,
@@ -302,6 +354,46 @@ pub fn post_pull_stream_settling_active(state: &HelixState) -> bool {
         && state
             .hw_model_post_pull_deadline
             .is_some_and(|t| Instant::now() < t)
+}
+
+/// Tick appelé depuis `usb_listener` à CHAQUE IN, indépendamment d'une capture en cours.
+///
+/// Sous `HX_PULL_COALESCE_LAST`, déclenche UN pull différé vers le DERNIER slot coalescé
+/// quand la fenêtre de settling vient d'expirer — pour lire le modèle FINAL d'un balayage
+/// rapide (le `1f` final tombait sinon dans le settling et était jeté). Sans le flag :
+/// no-op strict. Ne ferme jamais la transaction et n'émet aucun paquet nouveau pour le
+/// device : le pull différé est un pull grab-53 ordinaire.
+pub fn tick_hw_model_pull(state: &mut HelixState) {
+    if !coalesce_last_enabled() {
+        return;
+    }
+    // Capture en cours : on laisse `ingest_pull_capture` finir ; pas de pull différé.
+    if state.hw_model_pull_capture_deadline.is_some() {
+        return;
+    }
+    // Fait avancer la fenêtre de settling ; tant qu'elle est active, on patiente.
+    let _ = tick_post_pull_stream_settling(state);
+    if post_pull_stream_settling_active(state) {
+        return;
+    }
+    // Settling terminé : si un `1f` a été coalescé, on tire le pull vers le dernier slot.
+    let Some(slot_bus) = state.hw_model_pull_pending_slot_bus.take() else {
+        return;
+    };
+    if state.init_usb_settle_active()
+        || state.preset_usb_read_in_progress()
+        || state.preset_content_only
+    {
+        return;
+    }
+    pull_trace(&format!("pull différé (coalescé) slot_bus={slot_bus:02x}"));
+    state.hw_model_last_scroll_in_at = Some(Instant::now());
+    let lane = state.advance_firmware_scroll_lane(0x1f);
+    pull_trace(&format!(
+        "lane scroll avancée (pull différé) → {:02x}:{:02x}",
+        lane[0], lane[1]
+    ));
+    send_pull_sequence(state, slot_bus);
 }
 
 // ── Détection paquets ─────────────────────────────────────────────────────────
@@ -549,7 +641,7 @@ fn arm_pull_post_finalize_quiet(state: &mut HelixState) {
 fn arm_post_pull_stream_settling(state: &mut HelixState) {
     state.hw_model_post_pull_settling = true;
     state.hw_model_post_pull_deadline =
-        Some(Instant::now() + Duration::from_millis(PULL_POST_PULL_SETTLING_MS));
+        Some(Instant::now() + Duration::from_millis(post_pull_settling_ms()));
 }
 
 fn tick_post_pull_stream_settling(state: &mut HelixState) -> bool {
@@ -855,7 +947,7 @@ pub fn ingest_pull_capture(
 
     // Tick settling (pour détecter les 272 post-finalize tardifs).
     if tick_post_pull_stream_settling(state) {
-        if state.hw_model_pull_pending_slot_bus.is_some() {
+        if !coalesce_last_enabled() && state.hw_model_pull_pending_slot_bus.is_some() {
             pull_trace("settling expiré — pending abandonné (prochain 1f utilisateur)");
             state.hw_model_pull_pending_slot_bus = None;
         }

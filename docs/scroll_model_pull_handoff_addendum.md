@@ -12,8 +12,13 @@
 >
 > **English:** [scroll_model_pull_handoff_addendum.en.md](./scroll_model_pull_handoff_addendum.en.md)
 >
-> **Statut révisé : 1-notch RÉSOLU et stable.** Multi-notch rapide : fonctionnel avec une
-> perte de crans connue (non bloquant), à traiter ensuite.
+> **Statut révisé : 1-notch RÉSOLU et stable.** Multi-notch rapide : **MITIGÉ** (coalescing +
+> throttle 500 ms — cf.
+> [Addendum_section_gel_multinotch.md](./Addendum_section_gel_multinotch.md) §10).
+>
+> **Compléments :**
+> [§9 décrochage parseur](./addendum_section_decrochage_38.md) ·
+> [§10 gel multi-cran](./Addendum_section_gel_multinotch.md)
 
 ---
 
@@ -110,22 +115,23 @@ IN 1f → OUT 1b → IN 21 (avant tout dump) → abort propre (aucune transactio
 
 ---
 
-## 6. Ce qui reste (NON fait — prochaines étapes, par ordre)
+## 6. Ce qui reste / compléments
 
 1. **(1-notch) retry-once-on-reject** — sur `IN 21` à l'étape 1, réémettre **un seul** `1b`
    frais (continuation normale `ctr`/double). Le device dumpe très probablement au 2ᵉ essai
    → cran récupéré, plus de décalage visible. Peu risqué en grab-53 (pulls dos-à-dos OK).
-   *Statut : proposé, non implémenté.*
-2. **(multi-notch) coalescing du `1f` pendant le settling** — actuellement un `1f` arrivant
-   dans la fenêtre `PULL_POST_PULL_SETTLING_MS` (50 ms) est **jeté** (`1f pendant settling —
-   ignoré (pas de file)`) → cran perdu en scroll rapide. Fix proposé : mémoriser le dernier
-   `1f` comme *pending* (`hw_model_pull_pending_slot_bus`) et déclencher **un** pull à la fin
-   du settling → on lit toujours le modèle FINAL. Nécessite que le tick de fin de settling
-   soit appelé depuis `usb_listener` (le tick actuel est dans `ingest_pull_capture`, qui ne
-   tourne plus une fois le pull finalisé). *Statut : conçu, non implémenté.*
+   *Statut : proposé, non implémenté.* (Note : depuis les captures juin 2026, le `IN 21` **avant**
+   dump n'est plus traité comme reject — cette piste est probablement **obsolète** ; à revalider
+   avant implémentation.)
+2. **(multi-notch) coalescing du `1f` pendant le settling** — *anciennement « conçu, non
+   implémenté » ici.* **→ Remplacé et détaillé dans
+   [Addendum_section_gel_multinotch.md](./Addendum_section_gel_multinotch.md) §10** :
+   coalescing défaut ON (`HX_PULL_COALESCE_LAST=0` pour l'ancien comportement), throttle
+   500 ms, `tick_hw_model_pull` depuis `usb_listener`. *Statut : **implémenté et validé**
+   (24 pulls / 10 balayages, 0 gel ; gel device mitigé, pas guéri).*
 
-Ces deux points sont des améliorations **host-side**, sans risque pour le hardware (plus de
-traîne `19/272`).
+Le point 1 reste une amélioration **host-side** optionnelle. Le point 2 est couvert par le
+complément §10 (sans traîne `19/272`).
 
 ---
 
@@ -148,6 +154,7 @@ traîne `19/272`).
 ---
 
 *Synthèse : la lecture du modèle au scroll est PASSÉE de « suspendue / instable / gel » à
-« 1-notch stable ~92 %, zéro gel ». La cause profonde des deux murs était la traîne 19/272,
-qu'on n'avait pas besoin d'émettre. Les rejects résiduels sont bénins (auto-corrigés). Reste
-deux finitions host-side optionnelles (§6).*
+« 1-notch stable, zéro gel » (§9 : parseur) et « multi-cran rapide mitigé » (§10 :
+coalescing + throttle). La traîne 19/272 n'était pas nécessaire au chainHex. Reste surtout
+le retry-on-reject (§6.1, probablement obsolète) et la fermeture façon HX (§10.3, bloquée
+sur le `ctr` des `19`).*
