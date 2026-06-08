@@ -5,8 +5,10 @@
 > saturation** from accumulated pull transactions never closed (grab-53 sends no `19`). The
 > trigger is **cadence**, not detent count. 100% host-side mitigation: **coalesce to last
 > detent + throttle** pull rate. Validated: 24 pulls / 10 sweeps, `ff→00` wrap crossed,
-> **0 freeze**. The real remedy (close the transaction like HX Edit) remains blocked on the
-> `19` `ctr` rule (see §5, §11).
+> **0 freeze**. The real remedy (close the transaction like HX Edit) remains **unusable on
+> the synthetic lane**: the `19` `ctr` formula is **resolved** in
+> [§11](./addendum_section_close_proposition_A.en.md) (`dump[20] + 8`), but the device
+> **rejects the echo** until the `1b` is on the live lane (§5).
 >
 > **French (source):** [Addendum_section_gel_multinotch.md](./Addendum_section_gel_multinotch.md)
 >
@@ -47,11 +49,13 @@ Windows reference, per detent: `1b → model dump → (21) → 19#1 → 68-byte 
 Two **light** `19`s + 68-byte echoes, **no `272`** during scroll. HX therefore **closes** each
 transaction 1:1 with no settling blackout → its ED03 lane never accumulates, at any cadence.
 
-The real fix (proposal A) would replicate that closure. It remains **blocked**: `19` `ctr` is a
-position counter **tied to dump content** (measured: not `1b→19#1` =
-`0x46/0x44/0x4c/0x64/0x4b/0x4d` for dumps of 88/84/92/116/92/96 bytes, and the device does not
-re-encode it in the dump). Cannot reconstruct to ±0 without Line 6 specs — the §5 wall applied
-to closure. Sending a `19` at a guessed `ctr` would replay the freeze.
+The real fix (proposal A) would replicate that closure. **Updated per §11:** the `19` `ctr`
+formula is no longer out of reach — `delta(1b → 19#1) = dump[20] + 8` (verified 10/10 on HX
+captures, unit test `close_19_1_ctr_matches_hx_formula`). The remaining blocker is
+**hardware**: `19` requires the live lane the device tracks; on our synthetic lane
+(`0x6cbd`), **the 68-byte echo never arrives** (see
+[§11.3](./addendum_section_close_proposition_A.en.md)). Attempting closure anyway makes
+freeze worse (half-open transactions, §11.4) — hence abandonment and the §10 throttle path.
 
 ### 10.4. Mitigation: coalescing + throttle (pure host-side)
 
@@ -99,7 +103,7 @@ the wheel stops.
 ---
 
 *Summary: multi-notch freeze was not a new mystery but the known device freeze (§6), reached
-faster because fast scroll stacks never-closed ED03 transactions. Unable to close them (`19`
-`ctr` out of reach, §5), we cap their rate: coalescing + 500 ms throttle, host-side, zero
-device risk. Fast multi-notch scroll stable. HX Edit-style closure (proposal A) remains the
-target if `ctr` becomes tractable someday.*
+faster because fast scroll stacks never-closed ED03 transactions. The HX Edit closure formula
+is known (§11: `dump[20] + 8`), but unusable without the live lane (§5) — and trying it makes
+freeze worse. We therefore cap their rate: coalescing + 500 ms throttle, host-side, zero
+device risk. Fast multi-notch scroll stable.*

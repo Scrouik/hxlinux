@@ -6,7 +6,10 @@
 > n'envoie aucun `19`). Le déclencheur est le **rythme**, pas le nombre de crans. Mitigation
 > 100 % host-side : **coalescing vers le dernier cran + throttle** du rythme des pulls.
 > Validé : 24 pulls / 10 balayages, wrap `ff→00` franchi, **0 gel**. Le vrai remède (fermer
-> la transaction comme HX Edit) reste bloqué sur la règle du `ctr` des `19` (cf. §5, §11).
+> la transaction comme HX Edit) reste **inutilisable sur lane synthétique** : la formule du
+> `ctr` des `19` est **résolue** en
+> [§11](./addendum_section_close_proposition_A.md) (`dump[20] + 8`), mais le device **refuse
+> l'écho** tant que le `1b` n'est pas sur la lane vivante (§5).
 >
 > **English:** [Addendum_section_gel_multinotch.en.md](./Addendum_section_gel_multinotch.en.md)
 >
@@ -50,11 +53,13 @@ Deux `19` **légers** + échos de 68 o, **aucun `272`** pendant le scroll. HX **
 chaque transaction, à 1:1 et sans blackout de settling → sa lane ED03 ne s'accumule jamais,
 quel que soit le rythme.
 
-Le vrai correctif (proposition A) serait de répliquer cette fermeture. Il reste **bloqué** :
-le `ctr` des `19` est un compteur de position **lié au contenu du dump** (mesuré : pas
-`1b→19#1` = `0x46/0x44/0x4c/0x64/0x4b/0x4d` pour des dumps de 88/84/92/116/92/96 o, et le
-device ne le ré-encode pas dans le dump). Impossible à reconstruire à ±0 sans specs Line 6 —
-c'est le mur du §5 appliqué à la fermeture. Envoyer un `19` au `ctr` deviné rejouerait le gel.
+Le vrai correctif (proposition A) serait de répliquer cette fermeture. **Mise à jour §11 :**
+la formule `ctr` des `19` n'est plus hors de portée — `delta(1b → 19#1) = dump[20] + 8`
+(vérifié 10/10 sur captures HX, test unitaire `close_19_1_ctr_matches_hx_formula`). Le
+blocage restant est **matériel** : le `19` exige la lane vivante que le device suit ; sur
+notre lane synthétique (`0x6cbd`), **l'écho 68 o n'arrive jamais** (cf.
+[§11.3](./addendum_section_close_proposition_A.md)). Tenter quand même empire le gel
+(transactions à moitié ouvertes, §11.4) — d'où l'abandon et le retour au throttle §10.
 
 ### 10.4. La mitigation : coalescing + throttle (host-side pur)
 
@@ -103,6 +108,6 @@ final ~0,5 s après l'arrêt de la molette.
 
 *Synthèse : le gel multi-cran n'était pas un nouveau mystère mais le gel device connu (§6),
 atteint plus vite parce qu'en scroll rapide on empile des transactions ED03 jamais fermées.
-Faute de pouvoir les fermer (ctr des `19` hors de portée, §5), on plafonne leur rythme :
-coalescing + throttle 500 ms, host-side, zéro risque device. Scroll multi-cran stable. La
-fermeture façon HX Edit (proposition A) reste la cible si le `ctr` se débloque un jour.*
+La formule de fermeture HX Edit est connue (§11 : `dump[20] + 8`), mais inutilisable sans
+lane vivante (§5) — et l'essayer empire le gel. On plafonne donc leur rythme : coalescing +
+throttle 500 ms, host-side, zéro risque device. Scroll multi-cran stable.*

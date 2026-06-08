@@ -772,19 +772,51 @@ impl HelixState {
         self.editor_ed03_double_val()
     }
 
-    /// Double pour les ACK chunks preset (octets 12–13 du paquet `80:10:ed:03` sub=`08`).
+    /// `true` (défaut) : ACK chunks 272 sur [`Self::editor_ed03_lane`] (`9d:11`, …).
+    /// `HX_DUMP_ACK_LANE=f4` : témoin legacy (octet 12 figé `0xf4`).
+    pub fn preset_dump_ack_use_editor_lane() -> bool {
+        match std::env::var("HX_DUMP_ACK_LANE").as_deref() {
+            Ok(v) if matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "f4" | "legacy" | "0" | "false" | "no"
+            ) =>
+            {
+                false
+            }
+            Ok(_) => true,
+            Err(_) => true,
+        }
+    }
+
+    /// Octets 12–13 du OUT `ed:03` sub=`08` (ACK d'un chunk 272 du flux preset).
+    pub fn next_preset_stream_chunk_ack_lane(&mut self) -> [u8; 2] {
+        if Self::preset_dump_ack_use_editor_lane() {
+            return self.advance_editor_ed03_lane_hi();
+        }
+        // Témoin f4 : continuer à faire monter editor_ed03_lane en phase 4 (PHASE B).
+        if self.phase4_bootstrap_active {
+            let _ = self.advance_editor_ed03_lane_hi();
+        }
+        self.next_preset_dump_ack_f4_lane()
+    }
+
+    /// Lane témoin `f4:1d` → `f4:1e` (expérience HW — voir `preset_dump_stream_ack`).
     pub fn preset_dump_ack_double(&self) -> [u8; 2] {
         let lo = (self.preset_dump_ack_ctr & 0xFF) as u8;
         let hi = ((self.preset_dump_ack_ctr >> 8) & 0xFF) as u8;
         [lo, hi]
     }
 
-    /// Valeur courante puis +`0x0100` sur l’octet 13 uniquement (session 12 figée).
-    pub fn next_preset_dump_ack_double(&mut self) -> [u8; 2] {
+    fn next_preset_dump_ack_f4_lane(&mut self) -> [u8; 2] {
         let out = self.preset_dump_ack_double();
         self.preset_dump_ack_ctr = (self.preset_dump_ack_ctr.wrapping_add(0x0100) & 0xff00)
             | (self.request_preset_session_id as u16);
         out
+    }
+
+    /// ACK lane `f4:xx` — réservé aux réponses `f0:03` (preset switch), pas aux chunks 272.
+    pub fn next_preset_dump_ack_double(&mut self) -> [u8; 2] {
+        self.next_preset_dump_ack_f4_lane()
     }
 
     /// Double pour la lane éditeur ed:03 36 bytes (phase 4, pull 1b/19).

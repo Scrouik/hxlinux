@@ -147,17 +147,26 @@ pub fn handle_in_passive(step: &mut Phase4Step, data: &[u8]) {
             }
         }
         Phase4Step::WaitingDump => {
-            if (len == 132 && h == 0x7a || len == 116 && h == 0x6a)
-                && ep.first().copied() == Some(0xed)
+            // Variante deux-étages (216o cf → 1f → PostArm) : inchangée, testée
+            // AVANT la règle générique pour ne pas l'absorber.
+            if len == 216 && h == 0xcf && ep.first().copied() == Some(0xed) {
+                Some(Phase4Step::Waiting1fB)
+            // Fin de dump = dernier chunk PARTIEL du flux (sub=0x04, 16 < len < 272),
+            // quelle que soit sa taille : couvre 132/7a, 116/6a, 140/84, … La taille
+            // du chunk final dépend du preset actif — c'est ce qui codait l'intermittence
+            // quand on listait les longueurs en dur. Ici aucun risque de faux positif
+            // sur le préambule (92o/68o, mêmes sub=04) : on est DÉJÀ passé en WaitingDump,
+            // donc seuls les chunks (272 puis le partiel terminal) arrivent encore.
+            } else if ep.first().copied() == Some(0xed)
+                && sub == 0x04
+                && (17..272).contains(&len)
             {
                 crate::helix::init_trace::trace_fmt(format_args!(
-                    "[phase4_fsm] trailer {}o head={:02x} → PostArm (PHASE B proactive)",
+                    "[phase4_fsm] trailer {}o head={:02x} (chunk partiel) → PostArm (PHASE B proactive)",
                     len,
                     h
                 ));
                 Some(Phase4Step::PostArm)
-            } else if len == 216 && h == 0xcf && ep.first().copied() == Some(0xed) {
-                Some(Phase4Step::Waiting1fB)
             } else {
                 None
             }
@@ -362,6 +371,14 @@ fn send_phase_b_76(
 /// Le `1b` part avec un léger délai writer (≈ HX : ~15 ms après les ACK), sans
 /// bloquer le thread listener (delay porté par le writer).
 pub fn on_enter_post_arm(state: &mut crate::helix::HelixState) {
+    // Fin de dump atteinte (trailer = chunk partiel, détecté par la FSM en WaitingDump) :
+    // on signale ICI la complétion phase 4, depuis la FSM (stateful, déjà passé le
+    // préambule), au lieu de dépendre du détecteur stateless is_phase4_bootstrap_trailer_in
+    // (qui ne connaissait que 7a/132 et 6a/116 et timeoutait à 3500 ms sur les autres
+    // tailles, ex. 84/140 → settle forcé, éditeur jamais « vivant », presets non lus).
+    // Idempotent : no-op si phase4_bootstrap_active est déjà false.
+    state.note_phase4_bootstrap_complete();
+
     // ARM_ef (08 ef sub=08 lane=1a10) — inchangé.
     let cnt = state.next_x1_cnt();
     state.send(crate::helix::packet::OutPacket::new(vec![

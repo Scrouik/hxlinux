@@ -17,10 +17,8 @@ pub struct RequestPreset {
     preset_data:             Vec<u8>,
     /// true = Phase 1 envoyée, en attente de la réponse 68 octets
     waiting_phase1_response: bool,
-    /// Session choisie aléatoirement pour Phase 2 et tous les ACKs data
-    phase2_session:          u8,
-    /// Double (counter bytes) du dernier ACK chunk envoyé (pour le FDT ACK)
-    last_ack_double:         [u8; 2],
+    /// Double (octets 12–13) du dernier ACK chunk envoyé (pour le FDT ACK)
+    last_ack_lane:           [u8; 2],
     watchdog_cancel_tx:      Option<mpsc::Sender<()>>,
     mode_tx:                 Option<mpsc::Sender<ModeRequest>>,
 }
@@ -30,8 +28,7 @@ impl RequestPreset {
         Self {
             preset_data:             Vec::new(),
             waiting_phase1_response: false,
-            phase2_session:          0,
-            last_ack_double:         [0, 0],
+            last_ack_lane:           [0, 0],
             watchdog_cancel_tx:      None,
             mode_tx:                 None,
         }
@@ -73,32 +70,53 @@ impl RequestPreset {
     /// Envoie Phase 2 (sub=0x0c, byte30=0x16) après réception de la réponse Phase 1.
     fn send_phase2(&mut self, state: &mut HelixState) {
         let cnt      = state.next_x80_cnt();
-        // Lane éditeur (0x64xx) — phase 4 / pull
-        let double   = state.next_editor_ed03_double();
+        let d        = state.next_editor_ed03_double();
         let sess_id  = state.request_preset_session_id;
         state.request_preset_session_id = state.request_preset_session_id.wrapping_add(1);
         let cmd_type = state.ed03_cmd_type;
 
-        let pkt = OutPacket::new(vec![
-            0x19, 0x00, 0x00, 0x18,
-            0x80, 0x10, 0xed, 0x03,
-            0x00, cnt,  0x00, 0x0c,
-            self.phase2_session, double[0], double[1], 0x00,
-            0x01, 0x00, 0x06, 0x00,
-            0x09, 0x00, 0x00, 0x00,
-            0x83, 0x66, 0xcd, cmd_type,
-            sess_id, 0x64, 0x16, 0x65,
-            0xc0, 0x00, 0x00, 0x00,
-        ]);
-        state.send(pkt);
-        self.waiting_phase1_response = false;
-
-        if preset_debug_verbose_enabled() {
-            eprintln!(
-                "[PresetDebug][RequestPreset::send_phase2] cnt={:#04x} sess={:#04x} sess_id={:#04x} double={:02x}:{:02x}",
-                cnt, self.phase2_session, sess_id, double[0], double[1]
-            );
+        if HelixState::preset_dump_ack_use_editor_lane() {
+            let lane = state.advance_editor_ed03_lane_lo(HelixState::EDITOR_ED03_LANE_CMD_DELTA);
+            let pkt = OutPacket::new(vec![
+                0x19, 0x00, 0x00, 0x18,
+                0x80, 0x10, 0xed, 0x03,
+                0x00, cnt,  0x00, 0x0c,
+                lane[0], lane[1], 0x00, 0x00,
+                0x01, 0x00, 0x06, 0x00,
+                0x09, 0x00, 0x00, 0x00,
+                0x83, 0x66, 0xcd, cmd_type,
+                d[0], d[1], 0x16, 0x65,
+                0xc0, 0x00, 0x00, 0x00,
+            ]);
+            state.send(pkt);
+            if preset_debug_verbose_enabled() {
+                eprintln!(
+                    "[PresetDebug][RequestPreset::send_phase2] cnt={cnt:#04x} lane={:02x}:{:02x} double={:02x}:{:02x} editor=1",
+                    lane[0], lane[1], d[0], d[1]
+                );
+            }
+        } else {
+            let phase2_session = rand::random::<u8>().max(0x04);
+            let pkt = OutPacket::new(vec![
+                0x19, 0x00, 0x00, 0x18,
+                0x80, 0x10, 0xed, 0x03,
+                0x00, cnt,  0x00, 0x0c,
+                phase2_session, d[0], d[1], 0x00,
+                0x01, 0x00, 0x06, 0x00,
+                0x09, 0x00, 0x00, 0x00,
+                0x83, 0x66, 0xcd, cmd_type,
+                sess_id, 0x64, 0x16, 0x65,
+                0xc0, 0x00, 0x00, 0x00,
+            ]);
+            state.send(pkt);
+            if preset_debug_verbose_enabled() {
+                eprintln!(
+                    "[PresetDebug][RequestPreset::send_phase2] cnt={cnt:#04x} sess={phase2_session:#04x} sess_id={sess_id:#04x} double={:02x}:{:02x} editor=0",
+                    d[0], d[1]
+                );
+            }
         }
+        self.waiting_phase1_response = false;
 
         self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only, state.preset_read_generation);
     }
@@ -119,9 +137,7 @@ impl Mode for RequestPreset {
         let sess_id1 = state.request_preset_session_id;
         let cmd_type = state.ed03_cmd_type;
 
-        // Session aléatoire indépendante pour Phase 2
-        self.phase2_session = rand::random::<u8>().max(0x04);
-        // Avancer sess_id de 1 pour que Phase 2 utilise sess_id1 + 1
+        // Avancer sess_id de 1 pour que Phase 2 utilise sess_id1 + 1.
         state.request_preset_session_id = state.request_preset_session_id.wrapping_add(1);
 
         crate::helix::init_trace::trace_fmt(format_args!(
@@ -240,18 +256,35 @@ impl Mode for RequestPreset {
         match (data.len(), sub) {
             // FDT (fin-de-transfert) : 32 octets, sub=0x04, data[16]==0xa1
             (32, 0x04) if data[16] == 0xa1 => {
-                let cnt         = state.next_x80_cnt();
-                let fdt_session = self.phase2_session.wrapping_add(0x10);
+                let cnt = state.next_x80_cnt();
+                let (b12, b13, b14, b15) = if HelixState::preset_dump_ack_use_editor_lane() {
+                    (
+                        self.last_ack_lane[0].wrapping_add(0x10),
+                        self.last_ack_lane[1],
+                        0x00,
+                        0x00,
+                    )
+                } else {
+                    let fdt_session = self.last_ack_lane[0].wrapping_add(0x10);
+                    (
+                        fdt_session,
+                        self.last_ack_lane[0],
+                        self.last_ack_lane[1],
+                        0x00,
+                    )
+                };
                 state.send(OutPacket::new(vec![
                     0x08, 0x00, 0x00, 0x18,
                     0x80, 0x10, 0xed, 0x03,
                     0x00, cnt, 0x00, 0x08,
-                    fdt_session, self.last_ack_double[0], self.last_ack_double[1], 0x00,
+                    b12, b13, b14, b15,
                 ]));
                 if preset_debug_verbose_enabled() {
                     eprintln!(
-                        "[PresetDebug][RequestPreset::data_in] FDT total={} fdt_session={:#04x}",
-                        self.preset_data.len(), fdt_session
+                        "[PresetDebug][RequestPreset::data_in] FDT total={} lane={:02x}:{:02x}",
+                        self.preset_data.len(),
+                        b12,
+                        b13
                     );
                 }
                 self.cancel_watchdog();
@@ -266,25 +299,27 @@ impl Mode for RequestPreset {
                 true
             }
 
-            // Chunk de données preset : ACK avec lane dump (preset_dump_ack_ctr)
-            // Lane distincte de editor_ed03_double (0x64xx) — observé HX Edit :
-            // 9d:11, 9d:12... (octet haut stable = session, bas s'incrémente +1)
+            // Chunk de données preset : ACK sur editor_ed03_lane (HX : 9d:11, 9d:12, …)
             (_, 0x04) if data.len() > 16 => {
                 let chunk_data_len = data.len() - 16;
                 self.preset_data.extend_from_slice(&data[16..]);
-                let cnt        = state.next_x80_cnt();
-                let new_double = state.next_preset_dump_ack_double();
+                let cnt = state.next_x80_cnt();
+                let lane = state.next_preset_stream_chunk_ack_lane();
                 state.send(OutPacket::new(vec![
                     0x08, 0x00, 0x00, 0x18,
                     0x80, 0x10, 0xed, 0x03,
                     0x00, cnt, 0x00, 0x08,
-                    self.phase2_session, new_double[0], new_double[1], 0x00,
+                    lane[0], lane[1], 0x00, 0x00,
                 ]));
-                self.last_ack_double = new_double;
+                self.last_ack_lane = lane;
                 if preset_debug_verbose_enabled() {
                     eprintln!(
-                        "[PresetDebug][RequestPreset::data_in] chunk len={} total={} ack cnt={:#04x} double={:02x}:{:02x}",
-                        chunk_data_len, self.preset_data.len(), cnt, new_double[0], new_double[1]
+                        "[PresetDebug][RequestPreset::data_in] chunk len={} total={} ack cnt={:#04x} lane={:02x}:{:02x}",
+                        chunk_data_len,
+                        self.preset_data.len(),
+                        cnt,
+                        lane[0],
+                        lane[1]
                     );
                 }
                 if chunk_data_len < 256 {
@@ -331,13 +366,15 @@ impl Mode for RequestPreset {
         state.preset_data_ready = has_data;
         state.preset_content_only = false;
         state.session_no = if has_data {
-            self.phase2_session.wrapping_add(0x10)
+            self.last_ack_lane[0].wrapping_add(0x10)
+        } else if HelixState::preset_dump_ack_use_editor_lane() {
+            state.session_no
         } else {
             rand::random::<u8>().max(0x04)
         };
         state.ed03_cmd_type = state.ed03_cmd_type.wrapping_add(1);
-        if has_data && self.last_ack_double != [0, 0] {
-            state.preset_last_ack_double = self.last_ack_double;
+        if has_data && self.last_ack_lane != [0, 0] {
+            state.preset_last_ack_double = self.last_ack_lane;
         }
         if !has_data {
             // Reset lane éditeur uniquement — preset_dump_ack_ctr reste sur sa lane

@@ -1,19 +1,10 @@
 //! ACK host des trames IN **flux preset / slot** (`08:01:ed:03:80:10`, sub=`04`, souvent 272 o).
 //!
-//! HX Edit en scroll modèle HW acquitte **chaque** chunk (~11 par pull) avec
-//! `80:10:ed:03` sub=`08` et la lane [`HelixState::preset_dump_ack_ctr`].
-//! Sans ces ACK, le Stomp arrête d’émettre (captures `3_scroll_HXLinux.json` : 71 IN, 22 ACK).
+//! HX Edit acquitte **chaque** chunk (~11 par dump) avec `80:10:ed:03` sub=`08` et les octets
+//! 12–13 = [`HelixState::editor_ed03_lane`] (`9d:10` → `9d:11` → … pendant le dump).
 //!
-//! **Test HW (session)** : on garde l’octet 12 fixe à [`HelixState::request_preset_session_id`]
-//! (`f4:1d` → `f4:1e` → …) ; seul l’octet 13 s’incrémente (+`0x0100`). Si le Stomp accepte
-//! plusieurs scrolls sans freeze, la session n’est pas contrainte côté firmware.
-//!
-//! **Lane éditeur pendant la phase 4** : en plus de l’ACK (lane `preset_dump_ack_ctr`),
-//! chaque chunk du dump bootstrap fait monter le HI de [`HelixState::editor_ed03_lane`]
-//! (`10` → `11` → … → `1b`), de sorte que la PHASE B post-trailer démarre à `…:1c`
-//! comme HX (cf. captures `stomp_running_start_hxedit_one_notch`). Gardé par
-//! [`HelixState::phase4_bootstrap_active`] : n’affecte QUE le dump d’amorçage,
-//! jamais les lectures `RequestPreset` (qui n’empruntent pas ce module).
+//! **Défaut (depuis mai 2026)** : l'ACK part sur `editor_ed03_lane` (aligné HX / phase 4).
+//! **Témoin** : `HX_DUMP_ACK_LANE=f4` reprend l'expérience `f4:1d` → `f4:1e` (octet 12 figé).
 
 use crate::helix::{HelixState, packet::OutPacket};
 use crate::helix::usb_in_pipeline::{LayerEffect, LayerResult};
@@ -39,7 +30,7 @@ pub fn is_preset_dump_stream_chunk_in(data: &[u8]) -> bool {
     true
 }
 
-/// Couche active « ACK chunks 272 » (`preset_dump_ack_ctr`).
+/// Couche active « ACK chunks 272 ».
 pub fn handle_in_layer(state: &mut HelixState, data: &[u8]) -> LayerResult {
     if !is_preset_dump_stream_chunk_in(data) {
         return LayerResult::Ignored;
@@ -50,34 +41,21 @@ pub fn handle_in_layer(state: &mut HelixState, data: &[u8]) -> LayerResult {
         return LayerResult::Ignored;
     }
 
-    // Lane éditeur (PHASE B) : pendant le dump d'amorçage uniquement, faire monter le
-    // HI de editor_ed03_lane à chaque chunk (10 → 11 → … → 1b). La PHASE B post-trailer
-    // reprend ainsi à …:1c (fidèle HX). Gardé strictement par phase4_bootstrap_active :
-    // hors amorçage (queue device, etc.), la lane éditeur n'est pas touchée ici.
-    if state.phase4_bootstrap_active {
-        let lane = state.advance_editor_ed03_lane_hi();
-        if preset_dump_stream_ack_debug_enabled() {
-            eprintln!(
-                "[PresetDumpStreamAck] phase4 chunk → editor_ed03_lane.hi avancé (lane avant={:02x}:{:02x})",
-                lane[0], lane[1]
-            );
-        }
-    }
-
     let cnt = state.next_x80_cnt();
-    let double = state.next_preset_dump_ack_double();
+    let lane = state.next_preset_stream_chunk_ack_lane();
     state.send(OutPacket::new(vec![
         0x08, 0x00, 0x00, 0x18,
         0x80, 0x10, 0xed, 0x03,
         0x00, cnt, 0x00, 0x08,
-        double[0], double[1], 0x00, 0x00,
+        lane[0], lane[1], 0x00, 0x00,
     ]));
     if preset_dump_stream_ack_debug_enabled() {
         eprintln!(
-            "[PresetDumpStreamAck] IN len={} → OUT ed:03 sub=08 cnt={cnt:#04x} double={:02x}:{:02x}",
+            "[PresetDumpStreamAck] IN len={} → OUT ed:03 sub=08 cnt={cnt:#04x} lane={:02x}:{:02x} editor={}",
             data.len(),
-            double[0],
-            double[1]
+            lane[0],
+            lane[1],
+            HelixState::preset_dump_ack_use_editor_lane()
         );
     }
     LayerResult::Consumed {
@@ -96,6 +74,9 @@ fn preset_dump_stream_ack_debug_enabled() -> bool {
 mod tests {
     use super::*;
     use crate::helix::HelixState;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn sample_272() -> Vec<u8> {
         let mut b = vec![0u8; 272];
@@ -110,6 +91,19 @@ mod tests {
         b
     }
 
+    fn with_f4_lane(f: impl FnOnce()) {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("HX_DUMP_ACK_LANE", "f4");
+        f();
+        std::env::remove_var("HX_DUMP_ACK_LANE");
+    }
+
+    fn with_editor_lane(f: impl FnOnce()) {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("HX_DUMP_ACK_LANE");
+        f();
+    }
+
     #[test]
     fn detects_stream_chunk() {
         assert!(is_preset_dump_stream_chunk_in(&sample_272()));
@@ -117,68 +111,72 @@ mod tests {
     }
 
     #[test]
-    fn ack_increments_lane_hi_byte() {
-        let mut state = HelixState::new();
-        assert_eq!(state.preset_dump_ack_ctr, 0x1df4);
-        assert!(matches!(
-            handle_in_layer(&mut state, &sample_272()),
-            LayerResult::Consumed { .. }
-        ));
-        assert_eq!(state.preset_dump_ack_double(), [0xf4, 0x1e]);
-        assert_eq!(state.preset_dump_ack_ctr, 0x1ef4);
+    fn editor_lane_on_wire_during_phase4() {
+        with_editor_lane(|| {
+            let mut state = HelixState::new();
+            state.reset_editor_ed03_lane();
+            state.phase4_bootstrap_active = true;
+            state.editor_ed03_lane = 0x109d;
+            for expected_hi in 0x11u8..=0x1b {
+                let _ = handle_in_layer(&mut state, &sample_272());
+                let [lo, hi] = state.editor_ed03_lane_bytes();
+                assert_eq!(lo, 0x9d, "lo figé pendant le dump");
+                assert_eq!(hi, expected_hi, "hi monte après ACK sur le fil");
+            }
+        });
     }
 
     #[test]
-    fn many_acks_keep_session_f4() {
-        let mut state = HelixState::new();
-        for i in 0..25 {
-            let [s, c] = state.preset_dump_ack_double();
-            assert_eq!(s, 0xf4, "ACK #{i} session");
-            assert_eq!(c, 0x1d + i, "ACK #{i} counter");
-            let _ = handle_in_layer(&mut state, &sample_272());
-        }
+    fn f4_lane_temoin_increments_hi_only() {
+        with_f4_lane(|| {
+            let mut state = HelixState::new();
+            assert_eq!(state.preset_dump_ack_ctr, 0x1df4);
+            assert!(matches!(
+                handle_in_layer(&mut state, &sample_272()),
+                LayerResult::Consumed { .. }
+            ));
+            assert_eq!(state.preset_dump_ack_double(), [0xf4, 0x1e]);
+            assert_eq!(state.preset_dump_ack_ctr, 0x1ef4);
+        });
+    }
+
+    #[test]
+    fn f4_temoin_many_acks_keep_session_f4() {
+        with_f4_lane(|| {
+            let mut state = HelixState::new();
+            for i in 0..25 {
+                let [s, c] = state.preset_dump_ack_double();
+                assert_eq!(s, 0xf4, "ACK #{i} session");
+                assert_eq!(c, 0x1d + i, "ACK #{i} counter");
+                let _ = handle_in_layer(&mut state, &sample_272());
+            }
+        });
     }
 
     #[test]
     fn skips_during_request_preset() {
-        let mut state = HelixState::new();
-        state.set_preset_usb_read_modes_active(true);
-        assert!(matches!(
-            handle_in_layer(&mut state, &sample_272()),
-            LayerResult::Ignored
-        ));
-        assert_eq!(state.preset_dump_ack_ctr, 0x1df4);
+        with_editor_lane(|| {
+            let mut state = HelixState::new();
+            state.set_preset_usb_read_modes_active(true);
+            assert!(matches!(
+                handle_in_layer(&mut state, &sample_272()),
+                LayerResult::Ignored
+            ));
+            assert_eq!(state.preset_dump_ack_ctr, 0x1df4);
+        });
     }
 
-    /// Hors phase 4, la lane éditeur n'est PAS touchée par un chunk 272 (queue device, etc.).
     #[test]
     fn editor_lane_untouched_outside_phase4() {
-        let mut state = HelixState::new();
-        state.reset_editor_ed03_lane();
-        let before = state.editor_ed03_lane_bytes();
-        assert!(!state.phase4_bootstrap_active);
-        let _ = handle_in_layer(&mut state, &sample_272());
-        assert_eq!(
-            state.editor_ed03_lane_bytes(),
-            before,
-            "editor_ed03_lane ne doit pas bouger hors phase4_bootstrap_active"
-        );
-    }
-
-    /// Pendant la phase 4, chaque chunk monte le HI de la lane éditeur (lo figé).
-    #[test]
-    fn editor_lane_hi_rises_during_phase4() {
-        let mut state = HelixState::new();
-        state.reset_editor_ed03_lane();
-        // Simuler l'état "dump phase 4 en cours".
-        state.phase4_bootstrap_active = true;
-        // Positionner la lane comme en sortie de send() : lo=9d, hi=10.
-        state.editor_ed03_lane = 0x109d;
-        for expected_hi in 0x11u8..=0x1b {
+        with_editor_lane(|| {
+            let mut state = HelixState::new();
+            state.reset_editor_ed03_lane();
+            let before = state.editor_ed03_lane_bytes();
+            assert!(!state.phase4_bootstrap_active);
             let _ = handle_in_layer(&mut state, &sample_272());
-            let [lo, hi] = state.editor_ed03_lane_bytes();
-            assert_eq!(lo, 0x9d, "lo doit rester figé à 9d");
-            assert_eq!(hi, expected_hi, "hi doit monter de 1 par chunk");
-        }
+            let after = state.editor_ed03_lane_bytes();
+            assert_eq!(after[0], before[0]);
+            assert_eq!(after[1], before[1].wrapping_add(1), "hi +1 même hors phase4");
+        });
     }
 }

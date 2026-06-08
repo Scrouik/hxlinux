@@ -16,7 +16,7 @@
 //! ## Modèle du double — sourcé sur capture canonique HX Edit (one_notch, juin 2026)
 //!
 //! `stomp_running_start_hxedit_one_notch.json`, pull qui DUMPE :
-//! ```
+//! ```text
 //! [195] OUT 1b  ctr=0x1c7e  double=f1:64   ← le dump (IN 53) part sur CE 1b seul
 //! [200] OUT 19  ctr=0x1cc9  double=f2:64   (+0x4b sur ctr, +1 sur double)
 //! [203] OUT 19  ctr=0x1cfa  double=f3:64   (+0x31 sur ctr, +1 sur double)
@@ -27,17 +27,15 @@
 //! passe 03→04 au wrap bas du lo. Le device tolère la valeur absolue (un pull qui
 //! dumpe peut partir de f1 comme de f8) ; ce qui compte est la **continuité +1/OUT**.
 //!
-//! ## Modes (flag `HX_PULL_COUPLE_LANE=1`)
+//! ## Modes lane pull (défaut : couplé)
 //!
 //! Le mécanisme du double est **identique** dans les deux modes (+1/OUT, hi figé 0x64,
 //! wrap cd_lane). Seule la GRAINE du pull diffère, posée une fois par session (sentinelle
 //! `0xFFFF`) :
-//! - **couplé** (`HX_PULL_COUPLE_LANE=1`) : double = `editor_ed03_double` VIVANT ; ctr =
-//!   `0x6cbd` (page 0x6c) — EMPIRIQUEMENT la seule famille qui fait partir le `IN 53`
-//!   (dump) sur notre session. La page 0x1c (lane vivante, ou constante 0x1c7e) ne dumpe
-//!   jamais ici. La règle exacte des octets 12-13 reste inconnue (pas de specs Line 6).
-//! - **figé** (défaut, témoin) : graine = `editor_ed03_double` + `HX_PULL_DOUBLE_DELTA`,
-//!   ctr base figée `0x1c7e`.
+//! - **couplé** (défaut) : double = `editor_ed03_double` VIVANT ; ctr = `0x6cbd` (page 0x6c)
+//!   — seule combinaison empirique qui fait partir le `IN 53` sur notre session.
+//! - **figé** (`HX_PULL_COUPLE_LANE=0`, témoin / debug) : graine = `editor_ed03_double` +
+//!   `HX_PULL_DOUBLE_DELTA`, ctr base figée `0x1c7e` (ne dumpe pas en pratique).
 //!
 //! ## Mode GRAB-53 (depuis juin 2026)
 //!
@@ -81,6 +79,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 static SCROLL_PULL_DEBUG: AtomicBool = AtomicBool::new(false);
+static SCROLL_CHAINHEX: AtomicBool = AtomicBool::new(false);
 
 use serde::Serialize;
 
@@ -127,14 +126,15 @@ const PULL_CTR_DELTA_AFTER_19: u16 = 0x0031;
 /// ctr périmé sous sa lane et `0x1c7e` est en dessous de notre lane (≈ 0x1cf9).
 const FROZEN_PULL_CTR_BASE: u16 = 0x1c7e;
 
-// ── [TEST] Mode lane couplée ─────────────────────────────────────────────────
+// ── Mode lane couplée (défaut ON) ────────────────────────────────────────────
 //
-// HX_PULL_COUPLE_LANE=1 : double = editor_ed03_double VIVANT, ctr = editor_ed03_lane VIVANT.
-// Défaut (absent) = mode figé témoin (graine snap + delta, ctr=0x1c7e).
+// Défaut : double = editor_ed03_double VIVANT, ctr = 0x6cbd au premier pull.
+// HX_PULL_COUPLE_LANE=0 : mode figé témoin (graine snap + delta, ctr=0x1c7e).
 fn couple_lane_enabled() -> bool {
-    std::env::var("HX_PULL_COUPLE_LANE")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
-        .unwrap_or(false)
+    match std::env::var("HX_PULL_COUPLE_LANE") {
+        Ok(v) => !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("no")),
+        Err(_) => true,
+    }
 }
 
 // ── Coalescing multi-cran (DÉFAUT ON) ───────────────────────────────────────
@@ -146,7 +146,7 @@ fn couple_lane_enabled() -> bool {
 // transactions ED03 non fermées en vol → plus de gel (cf. addendum §10).
 //
 // Host-side PUR : aucun nouveau paquet n'est envoyé au device. Ne FERME PAS la transaction
-// (cf. handoff §6 / proposition A, bloquée sur la règle du `ctr` des `19`).
+// (proposition A testée §11 : formule `ctr` connue, mais `19` refusé sur lane synthétique).
 //
 // DÉFAUT : activé (comportement validé). `HX_PULL_COALESCE_LAST=0` pour revenir à l'ancien
 // comportement (1f jeté pendant le settling, settling court de 50 ms).
@@ -981,7 +981,10 @@ pub fn emit_slot_cleared(
 
 // ── Logs ──────────────────────────────────────────────────────────────────────
 
-/// `HX_SCROLL_PULL_DEBUG=1` au lancement (`lib.rs` → `init_from_env`).
+/// Au lancement (`lib.rs` → `init_from_env`) :
+/// - `HX_SCROLL_PULL_DEBUG=1` — trace protocole pull (1b, ctr, settling, …)
+/// - `HX_SCROLL_CHAINHEX=1` — ligne audit `chainHexHint` / `name` / `category` / `subCategory`
+///   (lookup catalogue) à chaque dump réussi
 pub fn init_from_env() {
     if std::env::var("HX_SCROLL_PULL_DEBUG")
         .map(|v| v == "1")
@@ -990,14 +993,31 @@ pub fn init_from_env() {
         SCROLL_PULL_DEBUG.store(true, Ordering::SeqCst);
         eprintln!("[ScrollModelPull] debug activé — HX_SCROLL_PULL_DEBUG=1");
     }
+    if std::env::var("HX_SCROLL_CHAINHEX")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        SCROLL_CHAINHEX.store(true, Ordering::SeqCst);
+        eprintln!("[ScrollModelPull] chainHex activé — HX_SCROLL_CHAINHEX=1");
+    }
     if couple_lane_enabled() {
-        eprintln!("[ScrollModelPull] HX_PULL_COUPLE_LANE=1 — double+ctr = lanes ED03 vivantes, +1/OUT");
+        eprintln!(
+            "[ScrollModelPull] lane couplée (défaut) — double+ctr ED03 vivants, grab-53"
+        );
+    } else {
+        eprintln!(
+            "[ScrollModelPull] HX_PULL_COUPLE_LANE=0 — mode figé témoin (ctr=1c7e, pas de dump attendu)"
+        );
     }
 }
 
 pub fn scroll_pull_debug_enabled() -> bool {
     SCROLL_PULL_DEBUG.load(Ordering::SeqCst)
         || crate::helix::preset_debug_verbose_enabled()
+}
+
+pub fn scroll_chainhex_log_enabled() -> bool {
+    SCROLL_CHAINHEX.load(Ordering::SeqCst)
 }
 
 fn pull_trace(msg: &str) {
@@ -1007,13 +1027,18 @@ fn pull_trace(msg: &str) {
 }
 
 fn log_hw_model_changed(module_hex: &str) {
-    if !scroll_pull_debug_enabled() {
+    if !scroll_chainhex_log_enabled() {
         return;
     }
-    if let Some((chain_hex, name)) = model_catalog::resolve_chain_hex_and_name(module_hex) {
-        eprintln!("[ScrollModelPull] model → \"{chain_hex}\"; \"{name}\"");
+    if let Some(entry) = model_catalog::resolve_chain_hex_entry(module_hex) {
+        eprintln!(
+            "[ScrollModelPull] \"chainHexHint\": \"{}\", \"name\": \"{}\", \"category\": \"{}\", \"subCategory\": \"{}\"",
+            entry.chain_hex, entry.name, entry.category, entry.sub_category
+        );
     } else {
-        eprintln!("[ScrollModelPull] model → \"{module_hex}\"; \"(inconnu catalogue)\"");
+        eprintln!(
+            "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"name\": \"(inconnu catalogue)\", \"category\": \"?\", \"subCategory\": \"?\""
+        );
     }
 }
 
