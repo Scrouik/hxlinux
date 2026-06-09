@@ -200,6 +200,54 @@ fn disconnect_helix_session(app: &mut AppState, app_handle: &tauri::AppHandle, r
     }
 }
 
+/// Fermeture gracieuse USB sur quit d'application : envoie le tour `sub=0x02`
+/// (désabonnement éditeur — cf. keep_alive::graceful_close_packets) sur les 3 lanes,
+/// laisse le Stomp le traiter, puis libère les interfaces. SYNCHRONE et appelé AVANT
+/// `exit(0)` : Tauri tue le process juste après, donc aucun teardown différé
+/// (start_helix / disconnect_helix_session) ne tournerait à temps.
+///
+/// Ne pas toucher `helix_session_stop` ici : ça déclencherait `disconnect_helix_session`
+/// (`connected=false`) avant l'envoi du close. On coupe seulement le poll idle via
+/// `KeepAliveCommand::StopAll`.
+fn graceful_helix_close(app: &tauri::AppHandle) {
+    let app_state = app.state::<Arc<Mutex<AppState>>>();
+    let (helix_arc, handle, stop_listener) = {
+        let a = app_state.lock().unwrap();
+        (a.helix_state.clone(), a.usb_handle.clone(), a.helix_stop_listener.clone())
+    };
+    let (Some(helix_arc), Some(handle)) = (helix_arc, handle) else { return; };
+
+    // 1) Stopper le poll idle (canal KA) ET le listener : on va lire 0x81 nous-mêmes,
+    //    en paced, pour que chaque ACK device ait un URB IN où atterrir.
+    {
+        let s = helix_arc.lock().unwrap();
+        if let Some(ka) = &s.keepalive_tx { let _ = ka.send(KeepAliveCommand::StopAll); }
+    }
+    if let Some(s) = stop_listener.as_ref() { s.store(true, Ordering::SeqCst); }
+    thread::sleep(Duration::from_millis(80)); // laisse poll + listener libérer 0x81
+
+    // 2) graceful_close_packets renvoie [f0, ed, ef] ; on réordonne en ed → f0 → ef (ordre HX Edit).
+    let pkts = {
+        let mut s = helix_arc.lock().unwrap();
+        helix::keep_alive::graceful_close_packets(&mut s)
+    };
+    let ordered = [&pkts[1], &pkts[0], &pkts[2]]; // ed, f0, ef
+    let mut buf = [0u8; 64];
+    for p in ordered {
+        let _ = handle.write_bulk(0x01, p, Duration::from_millis(200));
+        // read_bulk poste l'URB IN ET attend l'ACK avant la lane suivante (= pacing HX Edit).
+        let _ = handle.read_bulk(0x81, &mut buf, Duration::from_millis(150));
+    }
+
+    // 3) Libérer les interfaces.
+    let _ = handle.release_interface(0);
+    let _ = handle.attach_kernel_driver(0);
+    let _ = handle.release_interface(4);
+    let _ = handle.attach_kernel_driver(4);
+    eprintln!("[Helix] graceful close paced (ed→f0→ef) + interfaces libérées");
+}
+
+
 fn wait_previous_helix_session_end(busy: &AtomicBool, stop: Option<&AtomicBool>) {
     if let Some(s) = stop {
         s.store(true, Ordering::SeqCst);
@@ -3194,6 +3242,7 @@ pub fn run() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     save_window_layout(&window.app_handle());
+                    graceful_helix_close(&window.app_handle());
                     window.app_handle().exit(0);
                 } else {
                     api.prevent_close();

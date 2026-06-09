@@ -22,6 +22,20 @@
 //
 // IMPORTANT : c'est le POLL idle (sub=10). Les ARM bootstrap (`amorcage`) et les
 // ACK scroll (`firmware_scroll_ack`) restent sur sub=08 / 09:10 — ne pas confondre.
+//
+// FERMETURE GRACIEUSE (sub=02) : voir `graceful_close_packets` plus bas. À l'instant
+// du close, HX Edit envoie un DERNIER tour sur les 3 lanes avec `byte 11 = 0x02`
+// (le sous-type du *subscribe*), chacun ACKé par le Stomp, puis silence HID. C'est
+// le « désabonnement éditeur » qui rend l'écran au Stomp. Sans lui, le device reste
+// abonné : écran figé, moteur audio encore actif. (Capture `08_close_HXEdit.json`.)
+//
+// COMPTEUR DU CLOSE — règle confirmée sur 2 captures (HX Edit + close_linux) : le
+// Stomp lit un OUT dont l'octet 9 ÉGALE son compteur courant comme un simple ACK
+// (host accuse réception du keep-alive device) → il NE traite PAS le désabonnement.
+// Un OUT avec un compteur DIFFÉRENT est lu comme une requête → il traite + répond.
+// Le close doit donc porter `dernier compteur IN device sur la lane + 1`. Réutiliser
+// l'écho keep-alive (x80/x2/x1) retombe pile sur le compteur device → ACK → ignoré
+// (bug observé sur ed/f0 ; ef passait par hasard de phase).
 // ===========================================================
 
 use std::sync::{Arc, Mutex};
@@ -72,6 +86,71 @@ pub const POST_PHASE4_SETTLE_MS: u64 = 700;
 const TAIL_F0: [u8; 4] = [0x09, 0x10, 0x00, 0x00];
 const TAIL_ED: [u8; 4] = [0x7e, 0x1c, 0x00, 0x00];
 const TAIL_EF: [u8; 4] = [0xe0, 0x1d, 0x00, 0x00];
+
+/// Sous-type « poll idle » (octet 11).
+pub const POLL_SUB: u8 = 0x10;
+
+/// Sous-type « fermeture / désabonnement éditeur » (octet 11), relevé sur
+/// `08_close_HXEdit.json` : c'est le sous-type du *subscribe*, réutilisé au close.
+pub const CLOSE_SUB: u8 = 0x02;
+
+/// Construit les 3 paquets de fermeture gracieuse (un par lane, `sub=0x02`).
+///
+/// Compteur (octet 9) = **dernier compteur IN reçu du device sur la lane + 1**
+/// (cf. en-tête : c'est ce qui fait une REQUÊTE que le device traite, et pas un ACK
+/// qu'il ignore). Source : `HelixState::dev_keepalive_cnt_{ed,ef,f0}`, alimentés par
+/// `ingest_hw_slot_notify_in`. Fallback sur l'écho host si aucune IN n'a été observée
+/// (ne devrait pas arriver en session active).
+///
+/// Trailers = ceux des polls idle (le device les accepte sans validation stricte) ;
+/// seul l'octet 11 passe à `0x02`. `graceful_close_packets` renvoie `[f0, ed, ef]` ;
+/// `lib.rs::graceful_helix_close` réordonne en `ed → f0 → ef` (ordre HX Edit).
+///
+/// À envoyer AVANT `release_interface`, tant que l'USB est vivant. Sur quit
+/// d'application, l'appel DOIT être synchrone (cf. `lib.rs::graceful_helix_close`).
+pub fn graceful_close_packets(state: &mut HelixState) -> [Vec<u8>; 3] {
+    let c_f0 = state
+        .dev_keepalive_cnt_f0
+        .map(|c| c.wrapping_add(1))
+        .unwrap_or_else(|| state.next_x2_cnt());
+    let c_ed = state
+        .dev_keepalive_cnt_ed
+        .map(|c| c.wrapping_add(1))
+        .unwrap_or_else(|| state.next_x80_cnt());
+    let c_ef = state
+        .dev_keepalive_cnt_ef
+        .map(|c| c.wrapping_add(1))
+        .unwrap_or_else(|| state.next_x1_cnt());
+
+    if KEEPALIVE_TRACE.load(Ordering::Relaxed) {
+        eprintln!(
+            "[KeepAliveTrace] close cnt (device_last+1) f0={c_f0:02x} ed={c_ed:02x} ef={c_ef:02x} \
+             (dev_last f0={:?} ed={:?} ef={:?})",
+            state.dev_keepalive_cnt_f0, state.dev_keepalive_cnt_ed, state.dev_keepalive_cnt_ef
+        );
+    }
+
+    [
+        vec![
+            0x08, 0x00, 0x00, 0x18,
+            0x02, 0x10, 0xf0, 0x03,
+            0x00, c_f0, 0x00, CLOSE_SUB,
+            TAIL_F0[0], TAIL_F0[1], 0x00, 0x00,
+        ],
+        vec![
+            0x08, 0x00, 0x00, 0x18,
+            0x80, 0x10, 0xed, 0x03,
+            0x00, c_ed, 0x00, CLOSE_SUB,
+            TAIL_ED[0], TAIL_ED[1], 0x00, 0x00,
+        ],
+        vec![
+            0x08, 0x00, 0x00, 0x18,
+            0x01, 0x10, 0xef, 0x03,
+            0x00, c_ef, 0x00, CLOSE_SUB,
+            TAIL_EF[0], TAIL_EF[1], 0x00, 0x00,
+        ],
+    ]
+}
 
 pub struct KeepAliveManager {
     stop_ordered: Arc<AtomicBool>,
@@ -174,5 +253,33 @@ impl KeepAliveManager {
 
     pub fn stop_all(&self) {
         self.stop_ordered.store(true, Ordering::SeqCst);
+    }
+
+    /// Fermeture gracieuse via le writer asynchrone : stoppe d'abord le cycle idle
+    /// (pour qu'aucun poll `sub=10` ne s'intercale APRÈS), laisse le thread sortir de
+    /// son sleep, puis émet le tour `sub=0x02` sur les 3 lanes et patiente pour laisser
+    /// le Stomp traiter le désabonnement + le writer drainer.
+    ///
+    /// À utiliser sur une déconnexion où l'USB est ENCORE présent (ex. erreur interne).
+    /// **PAS** sur quit d'application (`exit(0)` tue le process avant) — voir
+    /// `lib.rs::graceful_helix_close`, qui réutilise `graceful_close_packets`.
+    #[allow(dead_code)] // réservé au désabonnement hors-quit (déconnexion/erreur)
+    pub fn stop_graceful(&self, state: &Arc<Mutex<HelixState>>) {
+        self.stop_ordered.store(true, Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(40));
+        {
+            let mut s = state.lock().unwrap();
+            if !s.connected {
+                return;
+            }
+            let pkts = graceful_close_packets(&mut s);
+            for p in pkts.iter() {
+                s.send(OutPacket::new(p.clone()));
+            }
+        }
+        if KEEPALIVE_TRACE.load(Ordering::Relaxed) {
+            eprintln!("[KeepAliveTrace] StopGraceful — tour sub=02 envoyé (f0/ed/ef)");
+        }
+        thread::sleep(Duration::from_millis(80));
     }
 }

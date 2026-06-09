@@ -170,6 +170,13 @@ pub struct HelixState {
     pub x2_cnt:  u8,
     pub x80_cnt: u8,
 
+    /// Dernier compteur (octet 9) reçu du device par lane keep-alive (IN 16o `sub=10`).
+    /// Pour le désabonnement gracieux : le close doit porter `device_last + 1` (= requête,
+    /// pas ACK). Alimentés par `ingest_hw_slot_notify_in`.
+    pub dev_keepalive_cnt_ed: Option<u8>,
+    pub dev_keepalive_cnt_ef: Option<u8>,
+    pub dev_keepalive_cnt_f0: Option<u8>,
+
     // Session number aléatoire (kempline : maybe_session_no)
     pub session_no: u8,
 
@@ -426,6 +433,9 @@ impl HelixState {
             x1_cnt:             0x02,
             x2_cnt:             0x02,
             x80_cnt:            0x02,
+            dev_keepalive_cnt_ed: None,
+            dev_keepalive_cnt_ef: None,
+            dev_keepalive_cnt_f0: None,
             session_no:         0x1a,
             preset_index:       0,
             preset_names:       Vec::new(),
@@ -707,6 +717,15 @@ impl HelixState {
         }
         let mut b = [0u8; 16];
         b.copy_from_slice(data);
+
+        // Mémorise le dernier compteur device (octet 9) par lane keep-alive — pour le
+        // désabonnement gracieux (close = device_last + 1 = requête, pas ACK).
+        match (data[4], data[5], data[6], data[7]) {
+            (0xed, 0x03, 0x80, 0x10) => self.dev_keepalive_cnt_ed = Some(data[9]),
+            (0xef, 0x03, 0x01, 0x10) => self.dev_keepalive_cnt_ef = Some(data[9]),
+            (0xf0, 0x03, 0x02, 0x10) => self.dev_keepalive_cnt_f0 = Some(data[9]),
+            _ => {}
+        }
 
         // Device IN : octets 4–7 = ed 03 80 10 (voir doc protocole)
         if data[4] == 0xed && data[5] == 0x03 && data[6] == 0x80 && data[7] == 0x10 {
