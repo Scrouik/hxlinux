@@ -137,10 +137,42 @@ pub fn handle_in_passive(step: &mut Phase4Step, data: &[u8]) {
             }
         }
         Phase4Step::Waiting68o => {
-            if len == 68
-                && matches!(h, 0x39 | 0x3c)
-                && ep.first().copied() == Some(0xed)
+            // Le « préambule » qui suit l'IN 1f précède immédiatement le dump.
+            // Sa TAILLE et son HEAD varient selon le preset actif :
+            //   classique : 68o head=39|3c
+            //   snapshot  : 68o head=3b (un run), 72o head=3e (run snapshot XL), …
+            // On le reconnaît donc par sa NATURE — chunk ed PARTIEL (sub=0x04,
+            // 17≤len<272), hors keepalive — exactement comme le trailer en
+            // WaitingDump, JAMAIS par une liste de head/len en dur (sinon
+            // intermittence par preset, même piège que l'ancien trailer figé).
+            //
+            // Ici aucune ambiguïté préambule/trailer : ils sont structurellement
+            // identiques (partiel ed/sub04) mais distingués par la POSITION —
+            // le préambule arrive en Waiting68o (avant tout chunk 272), le trailer
+            // en WaitingDump (après les 272). C'est tout le rôle de la FSM.
+            //
+            // Filet de sécurité : si le préambule a une forme inattendue (ni 68/72o
+            // ni partiel ed) mais que le 1er VRAI chunk 272 (08:01) arrive, on
+            // bascule quand même — le device a commencé le dump, il FAUT être en
+            // WaitingDump pour capter le trailer final. Le chunk 272 est sans
+            // équivoque (il ne peut pas être confondu avec le trailer, partiel) et
+            // partage sa définition avec la couche ACK (preset_dump_stream_ack).
+            if is_keepalive {
+                None
+            } else if ep.first().copied() == Some(0xed)
+                && sub == 0x04
+                && (17..272).contains(&len)
             {
+                crate::helix::init_trace::trace_fmt(format_args!(
+                    "[phase4_fsm] Waiting68o — préambule {}o head={:02x} (chunk partiel ed) → WaitingDump",
+                    len,
+                    h
+                ));
+                Some(Phase4Step::WaitingDump)
+            } else if crate::helix::preset_dump_stream_ack::is_preset_dump_stream_chunk_in(data) {
+                crate::helix::init_trace::trace(
+                    "[phase4_fsm] Waiting68o — 1er chunk dump 272 vu (préambule manqué ?) → WaitingDump",
+                );
                 Some(Phase4Step::WaitingDump)
             } else {
                 None
@@ -152,11 +184,12 @@ pub fn handle_in_passive(step: &mut Phase4Step, data: &[u8]) {
             if len == 216 && h == 0xcf && ep.first().copied() == Some(0xed) {
                 Some(Phase4Step::Waiting1fB)
             // Fin de dump = dernier chunk PARTIEL du flux (sub=0x04, 16 < len < 272),
-            // quelle que soit sa taille : couvre 132/7a, 116/6a, 140/84, … La taille
-            // du chunk final dépend du preset actif — c'est ce qui codait l'intermittence
-            // quand on listait les longueurs en dur. Ici aucun risque de faux positif
-            // sur le préambule (92o/68o, mêmes sub=04) : on est DÉJÀ passé en WaitingDump,
-            // donc seuls les chunks (272 puis le partiel terminal) arrivent encore.
+            // quelle que soit sa taille : couvre 132/7a, 116/6a, 140/84, 28/14, … La
+            // taille du chunk final dépend du preset actif — c'est ce qui codait
+            // l'intermittence quand on listait les longueurs en dur. Ici aucun risque
+            // de faux positif sur le préambule (92o/68o/72o, mêmes sub=04) : on est
+            // DÉJÀ passé en WaitingDump, donc seuls les chunks (272 puis le partiel
+            // terminal) arrivent encore.
             } else if ep.first().copied() == Some(0xed)
                 && sub == 0x04
                 && (17..272).contains(&len)
@@ -256,6 +289,11 @@ pub fn handle_in_passive(step: &mut Phase4Step, data: &[u8]) {
                 crate::helix::init_trace::trace("[PhaseB] WaitIn1b26 -> Done (IN 26/48o ef)");
                 Some(Phase4Step::Done)
             // Chemin Linux : 2× 68o head=3c|39 (ef puis ed) → Done sur le 2ᵉ.
+            // NOTE (vigilance snapshot) : même fragilité de head/len en dur qu'ex-
+            // Waiting68o. Si un preset snapshot répond ici avec une autre forme
+            // (ex. 72o/3e), la PHASE B calera. À traiter de la même façon
+            // (reconnaissance structurelle) UNE FOIS la forme observée en capture —
+            // ce run n'a jamais atteint la PHASE B, on ne devine pas.
             } else if len == 68 && matches!(h, 0x3c | 0x39) && ep.first().copied() == Some(0xef) {
                 crate::helix::init_trace::trace_fmt(format_args!(
                     "[PhaseB] WaitIn1b26 — IN 68o ef head={:02x} (1/2 Linux)",
@@ -291,7 +329,10 @@ pub fn handle_in_passive(step: &mut Phase4Step, data: &[u8]) {
         }
     } else if matches!(
         *step,
-        Phase4Step::Waiting92o | Phase4Step::Waiting1fA | Phase4Step::WaitingDump
+        Phase4Step::Waiting92o
+            | Phase4Step::Waiting1fA
+            | Phase4Step::Waiting68o
+            | Phase4Step::WaitingDump
     ) && ep.first().copied() == Some(0xed)
         && len >= 16
         && !is_keepalive
@@ -304,10 +345,11 @@ pub fn handle_in_passive(step: &mut Phase4Step, data: &[u8]) {
             ));
         } else {
             crate::helix::init_trace::trace_fmt(format_args!(
-                "[phase4_fsm] {} - IN ed ignore len={} head={:02x}",
+                "[phase4_fsm] {} - IN ed ignore len={} head={:02x} sub={:02x}",
                 step.label(),
                 len,
-                h
+                h,
+                sub
             ));
         }
     }
