@@ -1,5 +1,6 @@
 /**
- * Lecture locale de `HX_ModelCatalog.json` pour `presetMeta` (basedOn, subCategory, etc.).
+ * Jointure hex / métadonnées affichage : `HX_ModelUsbAssign.json` (`chainHexHint`, category, …).
+ * `HX_ModelCatalog.json` reste chargé uniquement pour l’ordre des params (`getCatalogParamOrderForId`).
  */
 
 export type PresetMetaJson = {
@@ -182,26 +183,254 @@ export async function getPresetMetaForModel(
   slotCategory: string,
   modelDisplayName: string,
 ): Promise<PresetMetaJson | null> {
-  const idx = await getCatalogIndexes();
-  return idx.byCategoryAndName.get(catalogKey(slotCategory, modelDisplayName))?.presetMeta ?? null;
+  const idx = await getUsbAssignIndexes();
+  const entry = idx.byCategoryAndName.get(catalogKey(slotCategory, modelDisplayName));
+  if (!entry) return null;
+  return buildPresetMetaFromAssignEntries(idx.byId.get(entry.id) ?? [entry]);
 }
 
 export async function getCatalogModelIdForModel(
   slotCategory: string,
   modelDisplayName: string,
 ): Promise<string | null> {
-  const idx = await getCatalogIndexes();
+  const idx = await getUsbAssignIndexes();
   return idx.byCategoryAndName.get(catalogKey(slotCategory, modelDisplayName))?.id ?? null;
 }
 
-/** Jointure stricte via `presetMeta.chainHex` (hex module lu dans le preset). */
-export async function getCatalogModelIdForHex(moduleHex: string | undefined): Promise<string | null> {
+type UsbAssignModelEntry = {
+  id: string;
+  variant: string;
+  name: string;
+  category: string;
+  subCategory: string;
+  chainHexHint: string;
+  basedOn?: string;
+  image?: string;
+};
+
+type UsbAssignIndexes = {
+  byHexHint: Map<string, UsbAssignModelEntry[]>;
+  byId: Map<string, UsbAssignModelEntry[]>;
+  byIdVariant: Map<string, UsbAssignModelEntry>;
+  byCategoryAndName: Map<string, UsbAssignModelEntry>;
+};
+
+let usbAssignIndexesPromise: Promise<UsbAssignIndexes> | null = null;
+
+/** `amp+cab` / `amp+cab-legacy` reprennent le fil ampli — pas d’index hex autonome. */
+function chainHexHintIndexEligible(variant: string): boolean {
+  const v = variant.trim().toLowerCase();
+  return v !== "amp+cab" && v !== "amp+cab-legacy";
+}
+
+function usbAssignVariantPriority(variant: string): number {
+  const v = variant.trim().toLowerCase();
+  if (v === "amp") return 100;
+  if (v === "preamp") return 95;
+  if (v === "stereo") return 50;
+  if (v === "dual") return 49;
+  if (v === "mono") return 48;
+  if (v === "single") return 47;
+  if (v === "legacy") return 46;
+  return 1;
+}
+
+function normalizeSlotCategoryHint(categoryHint?: string | null): string {
+  return (categoryHint ?? "").trim().toLowerCase().replace(/\s+/g, "");
+}
+
+/** Slot matériel / UI de type Amp+Cab (IR ou Legacy). */
+export function isAmpCabFamilySlotCategory(categoryHint?: string | null): boolean {
+  const raw = (categoryHint ?? "").trim().toLowerCase();
+  const slotCat = normalizeSlotCategoryHint(categoryHint);
+  return (
+    slotCat === "amp+cab" ||
+    slotCat === "ampcab" ||
+    slotCat === "amp+cablegacy" ||
+    (raw.includes("amp") && raw.includes("cab"))
+  );
+}
+
+export function isAmpCabLegacySlotCategory(categoryHint?: string | null): boolean {
+  const raw = (categoryHint ?? "").trim().toLowerCase();
+  const slotCat = normalizeSlotCategoryHint(categoryHint);
+  return slotCat === "amp+cablegacy" || (raw.includes("amp") && raw.includes("legacy"));
+}
+
+/** Partie cab d’un fil combiné `amp` + `1a` + `cab` (scroll ou preset). */
+export function cabHexFromAmpCabWire(moduleHex: string | undefined): string | null {
+  const hex = (moduleHex ?? "").trim().toLowerCase();
+  const sep = "1a";
+  const i = hex.indexOf(sep);
+  if (i <= 0) return null;
+  const cab = hex.slice(i + sep.length).trim();
+  return cab.length > 0 ? cab : null;
+}
+
+/**
+ * Variante assign scroll / picker pour la famille ampli (même `id`, fil ampli seul).
+ * **Legacy** : uniquement si la partie **cab** est connue (`moduleHex` combiné ou `cabHexHint`
+ * depuis le preset — ex. hybrid `34` vs IR `cd0321`). Fil ampli seul → `amp+cab` par défaut.
+ */
+export async function usbAssignVariantForAmpFamilyScroll(
+  modelId: string,
+  moduleHex: string | undefined,
+  categoryHint?: string | null,
+  cabHexHint?: string | null,
+): Promise<UsbAssignVariant> {
+  const id = modelId.trim();
+  if (!id) return "mono";
+  const slotCat = normalizeSlotCategoryHint(categoryHint);
+  if (slotCat === "preamp") return "preamp";
+  if (isAmpCabLegacySlotCategory(categoryHint)) return "amp+cab-legacy";
+  if (!isAmpCabFamilySlotCategory(categoryHint)) return "amp";
+  const cabFromWire = cabHexFromAmpCabWire(moduleHex);
+  const cabFromHint = (cabHexHint ?? "").trim().toLowerCase();
+  const cabPart = cabFromWire ?? (cabFromHint.length > 0 ? cabFromHint : null);
+  if (cabPart && (await isLegacyCabChainHex(cabPart))) return "amp+cab-legacy";
+  return "amp+cab";
+}
+
+function presetMetaCategoryNameFromAssign(entry: UsbAssignModelEntry): string {
+  const cat = entry.category.trim();
+  const variant = entry.variant.trim().toLowerCase();
+  if (
+    (cat === "Amp+Cab" || cat === "Amp+Cab Legacy") &&
+    (variant === "amp+cab" || variant === "amp+cab-legacy")
+  ) {
+    return "Amp";
+  }
+  return cat;
+}
+
+function buildPresetMetaFromAssignEntries(entries: UsbAssignModelEntry[]): PresetMetaJson | null {
+  if (entries.length === 0) return null;
+  const sorted = [...entries].sort(
+    (a, b) => usbAssignVariantPriority(b.variant) - usbAssignVariantPriority(a.variant),
+  );
+  const primary = sorted[0]!;
+  const hints: string[] = [];
+  const subs: string[] = [];
+  const variantOrder = [
+    "mono",
+    "single",
+    "amp",
+    "preamp",
+    "stereo",
+    "dual",
+    "legacy",
+    "amp+cab",
+    "amp+cab-legacy",
+  ];
+  const byVariant = [...entries].sort(
+    (a, b) => variantOrder.indexOf(a.variant) - variantOrder.indexOf(b.variant),
+  );
+  for (const e of byVariant) {
+    const h = e.chainHexHint.trim().toLowerCase();
+    if (!h || hints.includes(h)) continue;
+    hints.push(h);
+    subs.push(e.subCategory.trim());
+  }
+  const basedOn = (primary.basedOn ?? "").trim();
+  return {
+    categoryName: presetMetaCategoryNameFromAssign(primary),
+    chainHex: hints.length <= 1 ? (hints[0] ?? primary.chainHexHint) : hints,
+    subCategory: subs.length <= 1 ? (subs[0] ?? primary.subCategory) : subs,
+    basedOn: basedOn.length > 0 ? basedOn : undefined,
+  };
+}
+
+async function loadUsbAssignIndexes(): Promise<UsbAssignIndexes> {
+  const url = "/src-tauri/resources/HX_ModelUsbAssign.json";
+  const res = await fetch(url);
+  const byHexHint = new Map<string, UsbAssignModelEntry[]>();
+  const byId = new Map<string, UsbAssignModelEntry[]>();
+  const byIdVariant = new Map<string, UsbAssignModelEntry>();
+  const byCategoryAndName = new Map<string, UsbAssignModelEntry>();
+  if (!res.ok) {
+    console.warn("HX_ModelUsbAssign.json : chargement impossible.", res.status);
+    return { byHexHint, byId, byIdVariant, byCategoryAndName };
+  }
+  const data = JSON.parse(await res.text()) as { entries?: Record<string, unknown>[] };
+  for (const raw of data.entries ?? []) {
+    const id = typeof raw.id === "string" ? raw.id.trim() : "";
+    if (!id) continue;
+    const entry: UsbAssignModelEntry = {
+      id,
+      variant: typeof raw.variant === "string" ? raw.variant.trim().toLowerCase() : "mono",
+      name: typeof raw.name === "string" ? raw.name.trim() : id,
+      category: typeof raw.category === "string" ? raw.category.trim() : "Unknown",
+      subCategory: typeof raw.subCategory === "string" ? raw.subCategory.trim() : "",
+      chainHexHint:
+        typeof raw.chainHexHint === "string" ? raw.chainHexHint.trim().toLowerCase() : "",
+      basedOn: typeof raw.basedOn === "string" ? raw.basedOn.trim() : undefined,
+      image: typeof raw.image === "string" ? raw.image.trim() : undefined,
+    };
+    if (!entry.chainHexHint) continue;
+    if (chainHexHintIndexEligible(entry.variant)) {
+      const hintList = byHexHint.get(entry.chainHexHint) ?? [];
+      hintList.push(entry);
+      byHexHint.set(entry.chainHexHint, hintList);
+    }
+    const idList = byId.get(id) ?? [];
+    idList.push(entry);
+    byId.set(id, idList);
+    byIdVariant.set(`${id}\0${entry.variant}`, entry);
+    const cnKey = catalogKey(entry.category, entry.name);
+    if (!byCategoryAndName.has(cnKey)) {
+      byCategoryAndName.set(cnKey, entry);
+    }
+  }
+  return { byHexHint, byId, byIdVariant, byCategoryAndName };
+}
+
+async function getUsbAssignIndexes(): Promise<UsbAssignIndexes> {
+  if (!usbAssignIndexesPromise) {
+    usbAssignIndexesPromise = loadUsbAssignIndexes().catch((e) => {
+      usbAssignIndexesPromise = null;
+      throw e;
+    });
+  }
+  return usbAssignIndexesPromise;
+}
+
+/**
+ * Jointure `chainHexHint` (`HX_ModelUsbAssign.json`) — scroll HW, preset, grille.
+ * `categoryHint` (ex. « Amp+Cab ») départage amp / amp+cab sur le même fil ampli.
+ */
+export async function getCatalogModelIdForHex(
+  moduleHex: string | undefined,
+  categoryHint?: string | null,
+): Promise<string | null> {
+  return getCatalogModelIdFromUsbAssignHex(moduleHex, categoryHint);
+}
+
+/** Alias explicite : même résolution que `getCatalogModelIdForHex`. */
+export async function getCatalogModelIdFromUsbAssignHex(
+  moduleHex: string | undefined,
+  categoryHint?: string | null,
+): Promise<string | null> {
   const hexNorm = (moduleHex ?? "").trim().toLowerCase();
   if (!hexNorm) return null;
-  const idx = await getCatalogIndexes();
-  for (const h of moduleHexCatalogLookupCandidates(hexNorm)) {
-    const entry = idx.byHex.get(h);
-    if (entry?.id) return entry.id;
+  const { byHexHint: byHint } = await getUsbAssignIndexes();
+  const slotCat = normalizeSlotCategoryHint(categoryHint);
+  const wantPreamp = slotCat === "preamp";
+  const hints: string[] = [hexNorm];
+  const sep = "1a";
+  const i = hexNorm.indexOf(sep);
+  if (i > 0) {
+    const ampPart = hexNorm.slice(0, i);
+    if (ampPart.length > 0) hints.push(ampPart);
+  }
+  for (const hint of hints) {
+    const entries = byHint.get(hint);
+    if (!entries?.length) continue;
+    const hit =
+      (wantPreamp ? entries.find((e) => e.variant === "preamp") : undefined) ??
+      entries.find((e) => e.variant === "amp") ??
+      entries[0];
+    const id = hit?.id.trim();
+    if (id) return id;
   }
   return null;
 }
@@ -211,29 +440,35 @@ export async function getCatalogModelImageForModel(
   slotCategory: string,
   modelDisplayName: string,
 ): Promise<string | null> {
-  const idx = await getCatalogIndexes();
-  return idx.byCategoryAndName.get(catalogKey(slotCategory, modelDisplayName))?.image ?? null;
+  const idx = await getUsbAssignIndexes();
+  const img = idx.byCategoryAndName.get(catalogKey(slotCategory, modelDisplayName))?.image;
+  const t = (img ?? "").trim();
+  return t.length > 0 ? t : null;
 }
 
 export async function getPresetMetaForId(modelId: string | null | undefined): Promise<PresetMetaJson | null> {
   const id = (modelId ?? "").trim();
   if (!id) return null;
-  const idx = await getCatalogIndexes();
-  return idx.byId.get(id)?.presetMeta ?? null;
+  const idx = await getUsbAssignIndexes();
+  return buildPresetMetaFromAssignEntries(idx.byId.get(id) ?? []);
 }
 
 export async function getCatalogModelImageForId(modelId: string | null | undefined): Promise<string | null> {
   const id = (modelId ?? "").trim();
   if (!id) return null;
-  const idx = await getCatalogIndexes();
-  return idx.byId.get(id)?.image ?? null;
+  const idx = await getUsbAssignIndexes();
+  const entries = idx.byId.get(id) ?? [];
+  const img = entries.find((e) => (e.image ?? "").trim())?.image;
+  const t = (img ?? "").trim();
+  return t.length > 0 ? t : null;
 }
 
 export async function getCatalogModelNameForId(modelId: string | null | undefined): Promise<string | null> {
   const id = (modelId ?? "").trim();
   if (!id) return null;
-  const idx = await getCatalogIndexes();
-  const name = idx.byId.get(id)?.name ?? "";
+  const idx = await getUsbAssignIndexes();
+  const entries = idx.byId.get(id) ?? [];
+  const name = entries[0]?.name ?? "";
   const t = name.trim();
   return t.length > 0 ? t : null;
 }
@@ -323,7 +558,23 @@ export function pickSignal(meta: PresetMetaJson | null, moduleHex: string | unde
  * Variante pour `HX_ModelUsbAssign.json` / sonde USB : `legacy` si le preset l'indique,
  * sinon `pickSignal` (mono/stereo), repli `mono`.
  */
-/** `chainHex` catalogue à afficher / joindre pour une variante USB (mono = [0], stéréo = [1] si pair). */
+/** `chainHexHint` assign pour une variante USB (mono/stereo/amp+cab/…). */
+export async function moduleHexForUsbVariant(
+  modelId: string | null | undefined,
+  assignVariant: string,
+  meta?: PresetMetaJson | null,
+): Promise<string | null> {
+  const id = (modelId ?? "").trim();
+  const v = assignVariant.trim().toLowerCase();
+  if (id) {
+    const idx = await getUsbAssignIndexes();
+    const hit = idx.byIdVariant.get(`${id}\0${v}`);
+    if (hit?.chainHexHint) return hit.chainHexHint;
+  }
+  return moduleHexFromCatalogForUsbVariant(meta ?? null, assignVariant);
+}
+
+/** Repli via `presetMeta.chainHex` (tableau mono/stéréo). */
 export function moduleHexFromCatalogForUsbVariant(
   meta: PresetMetaJson | null,
   assignVariant: string,
@@ -344,7 +595,51 @@ export type UsbAssignVariant =
   | "dual"
   | "amp"
   | "preamp"
-  | "amp+cab";
+  | "amp+cab"
+  | "amp+cab-legacy";
+
+/** Cab hybrid pré-3.50 (`cab.models`, subCategory Legacy) vs cab IR Single/Dual. */
+export async function isLegacyCabChainHex(cabHex: string): Promise<boolean> {
+  const hex = (cabHex ?? "").trim().toLowerCase();
+  if (!hex) return false;
+  const { byHexHint } = await getUsbAssignIndexes();
+  for (const hint of moduleHexCatalogLookupCandidates(hex)) {
+    const entries = byHexHint.get(hint);
+    if (!entries?.length) continue;
+    for (const e of entries) {
+      const cat = e.category.trim().toLowerCase();
+      const sub = e.subCategory.trim().toLowerCase();
+      const variant = e.variant.trim().toLowerCase();
+      if (cat === "cab" && (sub === "legacy" || variant === "legacy")) return true;
+    }
+  }
+  return false;
+}
+
+/** Variante assign pour slot Amp+Cab : cab IR (`amp+cab`) vs hybrid legacy (`amp+cab-legacy`). */
+export async function usbAssignVariantForAmpCabSlot(
+  meta: PresetMetaJson | null,
+  moduleHex: string | undefined,
+  slotCategory?: string | null,
+  modelId?: string | null,
+  cabHexHint?: string | null,
+): Promise<UsbAssignVariant> {
+  const id = (modelId ?? "").trim();
+  const slotCat = normalizeSlotCategoryHint(slotCategory);
+  const catalogCat = (meta?.categoryName ?? "").trim().toLowerCase();
+  if (
+    id &&
+    (isAmpCabFamilySlotCategory(slotCategory) ||
+      slotCat === "amp" ||
+      slotCat === "preamp") &&
+    (catalogCat === "amp" || catalogCat === "preamp")
+  ) {
+    return usbAssignVariantForAmpFamilyScroll(id, moduleHex, slotCategory, cabHexHint);
+  }
+  const base = usbAssignVariantFromPresetMeta(meta, moduleHex, slotCategory);
+  if (base !== "amp+cab" || !id) return base;
+  return usbAssignVariantForAmpFamilyScroll(id, moduleHex, slotCategory, cabHexHint);
+}
 
 export function usbAssignVariantFromPresetMeta(
   meta: PresetMetaJson | null,
@@ -352,12 +647,10 @@ export function usbAssignVariantFromPresetMeta(
   /** Catégorie du slot lu sur le preset / matériel (ex. « Amp+Cab »). */
   slotCategory?: string | null,
 ): UsbAssignVariant {
-  const slotCat = (slotCategory ?? "").trim().toLowerCase().replace(/\s+/g, "");
+  const slotCat = normalizeSlotCategoryHint(slotCategory);
   const catalogCat = (meta?.categoryName ?? "").trim().toLowerCase();
-  if (
-    (slotCat === "amp+cab" || slotCat === "ampcab") &&
-    (catalogCat === "amp" || catalogCat === "preamp")
-  ) {
+  if (isAmpCabLegacySlotCategory(slotCategory)) return "amp+cab-legacy";
+  if (isAmpCabFamilySlotCategory(slotCategory) && (catalogCat === "amp" || catalogCat === "preamp")) {
     return "amp+cab";
   }
   if (catalogCat === "amp") {
@@ -420,6 +713,7 @@ export function resetHxCatalogMetaMapForTests(): void {
   catalogIndexesPromise = null;
   catalogPickerDataPromise = null;
   usbAssignPickerDataPromise = null;
+  usbAssignIndexesPromise = null;
 }
 
 // --- Sélecteur visuel catégorie / sous-catégorie / modèle (aperçu, pas d’écriture USB) ---
@@ -670,11 +964,17 @@ export function findUsbAssignPickerLocation(
   data: CatalogPickerData,
   catalogModelId: string,
   assignVariant: string,
+  /** Priorité catégorie picker (ex. « Amp+Cab Legacy ») si connue. */
+  preferCategory?: string | null,
 ): { category: string; subKey: string } | null {
   const id = catalogModelId.trim();
   const vid = assignVariant.trim().toLowerCase();
   if (!id) return null;
-  for (const cat of data.categories) {
+  const prefer = (preferCategory ?? "").trim();
+  const cats = prefer && data.categories.includes(prefer)
+    ? [prefer, ...data.categories.filter((c) => c !== prefer)]
+    : data.categories;
+  for (const cat of cats) {
     const subs = data.subcategoriesByCategory.get(cat) ?? [];
     for (const sub of subs) {
       const key = catalogPickerRowKey(cat, sub);

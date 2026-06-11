@@ -37,7 +37,9 @@ VARIANT_DEFAULT_SUB = {
 AMP_VARIANT = "amp"
 PREAMP_VARIANT = "preamp"
 AMP_CAB_VARIANT = "amp+cab"
+AMP_CAB_LEGACY_VARIANT = "amp+cab-legacy"
 AMP_CAB_CATEGORY = "Amp+Cab"
+AMP_CAB_LEGACY_CATEGORY = "Amp+Cab Legacy"
 AMP_CATEGORY = "Amp"
 PREAMP_CATEGORY = "Preamp"
 
@@ -199,26 +201,45 @@ def sync_entry_fields(entry: dict, catalog_row: dict) -> dict[str, object]:
     variant = (entry.get("variant") or "mono").strip().lower()
     updates: dict[str, object] = {}
 
-    hint = pick_parallel(pm, variant, "chainHex")
-    if hint and (entry.get("chainHexHint") or "").strip().lower() != hint:
-        updates["chainHexHint"] = hint
-    elif not hint and entry.get("chainHexHint"):
-        updates["chainHexHint"] = ""
+    if variant in (AMP_CAB_VARIANT, AMP_CAB_LEGACY_VARIANT):
+        if entry.get("chainHexHint"):
+            updates["chainHexHint"] = ""
+    else:
+        hint = pick_parallel(pm, variant, "chainHex")
+        if hint and (entry.get("chainHexHint") or "").strip().lower() != hint:
+            updates["chainHexHint"] = hint
+        elif not hint and entry.get("chainHexHint"):
+            updates["chainHexHint"] = ""
 
     name = (catalog_row.get("name") or "").strip()
     if name and entry.get("name") != name:
         updates["name"] = name
 
-    if (entry.get("category") or "").strip() != AMP_CAB_CATEGORY:
+    if variant == AMP_CAB_LEGACY_VARIANT:
+        if (entry.get("category") or "").strip() != AMP_CAB_LEGACY_CATEGORY:
+            updates["category"] = AMP_CAB_LEGACY_CATEGORY
+    elif variant == AMP_CAB_VARIANT:
+        if (entry.get("category") or "").strip() != AMP_CAB_CATEGORY:
+            updates["category"] = AMP_CAB_CATEGORY
+    elif (entry.get("category") or "").strip() not in (
+        AMP_CAB_CATEGORY,
+        AMP_CAB_LEGACY_CATEGORY,
+    ):
         category = (pm.get("categoryName") or "").strip()
         if category and entry.get("category") != category:
             updates["category"] = category
 
-    sub = pick_parallel(pm, variant, "subCategory")
-    if not sub:
-        sub = VARIANT_DEFAULT_SUB.get(variant, variant.title())
-    if sub and entry.get("subCategory") != sub:
-        updates["subCategory"] = sub
+    if variant in (AMP_CAB_VARIANT, AMP_CAB_LEGACY_VARIANT):
+        sc = (entry.get("subCategory") or "").strip().lower()
+        want = "Bass" if sc == "bass" or "bass" in sc else "Guitar"
+        if (entry.get("subCategory") or "").strip() != want:
+            updates["subCategory"] = want
+    else:
+        sub = pick_parallel(pm, variant, "subCategory")
+        if not sub:
+            sub = VARIANT_DEFAULT_SUB.get(variant, variant.title())
+        if sub and entry.get("subCategory") != sub:
+            updates["subCategory"] = sub
 
     based_on = (pm.get("basedOn") or "").strip()
     if based_on and entry.get("basedOn") != based_on:
@@ -261,25 +282,50 @@ def lookup_prev_entry(
     return None
 
 
-def clone_amp_cab_block_entry(
+def amp_cab_subcategory_variant_pairs(amp_sub: str) -> list[tuple[str, str, str]]:
+    """
+    Rubriques picker Amp+Cab (Helix FW 3.50+) :
+    Guitar / Bass sous `Amp+Cab` (IR) ou `Amp+Cab Legacy` (hybrid) — même libellé subCategory,
+    la catégorie picker distingue moderne vs legacy ; `variant` reste la clé bulk Rust.
+    """
+    s = (amp_sub or "Guitar").strip().lower()
+    if s == "bass":
+        return [
+            ("Bass", AMP_CAB_VARIANT, AMP_CAB_CATEGORY),
+            ("Bass", AMP_CAB_LEGACY_VARIANT, AMP_CAB_LEGACY_CATEGORY),
+        ]
+    return [
+        ("Guitar", AMP_CAB_VARIANT, AMP_CAB_CATEGORY),
+        ("Guitar", AMP_CAB_LEGACY_VARIANT, AMP_CAB_LEGACY_CATEGORY),
+    ]
+
+
+def clone_amp_cab_block_entries(
     amp_entry: dict, prev_by_key: dict[tuple[str, str], dict]
-) -> dict:
-    """Jumelle Amp → Amp+Cab (même id / chainHex, variant et bulk distincts)."""
+) -> list[dict]:
+    """Jumelles Amp → Amp+Cab moderne + Amp+Cab legacy (même id, bulks distincts)."""
     mid = (amp_entry.get("id") or "").strip()
-    clone: dict = {
-        "id": mid,
-        "variant": AMP_CAB_VARIANT,
-        "category": AMP_CAB_CATEGORY,
-        "bulkHex": "",
-        "name": (amp_entry.get("name") or mid).strip(),
-        "subCategory": (amp_entry.get("subCategory") or "Guitar").strip() or "Guitar",
-        "notes": STUB_NOTE,
-    }
-    for key in ("chainHexHint", "basedOn", "image"):
-        val = amp_entry.get(key)
-        if val:
-            clone[key] = val
-    return merge_preserved(clone, prev_by_key.get((mid, AMP_CAB_VARIANT)))
+    out: list[dict] = []
+    for sub_display, variant, category in amp_cab_subcategory_variant_pairs(
+        str(amp_entry.get("subCategory") or "Guitar")
+    ):
+        clone: dict = {
+            "id": mid,
+            "variant": variant,
+            "category": category,
+            "bulkHex": "",
+            "name": (amp_entry.get("name") or mid).strip(),
+            "subCategory": sub_display,
+            "notes": STUB_NOTE,
+        }
+        # chainHexHint : seule l’entrée `amp` le porte (fil USB = bloc ampli).
+        # amp+cab / legacy : variante picker + bulk — résolution via categoryHint + cab.
+        for key in ("basedOn", "image"):
+            val = amp_entry.get(key)
+            if val:
+                clone[key] = val
+        out.append(merge_preserved(clone, prev_by_key.get((mid, variant))))
+    return out
 
 
 def merge_preserved(stub: dict, prev: dict | None) -> dict:
@@ -314,7 +360,7 @@ def fill_all_from_catalog(assign: dict) -> list[dict]:
             )
             new_entries.append(merged)
             if cat_name == AMP_CATEGORY and variant == AMP_VARIANT:
-                new_entries.append(clone_amp_cab_block_entry(merged, prev_by_key))
+                new_entries.extend(clone_amp_cab_block_entries(merged, prev_by_key))
 
     return new_entries
 

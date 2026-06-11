@@ -100,7 +100,7 @@ _Raison : éviter que des développeurs optimisant ou modifiant le dépôt compa
 
 ## Scroll modèle HW — UX et robustesse (plus tard)
 
-- [ ] **Architecture scroll : un chemin par type de modèle** (comme loopers) — router `extract_module_hex_for_hw_scroll_dump` par familles (`82 13 XX` + encodage id), fallback ordonné, tests capture par type. Hypothèse mute amp ~12 scrolls = sous-chemin manquant. **Spec** : [`docs/todo-scroll-hw.md`](docs/todo-scroll-hw.md) § *Piste ouverte — extraction par type de modèle*.
+- [~] **Architecture scroll : un chemin par type de modèle** (comme loopers) — routeur `extract_module_hex_for_hw_scroll_dump` (standard → **Amp+Cab** → looper) ; chemin Amp+Cab dédié (`c319` + `1a`, dual-slot `19…1a…09`, paires `c219`, token court `2b`+cab) + `categoryHint` UI scroll. Reste : Send/Return, I/O routing, mute amp ~12ᵉ scroll à valider terrain. **Spec** : [`docs/todo-scroll-hw.md`](docs/todo-scroll-hw.md) § *Piste ouverte — extraction par type de modèle*.
 - [ ] **Popup consigne utilisateur** : au premier scroll / commande matérielle détectée pendant une session éditeur active, afficher une popup du type « évitez d’utiliser les commandes du Stomp pendant l’utilisation du programme ; préférez l’éditeur » (aligné handoff §0). **Prévoir un flag dev** (`HX_SKIP_HW_SCROLL_WARNING=1` ou équivalent) pour ne **pas** déclencher la popup pendant les tests terrain — sinon galère à valider le multi-cran.
 - [x] **Chargement preset sans flags debug** — lane couplée ON par défaut ; bootstrap preset + snapshot corrigés (voir **Réalisé**). Reste : validation session « normale » sans env de trace ; gate `editor_ready` sur le pull si un cas limite réapparaît.
 

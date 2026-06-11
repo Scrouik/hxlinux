@@ -1795,16 +1795,70 @@ fn get_active_preset_slot_linked_cab(
         return None;
     }
     let seg = kempline_assignable_segment_bytes(&s.preset_data, slot_index as usize)?;
-    if !is_amp_cab_assignable_chunk(seg) {
+    linked_cab_info_from_assignable_chunk(seg)
+}
+
+/// Cab rattaché dans un segment assignable Amp+Cab : `[hex, catégorie, nom, model_id]`.
+pub(crate) fn linked_cab_info_from_assignable_chunk(chunk: &[u8]) -> Option<[String; 4]> {
+    if !is_amp_cab_assignable_chunk(chunk) {
         return None;
     }
-    let blocks = preset_chain_params::parse_assignable_segment_param_blocks(&seg)?;
-    let ids = augmented_module_ids_for_assignable_chunk(seg, blocks.len());
+    let blocks = preset_chain_params::parse_assignable_segment_param_blocks(chunk)?;
+    let ids = augmented_module_ids_for_assignable_chunk(chunk, blocks.len());
     let cab_bi = catalog_cab_c219_block_index(&ids, blocks.len());
     cab_bi
         .and_then(|bi| block_chain_hex_for_c219(bi, &ids))
         .and_then(|h| cab_info_from_module_id(&h))
         .or_else(|| ids.iter().find_map(|id| cab_info_from_module_id(id)))
+}
+
+pub(crate) fn cab_hex_from_combined_module_wire(module_hex: &str) -> Option<String> {
+    let h = module_hex.trim().to_lowercase();
+    let (_, cab) = h.split_once("1a")?;
+    let cab = cab.trim();
+    if cab.is_empty() {
+        None
+    } else {
+        Some(cab.to_string())
+    }
+}
+
+/// Segment assignable scroll (`82 13 06|08` + `85188317`…) dans un dump IN pull.
+fn assignable_chunk_for_hw_scroll_dump(buf: &[u8]) -> Option<&[u8]> {
+    const SLOT_INFO_HEAD: [u8; 4] = SLOT_ASSIGNABLE_INFO_HEAD;
+    for i in 0..buf.len().saturating_sub(4) {
+        if buf[i] == 0x82
+            && buf[i + 1] == 0x13
+            && matches!(buf[i + 2], 0x06 | 0x08)
+        {
+            let rest = &buf[i + 2..];
+            if assignable_chunk_has_slot_info_head(rest) {
+                return Some(rest);
+            }
+        }
+    }
+    for start in 0..buf.len() {
+        let b = *buf.get(start)?;
+        if b != 0x06 && b != 0x08 {
+            continue;
+        }
+        let rest = &buf[start..];
+        if rest.len() < 8 {
+            continue;
+        }
+        let head_near = rest.len().min(32);
+        if !rest[..head_near].windows(4).any(|w| w == SLOT_INFO_HEAD) {
+            continue;
+        }
+        return Some(rest);
+    }
+    None
+}
+
+/// Hex cab inféré depuis un dump scroll (blocs `c219`), comme `get_active_preset_slot_linked_cab`.
+pub(crate) fn extract_linked_cab_hex_for_hw_scroll_dump(buf: &[u8]) -> Option<String> {
+    let chunk = assignable_chunk_for_hw_scroll_dump(buf)?;
+    linked_cab_info_from_assignable_chunk(chunk).map(|c| c[0].clone())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2085,25 +2139,13 @@ fn insert_model_ids_from_hx_catalog(map: &mut HashMap<String, String>, catalog: 
 }
 
 lazy_static! {
-    /// ID module (hex entre 0x19…0x1a) → `[catégorie, nom]`.
-    /// Source unique : `HX_ModelCatalog.json` (`presetMeta.chainHex` chaîne ou tableau + nom court du modèle).
-    static ref HX_CATALOG_MODULE_BY_HEX: HashMap<String, [String; 2]> = {
-        const HX_CATALOG_JSON: &str = include_str!("../resources/HX_ModelCatalog.json");
-        let catalog: Value =
-            serde_json::from_str(HX_CATALOG_JSON).expect("HX_ModelCatalog.json invalide");
-        let mut map = HashMap::new();
-        insert_modules_from_hx_catalog(&mut map, &catalog);
-        map
-    };
-    /// ID module hex -> ID modèle catalogue (`models[].id`), utile pour jointure stable vers `.models.symbolicID`.
-    static ref MODEL_ID_BY_HEX: HashMap<String, String> = {
-        const HX_CATALOG_JSON: &str = include_str!("../resources/HX_ModelCatalog.json");
-        let catalog: Value =
-            serde_json::from_str(HX_CATALOG_JSON).expect("HX_ModelCatalog.json invalide");
-        let mut map = HashMap::new();
-        insert_model_ids_from_hx_catalog(&mut map, &catalog);
-        map
-    };
+    /// ID module (`chainHexHint`) → `[catégorie, nom]`.
+    /// Source unique : `HX_ModelUsbAssign.json` (`chainHexHint` + `category` + `name`).
+    static ref HX_CATALOG_MODULE_BY_HEX: HashMap<String, [String; 2]> =
+        crate::helix::model_catalog::module_by_hex_map().clone();
+    /// ID module hex -> ID modèle (`HX_ModelUsbAssign.json` → `entries[].id`).
+    static ref MODEL_ID_BY_HEX: HashMap<String, String> =
+        crate::helix::model_catalog::model_id_by_hex_map().clone();
 }
 
 /// Famille catalogue pour un `chainHex` : choix du bloc `c219` ampli vs cab en Amp+Cab.
@@ -2350,9 +2392,115 @@ fn parsed_slot_from_module_hex(chunk: &[u8], module_hex: String) -> ParsedSlot {
     }
 }
 
-/// Pull scroll USB : même résolution `module_hex` que la grille preset (inférence Amp+Cab, dual-slot `19…1a…09`, etc.).
+const SLOT_ASSIGNABLE_INFO_HEAD: [u8; 4] = [0x85, 0x18, 0x83, 0x17];
+
+/// `true` si le segment assignable porte l'en-tête slot `85 18 83 17` (effets, amp, cab, preamp…).
+fn assignable_chunk_has_slot_info_head(chunk: &[u8]) -> bool {
+    chunk.len() >= 8 && chunk.windows(4).any(|w| w == SLOT_ASSIGNABLE_INFO_HEAD)
+}
+
+/// Paire ampli+cab lue sur le fil — ordre de priorité aligné sur les captures scroll.
+fn resolve_amp_cab_wire_pair(chunk: &[u8]) -> Option<(String, String)> {
+    infer_amp_cab_hex_pair_from_c319_1a_09_tail(chunk)
+        .or_else(|| infer_amp_cab_hex_pair_from_19_1a_09_markers(chunk))
+        .or_else(|| {
+            if is_amp_cab_assignable_chunk(chunk) {
+                inferred_amp_cab_hex_keys(chunk)
+            } else {
+                None
+            }
+        })
+}
+
+/// Combine fil `amp1acab` : oui pour paires catalogue / `cd02xx`, non pour le token contrôle `06`.
+fn should_use_amp_cab_combined_wire_hex(amp: &str, cab: &str) -> bool {
+    let amp = amp.trim().to_ascii_lowercase();
+    let cab = cab.trim().to_ascii_lowercase();
+    if amp.is_empty() || cab.is_empty() || amp == cab {
+        return false;
+    }
+    if amp == "06" {
+        return false;
+    }
+    let combined = format!("{amp}1a{cab}");
+    if HX_CATALOG_MODULE_BY_HEX
+        .get(&combined)
+        .map(|e| e[0].eq_ignore_ascii_case("amp+cab"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    let amp_full = amp.starts_with("cd") && amp.len() >= 6;
+    let cab_full = cab.starts_with("cd") && cab.len() >= 6;
+    if amp_full && matches!(catalog_slot_kind_for_chain_hex(&cab), CatalogSlotKind::CabLike) {
+        return true;
+    }
+    // Scroll asymétrique : token ampli court (`2b`) + cab catalogue (`cd0321`).
+    amp.len() >= 2
+        && amp.len() <= 4
+        && cab_full
+        && matches!(catalog_slot_kind_for_chain_hex(&cab), CatalogSlotKind::CabLike)
+}
+
+/// Chemin dédié **Amp+Cab** (cf. `docs/todo-scroll-hw.md` § extraction par type).
+fn try_extract_amp_cab_combined_hex_from_chunk(chunk: &[u8]) -> Option<String> {
+    let (amp, cab) = resolve_amp_cab_wire_pair(chunk)?;
+    if !should_use_amp_cab_combined_wire_hex(&amp, &cab) {
+        return None;
+    }
+    Some(format!("{amp}1a{cab}"))
+}
+
+fn parsed_slot_from_amp_cab_combined(chunk: &[u8], combined: &str) -> ParsedSlot {
+    let (grid_x, grid_y) = extract_grid_xy_after_id(chunk, 0);
+    if let Some(entry) = HX_CATALOG_MODULE_BY_HEX.get(combined) {
+        let e0 = entry[0].trim().to_ascii_lowercase();
+        let category = if e0 == "amp" || e0 == "preamp" || e0 == "amp+cab" {
+            String::from("Amp+Cab")
+        } else {
+            entry[0].clone()
+        };
+        return ParsedSlot {
+            category,
+            name: entry[1].clone(),
+            grid_x,
+            grid_y,
+            module_hex: combined.to_string(),
+        };
+    }
+    let amp_part = combined.split("1a").next().unwrap_or(combined);
+    let (category, name) = HX_CATALOG_MODULE_BY_HEX
+        .get(amp_part)
+        .map(|e| (String::from("Amp+Cab"), e[1].clone()))
+        .unwrap_or_else(|| (String::from("Amp+Cab"), combined.to_string()));
+    ParsedSlot {
+        category,
+        name,
+        grid_x,
+        grid_y,
+        module_hex: combined.to_string(),
+    }
+}
+
+/// Résout `module_hex` depuis un segment assignable — route par famille (Amp+Cab, standard, looper).
+fn extract_module_hex_from_assignable_chunk(chunk: &[u8]) -> Option<String> {
+    if let Some(hex) = try_extract_amp_cab_combined_hex_from_chunk(chunk) {
+        return Some(hex);
+    }
+    if is_looper_style_assignable_chunk(chunk) {
+        return extract_module_hex_from_looper_style_assignable(chunk);
+    }
+    let slot = extract_first_module_standard_from_assignable_chunk(chunk);
+    if slot.module_hex.is_empty() {
+        None
+    } else {
+        Some(slot.module_hex)
+    }
+}
+
+/// Pull scroll USB : routeur par type de modèle (standard → Amp+Cab → looper).
 pub(crate) fn extract_module_hex_for_hw_scroll_dump(buf: &[u8]) -> Option<String> {
-    const SLOT_INFO_HEAD: [u8; 4] = [0x85, 0x18, 0x83, 0x17];
+    const SLOT_INFO_HEAD: [u8; 4] = SLOT_ASSIGNABLE_INFO_HEAD;
     // Les IN scroll (9c/53, 76–164 o) préfixent l'en-tête USB ; le slot assignable commence
     // par `82 13 06|08` (cf. capture Grammatico Brt juin 2026). Ne pas confondre avec un
     // `0x06` isolé dans l'en-tête (`… 06 00 8c …`).
@@ -2362,10 +2510,9 @@ pub(crate) fn extract_module_hex_for_hw_scroll_dump(buf: &[u8]) -> Option<String
             && matches!(buf[i + 2], 0x06 | 0x08)
         {
             let rest = &buf[i + 2..];
-            if rest.len() >= 8 && rest.windows(4).any(|w| w == SLOT_INFO_HEAD) {
-                let slot = extract_first_module_from_assignable_chunk(rest);
-                if !slot.module_hex.is_empty() {
-                    return Some(slot.module_hex);
+            if assignable_chunk_has_slot_info_head(rest) {
+                if let Some(hex) = extract_module_hex_from_assignable_chunk(rest) {
+                    return Some(hex);
                 }
             }
         }
@@ -2384,13 +2531,59 @@ pub(crate) fn extract_module_hex_for_hw_scroll_dump(buf: &[u8]) -> Option<String
         if !rest[..head_near].windows(4).any(|w| w == SLOT_INFO_HEAD) {
             continue;
         }
-        let slot = extract_first_module_from_assignable_chunk(rest);
-        if !slot.module_hex.is_empty() {
-            return Some(slot.module_hex);
+        if let Some(hex) = extract_module_hex_from_assignable_chunk(rest) {
+            return Some(hex);
         }
     }
     // Loopers / fixed : chemin séparé, uniquement si le format looper est présent.
     extract_module_hex_from_looper_style_assignable(buf)
+}
+
+/// Catégorie slot pour l'UI scroll quand le fil est Amp+Cab (hint explicite).
+pub(crate) fn extract_category_hint_for_hw_scroll_dump(buf: &[u8]) -> Option<String> {
+    const SLOT_INFO_HEAD: [u8; 4] = SLOT_ASSIGNABLE_INFO_HEAD;
+    let try_chunk = |chunk: &[u8]| -> Option<String> {
+        if try_extract_amp_cab_combined_hex_from_chunk(chunk).is_some() {
+            return Some(String::from("Amp+Cab"));
+        }
+        let slot = extract_first_module_from_assignable_chunk(chunk);
+        if slot.category.eq_ignore_ascii_case("amp+cab") {
+            Some(slot.category)
+        } else {
+            None
+        }
+    };
+    for i in 0..buf.len().saturating_sub(4) {
+        if buf[i] == 0x82
+            && buf[i + 1] == 0x13
+            && matches!(buf[i + 2], 0x06 | 0x08)
+        {
+            let rest = &buf[i + 2..];
+            if assignable_chunk_has_slot_info_head(rest) {
+                if let Some(c) = try_chunk(rest) {
+                    return Some(c);
+                }
+            }
+        }
+    }
+    for start in 0..buf.len() {
+        let b = *buf.get(start)?;
+        if b != 0x06 && b != 0x08 {
+            continue;
+        }
+        let rest = &buf[start..];
+        if rest.len() < 8 {
+            continue;
+        }
+        let head_near = rest.len().min(32);
+        if !rest[..head_near].windows(4).any(|w| w == SLOT_INFO_HEAD) {
+            continue;
+        }
+        if let Some(c) = try_chunk(rest) {
+            return Some(c);
+        }
+    }
+    None
 }
 
 /// Parse les slots d'un preset brut.
@@ -2806,6 +2999,20 @@ fn infer_amp_cab_hex_pair_from_c319_1a_09_tail(chunk: &[u8]) -> Option<(String, 
         {
             return Some((amp_key, cab_key));
         }
+        // Scroll asymétrique : token ampli court (`2b`) + cab `cd02xx` après `c319`.
+        if is_amp_cab_assignable_chunk(chunk)
+            && cab_key != amp_key
+            && amp_key != "06"
+            && (2..=4).contains(&amp_key.len())
+            && cab_key.starts_with("cd")
+            && cab_key.len() >= 6
+            && matches!(
+                catalog_slot_kind_for_chain_hex(&cab_key),
+                CatalogSlotKind::CabLike
+            )
+        {
+            return Some((amp_key, cab_key));
+        }
         cursor = cab_end.saturating_add(1);
     }
     None
@@ -3095,8 +3302,16 @@ fn amp_cab_combined_chain_hex_for_slot_if_better(chunk: &[u8], extracted_id_hex:
     None
 }
 
-/// Premier module 0x19…0x1a dans un segment de slot assignable.
+/// Premier module dans un segment assignable — routeur (Amp+Cab puis standard).
 fn extract_first_module_from_assignable_chunk(chunk: &[u8]) -> ParsedSlot {
+    if let Some(combined) = try_extract_amp_cab_combined_hex_from_chunk(chunk) {
+        return parsed_slot_from_amp_cab_combined(chunk, &combined);
+    }
+    extract_first_module_standard_from_assignable_chunk(chunk)
+}
+
+/// Chemin standard : effets, amp/cab/preamp seuls, loopers — `19…1a` et replis.
+fn extract_first_module_standard_from_assignable_chunk(chunk: &[u8]) -> ParsedSlot {
     let mut cursor = 0usize;
     let mut first_unknown_id_hex: Option<String> = None;
     while cursor < chunk.len() {
@@ -4395,7 +4610,7 @@ mod extract_first_module_amp_cab_inference_tests {
     }
 
     /// US Small Tweed Amp+Cab scroll (capture 164 o) : `c319` puis `2b 1a cd0321 09`
-    /// (1ᵉ champ = octet court, 2ᵉ = id catalogue) — pas de forme `cd0321 1a <cab>`.
+    /// (1ᵉ champ = token ampli court, 2ᵉ = cab catalogue) → combiné fil `2b1acd0321`.
     #[test]
     fn scroll_us_small_tweed_amp_cab_asymmetric_c319_pair() {
         const IN164: &[u8] = &[
@@ -4405,7 +4620,15 @@ mod extract_first_module_amp_cab_inference_tests {
             0x83, 0x17, 0xc3, 0x19, 0x2b, 0x1a, 0xcd, 0x03, 0x21, 0x09, 0x21, 0x0a, 0xc3, 0x0b,
         ];
         let hex = super::extract_module_hex_for_hw_scroll_dump(IN164).expect("scroll");
-        assert_eq!(hex, "cd0321");
+        assert_eq!(hex, "2b1acd0321");
+        let seg_off = IN164
+            .windows(3)
+            .position(|w| w[0] == 0x82 && w[1] == 0x13 && w[2] == 0x06)
+            .expect("82 13 06")
+            + 2;
+        let slot = extract_first_module_from_assignable_chunk(&IN164[seg_off..]);
+        assert_eq!(slot.module_hex, "2b1acd0321");
+        assert_eq!(slot.category, "Amp+Cab");
     }
 
     #[test]

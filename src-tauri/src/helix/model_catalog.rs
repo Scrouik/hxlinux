@@ -1,13 +1,12 @@
-//! Résolution `chainHex` → métadonnées modèle depuis `HX_ModelCatalog.json`.
-//! Réservé au scroll / catalogue — utilisé par les tests unitaires pour l’instant.
-#![allow(dead_code)]
+//! Résolution `chainHexHint` → métadonnées modèle depuis `HX_ModelUsbAssign.json`.
+//! Le catalogue (`HX_ModelCatalog.json`) reste réservé à l’ordre des params / `.models`.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use serde_json::Value;
 
-const HX_MODEL_CATALOG_JSON: &str = include_str!("../../resources/HX_ModelCatalog.json");
+const HX_MODEL_USB_ASSIGN_JSON: &str = include_str!("../../resources/HX_ModelUsbAssign.json");
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChainHexCatalogEntry {
@@ -15,120 +14,183 @@ pub struct ChainHexCatalogEntry {
     pub name: String,
     pub category: String,
     pub sub_category: String,
+    pub model_id: String,
+    pub variant: String,
+}
+
+/// Variantes picker dont le `chainHexHint` duplique l’entrée `amp` — non indexées seules.
+pub fn chain_hex_hint_shared_with_amp(variant: &str) -> bool {
+    matches!(
+        variant.trim().to_ascii_lowercase().as_str(),
+        "amp+cab" | "amp+cab-legacy"
+    )
+}
+
+/// Index hex scroll : seules les variantes dont le hint est propre au fil USB.
+pub fn chain_hex_hint_index_eligible(variant: &str) -> bool {
+    !chain_hex_hint_shared_with_amp(variant)
+}
+
+/// Priorité lorsqu’un même `chainHexHint` est partagé (mono/stéréo, single/dual cab).
+pub fn usb_assign_variant_priority(variant: &str) -> i32 {
+    match variant.trim().to_ascii_lowercase().as_str() {
+        "amp" => 100,
+        "preamp" => 95,
+        "stereo" => 50,
+        "dual" => 49,
+        "mono" => 48,
+        "single" => 47,
+        "legacy" => 46,
+        _ => 1,
+    }
 }
 
 static CHAIN_HEX_TO_ENTRY: OnceLock<HashMap<String, ChainHexCatalogEntry>> = OnceLock::new();
+static HEX_TO_MODEL_ID: OnceLock<HashMap<String, String>> = OnceLock::new();
+static MODULE_BY_HEX: OnceLock<HashMap<String, [String; 2]>> = OnceLock::new();
+
+fn load_usb_assign_entries() -> Vec<ChainHexCatalogEntry> {
+    let assign: Value =
+        serde_json::from_str(HX_MODEL_USB_ASSIGN_JSON).expect("HX_ModelUsbAssign.json invalide");
+    let Some(arr) = assign.get("entries").and_then(|x| x.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for e in arr {
+        let Some(id) = e.get("id").and_then(|x| x.as_str()).map(|s| s.trim().to_string()) else {
+            continue;
+        };
+        if id.is_empty() {
+            continue;
+        }
+        let variant = e
+            .get("variant")
+            .and_then(|x| x.as_str())
+            .unwrap_or("mono")
+            .trim()
+            .to_ascii_lowercase();
+        let Some(hint) = e
+            .get("chainHexHint")
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim().to_lowercase())
+        else {
+            continue;
+        };
+        if hint.is_empty() {
+            continue;
+        }
+        let name = e
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let category = e
+            .get("category")
+            .and_then(|x| x.as_str())
+            .unwrap_or("Unknown")
+            .trim()
+            .to_string();
+        let sub_category = e
+            .get("subCategory")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let entry = ChainHexCatalogEntry {
+            chain_hex: hint,
+            name,
+            category,
+            sub_category,
+            model_id: id,
+            variant,
+        };
+        if chain_hex_hint_index_eligible(&entry.variant) {
+            out.push(entry);
+        }
+    }
+    out
+}
+
+fn insert_with_priority<K, V>(
+    map: &mut HashMap<K, V>,
+    priority_map: &mut HashMap<K, i32>,
+    key: K,
+    value: V,
+    priority: i32,
+) where
+    K: std::hash::Hash + Eq + Clone,
+{
+    let existing = priority_map.get(&key).copied().unwrap_or(-1);
+    if priority >= existing {
+        map.insert(key.clone(), value);
+        priority_map.insert(key, priority);
+    }
+}
 
 fn chain_hex_to_entry_map() -> &'static HashMap<String, ChainHexCatalogEntry> {
     CHAIN_HEX_TO_ENTRY.get_or_init(|| {
-        let catalog: Value =
-            serde_json::from_str(HX_MODEL_CATALOG_JSON).expect("HX_ModelCatalog.json invalide");
+        let entries = load_usb_assign_entries();
         let mut map = HashMap::new();
-        insert_models_from_catalog(&catalog, &mut map);
+        let mut priority_by_hex: HashMap<String, i32> = HashMap::new();
+        for entry in entries {
+            let pri = usb_assign_variant_priority(&entry.variant);
+            insert_with_priority(
+                &mut map,
+                &mut priority_by_hex,
+                entry.chain_hex.clone(),
+                entry,
+                pri,
+            );
+        }
         map
     })
 }
 
-fn sub_category_for_index(sub_v: &Value, index: usize) -> String {
-    match sub_v {
-        Value::String(s) => s.trim().to_string(),
-        Value::Array(a) => a
-            .get(index)
-            .or_else(|| a.first())
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string(),
-        _ => String::new(),
-    }
+/// ID module (`chainHexHint`) → `[catégorie, nom]` pour le parseur preset / scroll.
+pub fn module_by_hex_map() -> &'static HashMap<String, [String; 2]> {
+    MODULE_BY_HEX.get_or_init(|| {
+        let entries = load_usb_assign_entries();
+        let mut map = HashMap::new();
+        let mut priority_by_hex: HashMap<String, i32> = HashMap::new();
+        for entry in entries {
+            let pri = usb_assign_variant_priority(&entry.variant);
+            insert_with_priority(
+                &mut map,
+                &mut priority_by_hex,
+                entry.chain_hex.clone(),
+                [entry.category.clone(), entry.name.clone()],
+                pri,
+            );
+        }
+        map
+    })
 }
 
-fn insert_model_object(map: &mut HashMap<String, ChainHexCatalogEntry>, obj: &serde_json::Map<String, Value>) {
-    let Some(name) = obj.get("name").and_then(|x| x.as_str()) else {
-        return;
-    };
-    let name = name.trim();
-    if name.is_empty() {
-        return;
-    }
-    let Some(pm) = obj.get("presetMeta").and_then(|p| p.as_object()) else {
-        return;
-    };
-    let Some(hex_v) = pm.get("chainHex") else {
-        return;
-    };
-    let category = pm
-        .get("categoryName")
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let sub_v = pm
-        .get("subCategory")
-        .cloned()
-        .unwrap_or(Value::String(String::new()));
-
-    let mut insert_one = |hex: &str, index: usize| {
-        let h = hex.trim().to_lowercase();
-        if h.is_empty() {
-            return;
+/// `chainHexHint` → `id` modèle (symbolicID Line 6).
+pub fn model_id_by_hex_map() -> &'static HashMap<String, String> {
+    HEX_TO_MODEL_ID.get_or_init(|| {
+        let entries = load_usb_assign_entries();
+        let mut map = HashMap::new();
+        let mut priority_by_hex: HashMap<String, i32> = HashMap::new();
+        for entry in entries {
+            let pri = usb_assign_variant_priority(&entry.variant);
+            insert_with_priority(
+                &mut map,
+                &mut priority_by_hex,
+                entry.chain_hex.clone(),
+                entry.model_id.clone(),
+                pri,
+            );
         }
-        map.insert(
-            h.clone(),
-            ChainHexCatalogEntry {
-                chain_hex: h,
-                name: name.to_string(),
-                category: category.clone(),
-                sub_category: sub_category_for_index(&sub_v, index),
-            },
-        );
-    };
-
-    match hex_v {
-        Value::String(s) => insert_one(s, 0),
-        Value::Array(a) => {
-            for (index, x) in a.iter().enumerate() {
-                if let Some(s) = x.as_str() {
-                    insert_one(s, index);
-                }
-            }
-        }
-        _ => {}
-    }
+        map
+    })
 }
 
-fn insert_model_list(map: &mut HashMap<String, ChainHexCatalogEntry>, models: Option<&Value>) {
-    let Some(arr) = models.and_then(|m| m.as_array()) else {
-        return;
-    };
-    for m in arr {
-        let Some(obj) = m.as_object() else { continue };
-        insert_model_object(map, obj);
-    }
-}
-
-fn insert_models_from_catalog(catalog: &Value, map: &mut HashMap<String, ChainHexCatalogEntry>) {
-    if let Some(models) = catalog.get("models").and_then(|m| m.as_array()) {
-        for m in models {
-            let Some(obj) = m.as_object() else { continue };
-            insert_model_object(map, obj);
-        }
-        return;
-    }
-    let Some(categories) = catalog.get("categories").and_then(|c| c.as_array()) else {
-        return;
-    };
-    for cat in categories {
-        insert_model_list(map, cat.get("models"));
-        if let Some(subs) = cat.get("subcategories").and_then(|s| s.as_array()) {
-            for sub in subs {
-                insert_model_list(map, sub.get("models"));
-            }
-        }
-    }
-}
-
-/// Candidats pour joindre le catalogue (hex complet, préfixe avant `1a`, sous-chaînes `cdXXXX`).
+/// Candidats pour joindre l’assign (hex complet, préfixe avant `1a`, sous-chaînes `cdXXXX`).
 pub fn chain_hex_lookup_candidates(hex_norm: &str) -> Vec<String> {
     let h = hex_norm.trim().to_lowercase();
     if h.is_empty() {
@@ -154,7 +216,7 @@ pub fn chain_hex_lookup_candidates(hex_norm: &str) -> Vec<String> {
     out
 }
 
-/// Retourne les métadonnées catalogue pour un `chainHex` extrait du dump USB.
+/// Retourne les métadonnées assign pour un `chainHex` extrait du dump USB.
 pub fn resolve_chain_hex_entry(module_hex: &str) -> Option<ChainHexCatalogEntry> {
     let map = chain_hex_to_entry_map();
     for cand in chain_hex_lookup_candidates(module_hex) {
@@ -165,7 +227,7 @@ pub fn resolve_chain_hex_entry(module_hex: &str) -> Option<ChainHexCatalogEntry>
     None
 }
 
-/// Retourne `(chainHex catalogue, nom modèle)` si trouvé dans `HX_ModelCatalog.json`.
+/// Retourne `(chainHexHint, nom modèle)` si trouvé dans `HX_ModelUsbAssign.json`.
 pub fn resolve_chain_hex_and_name(module_hex: &str) -> Option<(String, String)> {
     resolve_chain_hex_entry(module_hex).map(|e| (e.chain_hex, e.name))
 }
@@ -210,5 +272,13 @@ mod tests {
         let e = resolve_chain_hex_entry("70").expect("70");
         assert_eq!(e.name, "Minotaur");
         assert_eq!(e.sub_category, "Stereo");
+    }
+
+    #[test]
+    fn amp_hint_indexed_not_amp_cab_clone() {
+        let map = module_by_hex_map();
+        let pair = map.get("2c").expect("2c");
+        assert_eq!(pair[0], "Amp");
+        assert_eq!(pair[1], "WhoWatt 100");
     }
 }

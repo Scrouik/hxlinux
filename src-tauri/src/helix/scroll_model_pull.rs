@@ -196,6 +196,10 @@ pub struct SlotModelHwChangedPayload {
     pub slot_index: u32,
     pub slot_bus: u8,
     pub module_hex: Option<String>,
+    /// Catégorie lue sur le fil (ex. `Amp+Cab`) quand le catalogue seul donnerait `Amp`.
+    pub category_hint: Option<String>,
+    /// Hex cab (bloc `c219` ou fil `amp1acab`) — distingue Amp+Cab IR vs Legacy au scroll.
+    pub cab_hex_hint: Option<String>,
 }
 
 // ── Couche Pipeline ───────────────────────────────────────────────────────────
@@ -884,11 +888,22 @@ fn finalize_pull_capture(
         return None;
     };
 
+    let category_hint = frames
+        .iter()
+        .find_map(|f| crate::extract_category_hint_for_hw_scroll_dump(f));
+
+    let cab_hex_hint = frames
+        .iter()
+        .find_map(|f| crate::extract_linked_cab_hex_for_hw_scroll_dump(f))
+        .or_else(|| crate::cab_hex_from_combined_module_wire(&module_hex));
+
     log_hw_model_changed(
         &module_hex,
         simple_hex.as_deref(),
         inferred_hex.as_deref(),
         best_dump_len,
+        category_hint.as_deref(),
+        cab_hex_hint.as_deref(),
     );
 
     let Some(slot_index) = slot_bus_to_kempline_index(slot_bus).map(|i| i as u32) else {
@@ -908,6 +923,8 @@ fn finalize_pull_capture(
         slot_index,
         slot_bus,
         module_hex: Some(module_hex),
+        category_hint,
+        cab_hex_hint,
     };
     arm_pull_post_finalize_quiet(state);
     arm_post_pull_stream_settling(state);
@@ -994,6 +1011,8 @@ pub fn emit_slot_cleared(
         slot_index,
         slot_bus,
         module_hex: None,
+        category_hint: None,
+        cab_hex_hint: None,
     })
 }
 
@@ -1001,8 +1020,9 @@ pub fn emit_slot_cleared(
 
 /// Au lancement (`lib.rs` → `init_from_env`) :
 /// - `HX_SCROLL_PULL_DEBUG=1` — trace protocole pull (1b, ctr, settling, …)
-/// - `HX_SCROLL_CHAINHEX=1` — à chaque dump réussi : `chainHexHint` = hex **fil** (combiné
-///   `amp1acab` si inféré), `dump_len`, lookup catalogue ; si simple≠inferred, ligne `chainHex parse`
+/// - `HX_SCROLL_CHAINHEX=1` — à chaque dump réussi : `chainHexHint` (fil / ampli court),
+///   `cabHexHint` (cab lu dans le bulk `c219`), `categoryHint`, lookup assign ; divergences
+///   `cabHexWire` vs `cabHexHint` → `cabHexDivergence` ; `cabFromBulk` si fil ampli seul
 pub fn init_from_env() {
     if std::env::var("HX_SCROLL_PULL_DEBUG")
         .map(|v| v == "1")
@@ -1044,13 +1064,46 @@ fn pull_trace(msg: &str) {
     }
 }
 
-/// `chainHexHint` = hex **lu sur le fil** (peut être combiné `amp1acab`), pas la clé
-/// raccourcie du catalogue après lookup (ex. `cd0217` seul).
+fn scroll_log_extra_notes(
+    module_hex: &str,
+    category_hint: Option<&str>,
+    cab_hex_hint: Option<&str>,
+) -> String {
+    let mut out = String::new();
+    if let Some(h) = category_hint.filter(|s| !s.is_empty()) {
+        out.push_str(&format!(", \"categoryHint\": \"{h}\""));
+    }
+    let Some(cab_bulk) = cab_hex_hint.filter(|s| !s.is_empty()) else {
+        return out;
+    };
+    out.push_str(&format!(", \"cabHexHint\": \"{cab_bulk}\""));
+    if let Some(entry) = model_catalog::resolve_chain_hex_entry(cab_bulk) {
+        out.push_str(&format!(
+            ", \"cabName\": \"{}\", \"cabCategory\": \"{}\", \"cabSubCategory\": \"{}\"",
+            entry.name, entry.category, entry.sub_category,
+        ));
+    }
+    let wire_cab = crate::cab_hex_from_combined_module_wire(module_hex);
+    match wire_cab.as_deref() {
+        Some(w) if w != cab_bulk => {
+            out.push_str(&format!(", \"cabHexWire\": \"{w}\", \"cabHexDivergence\": true"));
+        }
+        None if !module_hex.contains("1a") => {
+            out.push_str(", \"cabFromBulk\": true");
+        }
+        _ => {}
+    }
+    out
+}
+
+/// `chainHexHint` = hex **fil** retenu (souvent ampli court) ; `cabHexHint` = cab lu dans le bulk (`c219`).
 fn log_hw_model_changed(
     module_hex: &str,
     simple_hex: Option<&str>,
     inferred_hex: Option<&str>,
     dump_len: usize,
+    category_hint: Option<&str>,
+    cab_hex_hint: Option<&str>,
 ) {
     if !scroll_chainhex_log_enabled() {
         return;
@@ -1062,6 +1115,7 @@ fn log_hw_model_changed(
             );
         }
     }
+    let extra = scroll_log_extra_notes(module_hex, category_hint, cab_hex_hint);
     let amp_cab_wire = module_hex.contains("1a") && module_hex.len() > 12;
     if let Some(entry) = model_catalog::resolve_chain_hex_entry(module_hex) {
         let catalog_note = if entry.chain_hex != module_hex {
@@ -1075,7 +1129,7 @@ fn log_hw_model_changed(
             ""
         };
         eprintln!(
-            "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"dump_len\": {dump_len}, \"name\": \"{}\", \"category\": \"{}\", \"subCategory\": \"{}\"{catalog_note}{wire_note}",
+            "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"dump_len\": {dump_len}, \"name\": \"{}\", \"category\": \"{}\", \"subCategory\": \"{}\"{catalog_note}{wire_note}{extra}",
             entry.name,
             entry.category,
             entry.sub_category,
@@ -1085,19 +1139,29 @@ fn log_hw_model_changed(
         let cab_part = module_hex.split("1a").nth(1).unwrap_or("");
         if let Some(entry) = model_catalog::resolve_chain_hex_entry(amp_part) {
             eprintln!(
-                "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"dump_len\": {dump_len}, \"ampCabWire\": true, \"ampHex\": \"{amp_part}\", \"cabHex\": \"{cab_part}\", \"name\": \"{}\", \"category\": \"Amp+Cab (fil)\", \"subCategory\": \"{}\"",
+                "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"dump_len\": {dump_len}, \"ampCabWire\": true, \"ampHex\": \"{amp_part}\", \"cabHexWire\": \"{cab_part}\", \"name\": \"{}\", \"category\": \"Amp+Cab (fil)\", \"subCategory\": \"{}\"{extra}",
                 entry.name,
                 entry.sub_category,
             );
         } else {
             eprintln!(
-                "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"dump_len\": {dump_len}, \"ampCabWire\": true, \"ampHex\": \"{amp_part}\", \"cabHex\": \"{cab_part}\", \"name\": \"(inconnu catalogue)\", \"category\": \"Amp+Cab (fil)\", \"subCategory\": \"?\""
+                "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"dump_len\": {dump_len}, \"ampCabWire\": true, \"ampHex\": \"{amp_part}\", \"cabHexWire\": \"{cab_part}\", \"name\": \"(inconnu assign)\", \"category\": \"Amp+Cab (fil)\", \"subCategory\": \"?\"{extra}"
             );
         }
     } else {
-        eprintln!(
-            "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"dump_len\": {dump_len}, \"name\": \"(inconnu catalogue)\", \"category\": \"?\", \"subCategory\": \"?\""
-        );
+        let amp_part = module_hex;
+        if let Some(entry) = model_catalog::resolve_chain_hex_entry(amp_part) {
+            eprintln!(
+                "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"dump_len\": {dump_len}, \"name\": \"{}\", \"category\": \"{}\", \"subCategory\": \"{}\"{extra}",
+                entry.name,
+                entry.category,
+                entry.sub_category,
+            );
+        } else {
+            eprintln!(
+                "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"dump_len\": {dump_len}, \"name\": \"(inconnu assign)\", \"category\": \"?\", \"subCategory\": \"?\"{extra}"
+            );
+        }
     }
 }
 

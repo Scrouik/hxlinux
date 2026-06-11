@@ -11,9 +11,12 @@ import {
   getCatalogParamOrderForId,
   getUsbAssignPickerData,
   getPresetMetaForId,
-  moduleHexFromCatalogForUsbVariant,
+  cabHexFromAmpCabWire,
+  isLegacyCabChainHex,
+  moduleHexForUsbVariant,
   pickBasedOn,
   pickSignal,
+  usbAssignVariantForAmpCabSlot,
   usbAssignVariantFromPresetMeta,
   type CatalogPickerData,
   type PresetMetaJson,
@@ -77,6 +80,10 @@ type SlotModelHwChangedPayload = {
   slotIndex: number;
   slotBus: number;
   moduleHex: string | null;
+  /** Catégorie lue sur le fil (ex. Amp+Cab) — prioritaire sur le catalogue seul. */
+  categoryHint?: string | null;
+  /** Hex cab (bloc c219 ou fil combiné) — legacy IR vs hybrid au scroll. */
+  cabHexHint?: string | null;
 };
 
 type SlotFocusSyncResponse = {
@@ -360,7 +367,8 @@ const MODELS_DEBUG_HW_MODEL_FAST_FLAG = "models_debug_hw_model_fast";
 
 let hwModelSettleGeneration = 0;
 let lastCompletedHwParamsHeavyKey = "";
-let lastHwPickerCatalogId: string | null = null;
+/** `id` + variante assign (ex. amp+cab-legacy) — pas l’id seul. */
+let lastHwPickerSyncKey: string | null = null;
 /** Dernier event modèle HW pendant un geste (utilisé au settle). */
 let pendingHwModelSettle: { payload: SlotModelHwChangedPayload; ki: number } | null = null;
 
@@ -396,37 +404,60 @@ function slotDebugPreviewFromHex(hex: string): SlotDebug {
   return { category: "…", name: label, moduleHex: hex };
 }
 
+function scrollLinkedCabHex(p: SlotModelHwChangedPayload, moduleHex: string): string {
+  return (p.cabHexHint ?? "").trim() || cabHexFromAmpCabWire(moduleHex) || "";
+}
+
 async function slotDebugFromHwModelPayload(p: SlotModelHwChangedPayload): Promise<{
   slot: SlotDebug;
   catalogModelIdTrimmed: string;
   hex: string;
+  cabHex: string;
 }> {
   const hex = (p.moduleHex ?? "").trim();
+  const categoryHint = (p.categoryHint ?? "").trim();
+  const cabHex = scrollLinkedCabHex(p, hex);
+  const cacheKey = [hex, categoryHint, cabHex].filter(Boolean).join("\0").toLowerCase();
   let catalogModelIdTrimmed = "";
   if (hex) {
-    const cached = hwModelHexCatalogCache.get(hex);
+    const cached = hwModelHexCatalogCache.get(cacheKey);
     if (cached) {
-      return { hex, catalogModelIdTrimmed: cached.catalogModelIdTrimmed, slot: cached.slot };
+      return {
+        hex,
+        cabHex,
+        catalogModelIdTrimmed: cached.catalogModelIdTrimmed,
+        slot: cached.slot,
+      };
     }
-    const id = await getCatalogModelIdForHex(hex);
+    const id = await getCatalogModelIdForHex(hex, categoryHint);
     catalogModelIdTrimmed = (id ?? "").trim();
     const meta = catalogModelIdTrimmed ? await getPresetMetaForId(catalogModelIdTrimmed) : null;
     const catalogName = catalogModelIdTrimmed
       ? await getCatalogModelNameForId(catalogModelIdTrimmed)
       : null;
     const displayName = (catalogName ?? "").trim() || hex;
-    const categoryName = (meta?.categoryName ?? "").trim() || "?";
+    let categoryName =
+      categoryHint || (meta?.categoryName ?? "").trim() || "?";
+    const slotCatNorm = categoryName.trim().toLowerCase().replace(/\s+/g, "");
+    if (
+      (slotCatNorm === "amp+cab" || slotCatNorm === "ampcab") &&
+      cabHex &&
+      (await isLegacyCabChainHex(cabHex))
+    ) {
+      categoryName = "Amp+Cab Legacy";
+    }
     const slot: SlotDebug = {
       category: categoryName,
       name: displayName,
       moduleHex: hex,
       catalogModelId: catalogModelIdTrimmed || undefined,
     };
-    hwModelHexCatalogCache.set(hex, { catalogModelIdTrimmed, slot });
-    return { hex, catalogModelIdTrimmed, slot };
+    hwModelHexCatalogCache.set(cacheKey, { catalogModelIdTrimmed, slot });
+    return { hex, cabHex, catalogModelIdTrimmed, slot };
   }
   return {
     hex,
+    cabHex,
     catalogModelIdTrimmed,
     slot: { category: "", name: "<empty>" },
   };
@@ -455,6 +486,7 @@ function applyHardwareSlotModelVisualFast(
   ki: number,
   slot: SlotDebug,
   catalogModelIdTrimmed: string,
+  cabHexHint?: string | null,
 ): void {
   hwUi.runImmediate("grid", () => {
     if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16) {
@@ -472,21 +504,31 @@ function applyHardwareSlotModelVisualFast(
   });
 
   if (catalogModelIdTrimmed) {
-    if (catalogModelIdTrimmed === lastHwPickerCatalogId) return;
-    lastHwPickerCatalogId = catalogModelIdTrimmed;
     hwUi.runImmediate("picker", () => {
       void mountModelsSlotPicker().then(async () => {
         const meta = await getPresetMetaForId(catalogModelIdTrimmed);
-        syncModelsSlotPickerFromLoadedModel(
+        const cabHex = cabHexHint ?? cabHexFromAmpCabWire(slot.moduleHex);
+        const assignVariant = await usbAssignVariantForAmpCabSlot(
+          meta,
+          slot.moduleHex,
+          slot.category,
+          catalogModelIdTrimmed,
+          cabHex,
+        );
+        const syncKey = `${catalogModelIdTrimmed}\0${assignVariant}`;
+        if (syncKey === lastHwPickerSyncKey) return;
+        lastHwPickerSyncKey = syncKey;
+        await syncModelsSlotPickerFromLoadedModel(
           catalogModelIdTrimmed,
           meta,
           slot.moduleHex,
           slot.category,
+          cabHex,
         );
       });
     });
   } else {
-    lastHwPickerCatalogId = null;
+    lastHwPickerSyncKey = null;
   }
 }
 
@@ -537,11 +579,11 @@ function applyHardwareSlotModelChanged(p: SlotModelHwChangedPayload): void {
     if (!pending || pending.ki !== ki) return;
 
     const t0 = hwModelFastDebugEnabled() ? performance.now() : 0;
-    const { slot, catalogModelIdTrimmed, hex: settledHex } =
+    const { slot, catalogModelIdTrimmed, hex: settledHex, cabHex } =
       await slotDebugFromHwModelPayload(pending.payload);
     const tCatalog = hwModelFastDebugEnabled() ? performance.now() : 0;
 
-    applyHardwareSlotModelVisualFast(ki, slot, catalogModelIdTrimmed);
+    applyHardwareSlotModelVisualFast(ki, slot, catalogModelIdTrimmed, cabHex);
     const tVisual = hwModelFastDebugEnabled() ? performance.now() : 0;
 
     const heavyKey = `${currentPresetIndex}|${ki}|${catalogModelIdTrimmed}|${settledHex}`;
@@ -1660,12 +1702,20 @@ function resetSlotPickerToIdle(): void {
   refillSlotPickerModelList(null);
 }
 
-/** Variante USB pour `HX_ModelUsbAssign.json` : alignée sur la sous-catégorie du picker (Mono / Stereo / Legacy). */
-function usbAssignVariantFromPickerSub(sub: string): string {
+/** Variante USB pour `HX_ModelUsbAssign.json` : alignée sur la sous-catégorie du picker. */
+function usbAssignVariantFromPickerSub(sub: string, pickerCategory?: string): string {
+  const cat = (pickerCategory ?? "").trim().toLowerCase();
+  if (cat.includes("amp") && cat.includes("legacy")) return "amp+cab-legacy";
   const t = sub.trim().toLowerCase();
+  if ((t.includes("guitar") || t.includes("bass")) && t.includes("legacy")) {
+    return "amp+cab-legacy";
+  }
+  if (t === "guitar" || t === "bass") return "amp+cab";
   if (t.includes("legacy")) return "legacy";
   if (t.includes("stereo") || t.includes("stéréo")) return "stereo";
   if (t.includes("mono")) return "mono";
+  if (t === "single") return "single";
+  if (t === "dual") return "dual";
   return "mono";
 }
 
@@ -1719,7 +1769,10 @@ async function applySlotModelFromPickerListClick(
   const op = occupied ? "replace" : "add";
   const assignVariant =
     (assignVariantFromRow ?? "").trim().toLowerCase() ||
-    usbAssignVariantFromPickerSub(slotPickerSubEl?.value ?? "");
+    usbAssignVariantFromPickerSub(
+      slotPickerSubEl?.value ?? "",
+      slotPickerCategoryEl?.value ?? "",
+    );
   const categoryName = (slotPickerCategoryEl?.value ?? "").trim();
   if (!categoryName) {
     console.warn("[SlotModelProbe] catégorie picker vide — impossible MAJ optimiste.");
@@ -1740,7 +1793,7 @@ async function applySlotModelFromPickerListClick(
   const idTrim = catalogModelId.trim();
   const metaEarly = await getPresetMetaForId(idTrim);
   const moduleHexOpt =
-    (moduleHexFromCatalogForUsbVariant(metaEarly, assignVariant) ?? "").trim() || undefined;
+    (await moduleHexForUsbVariant(idTrim, assignVariant, metaEarly))?.trim() || undefined;
   const optimisticSlot: SlotDebug = {
     category: categoryName,
     name: displayName.trim(),
@@ -1834,15 +1887,28 @@ function applySlotPickerFromCatalogSelection(
   refillSlotPickerModelList(highlightModelId);
 }
 
-function syncModelsSlotPickerFromLoadedModel(
+async function syncModelsSlotPickerFromLoadedModel(
   catalogModelId: string,
   meta: PresetMetaJson | null,
   moduleHex?: string,
   slotCategory?: string,
-): void {
+  /** Cab lié lu dans le preset (`get_active_preset_slot_linked_cab` [0]) — legacy hybrid vs IR. */
+  linkedCabHex?: string | null,
+): Promise<void> {
   if (!catalogPickerDataCache) return;
-  const assignVariant = usbAssignVariantFromPresetMeta(meta, moduleHex, slotCategory);
-  const loc = findUsbAssignPickerLocation(catalogPickerDataCache, catalogModelId, assignVariant);
+  const assignVariant = await usbAssignVariantForAmpCabSlot(
+    meta,
+    moduleHex,
+    slotCategory,
+    catalogModelId,
+    linkedCabHex,
+  );
+  const loc = findUsbAssignPickerLocation(
+    catalogPickerDataCache,
+    catalogModelId,
+    assignVariant,
+    slotCategory,
+  );
   if (!loc) {
     const catFallback = catalogPickerDataCache.categories[0] ?? "";
     const subFallback = catalogPickerDataCache.subcategoriesByCategory.get(catFallback)?.[0] ?? "";
@@ -2474,7 +2540,9 @@ const EFFECT_TYPE_ABBREV: Record<string, string> = {
 };
 
 function normalizeCategory(category: string): string {
-  return category.trim().toLowerCase();
+  const c = category.trim().toLowerCase();
+  if (c === "amp+cab legacy" || c.replace(/\s+/g, "") === "amp+cablegacy") return "amp+cab";
+  return c;
 }
 
 // --- Fichiers `src-tauri/resources/models/*.models` (panneau Paramètres Models) ---
@@ -4387,12 +4455,13 @@ async function loadAndShowModelsParamsForSlot(
       catalogImage,
       kemplineSlotIndex,
     );
-    void mountModelsSlotPicker().then(() => {
-      syncModelsSlotPickerFromLoadedModel(
+    void mountModelsSlotPicker().then(async () => {
+      await syncModelsSlotPickerFromLoadedModel(
         catalogModelIdTrimmed,
         meta,
         slot.moduleHex,
         slot.category,
+        linkedCab?.[0] ?? null,
       );
     });
     paramsPaneCatalogBySlotKey.set(slotKeyNow, catalogModelIdTrimmed);
@@ -4486,8 +4555,8 @@ async function loadAndShowModelsParamsFromCatalogDefaults(
       catalogImage,
       kemplineSlotIndex,
     );
-    void mountModelsSlotPicker().then(() => {
-      syncModelsSlotPickerFromLoadedModel(
+    void mountModelsSlotPicker().then(async () => {
+      await syncModelsSlotPickerFromLoadedModel(
         catalogModelIdTrimmed,
         meta,
         slot.moduleHex,
