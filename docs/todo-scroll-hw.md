@@ -524,6 +524,58 @@ Fichiers : `stomp_running_start_hxedit.json`, `stomp_runnig_start_hxlinux.json` 
 
 ---
 
+## Piste ouverte — extraction par type de modèle et mute amp (~12 scrolls)
+
+**Contexte (juin 2026)** : fix looper (`82 13 07` + `84 08 <id> 09`) — chemin **séparé** du pull scroll classique (`82 13 06|08` + `19…1a`). Après fix : scrolls loopers OK, slot visible, ~**80** scrolls sans mute Stomp. Sur les **ampli**, mute vers le **12ᵉ** scroll.
+
+### Décision de design visée (juin 2026)
+
+**Comme pour les loopers** : ne pas élargir un seul parseur monolithique — **un chemin d’extraction par type de modèle / famille de segment fil**, enchaînés par **priorité + fallback** :
+
+```text
+extract_module_hex_for_hw_scroll_dump(buf):
+  1. Chemin standard (effets, amp, cab, preamp…) — 82 13 06|08 + 19…1a (+ inférences Amp+Cab)
+  2. Chemin looper / fixed — 82 13 07 ou tête 07 + 84 08 <id> 09     [fait]
+  3. (à découvrir) Send/Return, routing I/O, … — segment + encodage propres
+  4. None → pull non finalisé (slot vide, risque accumulation mute)
+```
+
+**Règles** :
+
+- Chaque chemin = **fonction isolée** + **tests sur capture réelle** (pas de heuristique globale).
+- Un chemin ne s’active que si le **marqueur de type** est présent (`82 13 XX`, encodage id…).
+- Le chemin standard reste **prioritaire** ; les autres ne sont que des **fallbacks** (ne pas casser Grammatico, Fullerton, US Small Tweed, etc.).
+- Même logique côté preset (`extract_first_module_from_assignable_chunk`) pour cohérence slot scroll ↔ grille preset.
+
+### Table des chemins (à compléter par captures)
+
+| Famille | Fichier `.models` | Segment fil (observé) | Encodage id | Extracteur | Statut |
+|---------|-------------------|------------------------|-------------|------------|--------|
+| Effets, amp, cab, preamp… | `*.models` classiques | `82 13 06\|08` + `85 18 83 17` | `19 … 1a` (+ Amp+Cab combiné) | `extract_first_module_from_assignable_chunk` / chemin standard | **OK** (à préserver) |
+| Looper / fixed | `fixed.models` | `82 13 07` (ou `07` après split) | `84 08 <octets> 09` | `extract_module_hex_from_looper_style_assignable` | **Fait** |
+| Amp / Amp+Cab (mute ~12 ?) | `amp`, `preamp`, `cab…` | à confirmer (variants dump court, combiné fil…) | `19…1a`, token 1 o, `amp1acab` | sous-chemin ou affinage du standard | **À investiguer** |
+| Send/Return | `sendreturn.models` | ? | ? (ex. `ccfa` catalogue) | chemin dédié | **À cartographier** |
+| Routing I/O (split, merge…) | `io.models` | ? | ? | chemin dédié | **À cartographier** |
+
+**Hypothèse mute amp** (à valider avant code) :
+
+| Observation | Interprétation |
+|-------------|----------------|
+| Loopers ignorés avant fix | Pull **non finalisé** → pas de `module_hex` → slot vide ; pas de log `chainHexHint` |
+| Amp mute ~12 scrolls | Dumps amp / Amp+Cab **mal routés** (sous-chemin manquant ou `module_hex` partiel) → post-pull / lane qui **s’accumule** |
+| Loopers ~80 scrolls OK post-fix | Le **bon chemin** finalise le pull → Stomp tient |
+
+**À faire** (incrémental, un type à la fois) :
+
+- [ ] **Refactor cible** : router `extract_module_hex_for_hw_scroll_dump` via une liste ordonnée de `(predicate, extract)` — une entrée par type, comme le looper.
+- [ ] Inventorier `82 13 XX` + encodage id par **catégorie catalogue** (scroll terrain + `HX_SCROLL_CHAINHEX=1`).
+- [ ] Comparer capture scroll amp **#10–15** vs looper **#70–80** avant d’ajouter un sous-chemin amp.
+- [ ] Chaque nouveau chemin : capture JSON + test unitaire Rust + régression sur les chemins déjà verts.
+
+**Réf. code** : `lib.rs` (`extract_module_hex_from_looper_style_assignable`, `extract_module_hex_for_hw_scroll_dump`), `scroll_model_pull.rs` (`finalize_pull_capture`, `frame_carries_model_id`).
+
+---
+
 ## Checklist rapide (jour J)
 
 1. [x] Phase 1 — connect / idle : UX OK + **fil fond V2 ≈ HX Edit** (`stomp_runnig_start_hxlinux_V2.json`)
@@ -541,4 +593,4 @@ Fichiers : `stomp_running_start_hxedit.json`, `stomp_runnig_start_hxlinux.json` 
 |------|----------|--------|
 | 2026-05-26 | Supprimer toute couche scroll legacy | Empilement de patches non prouvés ; freezes et doublons UI |
 | 2026-05-26 | Pas d’ACK `1d`/`1f` jusqu’à preuve capture | Fil USB vierge pour analyse |
-| 2026-05-26 | Plan en 4 phases connect → capture → analyse → replay | Éviter de coder avant mesure |
+| 2026-06-10 | **Un chemin d’extraction par type de modèle** (modèle looper) | Fallbacks isolés (`82 13 07` + `84 08…09`) au lieu d’élargir le parseur standard ; slot visible + scroll stable ; même approche prévue amp / Send/Return / I/O |

@@ -319,6 +319,9 @@ pub struct HelixState {
     /// Timeout global dialogue post-1a (armé à l'entrée de `PostArm`).
     /// Si expiré, la FSM passe en `Done` pour ne pas bloquer l'amorçage.
     pub phase4_post1a_timeout: Option<Instant>,
+    /// Chunks dump **pleins** (272 o) vus en `WaitingDump` — fin sans trailer partiel
+    /// (presets Amp+Cab slot 0 : rafale de 272 o puis écho IN sub=`08` 16 o).
+    pub phase4_dump_full_272_count: u16,
 }
 
 // ===========================================================
@@ -513,6 +516,7 @@ impl HelixState {
             phase4_step: phase4_state::Phase4Step::Idle,
             phase4_seen_19ef_pre_postarm: false,
             phase4_post1a_timeout: None,
+            phase4_dump_full_272_count: 0,
         }
     }
 
@@ -982,6 +986,7 @@ impl HelixState {
     /// OUT phase 4 (3×`19` + `1a`) — la fin est signalée par [`Self::note_phase4_bootstrap_complete`].
     pub fn start_phase4_bootstrap(&mut self) {
         self.phase4_bootstrap_active = true;
+        self.phase4_dump_full_272_count = 0;
         crate::helix::editor_phase4_bootstrap::send(self);
     }
 

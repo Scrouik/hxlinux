@@ -21,6 +21,8 @@ pub struct RequestPreset {
     last_ack_lane:           [u8; 2],
     watchdog_cancel_tx:      Option<mpsc::Sender<()>>,
     mode_tx:                 Option<mpsc::Sender<ModeRequest>>,
+    /// Dernier chunk reçu était un 272 o plein (256 o utiles) — la fin arrive par écho IN sub=`08`.
+    await_dump_end_after_full_chunk: bool,
 }
 
 impl RequestPreset {
@@ -31,6 +33,20 @@ impl RequestPreset {
             last_ack_lane:           [0, 0],
             watchdog_cancel_tx:      None,
             mode_tx:                 None,
+            await_dump_end_after_full_chunk: false,
+        }
+    }
+
+    fn finish_preset_transfer(&mut self, state: &mut HelixState) {
+        self.await_dump_end_after_full_chunk = false;
+        self.cancel_watchdog();
+        let next_mode = if state.preset_content_only {
+            ModeRequest::StandardPresetRead(state.preset_read_generation)
+        } else {
+            ModeRequest::Standard
+        };
+        if let Some(ref tx) = self.mode_tx {
+            let _ = tx.send(next_mode);
         }
     }
 
@@ -128,6 +144,7 @@ impl Mode for RequestPreset {
         self.preset_data.clear();
         self.waiting_phase1_response = true;
         self.watchdog_cancel_tx = None;
+        self.await_dump_end_after_full_chunk = false;
         self.mode_tx = state.mode_tx.clone();
 
         let cnt      = state.next_x80_cnt();
@@ -241,6 +258,22 @@ impl Mode for RequestPreset {
             return true;
         }
 
+        if !self.waiting_phase1_response
+            && self.await_dump_end_after_full_chunk
+            && sub == 0x08
+            && data.len() == 16
+            && !self.preset_data.is_empty()
+        {
+            if preset_debug_verbose_enabled() {
+                eprintln!(
+                    "[PresetDebug][RequestPreset::data_in] écho ACK sub=08 après rafale 272 o → transfert complet total={}",
+                    self.preset_data.len()
+                );
+            }
+            self.finish_preset_transfer(state);
+            return true;
+        }
+
         if self.waiting_phase1_response {
             // Réponse Phase 1 : sub=0x04, au moins 36 octets
             if sub == 0x04 && data.len() >= 36 {
@@ -287,15 +320,7 @@ impl Mode for RequestPreset {
                         b13
                     );
                 }
-                self.cancel_watchdog();
-                let next_mode = if state.preset_content_only {
-                    ModeRequest::StandardPresetRead(state.preset_read_generation)
-                } else {
-                    ModeRequest::Standard
-                };
-                if let Some(ref tx) = self.mode_tx {
-                    let _ = tx.send(next_mode);
-                }
+                self.finish_preset_transfer(state);
                 true
             }
 
@@ -329,16 +354,9 @@ impl Mode for RequestPreset {
                             self.preset_data.len()
                         );
                     }
-                    self.cancel_watchdog();
-                    let next_mode = if state.preset_content_only {
-                        ModeRequest::StandardPresetRead(state.preset_read_generation)
-                    } else {
-                        ModeRequest::Standard
-                    };
-                    if let Some(ref tx) = self.mode_tx {
-                        let _ = tx.send(next_mode);
-                    }
+                    self.finish_preset_transfer(state);
                 } else {
+                    self.await_dump_end_after_full_chunk = true;
                     self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only, state.preset_read_generation);
                 }
                 true

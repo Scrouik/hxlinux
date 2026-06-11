@@ -90,8 +90,11 @@ fn is_in_19_ef(data: &[u8]) -> bool {
 }
 
 /// Appelé depuis usb_listener juste avant le check trailer.
-pub fn handle_in_passive(step: &mut Phase4Step, data: &[u8]) {
-    if !step.is_active() { return; }
+pub fn handle_in_passive(state: &mut crate::helix::HelixState, data: &[u8]) {
+    let step = &mut state.phase4_step;
+    if !step.is_active() {
+        return;
+    }
 
     let prev = *step;
     let len = data.len();
@@ -199,6 +202,22 @@ pub fn handle_in_passive(step: &mut Phase4Step, data: &[u8]) {
                     len,
                     h
                 ));
+                state.phase4_dump_full_272_count = 0;
+                Some(Phase4Step::PostArm)
+            } else if crate::helix::preset_dump_stream_ack::is_preset_dump_stream_chunk_in(data)
+                && len == 272
+            {
+                state.phase4_dump_full_272_count =
+                    state.phase4_dump_full_272_count.saturating_add(1);
+                None
+            } else if state.phase4_dump_full_272_count > 0
+                && crate::helix::preset_dump_stream_ack::is_preset_dump_stream_ack_echo_in(data)
+            {
+                crate::helix::init_trace::trace_fmt(format_args!(
+                    "[phase4_fsm] fin dump (écho ACK sub=08 après {}×272o) → PostArm",
+                    state.phase4_dump_full_272_count
+                ));
+                state.phase4_dump_full_272_count = 0;
                 Some(Phase4Step::PostArm)
             } else {
                 None
@@ -543,4 +562,24 @@ pub fn on_enter_wait_in_1b26(state: &mut crate::helix::HelixState) {
         "[PhaseB] finalisation 19 ed+ef cnt={:02x}/{:02x} lane_ed={:02x}:{:02x} dbl_ed={:02x}:{:02x} dbl_ef={:02x}:{:02x}",
         cnt1, cnt2, lane1[0], lane1[1], d1[0], d1[1], d2[0], d2[1]
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::helix::HelixState;
+
+    #[test]
+    fn waiting_dump_ends_on_ack_echo_after_full_272_rafale() {
+        let mut state = HelixState::new();
+        state.phase4_dump_full_272_count = 2;
+        let echo = [
+            0x08, 0x00, 0x00, 0x18, 0xed, 0x03, 0x80, 0x10, 0x00, 0x13, 0x00, 0x08, 0x50, 0x02,
+            0x00, 0x00,
+        ];
+        state.phase4_step = Phase4Step::WaitingDump;
+        handle_in_passive(&mut state, &echo);
+        assert_eq!(state.phase4_step, Phase4Step::PostArm);
+        assert_eq!(state.phase4_dump_full_272_count, 0);
+    }
 }

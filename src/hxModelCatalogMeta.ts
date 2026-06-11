@@ -336,10 +336,36 @@ export function moduleHexFromCatalogForUsbVariant(
   return hexList[0] ?? null;
 }
 
+export type UsbAssignVariant =
+  | "mono"
+  | "stereo"
+  | "legacy"
+  | "single"
+  | "dual"
+  | "amp"
+  | "preamp"
+  | "amp+cab";
+
 export function usbAssignVariantFromPresetMeta(
   meta: PresetMetaJson | null,
   moduleHex: string | undefined,
-): "mono" | "stereo" | "legacy" {
+  /** Catégorie du slot lu sur le preset / matériel (ex. « Amp+Cab »). */
+  slotCategory?: string | null,
+): UsbAssignVariant {
+  const slotCat = (slotCategory ?? "").trim().toLowerCase().replace(/\s+/g, "");
+  const catalogCat = (meta?.categoryName ?? "").trim().toLowerCase();
+  if (
+    (slotCat === "amp+cab" || slotCat === "ampcab") &&
+    (catalogCat === "amp" || catalogCat === "preamp")
+  ) {
+    return "amp+cab";
+  }
+  if (catalogCat === "amp") {
+    return "amp";
+  }
+  if (catalogCat === "preamp") {
+    return "preamp";
+  }
   const sc = meta?.subCategory;
   const bits: string[] = [];
   if (typeof sc === "string") bits.push(sc);

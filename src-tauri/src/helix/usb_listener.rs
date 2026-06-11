@@ -153,7 +153,7 @@ pub fn start_listener(
                         // ── FSM phase 4 (passive) + PHASE B (réactive : OUT via on_enter_*). ──
                         if s.phase4_step.is_active() {
                             let prev_phase4_step = s.phase4_step;
-                            crate::helix::phase4_state::handle_in_passive(&mut s.phase4_step, &data);
+                            crate::helix::phase4_state::handle_in_passive(&mut s, &data);
 
                             // OUT émis À L'ENTRÉE de chaque état (déclenchement proactif PHASE B :
                             // PostArm envoie déjà le 1b 76:0e ; chaque IN 1f/19 enchaîne la requête

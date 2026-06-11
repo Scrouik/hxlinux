@@ -30,6 +30,14 @@ pub fn is_preset_dump_stream_chunk_in(data: &[u8]) -> bool {
     true
 }
 
+/// Écho device après le dernier ACK chunk (`08 ed sub=08` 16 o) — fin de rafale sans trailer partiel.
+pub fn is_preset_dump_stream_ack_echo_in(data: &[u8]) -> bool {
+    data.len() == 16
+        && data.get(0..4) == Some(&[0x08, 0x00, 0x00, 0x18])
+        && data.get(4..8) == Some(&[0xed, 0x03, 0x80, 0x10])
+        && data.get(11) == Some(&0x08)
+}
+
 /// Couche active « ACK chunks 272 ».
 pub fn handle_in_layer(state: &mut HelixState, data: &[u8]) -> LayerResult {
     if !is_preset_dump_stream_chunk_in(data) {

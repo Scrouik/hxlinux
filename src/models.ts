@@ -477,7 +477,12 @@ function applyHardwareSlotModelVisualFast(
     hwUi.runImmediate("picker", () => {
       void mountModelsSlotPicker().then(async () => {
         const meta = await getPresetMetaForId(catalogModelIdTrimmed);
-        syncModelsSlotPickerFromLoadedModel(catalogModelIdTrimmed, meta, slot.moduleHex);
+        syncModelsSlotPickerFromLoadedModel(
+          catalogModelIdTrimmed,
+          meta,
+          slot.moduleHex,
+          slot.category,
+        );
       });
     });
   } else {
@@ -1833,9 +1838,10 @@ function syncModelsSlotPickerFromLoadedModel(
   catalogModelId: string,
   meta: PresetMetaJson | null,
   moduleHex?: string,
+  slotCategory?: string,
 ): void {
   if (!catalogPickerDataCache) return;
-  const assignVariant = usbAssignVariantFromPresetMeta(meta, moduleHex);
+  const assignVariant = usbAssignVariantFromPresetMeta(meta, moduleHex, slotCategory);
   const loc = findUsbAssignPickerLocation(catalogPickerDataCache, catalogModelId, assignVariant);
   if (!loc) {
     const catFallback = catalogPickerDataCache.categories[0] ?? "";
@@ -4382,7 +4388,12 @@ async function loadAndShowModelsParamsForSlot(
       kemplineSlotIndex,
     );
     void mountModelsSlotPicker().then(() => {
-      syncModelsSlotPickerFromLoadedModel(catalogModelIdTrimmed, meta, slot.moduleHex);
+      syncModelsSlotPickerFromLoadedModel(
+        catalogModelIdTrimmed,
+        meta,
+        slot.moduleHex,
+        slot.category,
+      );
     });
     paramsPaneCatalogBySlotKey.set(slotKeyNow, catalogModelIdTrimmed);
     if (
@@ -4476,7 +4487,12 @@ async function loadAndShowModelsParamsFromCatalogDefaults(
       kemplineSlotIndex,
     );
     void mountModelsSlotPicker().then(() => {
-      syncModelsSlotPickerFromLoadedModel(catalogModelIdTrimmed, meta, slot.moduleHex);
+      syncModelsSlotPickerFromLoadedModel(
+        catalogModelIdTrimmed,
+        meta,
+        slot.moduleHex,
+        slot.category,
+      );
     });
     const slotKeyNow = makeSlotSelectionKey(slot, kemplineSlotIndex);
     paramsPaneCatalogBySlotKey.set(slotKeyNow, catalogModelIdTrimmed);
@@ -4568,14 +4584,19 @@ async function refreshAllSlotTooltipsInContent(): Promise<void> {
   );
 }
 
+/** URL Vite vers un asset sous `src-tauri/resources/` (encode le nom de fichier : `%` casse decodeURI). */
+function tauriResourceUrl(subdir: string, filename: string): string {
+  return `/src-tauri/resources/${subdir}/${encodeURIComponent(filename)}`;
+}
+
 function iconForCategory(category: string, name: string): string | null {
   const key = normalizeCategory(category);
   if (key === "routing" && name.toLowerCase().includes("merge")) {
-    return "/src-tauri/resources/icons_category/FX_HX_Category_Merge.png";
+    return tauriResourceUrl("icons_category", "FX_HX_Category_Merge.png");
   }
   const filename = CATEGORY_ICON_BY_KEY[key];
   if (!filename) return null;
-  return `/src-tauri/resources/icons_category/${filename}`;
+  return tauriResourceUrl("icons_category", filename);
 }
 
 /** Fichier `image` du catalogue : uniquement un nom de fichier PNG sûr pour `icons_models/`. */
@@ -4737,7 +4758,7 @@ function setModelsParamsHeaderIcon(slot: SlotDebug, catalogModelImage?: string |
   wrap.replaceChildren();
   const safe = catalogModelImage ? sanitizeIconsModelsFilename(catalogModelImage) : null;
   let src: string | null = null;
-  if (safe) src = `/src-tauri/resources/icons_models/${safe}`;
+  if (safe) src = tauriResourceUrl("icons_models", safe);
   if (!src) src = iconForCategory(slot.category, slot.name);
   if (src) {
     const img = document.createElement("img");

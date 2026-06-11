@@ -746,7 +746,7 @@ fn try_ack_pull_interstitial_echo(state: &mut HelixState, data: &[u8]) {
 /// Deux garde-fous : (1) on borne la recherche du `1a` à `MODEL_ID_MAX_LEN` octets
 /// (un model-id réel fait 1 à ~4 o) ; (2) si pas de `1a` dans la fenêtre, ce `19`
 /// est une collision → on n'avance QUE de 1 (jamais par-dessus un marqueur ultérieur).
-pub fn extract_first_module_hex_from_bulk(buf: &[u8]) -> Option<String> {
+fn extract_first_module_hex_from_bulk_simple(buf: &[u8]) -> Option<String> {
     /// Longueur max plausible d'un model-id entre `19` et `1a` (marge : observés ≤ 3 o).
     const MODEL_ID_MAX_LEN: usize = 8;
     let mut cursor = 0usize;
@@ -787,23 +787,44 @@ pub fn extract_first_module_hex_from_bulk(buf: &[u8]) -> Option<String> {
     None
 }
 
-fn best_module_hex_from_frames(frames: &[Vec<u8>]) -> Option<Option<String>> {
+/// Préfère un `chainHex` combiné Amp+Cab (`amp1acab`) quand le scan `19…1a` ne donne que la moitié ampli.
+fn prefer_amp_cab_combined_hex(simple: &str, inferred: &str) -> bool {
+    inferred.contains("1a")
+        && inferred.len() > simple.len()
+        && (simple.is_empty() || inferred.starts_with(simple))
+}
+
+pub fn extract_first_module_hex_from_bulk(buf: &[u8]) -> Option<String> {
+    let simple = extract_first_module_hex_from_bulk_simple(buf);
+    let inferred = crate::extract_module_hex_for_hw_scroll_dump(buf);
+    match (&simple, &inferred) {
+        (Some(s), Some(i)) if prefer_amp_cab_combined_hex(s, i) => Some(i.clone()),
+        (None, Some(i)) => Some(i.clone()),
+        (Some(s), _) => Some(s.clone()),
+        (None, None) => None,
+    }
+}
+
+fn best_hex_from_frames(
+    frames: &[Vec<u8>],
+    extract: fn(&[u8]) -> Option<String>,
+) -> Option<String> {
     let mut best: Option<(usize, String)> = None;
     for f in frames {
         if !frame_has_assign_marker(f) {
             continue;
         }
-        let hex = extract_first_module_hex_from_bulk(f);
+        let Some(hex) = extract(f) else {
+            continue;
+        };
         let score = f.len();
-        match (&best, &hex) {
-            (None, Some(h)) => best = Some((score, h.clone())),
-            (Some((prev_score, _)), Some(h)) if score > *prev_score => {
-                best = Some((score, h.clone()));
-            }
+        match &best {
+            None => best = Some((score, hex)),
+            Some((prev_score, _)) if score > *prev_score => best = Some((score, hex)),
             _ => {}
         }
     }
-    best.map(|(_, h)| Some(h))
+    best.map(|(_, h)| h)
 }
 
 fn send_post_pull_resume_traffic(state: &mut HelixState) {
@@ -844,7 +865,16 @@ fn finalize_pull_capture(
         }
     }
 
-    let Some(module_hex) = best_module_hex_from_frames(&frames) else {
+    let simple_hex = best_hex_from_frames(&frames, extract_first_module_hex_from_bulk_simple);
+    let inferred_hex = best_hex_from_frames(&frames, crate::extract_module_hex_for_hw_scroll_dump);
+    let best_dump_len = frames
+        .iter()
+        .filter(|f| frame_has_assign_marker(f))
+        .map(|f| f.len())
+        .max()
+        .unwrap_or(0);
+
+    let Some(module_hex) = best_hex_from_frames(&frames, extract_first_module_hex_from_bulk) else {
         pull_trace("pull échoué (pas de bulk assignable)");
         state.hw_model_pull_pending_slot_bus = None;
         send_post_pull_resume_traffic(state);
@@ -853,6 +883,13 @@ fn finalize_pull_capture(
         state.hw_model_pull_last_at = Some(Instant::now());
         return None;
     };
+
+    log_hw_model_changed(
+        &module_hex,
+        simple_hex.as_deref(),
+        inferred_hex.as_deref(),
+        best_dump_len,
+    );
 
     let Some(slot_index) = slot_bus_to_kempline_index(slot_bus).map(|i| i as u32) else {
         state.hw_model_pull_pending_slot_bus = None;
@@ -870,7 +907,7 @@ fn finalize_pull_capture(
         sequence,
         slot_index,
         slot_bus,
-        module_hex,
+        module_hex: Some(module_hex),
     };
     arm_pull_post_finalize_quiet(state);
     arm_post_pull_stream_settling(state);
@@ -911,14 +948,7 @@ pub fn ingest_pull_capture(
         && !is_in_1c_stub(data)
         && frame_carries_model_id(data)
     {
-        let payload = finalize_pull_capture(state, None);
-        if let Some(ref p) = payload {
-            if let Some(ref hex) = p.module_hex {
-                log_hw_model_changed(hex);
-            }
-            return payload;
-        }
-        return None;
+        return finalize_pull_capture(state, None);
     }
 
     if is_pull_final_meta_bulk(data) {
@@ -926,23 +956,11 @@ pub fn ingest_pull_capture(
     }
 
     if state.hw_model_pull_step >= 3 && state.hw_model_pull_saw_final_bulk {
-        let payload = finalize_pull_capture(state, None);
-        if let Some(ref p) = payload {
-            if let Some(ref hex) = p.module_hex {
-                log_hw_model_changed(hex);
-            }
-        }
-        return payload;
+        return finalize_pull_capture(state, None);
     }
 
     if now >= deadline {
-        let payload = finalize_pull_capture(state, Some(data));
-        if let Some(ref p) = payload {
-            if let Some(ref hex) = p.module_hex {
-                log_hw_model_changed(hex);
-            }
-        }
-        return payload;
+        return finalize_pull_capture(state, Some(data));
     }
 
     // Tick settling (pour détecter les 272 post-finalize tardifs).
@@ -983,8 +1001,8 @@ pub fn emit_slot_cleared(
 
 /// Au lancement (`lib.rs` → `init_from_env`) :
 /// - `HX_SCROLL_PULL_DEBUG=1` — trace protocole pull (1b, ctr, settling, …)
-/// - `HX_SCROLL_CHAINHEX=1` — ligne audit `chainHexHint` / `name` / `category` / `subCategory`
-///   (lookup catalogue) à chaque dump réussi
+/// - `HX_SCROLL_CHAINHEX=1` — à chaque dump réussi : `chainHexHint` = hex **fil** (combiné
+///   `amp1acab` si inféré), `dump_len`, lookup catalogue ; si simple≠inferred, ligne `chainHex parse`
 pub fn init_from_env() {
     if std::env::var("HX_SCROLL_PULL_DEBUG")
         .map(|v| v == "1")
@@ -1026,18 +1044,59 @@ fn pull_trace(msg: &str) {
     }
 }
 
-fn log_hw_model_changed(module_hex: &str) {
+/// `chainHexHint` = hex **lu sur le fil** (peut être combiné `amp1acab`), pas la clé
+/// raccourcie du catalogue après lookup (ex. `cd0217` seul).
+fn log_hw_model_changed(
+    module_hex: &str,
+    simple_hex: Option<&str>,
+    inferred_hex: Option<&str>,
+    dump_len: usize,
+) {
     if !scroll_chainhex_log_enabled() {
         return;
     }
+    if let (Some(s), Some(i)) = (simple_hex, inferred_hex) {
+        if s != i {
+            eprintln!(
+                "[ScrollModelPull] chainHex parse — simple=\"{s}\" inferred=\"{i}\" retenu=\"{module_hex}\" dump_len={dump_len}"
+            );
+        }
+    }
+    let amp_cab_wire = module_hex.contains("1a") && module_hex.len() > 12;
     if let Some(entry) = model_catalog::resolve_chain_hex_entry(module_hex) {
+        let catalog_note = if entry.chain_hex != module_hex {
+            format!(", \"chainHexCatalog\": \"{}\"", entry.chain_hex)
+        } else {
+            String::new()
+        };
+        let wire_note = if amp_cab_wire {
+            ", \"ampCabWire\": true"
+        } else {
+            ""
+        };
         eprintln!(
-            "[ScrollModelPull] \"chainHexHint\": \"{}\", \"name\": \"{}\", \"category\": \"{}\", \"subCategory\": \"{}\"",
-            entry.chain_hex, entry.name, entry.category, entry.sub_category
+            "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"dump_len\": {dump_len}, \"name\": \"{}\", \"category\": \"{}\", \"subCategory\": \"{}\"{catalog_note}{wire_note}",
+            entry.name,
+            entry.category,
+            entry.sub_category,
         );
+    } else if amp_cab_wire {
+        let amp_part = module_hex.split("1a").next().unwrap_or(module_hex);
+        let cab_part = module_hex.split("1a").nth(1).unwrap_or("");
+        if let Some(entry) = model_catalog::resolve_chain_hex_entry(amp_part) {
+            eprintln!(
+                "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"dump_len\": {dump_len}, \"ampCabWire\": true, \"ampHex\": \"{amp_part}\", \"cabHex\": \"{cab_part}\", \"name\": \"{}\", \"category\": \"Amp+Cab (fil)\", \"subCategory\": \"{}\"",
+                entry.name,
+                entry.sub_category,
+            );
+        } else {
+            eprintln!(
+                "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"dump_len\": {dump_len}, \"ampCabWire\": true, \"ampHex\": \"{amp_part}\", \"cabHex\": \"{cab_part}\", \"name\": \"(inconnu catalogue)\", \"category\": \"Amp+Cab (fil)\", \"subCategory\": \"?\""
+            );
+        }
     } else {
         eprintln!(
-            "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"name\": \"(inconnu catalogue)\", \"category\": \"?\", \"subCategory\": \"?\""
+            "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"dump_len\": {dump_len}, \"name\": \"(inconnu catalogue)\", \"category\": \"?\", \"subCategory\": \"?\""
         );
     }
 }
@@ -1188,6 +1247,33 @@ mod tests {
         assert_eq!(state.hw_model_pull_step, 0);
     }
 
+    /// Looper / fixed : `82 13 07` + `84 08 <id> 09` (pas de `19…1a`) — slot visible après scroll.
+    #[test]
+    fn looper_8213_07_dump_finalizes_with_8408_id() {
+        std::env::remove_var("HX_PULL_COUPLE_LANE");
+        let mut state = HelixState::new();
+        state.hw_active_slot_bus = Some(0x01);
+        state.hw_active_slot_index = Some(0);
+        state.hw_model_pull_ed03_double = 0x64f0;
+        arm_pull_capture(&mut state, 0x01);
+
+        let in44: Vec<u8> = vec![
+            0x44, 0x00, 0x00, 0x18, 0xed, 0x03, 0x80, 0x10, 0x00, 0x43, 0x00, 0x04, 0x4f, 0x03,
+            0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x34, 0x00, 0x00, 0x00, 0x83, 0x66, 0xcd, 0x03,
+            0xf6, 0x67, 0x00, 0x68, 0x82, 0x0d, 0x01, 0x18, 0x82, 0x13, 0x07, 0x14, 0x84, 0x08,
+            0xcc, 0x99, 0x09, 0x16, 0x0a, 0xc2, 0x07, 0x83, 0x02, 0x04, 0x03, 0x04, 0x04, 0x94,
+            0xca, 0x00, 0x00, 0x00, 0x00, 0xca, 0x00, 0x00, 0x00, 0x00, 0xca, 0x41, 0xa0, 0x00,
+            0x00, 0xca, 0x46, 0x9c, 0x40, 0x00,
+        ];
+        assert!(
+            frame_carries_model_id(&in44),
+            "dump looper 0x44/76o doit porter un model-id extractible"
+        );
+        let payload = ingest_pull_capture(&mut state, &in44).expect("dump looper finalise");
+        assert_eq!(payload.module_hex.as_deref(), Some("cc99"));
+        assert_eq!(state.hw_model_pull_step, 0);
+    }
+
     /// Mode grab-53 : la première réponse (`IN 53`) porte le chainHex → on FINALISE
     /// immédiatement (payload émis), sans envoyer aucun `19`, et l'étape retombe à 0.
     #[test]
@@ -1252,6 +1338,22 @@ mod tests {
     /// le rejetait (>12 o) en ayant sauté le vrai marqueur → `None` → « pull échoué ».
     /// Le device avait pourtant bien dumpé (`cd0209`). Doit désormais réussir.
     #[test]
+    fn amp_cab_dual_slot_infers_combined_chain_hex_when_simple_19_1a_is_amp_only() {
+        let assignable = vec![
+            0x08, 0x85, 0x18, 0x83, 0x17, 0xc2, 0x19, 0xcd, 0x02, 0x17, 0x1a, 0xcd, 0x02, 0x28, 0x09,
+            0x10, 0x0a, 0xc3,
+        ];
+        let mut dump = vec![0x53u8; 24];
+        dump.extend_from_slice(&[0x00; 4]);
+        dump.extend_from_slice(&[0x83, 0x66, 0xcd, 0x03]);
+        dump.extend(assignable);
+        assert_eq!(
+            extract_first_module_hex_from_bulk(&dump).as_deref(),
+            Some("cd02171acd0228")
+        );
+        assert!(frame_carries_model_id(&dump));
+    }
+
     fn echo_double_0x19_does_not_mask_model_id() {
         const DUMP_3875: &[u8] = &[
             0x53, 0x00, 0x00, 0x18, 0xed, 0x03, 0x80, 0x10, 0x00, 0x8b, 0x00, 0x04, 0xe8, 0x05,
