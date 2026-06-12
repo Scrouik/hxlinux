@@ -4,21 +4,28 @@ import { listen } from "@tauri-apps/api/event";
 import {
   catalogPickerRowKey,
   findUsbAssignPickerLocation,
+  findIoSourceIdFromInputChainValues,
+  findIoSourceIdByWireValue,
+  findSplitSourceIdByCatalogModelId,
+  findSplitSourceIdByWireValue,
+  splitWireFromChainHex,
+  splitChainHexFromWire,
   formatSubCategoryForHeader,
   getCatalogModelIdForHex,
   getCatalogModelImageForId,
   getCatalogModelNameForId,
-  getCatalogParamOrderForId,
   getUsbAssignPickerData,
   getPresetMetaForId,
+  ioSourceMatchesConnectedDevice,
+  modelsDefinitionFileBasesFromUsbAssign,
   cabHexFromAmpCabWire,
   isLegacyCabChainHex,
   moduleHexForUsbVariant,
   pickBasedOn,
   pickSignal,
   usbAssignVariantForAmpCabSlot,
-  usbAssignVariantFromPresetMeta,
   type CatalogPickerData,
+  type CatalogPickerModelRow,
   type PresetMetaJson,
 } from "./hxModelCatalogMeta";
 import { hwUi } from "./hwUiRefresh";
@@ -84,6 +91,18 @@ type SlotModelHwChangedPayload = {
   categoryHint?: string | null;
   /** Hex cab (bloc c219 ou fil combiné) — legacy IR vs hybrid au scroll. */
   cabHexHint?: string | null;
+};
+
+/** Scroll / echo Input Path 1 : `@input` wire (1 / 4 / 6 Stomp) depuis IN `82:62:00:33:XX`. */
+type Path1InputSourceChangedPayload = {
+  wireValue: number;
+  fromScroll21: boolean;
+};
+
+/** Type Split Path 1 — select UI, scroll ed03 ou IN `21` (`split scroll.json`). */
+type Path1SplitTypeChangedPayload = {
+  wireValue: number;
+  fromScroll21: boolean;
 };
 
 type SlotFocusSyncResponse = {
@@ -524,6 +543,9 @@ function applyHardwareSlotModelVisualFast(
           slot.moduleHex,
           slot.category,
           cabHex,
+          undefined,
+          0,
+          slot.name,
         );
       });
     });
@@ -1635,6 +1657,293 @@ let slotPickerCategoryEl: HTMLSelectElement | null = null;
 let slotPickerSubEl: HTMLSelectElement | null = null;
 let slotPickerListEl: HTMLUListElement | null = null;
 let slotPickerMountPromise: Promise<void> | null = null;
+/**
+ * Picker figé : I/O Path 1 (Input/Output) ou jonctions routage (Split/Merge uniquement).
+ */
+type SlotPickerLock =
+  | { kind: "io"; category: "Input" | "Output"; parentModelId: string }
+  | { kind: "routing"; category: "Split" | "Merge" };
+let slotPickerIoLock: SlotPickerLock | null = null;
+/** Bus USB du slot structurel sélectionné (Input 0, Output 9, Split 10, Merge 19). */
+let selectedSpecialHwSlotBus: number | null = null;
+
+/** Bus Path 1 observés USB (`switch_active_hardware_special_slot` / `82:62:SS:1a`). */
+const HW_SLOT_BUS_INPUT = 0;
+const HW_SLOT_BUS_OUTPUT = 9;
+const HW_SLOT_BUS_SPLIT = 0x0a;
+const HW_SLOT_BUS_MERGE = 0x13;
+
+function hwSlotBusFromDataset(raw: string | undefined): number | null {
+  if (raw === undefined || raw === "") return null;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function hwSlotBusFromSelectedParamsEl(): number | null {
+  return hwSlotBusFromDataset(selectedParamsSlotEl?.dataset.hwSlotBus);
+}
+
+function pickerCategoryForHwSlotBus(bus: number): "Split" | "Merge" | null {
+  if (bus === HW_SLOT_BUS_SPLIT) return "Split";
+  if (bus === HW_SLOT_BUS_MERGE) return "Merge";
+  return null;
+}
+
+function lockPickerCategoryFromHwSlotBus(
+  bus: number,
+  highlightModelId?: string | null,
+): void {
+  const cat = pickerCategoryForHwSlotBus(bus);
+  if (!cat || !catalogPickerDataCache || !slotPickerCategoryEl) return;
+  applySlotPickerRoutingLock(cat, highlightModelId ?? null);
+}
+
+/** Positionne le picker Split/Merge dès que le bus structurel est connu (sans attendre le catalogue FX). */
+function applyPickerForStructuralSlot(
+  slot: SlotDebug,
+  hwSlotBus?: number | null,
+): void {
+  const fromDom = hwSlotBus ?? hwSlotBusFromSelectedParamsEl();
+  let bus = fromDom;
+  if (bus == null) {
+    const nk = normalizeCategory(slot.category);
+    if (nk === "split") bus = HW_SLOT_BUS_SPLIT;
+    else if (nk === "merge") bus = HW_SLOT_BUS_MERGE;
+  }
+  if (bus == null || !pickerCategoryForHwSlotBus(bus)) return;
+  selectedSpecialHwSlotBus = bus;
+  if (catalogPickerDataCache) {
+    if (bus === HW_SLOT_BUS_SPLIT) {
+      applySlotPickerRoutingLock("Split");
+    } else {
+      lockPickerCategoryFromHwSlotBus(
+        bus,
+        (slot.catalogModelId ?? "HD2_AppDSPFlowJoin").trim() || null,
+      );
+    }
+  }
+  void mountModelsSlotPicker().then(() => {
+    if (bus === HW_SLOT_BUS_SPLIT) {
+      void syncSplitPickerHighlightAsync(
+        (slot.catalogModelId ?? "").trim(),
+        slot.moduleHex,
+      );
+    } else {
+      lockPickerCategoryFromHwSlotBus(
+        bus,
+        (slot.catalogModelId ?? "HD2_AppDSPFlowJoin").trim() || null,
+      );
+    }
+  });
+}
+/** Dernière source Input écrite sur le preset actif (preset_data pas encore à jour). */
+let path1InputSourceHighlightOverride: string | null = null;
+/** Dernier type Split écrit (wire live / preset pas encore à jour). */
+let path1SplitTypeHighlightOverride: string | null = null;
+let splitScrollParamsReloadTimer: number | null = null;
+
+function scheduleSplitScrollParamsReload(slot: SlotDebug): void {
+  if (splitScrollParamsReloadTimer !== null) {
+    window.clearTimeout(splitScrollParamsReloadTimer);
+  }
+  splitScrollParamsReloadTimer = window.setTimeout(() => {
+    splitScrollParamsReloadTimer = null;
+    if (
+      selectedParamsSlotEl &&
+      hwSlotBusFromSelectedParamsEl() === HW_SLOT_BUS_SPLIT
+    ) {
+      void loadAndShowModelsParamsForSlot(slot, undefined);
+    }
+  }, 150);
+}
+
+function clearPath1InputSourceHighlightOverride(): void {
+  path1InputSourceHighlightOverride = null;
+}
+
+function clearPath1SplitTypeHighlightOverride(): void {
+  path1SplitTypeHighlightOverride = null;
+}
+
+function syncInputPickerHighlight(
+  catalogModelId: string,
+  chainValues: ChainParamValueJson[] | null | undefined,
+  inputParamChainIndex: number,
+): void {
+  void syncInputPickerHighlightAsync(catalogModelId, chainValues, inputParamChainIndex);
+}
+
+async function syncInputPickerHighlightAsync(
+  catalogModelId: string,
+  chainValues: ChainParamValueJson[] | null | undefined,
+  inputParamChainIndex: number,
+): Promise<void> {
+  if (!catalogPickerDataCache) return;
+  const idTrim = catalogModelId.trim();
+  if (!idTrim) return;
+  let highlight = path1InputSourceHighlightOverride;
+  if (!highlight) {
+    try {
+      const liveWire = await invoke<number | null>("get_path1_input_source_wire_value");
+      if (liveWire != null && Number.isFinite(liveWire)) {
+        highlight = findIoSourceIdByWireValue(
+          catalogPickerDataCache,
+          idTrim,
+          liveWire,
+          connectedDeviceName,
+        );
+      }
+    } catch {
+      /* wire live optionnel */
+    }
+  }
+  if (!highlight) {
+    highlight = findIoSourceIdFromInputChainValues(
+      catalogPickerDataCache,
+      idTrim,
+      chainValues,
+      inputParamChainIndex,
+      connectedDeviceName,
+    );
+  }
+  applySlotPickerIoLock("Input", idTrim, highlight);
+}
+
+function syncSplitPickerHighlight(
+  catalogModelId: string,
+  moduleHex?: string | null,
+): void {
+  void syncSplitPickerHighlightAsync(catalogModelId, moduleHex);
+}
+
+async function syncSplitPickerHighlightAsync(
+  catalogModelId: string,
+  moduleHex?: string | null,
+): Promise<void> {
+  if (!catalogPickerDataCache) return;
+  const idTrim = catalogModelId.trim();
+  let highlight = path1SplitTypeHighlightOverride;
+  if (!highlight) {
+    try {
+      const liveWire = await invoke<number | null>("get_path1_split_type_wire_value");
+      if (liveWire != null && Number.isFinite(liveWire)) {
+        highlight = findSplitSourceIdByWireValue(
+          catalogPickerDataCache,
+          liveWire,
+          connectedDeviceName,
+        );
+      }
+    } catch {
+      /* wire live optionnel */
+    }
+  }
+  if (!highlight && idTrim) {
+    highlight = findSplitSourceIdByCatalogModelId(
+      catalogPickerDataCache,
+      idTrim,
+      connectedDeviceName,
+    );
+  }
+  if (!highlight) {
+    const wire = splitWireFromChainHex(moduleHex);
+    if (wire != null) {
+      highlight = findSplitSourceIdByWireValue(
+        catalogPickerDataCache,
+        wire,
+        connectedDeviceName,
+      );
+    }
+  }
+  if (highlight) {
+    applySlotPickerRoutingLock("Split", highlight);
+  }
+}
+
+async function refreshSplitPickerFromLiveWireDelayed(): Promise<void> {
+  await new Promise((r) => window.setTimeout(r, 180));
+  if (!catalogPickerDataCache || slotPickerIoLock?.kind !== "routing" || slotPickerIoLock.category !== "Split") {
+    return;
+  }
+  try {
+    const liveWire = await invoke<number | null>("get_path1_split_type_wire_value");
+    if (liveWire == null || !Number.isFinite(liveWire)) return;
+    const id = findSplitSourceIdByWireValue(
+      catalogPickerDataCache,
+      liveWire,
+      connectedDeviceName,
+    );
+    if (id) applySlotPickerFromCatalogSelection("Split", "Mono", id);
+  } catch {
+    /* ignore */
+  }
+}
+
+async function refreshInputPickerFromLiveWireDelayed(): Promise<void> {
+  await new Promise((r) => window.setTimeout(r, 180));
+  if (
+    !catalogPickerDataCache ||
+    slotPickerIoLock?.kind !== "io" ||
+    slotPickerIoLock.category !== "Input"
+  ) {
+    return;
+  }
+  const parentId = slotPickerIoLock.parentModelId;
+  try {
+    const liveWire = await invoke<number | null>("get_path1_input_source_wire_value");
+    if (liveWire == null || !Number.isFinite(liveWire)) return;
+    const id = findIoSourceIdByWireValue(
+      catalogPickerDataCache,
+      parentId,
+      liveWire,
+      connectedDeviceName,
+    );
+    if (id) applySlotPickerFromCatalogSelection("Input", "Source", id);
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearSlotPickerIoLock(): void {
+  slotPickerIoLock = null;
+  clearPath1InputSourceHighlightOverride();
+  clearPath1SplitTypeHighlightOverride();
+  if (slotPickerCategoryEl) slotPickerCategoryEl.disabled = false;
+  if (slotPickerSubEl) slotPickerSubEl.disabled = false;
+}
+
+function clearSpecialSlotPickerContext(): void {
+  selectedSpecialHwSlotBus = null;
+  clearSlotPickerIoLock();
+}
+
+function applySlotPickerIoLock(
+  category: "Input" | "Output",
+  catalogModelId: string,
+  highlightIoSourceId?: string | null,
+): void {
+  const id = catalogModelId.trim();
+  if (!id) return;
+  slotPickerIoLock = { kind: "io", category, parentModelId: id };
+  if (slotPickerCategoryEl) slotPickerCategoryEl.disabled = true;
+  if (slotPickerSubEl) slotPickerSubEl.disabled = true;
+  const subs = catalogPickerDataCache?.subcategoriesByCategory.get(category) ?? [];
+  const sub =
+    category === "Input" && subs.includes("Source") ? "Source" : subs.includes("Mono") ? "Mono" : subs[0] ?? "Mono";
+  applySlotPickerFromCatalogSelection(category, sub, highlightIoSourceId ?? null);
+}
+
+/** Split ou Merge : une seule catégorie dans le picker (tous les splits ou le mixer). */
+function applySlotPickerRoutingLock(
+  category: "Split" | "Merge",
+  highlightModelId?: string | null,
+): void {
+  slotPickerIoLock = { kind: "routing", category };
+  if (slotPickerCategoryEl) slotPickerCategoryEl.disabled = true;
+  if (slotPickerSubEl) slotPickerSubEl.disabled = true;
+  const subs = catalogPickerDataCache?.subcategoriesByCategory.get(category) ?? [];
+  const sub = subs.includes("Mono") ? "Mono" : subs[0] ?? "Mono";
+  applySlotPickerFromCatalogSelection(category, sub, highlightModelId ?? null);
+}
 
 function refillSlotPickerSubcategories(): void {
   if (!slotPickerCategoryEl || !slotPickerSubEl || !catalogPickerDataCache) return;
@@ -1657,7 +1966,7 @@ function refillSlotPickerSubcategories(): void {
     slotPickerSubEl.appendChild(o);
   }
   slotPickerSubEl.disabled = subs.length === 0;
-  slotPickerSubEl.value = "";
+  slotPickerSubEl.value = subs.length > 0 ? subs[0]! : "";
 }
 
 function refillSlotPickerModelList(highlightModelId: string | null | undefined): void {
@@ -1667,23 +1976,71 @@ function refillSlotPickerModelList(highlightModelId: string | null | undefined):
   slotPickerListEl.replaceChildren();
   if (!cat || !sub) return;
   const key = catalogPickerRowKey(cat, sub);
-  const rows = catalogPickerDataCache.modelsByCategoryAndSub.get(key) ?? [];
-  if (rows.length === 0) return;
+  const wantVariant = usbAssignVariantFromPickerSub(sub, cat);
+  const bucket = catalogPickerDataCache.modelsByCategoryAndSub.get(key) ?? [];
+  // Send/Return : variante USB unique `sendReturn` ; le regroupement picker reste Mono/Stereo.
+  let rows =
+    wantVariant === "sendreturn"
+      ? bucket
+      : bucket.filter(
+          (row) => (row.assignVariant ?? "mono").toLowerCase() === wantVariant,
+        );
+  if (slotPickerIoLock?.kind === "io" && slotPickerIoLock.category === cat) {
+    const parentId = slotPickerIoLock.parentModelId;
+    if (cat === "Input") {
+      const sources = rows.filter(
+        (row) =>
+          row.ioSource &&
+          row.parentModelId === parentId &&
+          ioSourceMatchesConnectedDevice(row.devices, connectedDeviceName),
+      );
+      rows = sources.length > 0 ? sources : rows.filter((row) => row.id === parentId);
+    } else {
+      rows = rows.filter((row) => row.id === parentId);
+    }
+  } else if (
+    slotPickerIoLock?.kind === "routing" &&
+    slotPickerIoLock.category === "Split" &&
+    cat === "Split"
+  ) {
+    const sources = rows.filter(
+      (row) =>
+        row.splitSource &&
+        ioSourceMatchesConnectedDevice(row.devices, connectedDeviceName),
+    );
+    if (sources.length > 0) rows = sources;
+  }
+  if (rows.length === 0) {
+    const hint = document.createElement("li");
+    hint.className = "models-slot-picker-model-item models-slot-picker-model-item--hint";
+    hint.textContent = !sub
+      ? "Choisir Mono ou Stereo ci-dessus"
+      : "Aucun modèle pour cette combinaison";
+    slotPickerListEl.appendChild(hint);
+    return;
+  }
   const hi = (highlightModelId ?? "").trim();
   for (const row of rows) {
     const li = document.createElement("li");
     li.className = "models-slot-picker-model-item";
     li.textContent = row.name;
-    li.title =
-      row.assignVariant !== undefined ? `${row.id} · ${row.assignVariant}` : row.id;
+    li.title = row.ioSource
+      ? `${row.id} · ioSource → ${row.parentModelId ?? ""}`
+      : row.splitSource
+        ? `${row.id} · splitSource → ${row.catalogModelId ?? ""}`
+        : row.assignVariant !== undefined
+          ? `${row.id} · ${row.assignVariant}`
+          : row.id;
     li.dataset.modelId = row.id;
+    if (row.ioSource) li.dataset.ioSource = "1";
+    if (row.splitSource) li.dataset.splitSource = "1";
     if (hi && row.id === hi) li.classList.add("models-slot-picker-model-item--active");
     li.addEventListener("click", () => {
       slotPickerListEl
         ?.querySelectorAll(".models-slot-picker-model-item")
         .forEach((n) => n.classList.remove("models-slot-picker-model-item--active"));
       li.classList.add("models-slot-picker-model-item--active");
-      void applySlotModelFromPickerListClick(row.id, row.name, row.assignVariant);
+      void applySlotModelFromPickerListClick(row);
     });
     slotPickerListEl.appendChild(li);
   }
@@ -1696,21 +2053,29 @@ function refillSlotPickerModelList(highlightModelId: string | null | undefined):
 
 function resetSlotPickerToIdle(): void {
   if (!slotPickerCategoryEl || !slotPickerSubEl || !slotPickerListEl) return;
+  clearSpecialSlotPickerContext();
   slotPickerCategoryEl.value = "";
   refillSlotPickerSubcategories();
   slotPickerSubEl.value = "";
   refillSlotPickerModelList(null);
 }
 
-/** Variante USB pour `HX_ModelUsbAssign.json` : alignée sur la sous-catégorie du picker. */
+/** Variante USB pour `HX_ModelUsbAssign.json` : alignée sur catégorie picker + sous-catégorie. */
 function usbAssignVariantFromPickerSub(sub: string, pickerCategory?: string): string {
   const cat = (pickerCategory ?? "").trim().toLowerCase();
+  if (cat === "send/return") return "sendReturn";
+  if (cat === "amp") return "amp";
+  if (cat === "preamp") return "preamp";
   if (cat.includes("amp") && cat.includes("legacy")) return "amp+cab-legacy";
+  if (cat === "amp+cab") return "amp+cab";
   const t = sub.trim().toLowerCase();
+  if (cat === "cab") {
+    if (t === "single" || t === "single legacy") return "single";
+    if (t === "dual" || t === "dual legacy") return "dual";
+  }
   if ((t.includes("guitar") || t.includes("bass")) && t.includes("legacy")) {
     return "amp+cab-legacy";
   }
-  if (t === "guitar" || t === "bass") return "amp+cab";
   if (t.includes("legacy")) return "legacy";
   if (t.includes("stereo") || t.includes("stéréo")) return "stereo";
   if (t.includes("mono")) return "mono";
@@ -1746,11 +2111,74 @@ function patchMatrixCategoryDescFromSlot(ki: number, slot: SlotDebug): void {
  * Clic sur une ligne du picker : MAJ immédiate pastille + paramètres (catalogue / défauts `.models`),
  * puis ordre USB `probe_slot_model_usb`.
  */
-async function applySlotModelFromPickerListClick(
-  catalogModelId: string,
-  displayName: string,
-  assignVariantFromRow?: string,
-): Promise<void> {
+async function applyPath1InputSourceFromPicker(row: CatalogPickerModelRow): Promise<void> {
+  const slotKey = selectedParamsSlotKey ?? "";
+  if (!slotKey.startsWith("input|")) {
+    console.warn(
+      "[Path1Input] cliquez d’abord le bloc Input Path 1 sur la matrice.",
+    );
+    return;
+  }
+  if (selectedParamsPresetIndex !== currentPresetIndex) return;
+  markLiveWriteUiInteraction();
+  try {
+    path1InputSourceHighlightOverride = row.id;
+    const out = await invoke<string>("write_path1_input_source", { ioSourceId: row.id });
+    console.info("[Path1Input]", row.name, out);
+    await syncInputPickerHighlightAsync(
+      flowIoCatalogIdsForConnectedDevice(connectedDeviceName).input,
+      null,
+      0,
+    );
+    if (selectedParamsSlotEl) {
+      const slot = path1IoSlot("input");
+      await loadAndShowModelsParamsForSlot(slot, undefined);
+    }
+  } catch (e) {
+    console.warn("[Path1Input]", e);
+  }
+}
+
+async function applyPath1SplitTypeFromPicker(row: CatalogPickerModelRow): Promise<void> {
+  if (slotPickerIoLock?.kind !== "routing" || slotPickerIoLock.category !== "Split") {
+    console.warn("[Path1Split] cliquez d’abord le Split Path 1 sur la matrice.");
+    return;
+  }
+  if (selectedParamsPresetIndex !== currentPresetIndex) return;
+  markLiveWriteUiInteraction();
+  try {
+    path1SplitTypeHighlightOverride = row.id;
+    const out = await invoke<string>("write_path1_split_type", { splitSourceId: row.id });
+    console.info("[Path1Split]", row.name, out);
+    const catId = (row.catalogModelId ?? "").trim();
+    const wire = row.wireValue ?? 0;
+    await syncSplitPickerHighlightAsync(catId, splitChainHexFromWire(wire));
+    if (selectedParamsSlotEl && catId) {
+      const slot: SlotDebug = {
+        category: "Split",
+        name: row.name,
+        moduleHex: splitChainHexFromWire(wire),
+        catalogModelId: catId,
+      };
+      await loadAndShowModelsParamsForSlot(slot, undefined);
+    }
+  } catch (e) {
+    console.warn("[Path1Split]", e);
+  }
+}
+
+async function applySlotModelFromPickerListClick(row: CatalogPickerModelRow): Promise<void> {
+  if (row.ioSource) {
+    await applyPath1InputSourceFromPicker(row);
+    return;
+  }
+  if (row.splitSource) {
+    await applyPath1SplitTypeFromPicker(row);
+    return;
+  }
+  const catalogModelId = row.id;
+  const displayName = row.name;
+  const assignVariantFromRow = row.assignVariant;
   const ki = selectedParamsKemplineSlotIndex;
   if (ki === null || ki < 0 || ki > 15) {
     console.warn(
@@ -1868,6 +2296,19 @@ async function applySlotModelFromPickerListClick(
  * Aligne les combos + liste sur le modèle catalogue courant (slot chargé).
  * Repli si catégorie / sous-clé absentes du jeu construit depuis le JSON.
  */
+function ensureSlotPickerCategoryOption(category: string): void {
+  if (!slotPickerCategoryEl) return;
+  const cat = category.trim();
+  if (!cat) return;
+  for (const opt of slotPickerCategoryEl.options) {
+    if (opt.value === cat) return;
+  }
+  const o = document.createElement("option");
+  o.value = cat;
+  o.textContent = cat;
+  slotPickerCategoryEl.appendChild(o);
+}
+
 function applySlotPickerFromCatalogSelection(
   categoryName: string,
   subKey: string,
@@ -1877,7 +2318,18 @@ function applySlotPickerFromCatalogSelection(
   const cats = catalogPickerDataCache.categories;
   if (cats.length === 0) return;
   let cat = categoryName.trim();
-  if (!cat || !cats.includes(cat)) cat = cats[0] ?? "";
+  const lockCat =
+    slotPickerIoLock?.kind === "io" || slotPickerIoLock?.kind === "routing"
+      ? slotPickerIoLock.category
+      : null;
+  if (!cat || !cats.includes(cat)) {
+    if (lockCat && lockCat === categoryName.trim()) {
+      ensureSlotPickerCategoryOption(lockCat);
+      cat = lockCat;
+    } else {
+      cat = cats[0] ?? "";
+    }
+  }
   slotPickerCategoryEl.value = cat;
   refillSlotPickerSubcategories();
   const subs = catalogPickerDataCache.subcategoriesByCategory.get(cat) ?? [];
@@ -1894,8 +2346,60 @@ async function syncModelsSlotPickerFromLoadedModel(
   slotCategory?: string,
   /** Cab lié lu dans le preset (`get_active_preset_slot_linked_cab` [0]) — legacy hybrid vs IR. */
   linkedCabHex?: string | null,
+  /** Valeurs chaîne lues (Path 1 Input : surligner la source `@input` courante). */
+  chainValues?: ChainParamValueJson[] | null,
+  /** Index param `@input` dans `chainValues` alignées (défaut 0). */
+  inputParamChainIndex?: number,
+  slotName?: string,
+  hwSlotBus?: number | null,
 ): Promise<void> {
   if (!catalogPickerDataCache) return;
+  const slotCat = (slotCategory ?? "").trim();
+  const slotCatNorm = normalizeCategory(slotCat);
+  const idTrim = catalogModelId.trim();
+  const bus =
+    hwSlotBus ??
+    selectedSpecialHwSlotBus ??
+    hwSlotBusFromSelectedParamsEl();
+
+  if (bus === HW_SLOT_BUS_SPLIT) {
+    await syncSplitPickerHighlightAsync(idTrim, moduleHex);
+    return;
+  }
+  if (bus === HW_SLOT_BUS_MERGE) {
+    applySlotPickerRoutingLock("Merge", idTrim || "HD2_AppDSPFlowJoin");
+    return;
+  }
+  if (bus === HW_SLOT_BUS_INPUT && idTrim) {
+    syncInputPickerHighlight(idTrim, chainValues, inputParamChainIndex ?? 0);
+    return;
+  }
+  if (bus === HW_SLOT_BUS_OUTPUT && idTrim) {
+    applySlotPickerIoLock("Output", idTrim);
+    return;
+  }
+
+  const routingCat = resolveRoutingPickerCategory(slotCat, slotName ?? "", idTrim, meta);
+  if (routingCat === "Split") {
+    await syncSplitPickerHighlightAsync(idTrim, moduleHex);
+    return;
+  }
+  if (routingCat === "Merge") {
+    applySlotPickerRoutingLock("Merge", idTrim || "HD2_AppDSPFlowJoin");
+    return;
+  }
+  if (slotCatNorm === "input" && idTrim) {
+    syncInputPickerHighlight(idTrim, chainValues, inputParamChainIndex ?? 0);
+    return;
+  }
+  if (slotCatNorm === "output" && idTrim) {
+    applySlotPickerIoLock("Output", idTrim);
+    return;
+  }
+  if (selectedSpecialHwSlotBus !== null && pickerCategoryForHwSlotBus(selectedSpecialHwSlotBus)) {
+    return;
+  }
+  clearSlotPickerIoLock();
   const assignVariant = await usbAssignVariantForAmpCabSlot(
     meta,
     moduleHex,
@@ -1910,9 +2414,16 @@ async function syncModelsSlotPickerFromLoadedModel(
     slotCategory,
   );
   if (!loc) {
-    const catFallback = catalogPickerDataCache.categories[0] ?? "";
-    const subFallback = catalogPickerDataCache.subcategoriesByCategory.get(catFallback)?.[0] ?? "";
-    applySlotPickerFromCatalogSelection(catFallback, subFallback, null);
+    const prefer = (slotCategory ?? "").trim();
+    // Split / merge / connected devices : hors picker FX.
+    if (prefer && !catalogPickerDataCache.categories.includes(prefer)) return;
+    const catFallback =
+      prefer && catalogPickerDataCache.categories.includes(prefer)
+        ? prefer
+        : (catalogPickerDataCache.categories[0] ?? "");
+    const subFallback =
+      catalogPickerDataCache.subcategoriesByCategory.get(catFallback)?.[0] ?? "";
+    applySlotPickerFromCatalogSelection(catFallback, subFallback, catalogModelId.trim() || null);
     return;
   }
   const cat = loc.category;
@@ -1981,7 +2492,11 @@ async function mountModelsSlotPicker(): Promise<void> {
       refillSlotPickerModelList(null);
     });
 
-    resetSlotPickerToIdle();
+    if (selectedSpecialHwSlotBus !== null && pickerCategoryForHwSlotBus(selectedSpecialHwSlotBus)) {
+      lockPickerCategoryFromHwSlotBus(selectedSpecialHwSlotBus);
+    } else {
+      resetSlotPickerToIdle();
+    }
   })();
   return slotPickerMountPromise;
 }
@@ -2315,7 +2830,8 @@ function clearModelsParamsPaneContent() {
   const inner = getModelsParamsInner();
   if (!inner) return;
   inner.replaceChildren();
-  resetSlotPickerToIdle();
+  clearSlotPickerIoLock();
+  // Ne pas resetSlotPickerToIdle : garder catégorie/modèle picker pour assigner sur ce slot vide FX.
 }
 
 /**
@@ -2367,8 +2883,19 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
     selectedParamsKemplineSlotIndex = Number.isFinite(kemplineSlotIndex)
       ? (kemplineSlotIndex as number)
       : null;
+    if (nextSlotIdx !== null) {
+      clearSpecialSlotPickerContext();
+    }
     selectedParamsPresetIndex = currentPresetIndex;
     selectedParamsValuesSig = null;
+    const hwBusRaw = el.dataset.hwSlotBus;
+    const hwBusParsed =
+      hwBusRaw !== undefined && hwBusRaw !== "" ? Number.parseInt(hwBusRaw, 10) : Number.NaN;
+    selectedSpecialHwSlotBus =
+      nextSlotIdx === null && Number.isFinite(hwBusParsed) ? (hwBusParsed as number) : null;
+    if (slot !== null) {
+      applyPickerForStructuralSlot(slot, selectedSpecialHwSlotBus);
+    }
     const now = Date.now();
     const tooSoon = now - lastUserHwSlotSwitchAt < 120;
     const duplicate = nextSlotIdx !== null && lastUserHwSlotSwitchIndex === nextSlotIdx && tooSoon;
@@ -2385,7 +2912,22 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
       lastUserHwSlotSwitchIndex = nextSlotIdx;
     }
     void (async () => {
-      if (shouldSwitchHardware && Number.isFinite(kemplineSlotIndex)) {
+      const shouldSwitchIoHardware =
+        userInitiated &&
+        !suppressNextUiSlotHardwareSwitch &&
+        !loading &&
+        loadedPresetIndex === currentPresetIndex &&
+        slot !== null &&
+        Number.isFinite(hwBusParsed) &&
+        nextSlotIdx === null;
+      if (shouldSwitchIoHardware) {
+        await waitUntilHardwareSyncIdle(15_000);
+        try {
+          await invoke("switch_active_hardware_special_slot", { slotBus: hwBusParsed });
+        } catch (e) {
+          console.warn("[HwIoSlotSync] switch_active_hardware_special_slot", e);
+        }
+      } else if (shouldSwitchHardware && Number.isFinite(kemplineSlotIndex)) {
         await waitUntilHardwareSyncIdle(15_000);
         await enqueueHardwareSlotSwitch(kemplineSlotIndex as number);
       }
@@ -2401,6 +2943,12 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
         slot,
         Number.isFinite(kemplineSlotIndex) ? kemplineSlotIndex : undefined,
       );
+      if (slot !== null && normalizeCategory(slot.category) === "input") {
+        void refreshInputPickerFromLiveWireDelayed();
+      }
+      if (slot !== null && normalizeCategory(slot.category) === "split") {
+        void refreshSplitPickerFromLiveWireDelayed();
+      }
     })();
   };
   el.addEventListener("click", (ev) => {
@@ -2430,6 +2978,8 @@ function setStatus(text: string) {
 
 function purgeModelsUi() {
   connectedDeviceName = null;
+  clearPath1InputSourceHighlightOverride();
+  clearPath1SplitTypeHighlightOverride();
   currentPresetIndex = -1;
   loadedPresetIndex = -1;
   lastRequestedPresetIndex = -1;
@@ -2494,7 +3044,7 @@ const CATEGORY_ICON_BY_KEY: Record<string, string> = {
   "vol/pan": "FX_HX_Category_VolumePan.png",
   amp: "FX_HX_Category_Amp.png",
   preamp: "FX_HX_Category_Preamp.png",
-  "amp+cab": "FX_HX_Category_Amp+Cab.png",
+  "amp+cab": "FX_HX_Category_AmpCab.png",
   cab: "FX_HX_Category_Cab.png",
   ir: "FX_HX_Category_Impulse Response.png",
   "impulse response": "FX_HX_Category_Impulse Response.png",
@@ -2541,8 +3091,36 @@ const EFFECT_TYPE_ABBREV: Record<string, string> = {
 
 function normalizeCategory(category: string): string {
   const c = category.trim().toLowerCase();
-  if (c === "amp+cab legacy" || c.replace(/\s+/g, "") === "amp+cablegacy") return "amp+cab";
+  const compact = c.replace(/\s+/g, "");
+  if (compact === "amp+cablegacy" || compact === "ampcablegacy" || c === "amp+cab legacy") {
+    return "amp+cab";
+  }
+  if (compact === "ampcab" || compact === "amp+cab") return "amp+cab";
   return c;
+}
+
+/** Catégorie picker pour jonctions Split / Merge (parseur preset peut renvoyer « Routing »). */
+function resolveRoutingPickerCategory(
+  slotCategory: string,
+  slotName: string,
+  catalogModelId: string,
+  meta: PresetMetaJson | null,
+): "Split" | "Merge" | null {
+  const nk = normalizeCategory(slotCategory);
+  const nn = slotName.trim().toLowerCase();
+  if (nk === "split" || nn.includes("split")) return "Split";
+  if (nk === "merge" || nn.includes("merge")) return "Merge";
+  if (nk === "routing") {
+    if (nn.includes("merge")) return "Merge";
+    if (nn.includes("split")) return "Split";
+  }
+  const cn = normalizeCategory(meta?.categoryName ?? "");
+  if (cn === "split") return "Split";
+  if (cn === "merge") return "Merge";
+  const id = catalogModelId.trim();
+  if (/^HD2_AppDSPFlowSplit/i.test(id)) return "Split";
+  if (id === "HD2_AppDSPFlowJoin") return "Merge";
+  return null;
 }
 
 // --- Fichiers `src-tauri/resources/models/*.models` (panneau Paramètres Models) ---
@@ -2578,16 +3156,19 @@ let modelsParamsLoadSeq = 0;
 /** Fichiers `.models` cab / IR Line 6, dans l’ordre de recherche (ids souvent dans `cabmicirs` ou `cabmicirswithpan`). */
 const CAB_MODEL_DEFINITION_BASES = ["cab", "cabmicirs", "cabmicirswithpan"] as const;
 
-/** Bases de fichiers `.models` à essayer dans l’ordre (sans extension). */
-function modelsDefinitionFileBasesForCategory(category: string): string[] {
+/**
+ * Repli si `HX_ModelUsbAssign.json` → `modelsFileByCategory` ne couvre pas la catégorie.
+ * Source de vérité : tables en tête du fichier assign (maintenues par sync_usb_assign_from_catalog.py).
+ */
+function modelsDefinitionFileBasesForCategoryFallback(category: string): string[] {
   const k = normalizeCategory(category);
   const m: Record<string, string[]> = {
     amp: ["amp"],
     preamp: ["preamp"],
     "amp+cab": ["amp", "cab", "preamp"],
     cab: [...CAB_MODEL_DEFINITION_BASES],
-    ir: ["cabmicirs", "cabmicirswithpan"],
-    "impulse response": ["cabmicirs", "cabmicirswithpan"],
+    ir: ["fixed", "cabmicirs", "cabmicirswithpan"],
+    "impulse response": ["fixed", "cabmicirs", "cabmicirswithpan"],
     delay: ["delay"],
     reverb: ["reverb"],
     dynamics: ["compressor", "gate"],
@@ -2657,7 +3238,9 @@ async function findModelDefinitionForSlot(
   if (!idTarget) return null;
   const categoryForFiles =
     (catalogPresetCategoryName ?? "").trim() || slot.category;
-  const bases = modelsDefinitionFileBasesForCategory(categoryForFiles);
+  const bases =
+    (await modelsDefinitionFileBasesFromUsbAssign(idTarget, categoryForFiles)) ??
+    modelsDefinitionFileBasesForCategoryFallback(categoryForFiles);
   if (bases.length === 0) return null;
   for (const fileBase of bases) {
     let list: ModelDefinitionJson[];
@@ -3363,15 +3946,6 @@ function buildDefaultChainValuesForSourceOrder(
   return out;
 }
 
-function filterParamsByCatalogOrder(
-  params: ModelParamDefJson[],
-  catalogParamOrder: string[] | null | undefined,
-): ModelParamDefJson[] {
-  void catalogParamOrder;
-  // Source de vérité UI: le fichier `.models`.
-  return params;
-}
-
 /**
  * Le binaire preset aligne les valeurs sur l'ordre DSP (`assign` croissant), puis les champs sans
  * `assign` dans l'ordre où ils apparaissent dans le JSON. Le panneau UI zippe par indice dans
@@ -3383,10 +3957,8 @@ function alignChainValuesToModelParamOrder(
   paramsForDisplay: ModelParamDefJson[],
   allModelParams: ModelParamDefJson[],
   catalogSignal?: string | null,
-  catalogParamOrder?: string[] | null,
 ): Array<ChainParamValueJson | undefined> | null | undefined {
   if (chainValues == null) return chainValues;
-  void catalogParamOrder;
   const signal = normalizeCatalogSignal(catalogSignal);
 
   const stereoOnlyById = new Map<string, boolean>();
@@ -3985,7 +4557,6 @@ function showModelsParamsLoading() {
   const inner = getModelsParamsInner();
   if (!inner) return;
   inner.replaceChildren();
-  resetSlotPickerToIdle();
   const p = document.createElement("p");
   p.className = "models-params-placeholder";
   p.textContent = "Chargement des paramètres…";
@@ -3995,7 +4566,6 @@ function showModelsParamsLoading() {
 function renderModelsParamsPane(
   slot: SlotDebug,
   params: ModelParamDefJson[],
-  catalogParamOrder: string[] | null,
   resolvedCatalogModelName?: string,
   chainValues?: ChainParamValueJson[] | null,
   linkedCab?: LinkedCabInfoJson | null,
@@ -4073,7 +4643,7 @@ function renderModelsParamsPane(
 
   const list = document.createElement("ul");
   list.className = "models-params-list";
-  const paramsForDisplay = filterParamsByCatalogOrder(params, catalogParamOrder);
+  const paramsForDisplay = params;
   const catN = normalizeCategory(slot.category);
   let chainForAlign = chainValues;
   if (
@@ -4104,7 +4674,6 @@ function renderModelsParamsPane(
       paramsForDisplay,
       params,
       catalogRoutingSignal,
-      catalogParamOrder,
     ),
   );
   const updateAlignedValues = appendModelsParamRows(
@@ -4126,7 +4695,6 @@ function renderModelsParamsPane(
         paramsForDisplay,
         params,
         catalogRoutingSignal,
-        catalogParamOrder,
       ),
     );
     updateAlignedValues(aligned ?? null);
@@ -4278,6 +4846,7 @@ async function loadAndShowModelsParamsForSlot(
     if (seq === modelsParamsLoadSeq) showModelsParamsNotFound(slot, null);
     return;
   }
+  applyPickerForStructuralSlot(slot);
   try {
     let chainValues: ChainParamValueJson[] | null = null;
     let linkedCab: LinkedCabInfoJson | null = null;
@@ -4376,10 +4945,7 @@ async function loadAndShowModelsParamsForSlot(
     kemplineTooltipCache.set(tooltipCacheKey(slot), short);
     applyShortNameToSlotNodes(slot, short);
     const meta = presetMetaForFiles;
-    const [catalogImage, catalogParamOrder] = await Promise.all([
-      getCatalogModelImageForId(catalogModelIdTrimmed),
-      getCatalogParamOrderForId(catalogModelIdTrimmed),
-    ]);
+    const catalogImage = await getCatalogModelImageForId(catalogModelIdTrimmed);
     if (seq !== modelsParamsLoadSeq) return;
     const catalogBasedOn = pickBasedOn(meta);
     const catalogSubcategoryLabel = formatSubCategoryForHeader(meta, slot.moduleHex);
@@ -4429,6 +4995,45 @@ async function loadAndShowModelsParamsForSlot(
       const patchFn = selectedParamsInPlaceUpdater;
       if (patchFn) patchFn(chainValues);
       paramsPaneCatalogBySlotKey.set(slotKeyNow, catalogModelIdTrimmed);
+      if (nk === "input") {
+        const modelParams = found.entry.params ?? [];
+        const aligned = alignChainValuesToModelParamOrder(
+          chainValues,
+          modelParams,
+          modelParams,
+          catalogRoutingSignal,
+        );
+        const inputParamChainIndex = modelParams.findIndex(
+          (p) => (p.symbolicID ?? "").trim() === "@input",
+        );
+        void mountModelsSlotPicker().then(async () => {
+          syncInputPickerHighlight(
+            catalogModelIdTrimmed,
+            aligned ?? chainValues,
+            inputParamChainIndex >= 0 ? inputParamChainIndex : 0,
+          );
+          void refreshInputPickerFromLiveWireDelayed();
+        });
+      } else if (
+        hwSlotBusFromSelectedParamsEl() === HW_SLOT_BUS_SPLIT ||
+        hwSlotBusFromSelectedParamsEl() === HW_SLOT_BUS_MERGE ||
+        resolveRoutingPickerCategory(slot.category, slot.name, catalogModelIdTrimmed, meta) ||
+        nk === "output"
+      ) {
+        void mountModelsSlotPicker().then(async () => {
+          await syncModelsSlotPickerFromLoadedModel(
+            catalogModelIdTrimmed,
+            meta,
+            slot.moduleHex,
+            slot.category,
+            linkedCab?.[0] ?? null,
+            chainValues,
+            0,
+            slot.name,
+            hwSlotBusFromSelectedParamsEl(),
+          );
+        });
+      }
       if (
         selectedParamsPresetIndex === currentPresetIndex &&
         selectedParamsKemplineSlotIndex !== null &&
@@ -4442,7 +5047,6 @@ async function loadAndShowModelsParamsForSlot(
     renderModelsParamsPane(
       slot,
       found.entry.params ?? [],
-      catalogParamOrder,
       short,
       chainValues,
       linkedCab,
@@ -4456,13 +5060,30 @@ async function loadAndShowModelsParamsForSlot(
       kemplineSlotIndex,
     );
     void mountModelsSlotPicker().then(async () => {
+      const modelParams = found.entry.params ?? [];
+      const aligned = alignChainValuesToModelParamOrder(
+        chainValues,
+        modelParams,
+        modelParams,
+        catalogRoutingSignal,
+      );
+      const inputParamChainIndex = modelParams.findIndex(
+        (p) => (p.symbolicID ?? "").trim() === "@input",
+      );
       await syncModelsSlotPickerFromLoadedModel(
         catalogModelIdTrimmed,
         meta,
         slot.moduleHex,
         slot.category,
         linkedCab?.[0] ?? null,
+        aligned ?? chainValues,
+        inputParamChainIndex >= 0 ? inputParamChainIndex : 0,
+        slot.name,
+        hwSlotBusFromSelectedParamsEl(),
       );
+      if (nk === "input") {
+        void refreshInputPickerFromLiveWireDelayed();
+      }
     });
     paramsPaneCatalogBySlotKey.set(slotKeyNow, catalogModelIdTrimmed);
     if (
@@ -4508,10 +5129,7 @@ async function loadAndShowModelsParamsFromCatalogDefaults(
     kemplineTooltipCache.set(tooltipCacheKey(slot), short);
     applyShortNameToSlotNodes(slot, short);
     const meta = presetMetaForFiles;
-    const [catalogImage, catalogParamOrder] = await Promise.all([
-      getCatalogModelImageForId(catalogModelIdTrimmed),
-      getCatalogParamOrderForId(catalogModelIdTrimmed),
-    ]);
+    const catalogImage = await getCatalogModelImageForId(catalogModelIdTrimmed);
     if (seq !== modelsParamsLoadSeq) return;
     const catalogBasedOn = pickBasedOn(meta);
     const catalogSubcategoryLabel = formatSubCategoryForHeader(meta, slot.moduleHex);
@@ -4542,7 +5160,6 @@ async function loadAndShowModelsParamsFromCatalogDefaults(
     renderModelsParamsPane(
       slot,
       found.entry.params ?? [],
-      catalogParamOrder,
       short,
       defaultChain,
       null,
@@ -4561,6 +5178,11 @@ async function loadAndShowModelsParamsFromCatalogDefaults(
         meta,
         slot.moduleHex,
         slot.category,
+        undefined,
+        undefined,
+        0,
+        slot.name,
+        hwSlotBusFromSelectedParamsEl(),
       );
     });
     const slotKeyNow = makeSlotSelectionKey(slot, kemplineSlotIndex);
@@ -5104,18 +5726,17 @@ function path1SeparatorSlot(
   marker?: RoutingMarker,
 ): SlotDebug {
   const markerHex = (marker?.moduleHex ?? "").trim();
-  const markerCategory = (marker?.category ?? "").trim();
   const markerName = (marker?.name ?? "").trim();
   if (kind === "split") {
     return {
-      category: markerCategory || "Split",
+      category: "Split",
       name: markerName || `Split (Path 1 #${boundary})`,
       moduleHex: markerHex,
     };
   }
   if (kind === "merge") {
     return {
-      category: markerCategory || "Merge",
+      category: "Merge",
       name: markerName || `Merge (Path 1 #${boundary})`,
       moduleHex: markerHex,
       catalogModelId: FLOW_JOIN_CATALOG_ID,
@@ -5827,6 +6448,9 @@ async function requestLoadForPreset(index: number) {
 
   loading = true;
   hardwareSyncPausedForPresetLoad = true;
+  if (index !== currentPresetIndex) {
+    clearPath1InputSourceHighlightOverride();
+  }
   mergeProbeSlotModelUntil = null;
   suppressUsbPresetPollUntilMs = 0;
   pendingPresetIndex = -1;
@@ -5912,6 +6536,7 @@ async function requestLoadForPreset(index: number) {
         recoveryAttemptCount = 0;
         stopLoadingHeartbeat();
         loadedPresetIndex = index;
+        clearPath1InputSourceHighlightOverride();
         lastSoftUsbPresetReadAt = Date.now();
         // Evite d'afficher une vieille réponse si l'utilisateur a recliqué ailleurs.
         if (currentPresetIndex === index) {
@@ -6121,6 +6746,17 @@ window.addEventListener("DOMContentLoaded", () => {
         2_000,
       );
     }
+    const notifyBus =
+      p && typeof p.slotBus === "number" && Number.isFinite(p.slotBus) ? p.slotBus : null;
+    if (notifyBus !== null && pickerCategoryForHwSlotBus(notifyBus)) {
+      selectedSpecialHwSlotBus = notifyBus;
+      void mountModelsSlotPicker().then(() => {
+        lockPickerCategoryFromHwSlotBus(notifyBus);
+        if (notifyBus === HW_SLOT_BUS_SPLIT) {
+          void refreshSplitPickerFromLiveWireDelayed();
+        }
+      });
+    }
     scheduleHardwareSyncFromEvent();
   });
 
@@ -6160,6 +6796,90 @@ window.addEventListener("DOMContentLoaded", () => {
       console.info("[HxLinux] models:slot-model-changed", p);
     }
     applyHardwareSlotModelChanged(p);
+  });
+
+  void listen<Path1InputSourceChangedPayload>("models:path1-input-source-changed", (event) => {
+    const p = event.payload;
+    if (!p || typeof p.wireValue !== "number") return;
+    if (
+      slotPickerIoLock?.kind !== "io" ||
+      slotPickerIoLock.category !== "Input" ||
+      !catalogPickerDataCache
+    ) {
+      return;
+    }
+    const id = findIoSourceIdByWireValue(
+      catalogPickerDataCache,
+      slotPickerIoLock.parentModelId,
+      p.wireValue,
+      connectedDeviceName,
+    );
+    if (!id) return;
+    clearPath1InputSourceHighlightOverride();
+    applySlotPickerFromCatalogSelection("Input", "Source", id);
+    if (hwSlotDebugEnabled() || modelsSyncTraceEnabled()) {
+      console.info("[HxLinux] models:path1-input-source-changed", p, "ioSource=", id);
+    }
+  });
+
+  void listen<Path1SplitTypeChangedPayload>("models:path1-split-type-changed", (event) => {
+    void (async () => {
+      const p = event.payload;
+      if (!p || typeof p.wireValue !== "number") return;
+      let hwOnSplit = selectedSpecialHwSlotBus === HW_SLOT_BUS_SPLIT;
+      if (!hwOnSplit) {
+        try {
+          const hw = await invoke<HardwareActiveSlotState>("get_active_hardware_slot_state");
+          hwOnSplit = hw?.slotBus === HW_SLOT_BUS_SPLIT;
+        } catch {
+          /* ignore */
+        }
+      }
+      const splitActive =
+        hwOnSplit ||
+        (slotPickerIoLock?.kind === "routing" && slotPickerIoLock.category === "Split");
+      if (!splitActive) return;
+
+      await mountModelsSlotPicker();
+      if (!catalogPickerDataCache) return;
+
+      const id = findSplitSourceIdByWireValue(
+        catalogPickerDataCache,
+        p.wireValue,
+        connectedDeviceName,
+      );
+      if (!id) return;
+
+      clearPath1SplitTypeHighlightOverride();
+      if (hwOnSplit) {
+        selectedSpecialHwSlotBus = HW_SLOT_BUS_SPLIT;
+      }
+      applySlotPickerRoutingLock("Split", id);
+
+      const chainHex = splitChainHexFromWire(p.wireValue);
+      let catalogModelId = "";
+      let name = "Split";
+      for (const rows of catalogPickerDataCache.modelsByCategoryAndSub.values()) {
+        const row = rows.find((r) => r.id === id);
+        if (row) {
+          catalogModelId = (row.catalogModelId ?? "").trim();
+          name = row.name;
+          break;
+        }
+      }
+      if (chainHex && catalogModelId) {
+        scheduleSplitScrollParamsReload({
+          category: "Split",
+          name,
+          moduleHex: chainHex,
+          catalogModelId,
+        });
+      }
+
+      if (hwSlotDebugEnabled() || modelsSyncTraceEnabled()) {
+        console.info("[HxLinux] models:path1-split-type-changed", p, "splitSource=", id);
+      }
+    })();
   });
 
   void listen<string>("helix-device-lost", () => {

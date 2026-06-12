@@ -1,5 +1,5 @@
 //! Résolution `chainHexHint` → métadonnées modèle depuis `HX_ModelUsbAssign.json`.
-//! Le catalogue (`HX_ModelCatalog.json`) reste réservé à l’ordre des params / `.models`.
+//! Ordre des params UI : fichiers `.models` (le catalogue n’est plus chargé côté TS).
 
 use std::collections::HashMap;
 use std::sync::OnceLock;

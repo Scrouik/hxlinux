@@ -123,7 +123,7 @@ pub fn start_listener(
 
                     // Dispatcher vers le mode actif
                     // On lock state et mode séparément pour éviter deadlock
-                    let (hw_slot_changed, fond_bootstrap_alert, slot_model_changed) = {
+                    let (hw_slot_changed, fond_bootstrap_alert, slot_model_changed, path1_input_changed, path1_split_changed) = {
                         let lock_start = Instant::now();
                         let mut s = state.lock().unwrap();
                         let state_wait_ms = lock_start.elapsed().as_millis();
@@ -135,6 +135,12 @@ pub fn start_listener(
                         }
                         // Échos paramètre HX Edit / firmware : mémorisés pour aligner `write_live_param`.
                         s.ingest_ed03_param_echo(&data);
+                        let path1_input_changed = s
+                            .ingest_path1_input_source_wire_in(&data)
+                            .map(|wire| s.path1_input_source_changed_payload(wire, &data));
+                        let path1_split_changed = s
+                            .ingest_path1_split_type_wire_in(&data)
+                            .map(|wire| s.path1_split_type_changed_payload(wire, &data));
                         // Slot actif unique (`hw_active_slot_*`) : `ingest_hw_slot_notify_in` — preset/HW/UI.
                         let ev = s.ingest_hw_slot_notify_in(&data);
                         crate::helix::init_trace::trace_in(&data);
@@ -249,11 +255,21 @@ pub fn start_listener(
                         }
                         let state_hold_ms = hold_start.elapsed().as_millis();
                         warn_slow_lock("HelixState.lock()", state_wait_ms, state_hold_ms, data.len());
-                        ((ev, param_events), fond_bootstrap_alert, slot_model_changed)
+                        ((ev, param_events), fond_bootstrap_alert, slot_model_changed, path1_input_changed, path1_split_changed)
                     };
                     if let (Some(app), Some(payload)) = (app_handle.as_ref(), hw_slot_changed.0) {
                         if let Err(e) = app.emit("models:hardware-slot-changed", payload) {
                             eprintln!("[UsbListener] emit models:hardware-slot-changed: {e}");
+                        }
+                    }
+                    if let (Some(app), Some(payload)) = (app_handle.as_ref(), path1_input_changed) {
+                        if let Err(e) = app.emit("models:path1-input-source-changed", payload) {
+                            eprintln!("[UsbListener] emit models:path1-input-source-changed: {e}");
+                        }
+                    }
+                    if let (Some(app), Some(payload)) = (app_handle.as_ref(), path1_split_changed) {
+                        if let Err(e) = app.emit("models:path1-split-type-changed", payload) {
+                            eprintln!("[UsbListener] emit models:path1-split-type-changed: {e}");
                         }
                     }
                     if let (Some(app), Some(payload)) = (app_handle.as_ref(), slot_model_changed) {

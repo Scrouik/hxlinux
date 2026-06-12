@@ -156,6 +156,9 @@ impl Mode for RequestPreset {
 
         // Avancer sess_id de 1 pour que Phase 2 utilise sess_id1 + 1.
         state.request_preset_session_id = state.request_preset_session_id.wrapping_add(1);
+        // Preset rechargé : les wires Path 1 mémorisés ne correspondent plus au dump.
+        state.path1_input_source_wire = None;
+        state.path1_split_type_wire = None;
 
         crate::helix::init_trace::trace_fmt(format_args!(
             "RequestPreset::start preset_index={} content_only={} preset_data_ready={}",

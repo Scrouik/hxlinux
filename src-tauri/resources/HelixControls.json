@@ -4980,6 +4980,19 @@
       "USB 7/8"
     ]
   },
+  "input_type_stomp": {
+    "isDiscrete": true,
+    "allowDiscreteStates": true,
+    "format": [
+      "None",
+      "Input Main L/R",
+      "",
+      "",
+      "Input Return L/R",
+      "",
+      "Input USB 5/6"
+    ]
+  },
   "input_type_lt": {
     "isDiscrete": true,
     "allowDiscreteStates": true,

@@ -468,7 +468,7 @@
                 "symbolicID": "@input",
                 "name": "Input From",
                 "valueType": 0,
-                "displayType": "input_type",
+                "displayType": "input_type_stomp",
                 "min": 0,
                 "max": 16,
                 "default": 1

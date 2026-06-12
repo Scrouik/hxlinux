@@ -11,6 +11,8 @@ pub mod keep_alive;
 pub mod modes;
 pub mod live_write;
 pub mod live_write_config;
+pub mod path1_io_live_write;
+pub mod path1_split_live_write;
 pub mod edit_slot_model;
 pub mod slot_focus_in;
 pub mod slot_param_in;
@@ -39,6 +41,24 @@ pub struct HardwareSlotChangedPayload {
     pub sequence: u32,
     pub slot_index: Option<usize>,
     pub slot_bus: Option<u8>,
+}
+
+/// Scroll / write Input Path 1 : valeur wire `@input` (1 / 4 / 6 Stomp) apprise depuis IN USB.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Path1InputSourceChangedPayload {
+    pub wire_value: u8,
+    /// `true` si trame `21` scroll hardware (vs echo post-write).
+    pub from_scroll_21: bool,
+}
+
+/// Type Split Path 1 apprise depuis IN USB (select `82:62:0a:1a:…:05` ou scroll ed03 / `21`).
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Path1SplitTypeChangedPayload {
+    pub wire_value: u8,
+    /// `true` si trame `21` scroll hardware (vs echo post-write ou ed03 seul).
+    pub from_scroll_21: bool,
 }
 
 /// Mapping index grille Kempline (0..15) -> slot bus observé en USB.
@@ -253,6 +273,10 @@ pub struct HelixState {
     pub hw_active_slot_bus: Option<u8>,
     /// +1 à chaque changement de `hw_active_slot_bus` (événement `models:hardware-slot-changed`).
     pub hw_active_slot_sequence: u32,
+    /// Dernière source Input Path 1 lue sur le fil (`82:62:00:33:XX`, trames IN).
+    pub path1_input_source_wire: Option<u8>,
+    /// Dernier type Split Path 1 lu sur le fil (`82:62:0a:1a:…:05`).
+    pub path1_split_type_wire: Option<u8>,
 
     /// Fenêtre de capture des IN `0x81` après un OUT « focus slot » (`sync_hardware_slot_focus_usb`).
     /// Remplie par `usb_listener` tant que `Instant::now() < deadline` (courte, ~55 ms ; max ~40 trames).
@@ -479,6 +503,8 @@ impl HelixState {
             hw_active_slot_index: None,
             hw_active_slot_bus: None,
             hw_active_slot_sequence: 0,
+            path1_input_source_wire: None,
+            path1_split_type_wire: None,
             usb_slot_focus_capture_deadline: None,
             usb_slot_focus_capture: Vec::new(),
             last_slot_focus_capsule: std::array::from_fn(|_| None),
@@ -674,6 +700,66 @@ impl HelixState {
             model_i,
             b[4]
         );
+    }
+
+    /// Source Input Path 1 depuis trames IN (`82:62:00:33:XX`).
+    /// Retourne la nouvelle valeur si elle a changé (scroll hardware ou echo post-write).
+    pub fn ingest_path1_input_source_wire_in(&mut self, data: &[u8]) -> Option<u8> {
+        let wire = crate::helix::path1_io_live_write::scan_path1_input_source_wire(data)?;
+        if self.path1_input_source_wire == Some(wire) {
+            return None;
+        }
+        self.path1_input_source_wire = Some(wire);
+        eprintln!(
+            "[Path1Input][wire-in] @input={wire} scroll_21={}",
+            crate::helix::path1_io_live_write::is_path1_input_scroll_notify_21(data)
+        );
+        Some(wire)
+    }
+
+    pub fn path1_input_source_changed_payload(
+        &self,
+        wire: u8,
+        data: &[u8],
+    ) -> Path1InputSourceChangedPayload {
+        Path1InputSourceChangedPayload {
+            wire_value: wire,
+            from_scroll_21: crate::helix::path1_io_live_write::is_path1_input_scroll_notify_21(data),
+        }
+    }
+
+    pub fn ingest_path1_split_type_wire_in(&mut self, data: &[u8]) -> Option<u8> {
+        if self.preset_content_only {
+            return None;
+        }
+        let wire = crate::helix::path1_split_live_write::scan_path1_split_type_wire(data)?;
+        let from_scroll_21 =
+            crate::helix::path1_split_live_write::is_path1_split_scroll_notify_21(data);
+        let from_ed03 = crate::helix::path1_split_live_write::scan_path1_split_type_wire_ed03_scroll(
+            data,
+        )
+        .is_some();
+        if self.path1_split_type_wire == Some(wire) && !from_scroll_21 && !from_ed03 {
+            return None;
+        }
+        self.path1_split_type_wire = Some(wire);
+        eprintln!(
+            "[Path1Split][wire-in] type={wire} scroll_21={from_scroll_21} ed03={from_ed03}"
+        );
+        Some(wire)
+    }
+
+    pub fn path1_split_type_changed_payload(
+        &self,
+        wire: u8,
+        data: &[u8],
+    ) -> Path1SplitTypeChangedPayload {
+        Path1SplitTypeChangedPayload {
+            wire_value: wire,
+            from_scroll_21: crate::helix::path1_split_live_write::is_path1_split_scroll_notify_21(
+                data,
+            ),
+        }
     }
 
     /// Met à jour [`Self::hw_active_slot_*`] et notifie l’UI — **seul** chemin pour le slot actif.

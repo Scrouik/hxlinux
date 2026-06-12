@@ -40,6 +40,8 @@ use helix::{
 use helix::packet::OutPacket;
 use helix::live_write::build_live_write_frames_from_state;
 use helix::live_write_config::validate_usb_live_write_metadata;
+use helix::path1_io_live_write::send_path1_input_source;
+use helix::path1_split_live_write::send_path1_split_type;
 use helix::edit_slot_model::{
     build_slot_model_probe_packets, change_model_hxedit_replace_test_bulk,
     resolve_catalog_model_chain_bytes, resolve_usb_assign_bulk, slot_probe_use_change_model_test_bulk,
@@ -1244,6 +1246,132 @@ fn write_live_param(
         frames.post_packet_x80_sel.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ")
     );
     Ok(())
+}
+
+/// Focus slot structurel Path 1 (Input `0x00`, Output `0x09`, Split `0x0a`, Merge `0x13`).
+#[tauri::command]
+fn switch_active_hardware_special_slot(
+    slot_bus: u8,
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Result<(), String> {
+    if !helix::is_special_slot_bus(slot_bus) {
+        return Err(format!(
+            "slotBus {slot_bus:#04x} invalide (attendu 0x00|0x09|0x0a|0x13)"
+        ));
+    }
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+
+    let mut s = helix_arc.lock().unwrap();
+    if s.preset_content_only || !s.connected {
+        return Err("switch slot I/O ignoré pendant chargement preset".to_string());
+    }
+    let packet = helix::path1_io_live_write::build_special_slot_focus_packet(&mut s, slot_bus);
+    s.send(OutPacket::new(packet.clone()));
+    s.hw_active_slot_bus = Some(slot_bus);
+    s.hw_active_slot_index = None;
+    drop(s);
+
+    eprintln!(
+        "[HwIoSlotSwitch][sent] slot_bus={slot_bus:#04x} packet={}",
+        packet
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    Ok(())
+}
+
+/// Change la source Input Path 1 (Stomp : Main / Return / USB 5/6) via trame `1d` capturée
+/// (`HX_ModelUsbAssign.json` → `ioSources[]`, pas `bulkHex` assign slot).
+#[tauri::command]
+fn write_path1_input_source(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    io_source_id: String,
+) -> Result<String, String> {
+    let id = io_source_id.trim();
+    if id.is_empty() {
+        return Err("ioSourceId vide".to_string());
+    }
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    if s.init_usb_settle_active() {
+        return Err(format!(
+            "write_path1_input_source ignoré (init USB ~{} ms)",
+            helix::keep_alive::POST_PHASE4_SETTLE_MS
+        ));
+    }
+    if !s.connected || s.preset_content_only {
+        return Err(
+            "write_path1_input_source ignoré (HX non prêt ou lecture preset en cours)".to_string(),
+        );
+    }
+    send_path1_input_source(&mut s, id)
+}
+
+/// Valeur wire `@input` Path 1 mémorisée depuis le trafic IN USB (prioritaire sur le dump preset pour le picker).
+#[tauri::command]
+fn get_path1_input_source_wire_value(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Option<u8> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()?
+    };
+    let s = helix_arc.lock().unwrap();
+    s.path1_input_source_wire
+}
+
+/// Change le type Split Path 1 (Y / A/B / Crossover / Dynamic) via trame `25` capturée
+/// (`HX_ModelUsbAssign.json` → `splitSources[]`).
+#[tauri::command]
+fn write_path1_split_type(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    split_source_id: String,
+) -> Result<String, String> {
+    let id = split_source_id.trim();
+    if id.is_empty() {
+        return Err("splitSourceId vide".to_string());
+    }
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    if s.init_usb_settle_active() {
+        return Err(format!(
+            "write_path1_split_type ignoré (init USB ~{} ms)",
+            helix::keep_alive::POST_PHASE4_SETTLE_MS
+        ));
+    }
+    if !s.connected || s.preset_content_only {
+        return Err(
+            "write_path1_split_type ignoré (HX non prêt ou lecture preset en cours)".to_string(),
+        );
+    }
+    send_path1_split_type(&mut s, id)
+}
+
+/// Valeur wire type Split Path 1 mémorisée depuis le trafic IN USB.
+#[tauri::command]
+fn get_path1_split_type_wire_value(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Option<u8> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()?
+    };
+    let s = helix_arc.lock().unwrap();
+    s.path1_split_type_wire
 }
 
 #[tauri::command]
@@ -2639,8 +2767,8 @@ fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
             }
             if w[1] == 0x01 {
                 let mapped = match w[2] {
-                    0x01 => Some("6ccd0023"), // Split Y
-                    0x00 => Some("6ccd0024"), // Split A/B
+                    0x00 => Some("6ccd0023"), // Split Y — OUT 25 / split select.json
+                    0x01 => Some("6ccd0024"), // Split A/B
                     0x02 => Some("6ccd0025"), // Split Crossover
                     _ => None,
                 };
@@ -3662,6 +3790,7 @@ pub fn run() {
             rename_preset,
             activate_preset,
             switch_active_hardware_slot,
+            switch_active_hardware_special_slot,
             probe_hardware_slot_focus_usb,
             sync_hardware_slot_focus_usb,
             request_preset_content,
@@ -3671,6 +3800,10 @@ pub fn run() {
             probe_slot_model_usb,
             write_live_param,
             write_live_param_midi_cc,
+            write_path1_input_source,
+            get_path1_input_source_wire_value,
+            write_path1_split_type,
+            get_path1_split_type_wire_value,
             set_usb_trace_enabled,
             set_usb_trace_delta_only,
             set_preset_debug_verbose,

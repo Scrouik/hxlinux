@@ -1,6 +1,6 @@
 /**
  * Jointure hex / métadonnées affichage : `HX_ModelUsbAssign.json` (`chainHexHint`, category, …).
- * `HX_ModelCatalog.json` reste chargé uniquement pour l’ordre des params (`getCatalogParamOrderForId`).
+ * Ordre des params UI : fichiers `.models` (pas de fetch runtime du catalogue).
  */
 
 export type PresetMetaJson = {
@@ -13,27 +13,6 @@ export type PresetMetaJson = {
   subCategory?: string | string[];
 };
 
-type CatalogModelEntry = {
-  id: string | null;
-  name: string;
-  presetMeta: PresetMetaJson | null;
-  /** Fichier PNG sous `icons_models/` (ex. `FX_HX_EQ_SimpleTilt.png`). */
-  image: string | null;
-  /** Ordre des clés `params` côté catalogue (`HX_ModelCatalog.json`). */
-  catalogParamOrder: string[];
-};
-
-type CatalogIndexes = {
-  /** Vue historique : clé = catégorie + nom. */
-  byCategoryAndName: Map<string, CatalogModelEntry>;
-  /** Jointure stricte du slot preset : `chainHex` -> entrée catalogue. */
-  byHex: Map<string, CatalogModelEntry>;
-  /** Jointure stricte par ID catalogue -> entrée. */
-  byId: Map<string, CatalogModelEntry>;
-};
-
-let catalogIndexesPromise: Promise<CatalogIndexes> | null = null;
-
 function catalogKey(category: string, modelName: string): string {
   return `${category.trim().toLowerCase()}\0${modelName.trim().toLowerCase()}`;
 }
@@ -45,23 +24,6 @@ function normalizeHexList(chainHex: string | string[] | undefined): string[] {
     return t ? [t] : [];
   }
   return chainHex.map((h) => String(h).trim().toLowerCase()).filter(Boolean);
-}
-
-function extractCatalogParamOrder(paramsRaw: unknown): string[] {
-  const out: string[] = [];
-  const walk = (v: unknown) => {
-    if (Array.isArray(v)) {
-      for (const x of v) walk(x);
-      return;
-    }
-    if (!v || typeof v !== "object") return;
-    for (const k of Object.keys(v as Record<string, unknown>)) {
-      const kk = k.trim();
-      if (kk) out.push(kk);
-    }
-  };
-  walk(paramsRaw);
-  return out;
 }
 
 /**
@@ -77,106 +39,6 @@ function moduleHexCatalogLookupCandidates(hexNorm: string): string[] {
     if (ampPart.length > 0) out.push(ampPart);
   }
   return out;
-}
-
-async function loadCatalogModelIndexes(): Promise<CatalogIndexes> {
-  const url = "/src-tauri/resources/HX_ModelCatalog.json";
-  const res = await fetch(url);
-  if (!res.ok) {
-    console.warn("HX_ModelCatalog.json : chargement presetMeta impossible.", res.status);
-    return {
-      byCategoryAndName: new Map(),
-      byHex: new Map(),
-      byId: new Map(),
-    };
-  }
-  const raw = await res.text();
-  const data = JSON.parse(raw) as { models?: unknown[]; categories?: unknown[] };
-  const byCategoryAndName = new Map<string, CatalogModelEntry>();
-  const byHex = new Map<string, CatalogModelEntry>();
-  const byId = new Map<string, CatalogModelEntry>();
-  const record = (catName: string, models: unknown) => {
-    if (!Array.isArray(models)) return;
-    for (const m of models) {
-      if (!m || typeof m !== "object") continue;
-      const mo = m as {
-        id?: string | number;
-        name?: string;
-        presetMeta?: PresetMetaJson;
-        image?: string;
-        params?: unknown;
-      };
-      const name = typeof mo.name === "string" ? mo.name.trim() : "";
-      if (!name) continue;
-      const key = catalogKey(catName, name);
-      const idRaw = mo.id;
-      const id =
-        typeof idRaw === "string"
-          ? (idRaw.trim() || null)
-          : typeof idRaw === "number"
-            ? String(idRaw)
-            : null;
-      const imgRaw = mo.image;
-      const image =
-        typeof imgRaw === "string" && imgRaw.trim().length > 0 ? imgRaw.trim() : null;
-      const entry: CatalogModelEntry = {
-        id,
-        name,
-        presetMeta: mo.presetMeta ? { ...mo.presetMeta } : null,
-        image,
-        catalogParamOrder: extractCatalogParamOrder(mo.params),
-      };
-      // Pour compat historique: garder la première entrée d'un (category, name).
-      if (!byCategoryAndName.has(key)) {
-        byCategoryAndName.set(key, entry);
-      }
-      if (id && !byId.has(id)) {
-        byId.set(id, entry);
-      }
-      for (const h of normalizeHexList(entry.presetMeta?.chainHex)) {
-        if (!byHex.has(h)) byHex.set(h, entry);
-      }
-    }
-  };
-  if (Array.isArray(data.models) && data.models.length > 0) {
-    for (const m of data.models) {
-      if (!m || typeof m !== "object") continue;
-      const mo = m as {
-        id?: string | number;
-        name?: string;
-        presetMeta?: PresetMetaJson;
-        image?: string;
-        params?: unknown;
-      };
-      const cn = mo.presetMeta?.categoryName;
-      const catName =
-        typeof cn === "string" && cn.trim().length > 0 ? cn.trim() : "Unknown";
-      record(catName, [m]);
-    }
-    return { byCategoryAndName, byHex, byId };
-  }
-  for (const cat of data.categories ?? []) {
-    if (!cat || typeof cat !== "object") continue;
-    const c = cat as { name?: string; models?: unknown; subcategories?: unknown[] };
-    const cn = typeof c.name === "string" ? c.name : "";
-    if (!cn) continue;
-    record(cn, c.models);
-    for (const sub of c.subcategories ?? []) {
-      if (!sub || typeof sub !== "object") continue;
-      record(cn, (sub as { models?: unknown }).models);
-    }
-  }
-  return { byCategoryAndName, byHex, byId };
-}
-
-async function getCatalogIndexes(): Promise<CatalogIndexes> {
-  if (!catalogIndexesPromise) {
-    catalogIndexesPromise = loadCatalogModelIndexes().catch((e) => {
-      catalogIndexesPromise = null;
-      throw e;
-    });
-  }
-  return catalogIndexesPromise;
 }
 
 export async function getPresetMetaForModel(
@@ -216,6 +78,82 @@ type UsbAssignIndexes = {
 };
 
 let usbAssignIndexesPromise: Promise<UsbAssignIndexes> | null = null;
+
+type UsbAssignModelsFileMaps = {
+  byCategory: Map<string, string[]>;
+  byId: Map<string, string[]>;
+};
+
+let usbAssignModelsFileMapsPromise: Promise<UsbAssignModelsFileMaps> | null = null;
+
+function parseModelsFileRef(raw: unknown): string[] {
+  if (typeof raw === "string") {
+    const t = raw.trim();
+    return t ? [t] : [];
+  }
+  if (Array.isArray(raw)) {
+    return raw
+      .map((x) => (typeof x === "string" ? x.trim() : ""))
+      .filter(Boolean);
+  }
+  return [];
+}
+
+async function loadUsbAssignModelsFileMaps(): Promise<UsbAssignModelsFileMaps> {
+  const url = "/src-tauri/resources/HX_ModelUsbAssign.json";
+  const res = await fetch(url);
+  const byCategory = new Map<string, string[]>();
+  const byId = new Map<string, string[]>();
+  if (!res.ok) {
+    console.warn("HX_ModelUsbAssign.json : modelsFileByCategory inaccessible.", res.status);
+    return { byCategory, byId };
+  }
+  const data = JSON.parse(await res.text()) as {
+    modelsFileByCategory?: Record<string, unknown>;
+    modelsFileById?: Record<string, unknown>;
+  };
+  for (const [cat, ref] of Object.entries(data.modelsFileByCategory ?? {})) {
+    const bases = parseModelsFileRef(ref);
+    if (bases.length > 0) byCategory.set(cat.trim(), bases);
+  }
+  for (const [id, ref] of Object.entries(data.modelsFileById ?? {})) {
+    const bases = parseModelsFileRef(ref);
+    if (bases.length > 0) byId.set(id.trim(), bases);
+  }
+  return { byCategory, byId };
+}
+
+async function getUsbAssignModelsFileMaps(): Promise<UsbAssignModelsFileMaps> {
+  if (!usbAssignModelsFileMapsPromise) {
+    usbAssignModelsFileMapsPromise = loadUsbAssignModelsFileMaps().catch((e) => {
+      usbAssignModelsFileMapsPromise = null;
+      throw e;
+    });
+  }
+  return usbAssignModelsFileMapsPromise;
+}
+
+/**
+ * Bases `.models` (sans extension) depuis `HX_ModelUsbAssign.json` :
+ * `modelsFileById` puis `modelsFileByCategory`. `null` si non déclaré.
+ */
+export async function modelsDefinitionFileBasesFromUsbAssign(
+  catalogModelId: string,
+  categoryName: string,
+): Promise<string[] | null> {
+  const maps = await getUsbAssignModelsFileMaps();
+  const id = catalogModelId.trim();
+  if (id) {
+    const byId = maps.byId.get(id);
+    if (byId?.length) return byId;
+  }
+  const cat = categoryName.trim();
+  if (cat) {
+    const byCat = maps.byCategory.get(cat);
+    if (byCat?.length) return byCat;
+  }
+  return null;
+}
 
 /** `amp+cab` / `amp+cab-legacy` reprennent le fil ampli — pas d’index hex autonome. */
 function chainHexHintIndexEligible(variant: string): boolean {
@@ -473,16 +411,6 @@ export async function getCatalogModelNameForId(modelId: string | null | undefine
   return t.length > 0 ? t : null;
 }
 
-export async function getCatalogParamOrderForId(
-  modelId: string | null | undefined,
-): Promise<string[] | null> {
-  const id = (modelId ?? "").trim();
-  if (!id) return null;
-  const idx = await getCatalogIndexes();
-  const order = idx.byId.get(id)?.catalogParamOrder ?? [];
-  return order.length > 0 ? [...order] : null;
-}
-
 export function pickBasedOn(meta: PresetMetaJson | null): string | null {
   const c = meta?.basedOn;
   if (typeof c !== "string") return null;
@@ -596,7 +524,8 @@ export type UsbAssignVariant =
   | "amp"
   | "preamp"
   | "amp+cab"
-  | "amp+cab-legacy";
+  | "amp+cab-legacy"
+  | "sendReturn";
 
 /** Cab hybrid pré-3.50 (`cab.models`, subCategory Legacy) vs cab IR Single/Dual. */
 export async function isLegacyCabChainHex(cabHex: string): Promise<boolean> {
@@ -648,6 +577,7 @@ export function usbAssignVariantFromPresetMeta(
   slotCategory?: string | null,
 ): UsbAssignVariant {
   const slotCat = normalizeSlotCategoryHint(slotCategory);
+  if (slotCat === "send/return") return "sendReturn";
   const catalogCat = (meta?.categoryName ?? "").trim().toLowerCase();
   if (isAmpCabLegacySlotCategory(slotCategory)) return "amp+cab-legacy";
   if (isAmpCabFamilySlotCategory(slotCategory) && (catalogCat === "amp" || catalogCat === "preamp")) {
@@ -659,6 +589,9 @@ export function usbAssignVariantFromPresetMeta(
   if (catalogCat === "preamp") {
     return "preamp";
   }
+  if (catalogCat === "send/return") {
+    return "sendReturn";
+  }
   const sc = meta?.subCategory;
   const bits: string[] = [];
   if (typeof sc === "string") bits.push(sc);
@@ -668,7 +601,13 @@ export function usbAssignVariantFromPresetMeta(
     }
   }
   const joined = bits.join(" ").toLowerCase();
-  if (joined.includes("legacy")) return "legacy";
+  if (joined.includes("legacy")) {
+    if (catalogCat === "cab") {
+      const sig = pickSignal(meta, moduleHex);
+      return sig === "stereo" ? "dual" : "single";
+    }
+    return "legacy";
+  }
   const sig = pickSignal(meta, moduleHex);
   if (sig === "stereo") return "stereo";
   if (sig === "mono") return "mono";
@@ -710,10 +649,9 @@ export function formatSubCategoryForHeader(
 
 /** Tests uniquement. */
 export function resetHxCatalogMetaMapForTests(): void {
-  catalogIndexesPromise = null;
-  catalogPickerDataPromise = null;
   usbAssignPickerDataPromise = null;
   usbAssignIndexesPromise = null;
+  usbAssignModelsFileMapsPromise = null;
 }
 
 // --- Sélecteur visuel catégorie / sous-catégorie / modèle (aperçu, pas d’écriture USB) ---
@@ -723,6 +661,15 @@ export type CatalogPickerModelRow = {
   name: string;
   /** Ligne `HX_ModelUsbAssign.json` : `mono` | `stereo` | `legacy` (pour l’invoke sonde). */
   assignVariant?: string;
+  /** Source I/O Path 1 (`ioSources[]`) — écriture `write_path1_input_source`, pas `probe_slot_model_usb`. */
+  ioSource?: boolean;
+  /** Type Split Path 1 (`splitSources[]`) — écriture `write_path1_split_type`. */
+  splitSource?: boolean;
+  catalogModelId?: string;
+  parentModelId?: string;
+  wireValue?: number;
+  /** Noms device Rust (`SUPPORTED_DEVICES`) ou sous-chaîne tolérée (ex. `stomp`). */
+  devices?: string[];
 };
 
 export type CatalogPickerData = {
@@ -734,155 +681,26 @@ export type CatalogPickerData = {
   modelsByCategoryAndSub: Map<string, CatalogPickerModelRow[]>;
 };
 
-let catalogPickerDataPromise: Promise<CatalogPickerData> | null = null;
-
-/**
- * Valeurs distinctes de `presetMeta.subCategory` pour le picker :
- * chaîne seule → un élément ; tableau (ex. Mono/Stéréo, Single/Dual) → **une entrée par cellule**, pas une concaténation.
- */
-export function presetMetaSubCategoryPickerKeys(
-  meta: PresetMetaJson | null | undefined,
-): string[] {
-  const sc = meta?.subCategory;
-  if (sc === undefined || sc === null) return ["—"];
-  if (typeof sc === "string") {
-    const t = sc.trim();
-    return [t.length > 0 ? t : "—"];
-  }
-  if (Array.isArray(sc)) {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const x of sc) {
-      if (typeof x !== "string") continue;
-      const t = x.trim();
-      if (!t) continue;
-      const low = t.toLowerCase();
-      if (seen.has(low)) continue;
-      seen.add(low);
-      out.push(t);
-    }
-    return out.length > 0 ? out : ["—"];
-  }
-  return ["—"];
-}
-
 export function catalogPickerRowKey(category: string, subKey: string): string {
   return `${category.trim()}\0${subKey}`;
 }
 
-async function loadCatalogPickerDataFromJson(): Promise<CatalogPickerData> {
-  const url = "/src-tauri/resources/HX_ModelCatalog.json";
-  const res = await fetch(url);
-  if (!res.ok) {
-    console.warn("HX_ModelCatalog.json : chargement picker impossible.", res.status);
-    return {
-      categories: [],
-      subcategoriesByCategory: new Map(),
-      modelsByCategoryAndSub: new Map(),
-    };
+/**
+ * Libellé sous-catégorie picker (peut différer de `subCategory` assign).
+ * Cab Legacy : une entrée assign `Legacy` + variant `single`|`dual` → « Single Legacy » / « Dual Legacy ».
+ */
+export function usbAssignPickerSubDisplay(
+  category: string,
+  subCategory: string,
+  variant: string,
+): string {
+  const cat = category.trim();
+  const sub = subCategory.trim();
+  const v = variant.trim().toLowerCase();
+  if (cat === "Cab" && sub.toLowerCase() === "legacy") {
+    return v === "dual" ? "Dual Legacy" : "Single Legacy";
   }
-  const raw = await res.text();
-  const data = JSON.parse(raw) as { models?: unknown[]; categories?: unknown[] };
-
-  const rows: { id: string; name: string; category: string; subKey: string }[] = [];
-
-  const pushModel = (catName: string, m: unknown) => {
-    if (!m || typeof m !== "object") return;
-    const mo = m as {
-      id?: string | number;
-      name?: string;
-      presetMeta?: PresetMetaJson;
-    };
-    const idRaw = mo.id;
-    const id =
-      typeof idRaw === "string"
-        ? idRaw.trim()
-        : typeof idRaw === "number"
-          ? String(idRaw)
-          : "";
-    if (!id || id === "None") return;
-    const name = typeof mo.name === "string" ? mo.name.trim() : "";
-    if (!name) return;
-    const cat = catName.trim() || "Unknown";
-    if (cat.toLowerCase() === "none") return;
-    for (const subKey of presetMetaSubCategoryPickerKeys(mo.presetMeta)) {
-      rows.push({ id, name, category: cat, subKey });
-    }
-  };
-
-  if (Array.isArray(data.models) && data.models.length > 0) {
-    for (const m of data.models) {
-      const mo = m as { presetMeta?: PresetMetaJson };
-      const cn = mo.presetMeta?.categoryName;
-      const catName =
-        typeof cn === "string" && cn.trim().length > 0 ? cn.trim() : "Unknown";
-      pushModel(catName, m);
-    }
-  } else {
-    for (const cat of data.categories ?? []) {
-      if (!cat || typeof cat !== "object") continue;
-      const c = cat as { name?: string; models?: unknown; subcategories?: unknown[] };
-      const cn = typeof c.name === "string" ? c.name.trim() : "";
-      if (!cn) continue;
-      if (Array.isArray(c.models)) {
-        for (const m of c.models) pushModel(cn, m);
-      }
-      for (const sub of c.subcategories ?? []) {
-        if (!sub || typeof sub !== "object") continue;
-        const models = (sub as { models?: unknown }).models;
-        if (Array.isArray(models)) {
-          for (const m of models) pushModel(cn, m);
-        }
-      }
-    }
-  }
-
-  const byCat = new Map<string, Map<string, CatalogPickerModelRow[]>>();
-  for (const r of rows) {
-    if (!byCat.has(r.category)) byCat.set(r.category, new Map());
-    const mSub = byCat.get(r.category)!;
-    if (!mSub.has(r.subKey)) mSub.set(r.subKey, []);
-    mSub.get(r.subKey)!.push({ id: r.id, name: r.name });
-  }
-
-  const modelsByCategoryAndSub = new Map<string, CatalogPickerModelRow[]>();
-  const subcategoriesByCategory = new Map<string, string[]>();
-  const categorySet = new Set<string>();
-
-  for (const [cat, subMap] of byCat) {
-    categorySet.add(cat);
-    const subs = [...subMap.keys()].sort((a, b) =>
-      a.localeCompare(b, undefined, { sensitivity: "base" }),
-    );
-    subcategoriesByCategory.set(cat, subs);
-    for (const sub of subs) {
-      const list = subMap.get(sub) ?? [];
-      const dedup = new Map<string, string>();
-      for (const { id, name } of list) {
-        if (!dedup.has(id)) dedup.set(id, name);
-      }
-      const sorted = [...dedup.entries()]
-        .map(([id, name]) => ({ id, name }))
-        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-      modelsByCategoryAndSub.set(catalogPickerRowKey(cat, sub), sorted);
-    }
-  }
-
-  const categories = [...categorySet].sort((a, b) =>
-    a.localeCompare(b, undefined, { sensitivity: "base" }),
-  );
-
-  return { categories, subcategoriesByCategory, modelsByCategoryAndSub };
-}
-
-export async function getCatalogPickerData(): Promise<CatalogPickerData> {
-  if (!catalogPickerDataPromise) {
-    catalogPickerDataPromise = loadCatalogPickerDataFromJson().catch((e) => {
-      catalogPickerDataPromise = null;
-      throw e;
-    });
-  }
-  return catalogPickerDataPromise;
+  return sub || "Mono";
 }
 
 // --- Picker slot : uniquement les modèles présents dans HX_ModelUsbAssign.json (ordre hardware) ---
@@ -897,6 +715,26 @@ type UsbAssignFileEntry = {
   subCategory?: string;
 };
 
+type UsbAssignIoSourceEntry = {
+  id?: string;
+  parentModelId?: string;
+  name?: string;
+  category?: string;
+  subCategory?: string;
+  wireValue?: number;
+  devices?: string[];
+};
+
+type UsbAssignSplitSourceEntry = {
+  id?: string;
+  catalogModelId?: string;
+  name?: string;
+  category?: string;
+  subCategory?: string;
+  wireValue?: number;
+  devices?: string[];
+};
+
 async function loadUsbAssignPickerDataFromJson(): Promise<CatalogPickerData> {
   const url = "/src-tauri/resources/HX_ModelUsbAssign.json";
   const res = await fetch(url);
@@ -908,8 +746,20 @@ async function loadUsbAssignPickerDataFromJson(): Promise<CatalogPickerData> {
       modelsByCategoryAndSub: new Map(),
     };
   }
-  const data = JSON.parse(await res.text()) as { entries?: UsbAssignFileEntry[] };
+  const data = JSON.parse(await res.text()) as {
+    entries?: UsbAssignFileEntry[];
+    ioSources?: UsbAssignIoSourceEntry[];
+    splitSources?: UsbAssignSplitSourceEntry[];
+    pickerExcludedCategories?: string[];
+  };
   const entries = Array.isArray(data.entries) ? data.entries : [];
+  const ioSources = Array.isArray(data.ioSources) ? data.ioSources : [];
+  const splitSources = Array.isArray(data.splitSources) ? data.splitSources : [];
+  const pickerExcluded = new Set(
+    (Array.isArray(data.pickerExcludedCategories) ? data.pickerExcludedCategories : [])
+      .map((c) => (typeof c === "string" ? c.trim() : ""))
+      .filter(Boolean),
+  );
 
   const categories: string[] = [];
   const seenCat = new Set<string>();
@@ -931,9 +781,11 @@ async function loadUsbAssignPickerDataFromJson(): Promise<CatalogPickerData> {
     const id = (e.id ?? "").trim();
     if (!id) continue;
     const cat = (e.category ?? "Unknown").trim() || "Unknown";
-    const sub = (e.subCategory ?? "Mono").trim() || "Mono";
-    const name = (e.name ?? id).trim() || id;
+    if (pickerExcluded.has(cat)) continue;
+    const subRaw = (e.subCategory ?? "Mono").trim() || "Mono";
     const assignVariant = (e.variant ?? "mono").trim().toLowerCase();
+    const sub = usbAssignPickerSubDisplay(cat, subRaw, assignVariant);
+    const name = (e.name ?? id).trim() || id;
     if (!seenCat.has(cat)) {
       seenCat.add(cat);
       categories.push(cat);
@@ -945,7 +797,226 @@ async function loadUsbAssignPickerDataFromJson(): Promise<CatalogPickerData> {
     modelsByCategoryAndSub.set(key, list);
   }
 
+  for (const src of ioSources) {
+    const id = (src.id ?? "").trim();
+    const parentModelId = (src.parentModelId ?? "").trim();
+    if (!id || !parentModelId) continue;
+    const cat = (src.category ?? "Input").trim() || "Input";
+    if (pickerExcluded.has(cat)) continue;
+    const subRaw = (src.subCategory ?? "Source").trim() || "Source";
+    const sub = usbAssignPickerSubDisplay(cat, subRaw, "mono");
+    const name = (src.name ?? id).trim() || id;
+    const devices = Array.isArray(src.devices)
+      ? src.devices.map((d) => String(d).trim()).filter(Boolean)
+      : undefined;
+    if (!seenCat.has(cat)) {
+      seenCat.add(cat);
+      categories.push(cat);
+    }
+    pushSub(cat, sub);
+    const key = catalogPickerRowKey(cat, sub);
+    const list = modelsByCategoryAndSub.get(key) ?? [];
+    list.push({
+      id,
+      name,
+      ioSource: true,
+      parentModelId,
+      wireValue: typeof src.wireValue === "number" ? src.wireValue : undefined,
+      devices,
+    });
+    modelsByCategoryAndSub.set(key, list);
+  }
+
+  for (const src of splitSources) {
+    const id = (src.id ?? "").trim();
+    const catalogModelId = (src.catalogModelId ?? "").trim();
+    if (!id || !catalogModelId) continue;
+    const cat = (src.category ?? "Split").trim() || "Split";
+    // splitSources[] : toujours enregistrés (comme ioSources[] pour Input).
+    // pickerExcluded ne s'applique qu'aux entrées FX `entries[]`.
+    const subRaw = (src.subCategory ?? "Mono").trim() || "Mono";
+    const sub = usbAssignPickerSubDisplay(cat, subRaw, "mono");
+    const name = (src.name ?? id).trim() || id;
+    const devices = Array.isArray(src.devices)
+      ? src.devices.map((d) => String(d).trim()).filter(Boolean)
+      : undefined;
+    if (!seenCat.has(cat)) {
+      seenCat.add(cat);
+      categories.push(cat);
+    }
+    pushSub(cat, sub);
+    const key = catalogPickerRowKey(cat, sub);
+    const list = modelsByCategoryAndSub.get(key) ?? [];
+    list.push({
+      id,
+      name,
+      splitSource: true,
+      catalogModelId,
+      wireValue: typeof src.wireValue === "number" ? src.wireValue : undefined,
+      devices,
+    });
+    modelsByCategoryAndSub.set(key, list);
+  }
+
   return { categories, subcategoriesByCategory, modelsByCategoryAndSub };
+}
+
+/** Filtre device connecté pour `ioSources[]` (tolère « stomp », « HX Stomp XL », etc.). */
+export function ioSourceMatchesConnectedDevice(
+  devices: string[] | undefined,
+  connectedDeviceName: string | null,
+): boolean {
+  if (!devices || devices.length === 0) return true;
+  const n = (connectedDeviceName ?? "").trim().toLowerCase();
+  if (!n) return true;
+  return devices.some((d) => {
+    const t = d.trim().toLowerCase();
+    return t && (n.includes(t) || t.includes(n));
+  });
+}
+
+/**
+ * Valeur wire Stomp compacte (1 / 4 / 6) depuis l’enum preset ou la chaîne lue.
+ * Le dump preset peut utiliser l’enum `input_type` complet (ex. 11 = Return 1/2, 15 = USB 5/6).
+ */
+export function normalizeStompInputWireValue(raw: number): number {
+  const v = Math.round(raw);
+  if (v === 11) return 4;
+  if (v === 15) return 6;
+  return v;
+}
+
+/** Id `ioSources[]` pour une valeur wire `@input` Stomp (ex. 1 / 4 / 6). */
+export function findIoSourceIdByWireValue(
+  data: CatalogPickerData,
+  parentModelId: string,
+  wireValue: number,
+  connectedDeviceName: string | null,
+): string | null {
+  const parent = parentModelId.trim();
+  const wire = normalizeStompInputWireValue(wireValue);
+  if (!parent || !Number.isFinite(wire)) return null;
+  const key = catalogPickerRowKey("Input", "Source");
+  const rows = data.modelsByCategoryAndSub.get(key) ?? [];
+  const hit = rows.find(
+    (r) =>
+      r.ioSource &&
+      (r.parentModelId ?? "").trim() === parent &&
+      r.wireValue === wire &&
+      ioSourceMatchesConnectedDevice(r.devices, connectedDeviceName),
+  );
+  return hit?.id ?? null;
+}
+
+type ChainParamValueJson = boolean | number | string;
+
+/** Résout la source Input surlignée depuis les valeurs chaîne preset / alignées. */
+export function findIoSourceIdFromInputChainValues(
+  data: CatalogPickerData,
+  parentModelId: string,
+  chainValues: ChainParamValueJson[] | null | undefined,
+  inputParamChainIndex: number,
+  connectedDeviceName: string | null,
+): string | null {
+  const parent = parentModelId.trim();
+  if (!parent || !chainValues?.length) return null;
+
+  const key = catalogPickerRowKey("Input", "Source");
+  const knownWires = new Set(
+    (data.modelsByCategoryAndSub.get(key) ?? [])
+      .filter(
+        (r) =>
+          r.ioSource &&
+          (r.parentModelId ?? "").trim() === parent &&
+          ioSourceMatchesConnectedDevice(r.devices, connectedDeviceName) &&
+          typeof r.wireValue === "number",
+      )
+      .map((r) => r.wireValue as number),
+  );
+  if (knownWires.size === 0) return null;
+
+  const candidates: number[] = [];
+  const push = (v: ChainParamValueJson | undefined) => {
+    if (typeof v !== "number" || !Number.isFinite(v)) return;
+    const w = normalizeStompInputWireValue(v);
+    if (!candidates.includes(w)) candidates.push(w);
+  };
+  push(chainValues[inputParamChainIndex]);
+  for (const v of chainValues) push(v);
+
+  for (const wire of candidates) {
+    if (!knownWires.has(wire)) continue;
+    const id = findIoSourceIdByWireValue(data, parent, wire, connectedDeviceName);
+    if (id) return id;
+  }
+  return null;
+}
+
+const SPLIT_CHAIN_HEX_TO_WIRE: Record<string, number> = {
+  "6ccd0023": 0,
+  "6ccd0024": 1,
+  "6ccd0025": 2,
+  "6ccd0026": 0x33,
+};
+
+/** Valeur wire type Split depuis chainHex preset (ex. `6ccd0024` → A/B). */
+export function splitWireFromChainHex(moduleHex: string | null | undefined): number | null {
+  const h = (moduleHex ?? "").trim().toLowerCase().replace(/[^0-9a-f]/g, "");
+  if (!h) return null;
+  const tail = h.length >= 8 ? h.slice(-8) : h;
+  const wire = SPLIT_CHAIN_HEX_TO_WIRE[tail];
+  return wire !== undefined ? wire : null;
+}
+
+export function splitChainHexFromWire(wire: number): string {
+  const m: Record<number, string> = {
+    0: "6ccd0023",
+    1: "6ccd0024",
+    2: "6ccd0025",
+    0x33: "6ccd0026",
+  };
+  return m[wire] ?? "";
+}
+
+/** Id `splitSources[]` pour une valeur wire Split Path 1 (0 / 1 / 2 / 0x33). */
+export function findSplitSourceIdByWireValue(
+  data: CatalogPickerData,
+  wire: number,
+  connectedDeviceName: string | null,
+): string | null {
+  for (const rows of data.modelsByCategoryAndSub.values()) {
+    for (const r of rows) {
+      if (
+        r.splitSource &&
+        r.wireValue === wire &&
+        ioSourceMatchesConnectedDevice(r.devices, connectedDeviceName)
+      ) {
+        return r.id;
+      }
+    }
+  }
+  return null;
+}
+
+export function findSplitSourceIdByCatalogModelId(
+  data: CatalogPickerData,
+  catalogModelId: string,
+  connectedDeviceName: string | null,
+): string | null {
+  const id = catalogModelId.trim();
+  if (!id) return null;
+  for (const rows of data.modelsByCategoryAndSub.values()) {
+    for (const r of rows) {
+      if (
+        r.splitSource &&
+        (r.catalogModelId ?? "").trim() === id &&
+        ioSourceMatchesConnectedDevice(r.devices, connectedDeviceName)
+      ) {
+        return r.id;
+      }
+    }
+  }
+  return null;
 }
 
 /** Données picker slot : catégories / sous-catégories / modèles issus de `HX_ModelUsbAssign.json` (ordre fichier). */

@@ -218,6 +218,17 @@ html, body {
   font-weight: 600;
 }
 
+.models-slot-picker-model-item--hint {
+  cursor: default;
+  opacity: 0.65;
+  font-style: italic;
+  pointer-events: none;
+}
+
+.models-slot-picker-model-item--hint:hover {
+  background: transparent;
+}
+
 /* Pendant un geste HW : liste active, panneau params grisé jusqu’au settle (~200 ms). */
 .models-params-pane.models-params-browsing .models-params-params-column .models-params-inner,
 .models-params-inner.models-params-browsing {

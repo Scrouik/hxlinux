@@ -42,6 +42,8 @@ AMP_CAB_CATEGORY = "Amp+Cab"
 AMP_CAB_LEGACY_CATEGORY = "Amp+Cab Legacy"
 AMP_CATEGORY = "Amp"
 PREAMP_CATEGORY = "Preamp"
+SEND_RETURN_CATEGORY = "Send/Return"
+SEND_RETURN_VARIANT = "sendReturn"
 
 SUB_TO_VARIANT: dict[str, str] = {
     "mono": "mono",
@@ -58,6 +60,85 @@ SUB_TO_VARIANT: dict[str, str] = {
 PRESERVE_KEYS = ("bulkHex", "notes", "bulkKind", "edOpcode")
 
 STUB_NOTE = "bulkHex à capturer — généré depuis HX_ModelCatalog.json"
+
+# Bases `.models` (sans extension) par catégorie picker — source de vérité, recopiée en tête du JSON assign.
+MODELS_FILE_BY_CATEGORY: dict[str, str | list[str]] = {
+    "Amp": "amp",
+    "Preamp": "preamp",
+    "Amp+Cab": ["amp", "cab", "cabmicirs", "cabmicirswithpan", "preamp"],
+    "Amp+Cab Legacy": ["amp", "cab", "cabmicirs", "cabmicirswithpan", "preamp"],
+    "Cab": ["cab", "cabmicirs", "cabmicirswithpan"],
+    "IR": ["fixed", "cabmicirs", "cabmicirswithpan"],
+    "Looper": "fixed",
+    "Delay": "delay",
+    "Reverb": "reverb",
+    "Dynamics": ["compressor", "gate"],
+    "EQ": "eq",
+    "Modulation": "modulation",
+    "Distortion": "distortion",
+    "Filter": "filter",
+    "Wah": "wah",
+    "Pitch/Synth": "pitch-synth",
+    "Volume/Pan": "volumepan",
+    "Send/Return": "sendreturn",
+    "Input": "io",
+    "Output": "io",
+    "Split": "io",
+    "Merge": "io",
+    "Connected Devices": "io",
+}
+
+# Exceptions id → fichier(s) ; prioritaire sur modelsFileByCategory.
+MODELS_FILE_BY_ID: dict[str, str | list[str]] = {}
+
+# Catégories présentes dans entries[] (scroll / métadonnées) mais absentes du picker assign slot FX.
+# Routing / périphériques : jamais dans le picker FX. Input/Output : picker verrouillé sur le slot I/O Path 1.
+PICKER_EXCLUDED_CATEGORIES: list[str] = [
+    "Split",
+    "Merge",
+    "Connected Devices",
+]
+
+
+def ensure_models_file_maps(assign: dict) -> None:
+    """Met à jour modelsFileByCategory / modelsFileById sans écraser les ids ajoutés à la main."""
+    assign["modelsFileByCategory"] = dict(MODELS_FILE_BY_CATEGORY)
+    by_id = dict(MODELS_FILE_BY_ID)
+    existing = assign.get("modelsFileById")
+    if isinstance(existing, dict):
+        for k, v in existing.items():
+            if k not in by_id:
+                by_id[k] = v
+    assign["modelsFileById"] = by_id
+    fg = assign.setdefault("fieldGuide", {})
+    if isinstance(fg, dict):
+        fg.setdefault(
+            "modelsFileByCategory",
+            {
+                "runtime": "TypeScript (panneau paramètres)",
+                "purpose": "Catégorie picker → base(s) `.models` (sans extension), string ou tableau.",
+            },
+        )
+        fg.setdefault(
+            "modelsFileById",
+            {
+                "runtime": "TypeScript (panneau paramètres)",
+                "purpose": "Exceptions par id catalogue (prioritaire sur modelsFileByCategory).",
+            },
+        )
+
+
+def ensure_picker_excluded_categories(assign: dict) -> None:
+    assign["pickerExcludedCategories"] = list(PICKER_EXCLUDED_CATEGORIES)
+    fg = assign.setdefault("fieldGuide", {})
+    if isinstance(fg, dict):
+        fg.setdefault(
+            "pickerExcludedCategories",
+            {
+                "runtime": "TypeScript (picker assign)",
+                "purpose": "Catégories hors picker FX (split, merge, …). Input/Output restent dans le picker mais verrouillés sur les slots Path 1 dédiés.",
+            },
+        )
 
 
 def load_catalog_models() -> list[dict]:
@@ -81,12 +162,14 @@ def sub_to_variant(sub: str) -> str:
 
 
 def catalog_variant_for_sub(pm: dict, sub: str) -> str:
-    """Amp / Preamp : pas de mono/stéréo — variants dédiés (`amp`, `preamp`)."""
+    """Amp / Preamp / Send-Return : variants dédiés (pas mono/stéréo USB)."""
     cat = (pm.get("categoryName") or "").strip()
     if cat == AMP_CATEGORY:
         return AMP_VARIANT
     if cat == PREAMP_CATEGORY:
         return PREAMP_VARIANT
+    if cat == SEND_RETURN_CATEGORY:
+        return SEND_RETURN_VARIANT
     return sub_to_variant(sub)
 
 
@@ -117,6 +200,16 @@ def expand_catalog_variants(pm: dict) -> list[tuple[str, str, str]]:
         return [(catalog_variant_for_sub(pm, sub), hint, sub)]
 
     if len(chs) > 1:
+        cat = (pm.get("categoryName") or "").strip()
+        # Cab IR : parfois chainHex [single, dual] sur une ligne catalogue alors que le dual
+        # a son propre id (*WithPan) — ne pas fabriquer une 2ᵉ entrée `mono`.
+        if (
+            cat == "Cab"
+            and len(subs) == 1
+            and subs[0].strip().lower() in ("single", "legacy")
+        ):
+            sub = subs[0]
+            return [(catalog_variant_for_sub(pm, sub), chs[0].lower(), sub)]
         out: list[tuple[str, str, str]] = []
         for i, ch in enumerate(chs):
             sub = subs[i] if i < len(subs) else "Mono"
@@ -445,8 +538,27 @@ def main() -> int:
         if missing_catalog:
             print(f"Ids assign absents du catalogue : {len(missing_catalog)}", file=sys.stderr)
 
+    ensure_models_file_maps(assign)
+    ensure_picker_excluded_categories(assign)
+    ordered: dict = {}
+    for key in (
+        "schemaVersion",
+        "description",
+        "modelsFileByCategory",
+        "modelsFileById",
+        "pickerExcludedCategories",
+        "ioSources",
+        "splitSources",
+        "fieldGuide",
+        "entries",
+    ):
+        if key in assign:
+            ordered[key] = assign[key]
+    for key, val in assign.items():
+        if key not in ordered:
+            ordered[key] = val
     ASSIGN_PATH.write_text(
-        json.dumps(assign, ensure_ascii=False, indent=2) + "\n",
+        json.dumps(ordered, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     write_audit(assign["entries"])
