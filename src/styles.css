@@ -1310,22 +1310,20 @@ html, body {
   text-overflow: ellipsis;
 }
 
-.models-status {
-  font-size: 12px;
-  color: var(--text-dim);
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border);
-}
-
 .models-content {
-  padding: 12px;
+  padding: 10px 12px 12px;
+  box-sizing: border-box;
+  width: 100%;
 }
 
 .models-matrix-host,
 #content.models-pane {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
+  width: 100%;
+  container-type: inline-size;
+  container-name: models-matrix;
 }
 
 .models-pane .flow {
@@ -1335,14 +1333,18 @@ html, body {
   min-width: max-content;
 }
 
-/* Matrice seule : largeur = grille uniquement (pas d’étirement sur le main). */
+/* Matrice : cadre + marge intérieure (grille non collée aux bords). */
 .models-pane .flow.hx-matrix {
   min-width: 0;
   width: fit-content;
   max-width: 100%;
   flex-shrink: 0;
-  /* Évite que l’enfant grille ne s’étire en cross-axis (largeur) comme un flex item « stretch ». */
   align-items: flex-start;
+  box-sizing: border-box;
+  padding: 12px 14px 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-raised);
 }
 
 .models-pane .flow-row {
@@ -1610,23 +1612,54 @@ html, body {
   border-width: 1px;
 }
 
-/* Slot vide sélectionné: forcer un cadre orange visible, icône ou non. */
-.models-pane .hx-matrix-cell > .node.node--hx-slot.node-empty.node--selected {
+/* Slot vide matrice : fond transparent, pas de cadre au repos ; blanc au survol, orange si sélectionné. */
+.models-pane .hx-matrix-cell > .node-empty.node-empty-flat.node--hx-slot {
+  flex: 1 1 auto;
+  align-self: stretch;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  opacity: 1;
+}
+
+.models-pane .hx-matrix-cell > .node-empty.node-empty-flat.node--hx-slot:hover:not(.node--selected),
+.models-pane .hx-matrix-cell > .node-empty.node-empty-flat.node--hx-slot:focus-visible:not(.node--selected) {
+  border-color: rgb(255, 255, 255);
+  border-style: solid;
+}
+
+.models-pane .hx-matrix-cell > .node-empty.node-empty-flat.node--hx-slot.node-empty-column-blocked {
+  pointer-events: none;
+  cursor: default;
+}
+
+.models-pane .hx-matrix-cell > .node-empty.node-empty-flat.node--hx-slot.node-empty-column-blocked:hover,
+.models-pane .hx-matrix-cell > .node-empty.node-empty-flat.node--hx-slot.node-empty-column-blocked:focus-visible {
+  border-color: transparent;
+}
+
+.models-pane .hx-matrix-cell > .node-empty.node-empty-flat.node--hx-slot.node--selected {
   border-color: var(--amber) !important;
   border-style: solid;
-  border-width: 1px;
   box-shadow: inset 0 0 0 2px var(--amber), 0 0 0 1px var(--amber);
 }
 
-/* Matrice 4×20 : L1 Path 1, L2 Description Path 1, L3 Path 2, L4 Description Path 2 ; col 20 = n° ligne (debug). */
+/* Matrice 2×19 : L1 Path 1, L2 Path 2. */
 .models-pane .hx-matrix-grid {
-  --hx-matrix-cell: 56px;
-  --hx-matrix-cols: 20;
+  --hx-matrix-cell-min: 30px;
+  --hx-matrix-cell-max: 38px;
+  --hx-matrix-cell: var(--hx-matrix-cell-max);
+  --hx-matrix-icon: min(32px, calc(var(--hx-matrix-cell) * 0.82));
   display: grid;
   flex: 0 0 auto;
   align-self: flex-start;
-  grid-template-columns: repeat(20, 56px);
-  grid-template-rows: repeat(4, 56px);
+  /* Literals in repeat() — WebKitGTK n’accepte pas repeat(var(--n), …). */
+  grid-template-columns: repeat(19, var(--hx-matrix-cell));
+  grid-template-rows: repeat(2, var(--hx-matrix-cell));
   gap: 0;
   row-gap: 0;
   column-gap: 0;
@@ -1634,11 +1667,104 @@ html, body {
   justify-items: stretch;
   justify-content: start;
   align-content: start;
-  width: calc(var(--hx-matrix-cols) * var(--hx-matrix-cell));
-  min-width: calc(var(--hx-matrix-cols) * var(--hx-matrix-cell));
-  max-width: calc(var(--hx-matrix-cols) * var(--hx-matrix-cell));
+  width: calc(19 * var(--hx-matrix-cell));
+  min-width: calc(19 * var(--hx-matrix-cell-min));
+  max-width: calc(19 * var(--hx-matrix-cell-max));
   box-sizing: border-box;
   isolation: isolate;
+}
+
+/* Taille dynamique : isolée dans @container pour ne pas invalider --hx-matrix-cell si cqi absent. */
+@container models-matrix (min-width: 1px) {
+  .models-pane .hx-matrix-grid {
+    --hx-matrix-cell: clamp(
+      var(--hx-matrix-cell-min),
+      calc(100cqi / 19),
+      var(--hx-matrix-cell-max)
+    );
+  }
+}
+
+/* Rail Path 1 (L1) : trait horizontal centre Input → centre Output, sous les cellules (z-index 0). */
+.models-pane .hx-matrix-path1-rail {
+  grid-row: 1;
+  grid-column: 1 / 20;
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  justify-self: stretch;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.models-pane .hx-matrix-path1-rail::after,
+.models-pane .hx-matrix-path2-rail::after {
+  content: "";
+  display: block;
+  width: calc(100% - var(--hx-matrix-cell, 38px));
+  margin-left: calc(var(--hx-matrix-cell, 38px) / 2);
+  height: 1px;
+  background: rgb(255, 255, 255);
+  box-shadow: none;
+}
+
+/* Rail Path 2 (L3) : split → merge, sous les cellules (z-index 0). Colonnes posées en JS. */
+.models-pane .hx-matrix-path2-rail {
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  justify-self: stretch;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+/* Trait vertical split/merge : centre Path 1 (L1) → centre Path 2 (L2), même colonne — couche 0. */
+.models-pane .hx-matrix-junction-vrail {
+  grid-row: 1 / 3;
+  z-index: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  align-self: stretch;
+  justify-self: stretch;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.models-pane .hx-matrix-junction-vrail::after {
+  content: "";
+  display: block;
+  width: 1px;
+  margin-top: calc(var(--hx-matrix-cell, 38px) / 2);
+  height: calc(1 * var(--hx-matrix-cell, 38px));
+  background: rgb(255, 255, 255);
+  box-shadow: none;
 }
 
 /*
@@ -1665,12 +1791,12 @@ html, body {
   /* Par défaut : le contenu remplit la case (évite « pilules » plus basses sur les slots vides). */
   align-items: stretch;
   justify-content: stretch;
-  width: var(--hx-matrix-cell);
-  height: var(--hx-matrix-cell);
+  width: var(--hx-matrix-cell, 38px);
+  height: var(--hx-matrix-cell, 38px);
   min-width: 0;
   min-height: 0;
-  max-width: var(--hx-matrix-cell);
-  max-height: var(--hx-matrix-cell);
+  max-width: var(--hx-matrix-cell, 38px);
+  max-height: var(--hx-matrix-cell, 38px);
   padding: 0;
   box-sizing: border-box;
   overflow: hidden;
@@ -1689,29 +1815,11 @@ html, body {
   margin: 0;
 }
 
-/* Colonne split/merge sur « Description Path 1 » (L2) : trait centré (pas le même alignement que le texte catégorie). */
-.models-pane .hx-matrix-cell.hx-matrix-cell--description-path.hx-matrix-cell--r2-junction-vline {
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-}
-
+/* Colonne split/merge sur « Description Path 1 » (L2) : cellule vide ; trait = `.hx-matrix-junction-vrail`. */
 .models-pane .hx-matrix-cell.hx-matrix-cell--description-path.hx-matrix-cell--empty {
   min-width: 0;
   min-height: 0;
   margin: 0;
-}
-
-.models-pane .hx-matrix-r2-vline {
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  flex: 1 1 auto;
 }
 
 .models-pane .hx-matrix-category {
@@ -1719,7 +1827,7 @@ html, body {
   max-width: 100%;
   box-sizing: border-box;
   padding: 0 2px;
-  font-size: 9px;
+  font-size: clamp(8px, calc(var(--hx-matrix-cell, 38px) * 0.24), 9px);
   font-weight: 600;
   line-height: 1.2;
   letter-spacing: 0.02em;
@@ -1730,25 +1838,8 @@ html, body {
   white-space: nowrap;
 }
 
-/* Colonne 20 : indice de ligne grille (vérification layout). */
-.models-pane .hx-matrix-cell--row-line-debug {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-}
-
-.models-pane .hx-matrix-row-line-debug {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-muted);
-  line-height: 1;
-  user-select: text;
-}
-
 /*
- * REVERT (5 lignes + cellule debug « 3 » sur rangée séparateur hauteur 0) :
+ * REVERT (5 lignes + cellule debug sur rangée séparateur) :
  * .models-pane .hx-matrix-cell.hx-matrix-cell--row-line-debug-sep {
  *   height: auto !important;
  *   max-height: 22px !important;
@@ -1759,7 +1850,16 @@ html, body {
  * }
  */
 
-/* Même gabarit que `.node.node--hx-slot` : icône slot 56×56 (cellule matrice 56×56). */
+/* Icônes slot / vide en matrice : taille liée à `--hx-matrix-cell` (assets source 38×38). */
+.models-pane .hx-matrix-cell .node-icon-img,
+.models-pane .hx-matrix-cell .node-icon-fallback {
+  width: var(--hx-matrix-icon);
+  height: var(--hx-matrix-icon);
+  max-width: 100%;
+  max-height: 100%;
+  font-size: clamp(8px, calc(var(--hx-matrix-cell) * 0.28), 11px);
+}
+
 .models-pane .hx-matrix-cell .hx-io {
   box-sizing: border-box;
   width: 100%;
@@ -1787,7 +1887,21 @@ html, body {
   border-radius: 4px;
 }
 
-/* Infobulle au survol de toute la cellule : contenu limité à la cellule 56×56. */
+.models-pane .hx-matrix-cell .hx-io-icon {
+  width: var(--hx-matrix-icon);
+  height: var(--hx-matrix-icon);
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.models-pane .hx-matrix-cell .hx-io-icon--output {
+  width: calc(var(--hx-matrix-icon) * 0.58);
+  height: calc(var(--hx-matrix-icon) * 0.58);
+}
+
+/* Infobulle au survol de toute la cellule : contenu limité à la case matrice. */
 .models-pane .hx-matrix-cell > .node.node--hx-slot {
   box-sizing: border-box;
   width: 100%;
@@ -1811,23 +1925,13 @@ html, body {
   outline-offset: -2px;
 }
 
-/* Slot vide matrice : occupe toute la case pour hauteur identique aux blocs avec icône. */
-.models-pane .hx-matrix-cell > .node-empty.node-empty-flat.node--hx-slot {
-  flex: 1 1 auto;
-  align-self: stretch;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  max-height: 100%;
-}
-
-/* Colonnes paires (path 1) : décorations grille — pas les cartes slot (icônes catégorie 56×56). */
+/* Colonnes impaires : décorations grille (ligne, split, merge). */
 .models-pane .hx-matrix-junction-line {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
   min-height: 0;
-  max-height: 56px;
+  max-height: 100%;
   margin: 0;
   padding: 0 1px;
   border: none;
@@ -1844,9 +1948,9 @@ html, body {
   width: 100%;
   min-width: 0;
   min-height: 0;
-  max-height: 56px;
+  max-height: 100%;
   margin: 0;
-  padding: 0 1px;
+  padding: 0;
   border: none;
   background: transparent;
   box-shadow: none;
@@ -1854,6 +1958,20 @@ html, body {
   align-items: center;
   justify-content: center;
   pointer-events: auto;
+}
+
+.models-pane .hx-matrix-routing-marker::after {
+  content: "";
+  display: block;
+  flex: 0 0 auto;
+  width: calc(var(--hx-matrix-cell, 38px) * 0.24);
+  height: calc(var(--hx-matrix-cell, 38px) * 0.24);
+  min-width: 6px;
+  min-height: 6px;
+  border: 1px solid rgb(255, 255, 255);
+  border-radius: 50%;
+  background: rgb(255, 255, 255);
+  box-sizing: border-box;
 }
 
 /* Séparateurs cliquables sur Path 1 (même mécanique de sélection que les slots). */
@@ -1872,29 +1990,8 @@ html, body {
   border-radius: 4px;
 }
 
-/* Trait vertical split/merge : « Description Path 1 » (L2) = `.hx-matrix-r2-vline` ; pas d’overlay L3 (évite chevauchement avec `Icons_link_*`). */
-.models-pane .hx-matrix-vspan,
-.models-pane .hx-matrix-path2-link {
-  box-sizing: border-box;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  margin: 0;
-  padding: 0 1px;
-  border: none;
-  background: transparent;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  z-index: 2;
-}
-
-/* Images décor grille (colonnes paires + vspan) : PNG typiquement 56×56. */
-.models-pane .hx-matrix-junction-line-img,
-.models-pane .hx-matrix-routing-marker-img,
-.models-pane .hx-matrix-vspan-img {
+/* Images décor grille (path2 link — retiré) : conservé si réutilisation future. */
+.models-pane .hx-matrix-junction-line-img {
   width: auto;
   height: auto;
   max-width: 100%;

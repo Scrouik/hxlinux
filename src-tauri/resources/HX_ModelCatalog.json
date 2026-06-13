@@ -27294,8 +27294,8 @@
         {
             "id": "HD2_AppDSPFlow1Input",
             "name": "Input",
-            "image": "icon-inputs_%18.png",
-            "image_native": "icon-inputs-native_%3.png",
+            "image": "icon-inputs_f18.png",
+            "image_native": "icon-inputs-native_f3.png",
             "params": [
                 {
                     "noiseGate": "Input Gate"
@@ -27324,8 +27324,8 @@
         {
             "id": "HD2_AppDSPFlow2Input",
             "name": "Input",
-            "image": "icon-inputs_%18.png",
-            "image_native": "icon-inputs-native_%3.png",
+            "image": "icon-inputs_f18.png",
+            "image_native": "icon-inputs-native_f3.png",
             "params": [
                 {
                     "noiseGate": "Input Gate"
@@ -27356,7 +27356,7 @@
             "id": "HelixFx_AppDSPFlowInput",
             "name": "Input",
             "image": "icon-input-category.png",
-            "image_native": "icon-inputs-native_%3.png",
+            "image_native": "icon-inputs-native_f3.png",
             "params": [],
             "presetMeta": {
                 "categoryId": 18,
@@ -27369,8 +27369,8 @@
         {
             "id": "HelixStomp_AppDSPFlowInput",
             "name": "Input",
-            "image": "icon-inputs-p33_%8.png",
-            "image_native": "icon-inputs-native_%3.png",
+            "image": "icon-inputs-main-LR.png",
+            "image_native": "icon-inputs-native_f3.png",
             "params": [
                 {
                     "noiseGate": "Input Gate"
@@ -27398,8 +27398,8 @@
         },
         {
             "id": "HD2_AppDSPFlowOutput",
-            "image": "icon-outputs_%14.png",
-            "image_native": "icon-outputs-native_%6.png",
+            "image": "icon-outputs_f14.png",
+            "image_native": "icon-outputs-native_f6.png",
             "name": "Output",
             "params": [
                 {
@@ -27419,8 +27419,8 @@
         },
         {
             "id": "HelixFx_AppDSPFlowOutput",
-            "image": "icon-outputs-f15_%8.png",
-            "image_native": "icon-outputs-native_%6.png",
+            "image": "icon-outputs-f15_f8.png",
+            "image_native": "icon-outputs-native_f6.png",
             "name": "Output",
             "params": [
                 {
@@ -27440,8 +27440,8 @@
         },
         {
             "id": "HelixStomp_AppDSPFlowOutputMain",
-            "image": "icon-outputs-f15_%8.png",
-            "image_native": "icon-outputs-native_%6.png",
+            "image": "icon-outputs-f15_f8.png",
+            "image_native": "icon-outputs-native_f6.png",
             "name": "Output",
             "params": [
                 {
@@ -27461,8 +27461,8 @@
         },
         {
             "id": "HelixStomp_AppDSPFlowOutputSend",
-            "image": "icon-outputs-f15_%8.png",
-            "image_native": "icon-outputs-native_%6.png",
+            "image": "icon-outputs-f15_f8.png",
+            "image_native": "icon-outputs-native_f6.png",
             "name": "Output",
             "params": [
                 {

@@ -14,9 +14,9 @@
     "windows": [
       {
         "title": "hxlinux",
-        "width": 800,
+        "width": 1293,
         "minWidth": 280,
-        "height": 600,
+        "height": 1143,
         "devtools": true
       }
     ],

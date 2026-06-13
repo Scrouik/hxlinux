@@ -221,4 +221,4 @@ Le champ **`basedOn`** (ex. *MESA/Boogie® Dual Rectifier*) dans l’assign est 
 - [ ] **README / disclaimer** : HXLinux non affilié Line 6 / Yamaha / fabricants cités ; marques = propriétaires ; `basedOn` = aide utilisateur issue de docs publiques, pas du device.
 - [ ] **`fieldGuide`** : documenter `basedOn` comme *métadonnée curatée (site L6)* ; passer en *runtime TS (affichage optionnel)* seulement quand le flag caché existe.
 
-_Voir aussi le bloc **Todo** dans **`description.md`**._
+_Voir aussi le **guide de reprise** dans **`description.md`** (architecture, conventions, commandes)._

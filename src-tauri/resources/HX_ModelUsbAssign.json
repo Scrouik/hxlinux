@@ -66,6 +66,7 @@
       "subCategory": "Source",
       "name": "Input Main L/R",
       "wireValue": 1,
+      "image": "icon-inputs-main-LR.png",
       "liveWriteHex": "1d0000188010ed0300690004931d0000010006000d0000008366cd03f3642a658262003301000000",
       "assignKind": "path1InputSource",
       "notes": "Capture HX Edit Input.json frame 1349 — live write 1d @input bus 0x00 param 0x33"
@@ -81,6 +82,7 @@
       "subCategory": "Source",
       "name": "Input Return L/R",
       "wireValue": 4,
+      "image": "icon-inputs-return-LR.png",
       "liveWriteHex": "1d0000188010ed03006c0004a41d0000010006000d0000008366cd03f4642a658262003304000000",
       "assignKind": "path1InputSource",
       "notes": "Capture HX Edit Input.json frame 1931"
@@ -96,6 +98,7 @@
       "subCategory": "Source",
       "name": "Input USB 5/6",
       "wireValue": 6,
+      "image": "icon-inputs-usb-5-6.png",
       "liveWriteHex": "1d0000188010ed03006f0004b51d0000010006000d0000008366cd03f5642a658262003306000000",
       "assignKind": "path1InputSource",
       "notes": "Capture HX Edit Input.json frame 2511"
@@ -214,8 +217,8 @@
       "purpose": "Journal de capture (date, source HX Edit, variante vue sur Stomp, chainHex scroll validé, etc.)."
     },
     "ioSources": {
-      "runtime": "Rust (write_path1_input_source) + TypeScript (picker Input verrouillé)",
-      "purpose": "Sources Path 1 sélectionnables (ex. Main / Return / USB sur Stomp). liveWriteHex = trame 1d (40 o), pas bulkHex assign slot. parentModelId = modèle catalogue I/O pour le panneau paramètres."
+      "runtime": "Rust (write_path1_input_source) + TypeScript (picker Input verrouillé, icône matrice)",
+      "purpose": "Sources Path 1 sélectionnables (ex. Main / Return / USB sur Stomp). liveWriteHex = trame 1d (40 o). image = PNG dédié icons_models/ par source."
     },
     "splitSources": {
       "runtime": "Rust (write_path1_split_type) + TypeScript (picker Split verrouillé)",
@@ -228,6 +231,10 @@
     "wireValue": {
       "runtime": "Rust + doc",
       "purpose": "Valeur wire @input Stomp (indices compacts 1/4/6 — pas l'enum input_type Floor complet)."
+    },
+    "image": {
+      "runtime": "TypeScript (matrice / picker)",
+      "purpose": "Nom de fichier PNG dans icons_models/ (ex. icon-inputs-main-LR.png), une icône par entrée ioSources[]."
     },
     "parentModelId": {
       "runtime": "TypeScript (picker + panneau params)",
@@ -15175,7 +15182,7 @@
       "name": "Input",
       "category": "Input",
       "subCategory": "Mono",
-      "image": "icon-inputs_%18.png",
+      "image": "icon-inputs_f18.png",
       "notes": "bulkHex à capturer — généré depuis HX_ModelCatalog.json"
     },
     {
@@ -15185,7 +15192,7 @@
       "name": "Input",
       "category": "Input",
       "subCategory": "Mono",
-      "image": "icon-inputs_%18.png",
+      "image": "icon-inputs_f18.png",
       "notes": "bulkHex à capturer — généré depuis HX_ModelCatalog.json"
     },
     {
@@ -15205,7 +15212,7 @@
       "name": "Input",
       "category": "Input",
       "subCategory": "Mono",
-      "image": "icon-inputs-p33_%8.png",
+      "image": "icon-inputs-main-LR.png",
       "notes": "bulkHex à capturer — généré depuis HX_ModelCatalog.json"
     },
     {
@@ -15215,7 +15222,7 @@
       "name": "Output",
       "category": "Output",
       "subCategory": "Mono",
-      "image": "icon-outputs_%14.png",
+      "image": "icon-outputs_f14.png",
       "notes": "bulkHex à capturer — généré depuis HX_ModelCatalog.json"
     },
     {
@@ -15225,7 +15232,7 @@
       "name": "Output",
       "category": "Output",
       "subCategory": "Mono",
-      "image": "icon-outputs-f15_%8.png",
+      "image": "icon-outputs-f15_f8.png",
       "notes": "bulkHex à capturer — généré depuis HX_ModelCatalog.json"
     },
     {
@@ -15235,7 +15242,7 @@
       "name": "Output",
       "category": "Output",
       "subCategory": "Mono",
-      "image": "icon-outputs-f15_%8.png",
+      "image": "icon-outputs-f15_f8.png",
       "notes": "bulkHex à capturer — généré depuis HX_ModelCatalog.json"
     },
     {
@@ -15245,7 +15252,7 @@
       "name": "Output",
       "category": "Output",
       "subCategory": "Mono",
-      "image": "icon-outputs-f15_%8.png",
+      "image": "icon-outputs-f15_f8.png",
       "notes": "bulkHex à capturer — généré depuis HX_ModelCatalog.json"
     },
     {

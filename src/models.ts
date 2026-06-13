@@ -6,6 +6,8 @@ import {
   findUsbAssignPickerLocation,
   findIoSourceIdFromInputChainValues,
   findIoSourceIdByWireValue,
+  findIoSourceRowById,
+  findIoSourceRowByWireValue,
   findSplitSourceIdByCatalogModelId,
   findSplitSourceIdByWireValue,
   splitWireFromChainHex,
@@ -122,7 +124,11 @@ const DEBUG_MODEL_ID_JOIN_FALLBACK =
 let debugRoutingMode = localStorage.getItem("models_debug_routing") === "1";
 let connectedDeviceName: string | null = null;
 
-const statusEl = document.getElementById("status") as HTMLElement;
+const statusEl = document.getElementById("status");
+
+function setStatus(text: string) {
+  if (statusEl) statusEl.textContent = text;
+}
 const presetLabelEl = document.getElementById("preset-label") as HTMLElement;
 const contentEl = document.getElementById("content") as HTMLElement;
 const LIVE_WRITE_PROBE_FLAG = "models_live_write_probe";
@@ -491,7 +497,6 @@ function applyHardwareSlotModelVisualLight(ki: number, slot: SlotDebug): void {
       lastHwSyncChainSignature = chainLayoutSignature(next);
     }
     patchMatrixSlotVisualFromSlot(ki, slot);
-    patchMatrixCategoryDescFromSlot(ki, slot);
     const titleEl = document.getElementById("models-params-pane-title");
     if (titleEl) {
       const label = slot.name?.trim();
@@ -514,7 +519,6 @@ function applyHardwareSlotModelVisualFast(
       lastHwSyncChainSignature = chainLayoutSignature(next);
     }
     patchMatrixSlotVisualFromSlot(ki, slot);
-    patchMatrixCategoryDescFromSlot(ki, slot);
     const titleEl = document.getElementById("models-params-pane-title");
     if (titleEl) {
       const label = slot.name?.trim();
@@ -1738,6 +1742,8 @@ function applyPickerForStructuralSlot(
 }
 /** Dernière source Input écrite sur le preset actif (preset_data pas encore à jour). */
 let path1InputSourceHighlightOverride: string | null = null;
+/** Wire `@input` Path 1 mémorisé pour l’icône matrice (scroll / live write). */
+let path1InputMatrixWire: number | null = null;
 /** Dernier type Split écrit (wire live / preset pas encore à jour). */
 let path1SplitTypeHighlightOverride: string | null = null;
 let splitScrollParamsReloadTimer: number | null = null;
@@ -1759,6 +1765,10 @@ function scheduleSplitScrollParamsReload(slot: SlotDebug): void {
 
 function clearPath1InputSourceHighlightOverride(): void {
   path1InputSourceHighlightOverride = null;
+}
+
+function clearPath1InputMatrixWire(): void {
+  path1InputMatrixWire = null;
 }
 
 function clearPath1SplitTypeHighlightOverride(): void {
@@ -1807,6 +1817,11 @@ async function syncInputPickerHighlightAsync(
     );
   }
   applySlotPickerIoLock("Input", idTrim, highlight);
+  if (highlight) {
+    const row = findIoSourceRowById(catalogPickerDataCache, highlight);
+    if (typeof row?.wireValue === "number") path1InputMatrixWire = row.wireValue;
+    void refreshPath1InputMatrixIcon();
+  }
 }
 
 function syncSplitPickerHighlight(
@@ -2086,25 +2101,28 @@ function usbAssignVariantFromPickerSub(sub: string, pickerCategory?: string): st
 
 function patchMatrixSlotVisualFromSlot(ki: number, slot: SlotDebug): void {
   const nodes = contentEl.querySelectorAll<HTMLElement>(`[data-kempline-slot-index="${ki}"]`);
+  let slotsCtx = lastHwSyncNormalizedSlots;
+  if (slotsCtx && slotsCtx.length === 16) {
+    slotsCtx = slotsCtx.map((s, i) => (i === ki ? { ...slot } : { ...s }));
+  }
   for (const old of nodes) {
-    const inner = gridSlotNode(slot, ki, { path: ki >= 8 ? 2 : 1 });
+    const inner = gridSlotNode(slot, ki, slotsCtx ?? undefined);
     old.replaceWith(inner);
+  }
+  if (slotsCtx && slotsCtx.length === 16) {
+    refreshColumnPairedEmptySlotVisual(slotsCtx, ki);
   }
 }
 
-function patchMatrixCategoryDescFromSlot(ki: number, slot: SlotDebug): void {
-  const el = contentEl.querySelector<HTMLElement>(`[data-kempline-slot-desc-index="${ki}"]`);
-  if (!el) return;
-  const empty = !slot.category && slot.name === "<empty>";
-  if (empty) {
-    el.textContent = "";
-    el.removeAttribute("title");
-    return;
+function refreshColumnPairedEmptySlotVisual(slots: SlotDebug[], kemplineSlotIndex: number): void {
+  const paired = pairedKemplineSlotIndex(kemplineSlotIndex);
+  if (paired === null) return;
+  const pairedSlot = slots[paired];
+  if (!pairedSlot || !isEmptyGridCell(pairedSlot)) return;
+  const nodes = contentEl.querySelectorAll<HTMLElement>(`[data-kempline-slot-index="${paired}"]`);
+  for (const old of nodes) {
+    old.replaceWith(gridSlotNode(pairedSlot, paired, slots));
   }
-  const cat = slot.category.trim();
-  el.textContent = cat;
-  if (cat) el.title = cat;
-  else el.removeAttribute("title");
 }
 
 /**
@@ -2123,8 +2141,10 @@ async function applyPath1InputSourceFromPicker(row: CatalogPickerModelRow): Prom
   markLiveWriteUiInteraction();
   try {
     path1InputSourceHighlightOverride = row.id;
+    if (typeof row.wireValue === "number") path1InputMatrixWire = row.wireValue;
     const out = await invoke<string>("write_path1_input_source", { ioSourceId: row.id });
     console.info("[Path1Input]", row.name, out);
+    void refreshPath1InputMatrixIcon();
     await syncInputPickerHighlightAsync(
       flowIoCatalogIdsForConnectedDevice(connectedDeviceName).input,
       null,
@@ -2243,7 +2263,6 @@ async function applySlotModelFromPickerListClick(row: CatalogPickerModelRow): Pr
   }
 
   patchMatrixSlotVisualFromSlot(ki, optimisticSlot);
-  patchMatrixCategoryDescFromSlot(ki, optimisticSlot);
   if (selectedParamsKemplineSlotIndex === ki) {
     selectParamsPaneByKemplineIndex(ki);
   }
@@ -2277,7 +2296,6 @@ async function applySlotModelFromPickerListClick(row: CatalogPickerModelRow): Pr
     if (prevSnapshot) {
       const old = prevSnapshot[ki]!;
       patchMatrixSlotVisualFromSlot(ki, old);
-      patchMatrixCategoryDescFromSlot(ki, old);
       lastHwSyncNormalizedSlots = prevSnapshot.map((s) => ({ ...s }));
       lastHwSyncChainSignature = chainLayoutSignature(lastHwSyncNormalizedSlots);
       if (selectedParamsKemplineSlotIndex === ki) {
@@ -2682,7 +2700,6 @@ function attachSelectedSlotRemoveButton(el: HTMLElement, slotIndex: number): voi
           lastHwSyncNormalizedSlots = next;
           lastHwSyncChainSignature = chainLayoutSignature(next);
           patchMatrixSlotVisualFromSlot(slotIndex, emptySlot);
-          patchMatrixCategoryDescFromSlot(slotIndex, emptySlot);
           mergeProbeSlotModelUntil = {
             ki: slotIndex,
             deadline: Date.now() + PROBE_SLOT_MERGE_GRACE_MS,
@@ -2740,7 +2757,7 @@ function selectParamsPaneByKemplineIndex(kemplineSlotIndex: number): boolean {
     return false;
   }
   const node = contentEl.querySelector<HTMLElement>(
-    `[data-kempline-slot-index="${kemplineSlotIndex}"]`,
+    `.node--params-clickable[data-kempline-slot-index="${kemplineSlotIndex}"]`,
   );
   if (!node) return false;
   suppressNextUiSlotHardwareSwitch = true;
@@ -2972,13 +2989,10 @@ function isEmpty(name: string): boolean {
   return !name || name === "<empty>";
 }
 
-function setStatus(text: string) {
-  statusEl.textContent = text;
-}
-
 function purgeModelsUi() {
   connectedDeviceName = null;
   clearPath1InputSourceHighlightOverride();
+  clearPath1InputMatrixWire();
   clearPath1SplitTypeHighlightOverride();
   currentPresetIndex = -1;
   loadedPresetIndex = -1;
@@ -5290,11 +5304,11 @@ function iconForCategory(category: string, name: string): string | null {
   return tauriResourceUrl("icons_category", filename);
 }
 
-/** Fichier `image` du catalogue : uniquement un nom de fichier PNG sûr pour `icons_models/`. */
+/** Fichier `image` assign : nom PNG sûr pour `icons_models/` (éviter `%` — préférer `_fN` pour N bandes). */
 function sanitizeIconsModelsFilename(name: string): string | null {
   const t = name.trim();
   if (!t || t.includes("/") || t.includes("\\") || t.includes("..")) return null;
-  if (!/^[a-zA-Z0-9_.-]+\.png$/i.test(t)) return null;
+  if (!/^[a-zA-Z0-9_.()-]+\.png$/i.test(t)) return null;
   return t;
 }
 
@@ -5526,6 +5540,23 @@ function isEmptyGridCell(slot: SlotDebug): boolean {
   return !slot.category && slot.name === "<empty>";
 }
 
+/** Paire Path 1 (0..7) ↔ Path 2 (8..15) : même colonne visuelle. */
+function pairedKemplineSlotIndex(kemplineSlotIndex: number): number | null {
+  if (kemplineSlotIndex >= 0 && kemplineSlotIndex <= 7) return kemplineSlotIndex + 8;
+  if (kemplineSlotIndex >= 8 && kemplineSlotIndex <= 15) return kemplineSlotIndex - 8;
+  return null;
+}
+
+/** Slot vide non assignable : l'autre path de la même colonne porte déjà un bloc (max 1 model / colonne). */
+function isColumnPairedSlotBlocked(slots: SlotDebug[], kemplineSlotIndex: number): boolean {
+  const slot = slots[kemplineSlotIndex];
+  if (!slot || !isEmptyGridCell(slot)) return false;
+  const paired = pairedKemplineSlotIndex(kemplineSlotIndex);
+  if (paired === null) return false;
+  const other = slots[paired];
+  return other !== undefined && !isEmptyGridCell(other);
+}
+
 function countRealBlocks(slots: SlotDebug[]): number {
   return slots.filter((s) => !isEmptyGridCell(s)).length;
 }
@@ -5590,8 +5621,6 @@ function makeNode(slot: SlotDebug, opts?: { showTypeAbbrev?: boolean }): HTMLEle
     img.className = "node-icon-img";
     img.src = iconPath;
     img.alt = "";
-    img.width = 56;
-    img.height = 56;
     iconWrap.appendChild(img);
   } else {
     const ph = document.createElement("div");
@@ -5641,74 +5670,151 @@ function isKemplineGrid16(slots: SlotDebug[]): boolean {
   });
 }
 
-/** Slot vide matrice : icône « empty » (path1 partout ; path2 seulement entre split/merge via `gridSlotNode`). */
-function makeEmptySlotNode(withIcon: boolean): HTMLElement {
+/** Slot vide matrice : cadre au survol / sélection sauf si colonne bloquée par l'autre path. */
+function makeEmptySlotNode(opts?: { columnBlocked?: boolean }): HTMLElement {
   const item = document.createElement("div");
-  item.className =
-    "node node-empty node--hx-slot node-empty-flat" +
-    (withIcon ? " node-empty-slot-icon node--icon-only" : "");
-  item.title = "Slot vide";
-  item.setAttribute("aria-label", "Slot vide");
-  if (withIcon) {
-    const iconWrap = document.createElement("div");
-    iconWrap.className = "node-icon-wrap";
-    const img = document.createElement("img");
-    img.className = "node-icon-img";
-    img.src = MATRIX_EMPTY_SLOT_ICON;
-    img.alt = "";
-    img.width = 56;
-    img.height = 56;
-    img.decoding = "async";
-    iconWrap.appendChild(img);
-    item.appendChild(iconWrap);
+  item.className = "node node-empty node--hx-slot node-empty-flat";
+  if (opts?.columnBlocked) {
+    item.classList.add("node-empty-column-blocked");
+    item.title = "Colonne déjà utilisée sur l'autre path";
+    item.setAttribute("aria-label", "Slot indisponible — colonne déjà utilisée");
+    item.setAttribute("aria-disabled", "true");
+  } else {
+    item.title = "Slot vide";
+    item.setAttribute("aria-label", "Slot vide");
+    bindSlotParamsInteraction(item, null);
   }
-  bindSlotParamsInteraction(item, null);
   return item;
-}
-
-/** Path2 slot row index 0..7 : entre split et merge (même logique que le trait L3 entre jonctions). */
-function path2SlotBetweenSplitAndMerge(
-  slotRowIndex: number,
-  splitCol: number,
-  mergeCol: number,
-): boolean {
-  const b = slotRowIndex + 1;
-  // `merge_after_col` est la frontière où se dessine le merge : le dernier slot path2 *avant*
-  // cette frontière a `b === mergeCol` (ex. merge en 7 → slot vide en 6 avec b=7). Un `<` strict
-  // masquait l’icône `Icons_empty_slot.png` sur ce slot.
-  return b > splitCol && b <= mergeCol;
 }
 
 const IO_INPUT_ICON = "/src-tauri/resources/icons_category/icon-input-category.png";
 const IO_OUTPUT_ICON = "/src-tauri/resources/icons_category/icon-output-category.png";
-const MATRIX_PATH1_LINE_ICON = "/src-tauri/resources/icons_category/Icons_line.png";
-const MATRIX_PATH1_SPLIT_MERGE_ICON =
-  "/src-tauri/resources/icons_category/Icons_split_merge.png";
-const MATRIX_ICON_VERTICAL = "/src-tauri/resources/icons_category/Icons_vertical_line.png";
-const MATRIX_ICON_LINK_SPLIT = "/src-tauri/resources/icons_category/Icons_link_split.png";
-const MATRIX_ICON_LINK_MERGE = "/src-tauri/resources/icons_category/Icons_link_merge.png";
-const MATRIX_EMPTY_SLOT_ICON =
-  "/src-tauri/resources/icons_category/Icons_empty_slot.png";
 
-/** Nœuds d'extrémité façon HX Edit (icônes Input / Main L·R). */
-function makeIoNode(kind: "input" | "output"): HTMLElement {
-  const el = document.createElement("div");
-  el.className = "hx-io hx-io--icon";
+function path1InputParentModelId(): string {
+  return flowIoCatalogIdsForConnectedDevice(connectedDeviceName).input;
+}
+
+function resolvePath1InputIoSourceRow(): CatalogPickerModelRow | null {
+  if (!catalogPickerDataCache) return null;
+  const parentId = path1InputParentModelId();
+  if (path1InputSourceHighlightOverride) {
+    const fromOverride = findIoSourceRowById(catalogPickerDataCache, path1InputSourceHighlightOverride);
+    if (fromOverride) return fromOverride;
+  }
+  if (path1InputMatrixWire != null && Number.isFinite(path1InputMatrixWire)) {
+    const fromWire = findIoSourceRowByWireValue(
+      catalogPickerDataCache,
+      parentId,
+      path1InputMatrixWire,
+      connectedDeviceName,
+    );
+    if (fromWire) return fromWire;
+  }
+  return findIoSourceRowByWireValue(catalogPickerDataCache, parentId, 1, connectedDeviceName);
+}
+
+function queryPath1InputMatrixNode(): HTMLElement | null {
+  return contentEl.querySelector<HTMLElement>('.hx-matrix-cell .hx-io[data-hw-slot-bus="0"]');
+}
+
+function makeIoSourceIconImg(row: CatalogPickerModelRow): HTMLImageElement | null {
+  const safe = row.image ? sanitizeIconsModelsFilename(row.image) : null;
+  if (!safe) return null;
   const img = document.createElement("img");
   img.className = "hx-io-icon";
   img.decoding = "async";
+  img.alt = "";
+  img.src = tauriResourceUrl("icons_models", safe);
+  return img;
+}
+
+function applyIoSourceIconToInputNode(node: HTMLElement, row: CatalogPickerModelRow): void {
+  const label = row.name.trim() || "Input";
+  node.setAttribute("aria-label", label);
+  node.title = label;
+  const img = makeIoSourceIconImg(row);
+  if (!img) return;
+  const existing = node.querySelector(".hx-io-icon");
+  if (existing) existing.replaceWith(img);
+  else {
+    node.querySelectorAll(".hx-io-icon").forEach((n) => n.remove());
+    node.appendChild(img);
+  }
+}
+
+async function refreshPath1InputMatrixIcon(): Promise<void> {
+  const node = queryPath1InputMatrixNode();
+  if (!node || !catalogPickerDataCache) return;
+  const parentId = path1InputParentModelId();
+  let row: CatalogPickerModelRow | null = null;
+
+  if (path1InputSourceHighlightOverride) {
+    row = findIoSourceRowById(catalogPickerDataCache, path1InputSourceHighlightOverride);
+  }
+  if (!row) {
+    try {
+      const liveWire = await invoke<number | null>("get_path1_input_source_wire_value");
+      if (liveWire != null && Number.isFinite(liveWire)) {
+        path1InputMatrixWire = liveWire;
+        row = findIoSourceRowByWireValue(
+          catalogPickerDataCache,
+          parentId,
+          liveWire,
+          connectedDeviceName,
+        );
+      }
+    } catch {
+      /* wire live optionnel */
+    }
+  }
+  if (!row && path1InputMatrixWire != null) {
+    row = findIoSourceRowByWireValue(
+      catalogPickerDataCache,
+      parentId,
+      path1InputMatrixWire,
+      connectedDeviceName,
+    );
+  }
+  if (!row) {
+    row = findIoSourceRowByWireValue(catalogPickerDataCache, parentId, 1, connectedDeviceName);
+  }
+  if (!row?.image) return;
+  if (typeof row.wireValue === "number") path1InputMatrixWire = row.wireValue;
+  applyIoSourceIconToInputNode(node, row);
+}
+
+/** Nœuds d'extrémité façon HX Edit (icônes Input / Main L·R). */
+function makeIoNode(kind: "input" | "output", inputSourceRow?: CatalogPickerModelRow | null): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "hx-io hx-io--icon";
   if (kind === "input") {
-    img.src = IO_INPUT_ICON;
-    img.alt = "Input";
-    el.setAttribute("aria-label", "Input");
-    el.title = "Input";
+    const row = inputSourceRow ?? resolvePath1InputIoSourceRow();
+    const img = row ? makeIoSourceIconImg(row) : null;
+    if (img) {
+      el.appendChild(img);
+      const label = row!.name.trim() || "Input";
+      el.setAttribute("aria-label", label);
+      el.title = label;
+    } else {
+      const fallback = document.createElement("img");
+      fallback.className = "hx-io-icon";
+      fallback.decoding = "async";
+      fallback.src = IO_INPUT_ICON;
+      fallback.alt = "Input";
+      el.setAttribute("aria-label", "Input");
+      el.title = "Input";
+      el.appendChild(fallback);
+    }
   } else {
+    const img = document.createElement("img");
+    img.className = "hx-io-icon hx-io-icon--output";
+    img.decoding = "async";
     img.src = IO_OUTPUT_ICON;
     img.alt = "Main L/R";
     el.setAttribute("aria-label", "Main L/R");
     el.title = "Main L/R";
+    el.appendChild(img);
   }
-  el.appendChild(img);
   return el;
 }
 
@@ -5810,110 +5916,26 @@ function matrixEvenColForRoutingBoundary(boundary: number): number {
   return 4 + 2 * (boundary - 1);
 }
 
-/** Trait vertical (overlay optionnel sur « Path 2 » L3) — désactivé par défaut (chevauchement avec `Icons_link_*`). */
-function makeMatrixVerticalSpanIcon(): HTMLElement {
-  const wrap = document.createElement("div");
-  wrap.className = "hx-matrix-vspan";
-  wrap.setAttribute("aria-hidden", "true");
-  const img = document.createElement("img");
-  img.className = "hx-matrix-vspan-img";
-  img.src = MATRIX_ICON_VERTICAL;
-  img.alt = "";
-  img.decoding = "async";
-  wrap.appendChild(img);
-  return wrap;
-}
-
-/** Même PNG que le vspan, dans la cellule « Description Path 1 » (L2), colonnes split/merge. */
-function makeMatrixDescRowVerticalIcon(): HTMLElement {
-  const wrap = document.createElement("div");
-  wrap.className = "hx-matrix-r2-vline";
-  wrap.setAttribute("aria-hidden", "true");
-  const img = document.createElement("img");
-  img.className = "hx-matrix-vspan-img";
-  img.src = MATRIX_ICON_VERTICAL;
-  img.alt = "";
-  img.decoding = "async";
-  wrap.appendChild(img);
-  return wrap;
-}
-
-/** Jonction sur « Path 2 » (L3) : coin split ou merge (`Icons_link_*`). */
-function makeMatrixPath2LinkIcon(src: string): HTMLElement {
-  const wrap = document.createElement("div");
-  wrap.className = "hx-matrix-path2-link";
-  wrap.setAttribute("aria-hidden", "true");
-  const img = document.createElement("img");
-  img.className = "hx-matrix-junction-line-img";
-  img.src = src;
-  img.alt = "";
-  img.decoding = "async";
-  wrap.appendChild(img);
-  return wrap;
-}
-
-/** Colonnes paires « Path 1 » (L1) sans split/merge : icône ligne horizontale. */
-function makeMatrixPath1LineIcon(): HTMLElement {
-  const wrap = document.createElement("div");
-  wrap.className = "hx-matrix-junction-line hx-matrix-path1-separator";
-  wrap.setAttribute("aria-hidden", "true");
-  const img = document.createElement("img");
-  img.className = "hx-matrix-junction-line-img";
-  img.src = MATRIX_PATH1_LINE_ICON;
-  img.alt = "";
-  img.decoding = "async";
-  wrap.appendChild(img);
-  return wrap;
-}
-
-/** Ligne horizontale « Path 2 » (L3), même asset `Icons_line.png` que Path 1. */
-function makeMatrixPath2LineIcon(): HTMLElement {
-  const wrap = document.createElement("div");
-  wrap.className = "hx-matrix-junction-line";
-  wrap.setAttribute("aria-hidden", "true");
-  const img = document.createElement("img");
-  img.className = "hx-matrix-junction-line-img";
-  img.src = MATRIX_PATH1_LINE_ICON;
-  img.alt = "";
-  img.decoding = "async";
-  wrap.appendChild(img);
-  return wrap;
-}
-
-/** Split / merge sur « Path 1 » (L1) : icône jonction ; `title` sur la cellule grille. */
+/** Split / merge sur « Path 1 » (L1) : cercle centré (CSS) ; `title` sur la cellule grille. */
 function makePathRoutingNode(kind: "split" | "merge"): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = `hx-matrix-routing-marker hx-matrix-path1-separator hx-matrix-routing-marker--${kind}`;
   wrap.dataset.routingMarker = kind;
-  const img = document.createElement("img");
-  img.className = "hx-matrix-routing-marker-img";
-  img.src = MATRIX_PATH1_SPLIT_MERGE_ICON;
-  img.alt = "";
-  img.decoding = "async";
-  wrap.appendChild(img);
   return wrap;
 }
 
 function gridSlotNode(
   slot: SlotDebug,
   kemplineSlotIndex: number,
-  opts?: {
-    path?: 1 | 2;
-    /** Index 0..7 sur la rangée path2 (ignoré si path !== 2). */
-    path2SlotRowIndex?: number;
-    splitCol?: number;
-    mergeCol?: number;
-  },
+  allSlots?: SlotDebug[],
 ): HTMLElement {
   const empty = !slot.category && slot.name === "<empty>";
   if (empty) {
-    const onPath2 = opts?.path === 2;
-    const i = opts?.path2SlotRowIndex ?? 0;
-    const sc = opts?.splitCol ?? 0;
-    const mc = opts?.mergeCol ?? 8;
-    const showIcon =
-      !onPath2 || (onPath2 && path2SlotBetweenSplitAndMerge(i, sc, mc));
-    const n = makeEmptySlotNode(showIcon);
+    const columnBlocked =
+      allSlots !== undefined &&
+      allSlots.length === 16 &&
+      isColumnPairedSlotBlocked(allSlots, kemplineSlotIndex);
+    const n = makeEmptySlotNode({ columnBlocked });
     n.dataset.kemplineSlotIndex = String(kemplineSlotIndex);
     return n;
   }
@@ -5923,48 +5945,8 @@ function gridSlotNode(
   return node;
 }
 
-/** Libellé catégorie : « Description Path 1 » (L2) ou « Description Path 2 » (L4) sous un slot. */
-function makeMatrixCategoryCell(slot: SlotDebug, kemplineDescIndex: number): HTMLElement {
-  const el = document.createElement("div");
-  el.className = "hx-matrix-category";
-  el.dataset.kemplineSlotDescIndex = String(kemplineDescIndex);
-  const empty = !slot.category && slot.name === "<empty>";
-  if (empty) {
-    el.textContent = "";
-    el.removeAttribute("title");
-    return el;
-  }
-  const cat = slot.category.trim();
-  el.textContent = cat;
-  if (cat) el.title = cat;
-  return el;
-}
-
-/** Texte fixe sur « Description Path 1 » (L2) : sous Input / Main L·R. */
-function makeMatrixDescriptionLabel(text: string): HTMLElement {
-  const el = document.createElement("div");
-  el.className = "hx-matrix-category";
-  el.textContent = text;
-  el.title = text;
-  return el;
-}
-
-/** Colonne debug : numéro de ligne grille (1–4). */
-function makeMatrixRowLineLabel(line: number): HTMLElement {
-  const el = document.createElement("div");
-  el.className = "hx-matrix-row-line-debug";
-  el.textContent = String(line);
-  el.title = `Ligne ${line}`;
-  return el;
-}
-
 /**
- * Grille 16 cases Kempline : matrice **4 lignes × 20 colonnes** (sans rangée séparateur — essai).
- * - **Ligne 1** = Path 1
- * - **Ligne 2** = Description Path 1
- * - **Ligne 3** = Path 2
- * - **Ligne 4** = Description Path 2
- * Col 20 = numéro de ligne grille (debug). Pour revenir à 5 lignes + séparateur : blocs `REVERT` (TS + CSS).
+ * Grille 16 cases Kempline : matrice **2 lignes × 19 colonnes** (Path 1 + Path 2).
  */
 function renderGrid16(
   slots: SlotDebug[],
@@ -5973,7 +5955,7 @@ function renderGrid16(
 ) {
   const lastB = lastFilledSlotRowIndex(slots, 8, 8);
   const hasBranchB = lastB >= 0;
-  /** Split/merge path1, traits verticaux L2, path2 : seulement si au moins un bloc path2 (ignore Split/Merge parsés sans branche B). */
+  /** Split/merge path1, path2 : seulement si au moins un bloc path2. */
   const showRoutingUi = hasBranchB;
 
   const routingCols =
@@ -5995,69 +5977,43 @@ function renderGrid16(
   const grid = document.createElement("div");
   grid.className = "hx-matrix-grid";
 
-  /**
-   * Nomenclature `grid-row` (1-based) :
-   * L1 = Path 1, L2 = Description Path 1, L3 = Path 2, L4 = Description Path 2 (sans rangée séparateur).
-   */
   const LINE_PATH_1 = 1;
-  const LINE_DESC_PATH_1 = 2;
-  const LINE_PATH_2 = 3;
-  const LINE_DESC_PATH_2 = 4;
-  const NUM_ROWS = 4;
-  const NUM_COLS = 20;
-  /** Pistes grille en px (doublon volontaire avec le CSS : certains WebView n’appliquent pas bien `repeat()` seul). */
-  const CELL_PX = 56;
-  const MATRIX_ROW_HEIGHTS = `${CELL_PX}px `.repeat(NUM_ROWS).trimEnd();
-  const MATRIX_GRID_HEIGHT_PX = NUM_ROWS * CELL_PX;
+  const LINE_PATH_2 = 2;
+  const NUM_ROWS = 2;
+  const NUM_COLS = 19;
 
   /*
-   * ─── REVERT : matrice 5 lignes + rangée 3 « séparateur » (piste 0 px + barre + pastille debug) ───
-   * const LINE_PATH_1 = 1;
-   * const LINE_DESC_PATH_1 = 2;
-   * const LINE_SEPARATOR = 3;
-   * const LINE_PATH_2 = 4;
-   * const LINE_DESC_PATH_2 = 5;
-   * const NUM_ROWS = 5;
-   * const MATRIX_ROW_HEIGHTS = `${CELL_PX}px ${CELL_PX}px 0px ${CELL_PX}px ${CELL_PX}px`;
-   * const MATRIX_GRID_HEIGHT_PX = 4 * CELL_PX;
-   * Puis rétablir la boucle `if (row === LINE_SEPARATOR) { ... bar ... wrapCell(...,3)... continue }`,
+   * ─── REVERT : matrice 5 lignes + rangée 3 « séparateur » ───
+   * const LINE_SEPARATOR = 3; const NUM_ROWS = 5;
+   * Puis rétablir la boucle `if (row === LINE_SEPARATOR) { ... }`,
    * `v.style.gridRow = "3 / 5"`, et dans wrapCell : `if (row === LINE_SEPARATOR) cls += " hx-matrix-cell--row-line-debug-sep"`.
-   * CSS : `grid-template-rows: 56px 56px 0px 56px 56px` + décommenter `.hx-matrix-separator-bar` et
-   * `.hx-matrix-cell--row-line-debug-sep`.
+   * CSS : 5 rangées + décommenter `.hx-matrix-separator-bar` et `.hx-matrix-cell--row-line-debug-sep`.
    */
-  grid.style.display = "grid";
-  grid.style.gridTemplateColumns = `repeat(${NUM_COLS}, ${CELL_PX}px)`;
-  grid.style.gridTemplateRows = MATRIX_ROW_HEIGHTS;
-  grid.style.width = `${NUM_COLS * CELL_PX}px`;
-  grid.style.minWidth = `${NUM_COLS * CELL_PX}px`;
-  grid.style.maxWidth = `${NUM_COLS * CELL_PX}px`;
-  grid.style.height = `${MATRIX_GRID_HEIGHT_PX}px`;
-  grid.style.minHeight = `${MATRIX_GRID_HEIGHT_PX}px`;
-  grid.style.maxHeight = `${MATRIX_GRID_HEIGHT_PX}px`;
-  grid.style.boxSizing = "border-box";
 
-  function wrapCell(
-    row: number,
-    col: number,
-    inner: HTMLElement | null,
-    opts?: { descriptionPathRow?: boolean; r2JunctionVertical?: boolean; rowLineDebug?: boolean },
-  ): HTMLElement {
+  const path1Rail = document.createElement("div");
+  path1Rail.className = "hx-matrix-path1-rail";
+  path1Rail.setAttribute("role", "presentation");
+  path1Rail.setAttribute("aria-hidden", "true");
+  grid.appendChild(path1Rail);
+
+  const splitG = showRoutingUi ? matrixEvenColForRoutingBoundary(routingCols.splitCol) : -1;
+  const mergeG = showRoutingUi ? matrixEvenColForRoutingBoundary(routingCols.mergeCol) : -1;
+  if (showRoutingUi && hasBranchB && splitG >= 2 && mergeG >= splitG) {
+    const path2Rail = document.createElement("div");
+    path2Rail.className = "hx-matrix-path2-rail";
+    path2Rail.setAttribute("role", "presentation");
+    path2Rail.setAttribute("aria-hidden", "true");
+    path2Rail.style.gridRow = String(LINE_PATH_2);
+    path2Rail.style.gridColumn = `${splitG} / ${mergeG + 1}`;
+    grid.appendChild(path2Rail);
+  }
+
+  function wrapCell(row: number, col: number, inner: HTMLElement | null): HTMLElement {
     const w = document.createElement("div");
-    let cls = "hx-matrix-cell" + (inner ? "" : " hx-matrix-cell--empty");
-    if (opts?.descriptionPathRow) cls += " hx-matrix-cell--description-path";
-    if (opts?.r2JunctionVertical) cls += " hx-matrix-cell--r2-junction-vline";
-    if (opts?.rowLineDebug) {
-      cls += " hx-matrix-cell--row-line-debug";
-      // REVERT (5 lignes + séparateur) : if (row === LINE_SEPARATOR) cls += " hx-matrix-cell--row-line-debug-sep";
-    }
+    const cls = "hx-matrix-cell" + (inner ? "" : " hx-matrix-cell--empty");
     w.className = cls;
     w.style.gridRow = String(row);
     w.style.gridColumn = String(col);
-    w.style.boxSizing = "border-box";
-    w.style.width = `${CELL_PX}px`;
-    w.style.height = `${CELL_PX}px`;
-    w.style.maxWidth = `${CELL_PX}px`;
-    w.style.maxHeight = `${CELL_PX}px`;
     if (inner) w.appendChild(inner);
     const rk = inner?.dataset?.routingMarker;
     if (rk === "split" || rk === "merge") {
@@ -6086,11 +6042,20 @@ function renderGrid16(
     return null;
   }
 
-  const splitG = showRoutingUi ? matrixEvenColForRoutingBoundary(routingCols.splitCol) : -1;
-  const mergeG = showRoutingUi ? matrixEvenColForRoutingBoundary(routingCols.mergeCol) : -1;
   const junctionDecoCols = new Set<number>();
   if (splitG >= 2) junctionDecoCols.add(splitG);
   if (mergeG >= 2) junctionDecoCols.add(mergeG);
+
+  if (showRoutingUi) {
+    for (const col of junctionDecoCols) {
+      const junctionVRail = document.createElement("div");
+      junctionVRail.className = "hx-matrix-junction-vrail";
+      junctionVRail.setAttribute("role", "presentation");
+      junctionVRail.setAttribute("aria-hidden", "true");
+      junctionVRail.style.gridColumn = String(col);
+      grid.appendChild(junctionVRail);
+    }
+  }
 
   for (let row = 1; row <= NUM_ROWS; row += 1) {
     /*
@@ -6110,21 +6075,12 @@ function renderGrid16(
      * }
      */
 
-    const descriptionPathRow = row === LINE_DESC_PATH_1 || row === LINE_DESC_PATH_2;
     for (let col = 1; col <= NUM_COLS; col += 1) {
       let inner: HTMLElement | null = null;
 
-      if (col === NUM_COLS) {
-        inner = makeMatrixRowLineLabel(row);
-      } else if (row === LINE_DESC_PATH_1 && col === 1) {
-        inner = makeMatrixDescriptionLabel("input");
-      } else if (row === LINE_DESC_PATH_1 && col === 19) {
-        inner = makeMatrixDescriptionLabel("Main L/R");
-      } else if (row === LINE_DESC_PATH_1 && junctionDecoCols.has(col)) {
-        inner = makeMatrixDescRowVerticalIcon();
-      } else if (col === 1) {
+      if (col === 1) {
         if (row === LINE_PATH_1) {
-          inner = makeIoNode("input");
+          inner = makeIoNode("input", resolvePath1InputIoSourceRow());
           inner.dataset.hwSlotBus = "0";
           bindSlotParamsInteraction(inner, path1IoSlot("input"));
         }
@@ -6132,15 +6088,14 @@ function renderGrid16(
         if (row === LINE_PATH_1) {
           const rk: "split" | "merge" | null =
             showRoutingUi && routingCols.splitCol === 0 ? "split" : null;
-          if (rk === "split") inner = makePathRoutingNode("split");
-          else inner = makeMatrixPath1LineIcon();
-          if (rk === "split") inner.dataset.hwSlotBus = "10";
-          else if (rk === "merge") inner.dataset.hwSlotBus = "19";
-          // Frontière 0: séparateur immédiatement après l'Input (Path 1).
-          bindSlotParamsInteraction(
-            inner,
-            rk === null ? null : path1SeparatorSlot(0, rk, rk === "split" ? splitEntry : undefined),
-          );
+          if (rk === "split") {
+            inner = makePathRoutingNode("split");
+            inner.dataset.hwSlotBus = "10";
+            bindSlotParamsInteraction(
+              inner,
+              path1SeparatorSlot(0, rk, splitEntry),
+            );
+          }
         }
       } else if (col === 19) {
         if (row === LINE_PATH_1) {
@@ -6152,16 +6107,9 @@ function renderGrid16(
         const i = (col - 3) / 2;
         if (i >= 0 && i <= 7) {
           if (row === LINE_PATH_1)
-            inner = gridSlotNode(slots[i]!, i, { path: 1 });
-          else if (row === LINE_DESC_PATH_1) inner = makeMatrixCategoryCell(slots[i]!, i);
+            inner = gridSlotNode(slots[i]!, i, slots);
           else if (row === LINE_PATH_2 && hasBranchB)
-            inner = gridSlotNode(slots[8 + i]!, 8 + i, {
-              path: 2,
-              path2SlotRowIndex: i,
-              splitCol: routingCols.splitCol,
-              mergeCol: routingCols.mergeCol,
-            });
-          else if (row === LINE_DESC_PATH_2) inner = makeMatrixCategoryCell(slots[8 + i]!, 8 + i);
+            inner = gridSlotNode(slots[8 + i]!, 8 + i, slots);
         }
       } else if (col >= 4 && col <= 18 && (col - 4) % 2 === 0) {
         const j = (col - 4) / 2;
@@ -6169,74 +6117,22 @@ function renderGrid16(
           const boundary = j + 1;
           const rk = routingKindAtBoundary(boundary);
           inner = routingAtBoundary(boundary);
-          if (inner === null) inner = makeMatrixPath1LineIcon();
-          if (rk === "split") inner.dataset.hwSlotBus = "10";
-          else if (rk === "merge") inner.dataset.hwSlotBus = "19";
-          // Étape 1 UX: tous les séparateurs Path 1 sont cliquables comme les slots.
-          bindSlotParamsInteraction(
-            inner,
-            rk === null
-              ? null
-              : path1SeparatorSlot(
-                  boundary,
-                  rk,
-                  rk === "split" ? splitEntry : rk === "merge" ? mergeEntry : undefined,
-                ),
-          );
-        } else if (row === LINE_PATH_2 && hasBranchB && j >= 0 && j <= 7) {
-          // Path 2 (L3): réafficher `Icons_line.png` entre split et merge.
-          const boundary = j + 1;
-          if (boundary > routingCols.splitCol && boundary < routingCols.mergeCol) {
-            inner = makeMatrixPath2LineIcon();
+          if (inner !== null && rk !== null) {
+            if (rk === "split") inner.dataset.hwSlotBus = "10";
+            else if (rk === "merge") inner.dataset.hwSlotBus = "19";
+            bindSlotParamsInteraction(
+              inner,
+              path1SeparatorSlot(
+                boundary,
+                rk,
+                rk === "split" ? splitEntry : rk === "merge" ? mergeEntry : undefined,
+              ),
+            );
           }
         }
       }
 
-      const r2JunctionVertical =
-        showRoutingUi && row === LINE_DESC_PATH_1 && junctionDecoCols.has(col) && inner !== null;
-      const rowLineDebug = col === NUM_COLS;
-      grid.appendChild(
-        wrapCell(row, col, inner, {
-          descriptionPathRow: descriptionPathRow && !rowLineDebug,
-          r2JunctionVertical,
-          rowLineDebug,
-        }),
-      );
-    }
-  }
-
-  if (showRoutingUi) {
-    /**
-     * `false` : pas d’overlay trait sur « Path 2 » (L3) dans les colonnes split/merge — même grille
-     * que `Icons_link_*` → superposition. Le trait vertical reste en « Description Path 1 » (L2).
-     * Mettre à `true` pour réactiver (REVERT visuel) ; avec 5 lignes séparateur, utiliser `grid-row` adapté.
-     */
-    const ENABLE_MATRIX_VSPAN_ON_PATH2 = false;
-    if (ENABLE_MATRIX_VSPAN_ON_PATH2 && hasBranchB) {
-      for (const col of junctionDecoCols) {
-        const v = makeMatrixVerticalSpanIcon();
-        v.style.gridRow = "3 / 4";
-        v.style.gridColumn = String(col);
-        v.style.boxSizing = "border-box";
-        v.style.zIndex = "2";
-        v.style.pointerEvents = "none";
-        grid.appendChild(v);
-      }
-    }
-
-    function placePath2Link(col: number, src: string) {
-      const el = makeMatrixPath2LinkIcon(src);
-      el.style.gridRow = String(LINE_PATH_2);
-      el.style.gridColumn = String(col);
-      el.style.boxSizing = "border-box";
-      el.style.zIndex = "2";
-      el.style.pointerEvents = "none";
-      grid.appendChild(el);
-    }
-    // Sans bloc sur le path 2, pas d’icônes split/merge sur L3 (évite split/merge « orphelins »).
-    if (hasBranchB) {
-      if (splitG >= 2) placePath2Link(splitG, MATRIX_ICON_LINK_SPLIT);
-      if (mergeG >= 2) placePath2Link(mergeG, MATRIX_ICON_LINK_MERGE);
+      grid.appendChild(wrapCell(row, col, inner));
     }
   }
 
@@ -6257,6 +6153,7 @@ function renderGrid16(
     armAutoSelectFallbackParamsPaneAfterRender();
   }
   consumePendingHardwareSlotSelection();
+  void refreshPath1InputMatrixIcon();
 }
 
 function buildFlowSections(slots: SlotDebug[]) {
@@ -6578,21 +6475,26 @@ async function requestLoadForPreset(index: number) {
               // best effort : si l'invoke échoue, le fallback 240ms prend le relais
             }
           }
-          await logCatalogChainHexDiffIfNeeded(normalizedSlots, index);
-          await renderSlots(normalizedSlots, routingFlow, stompLayout);
-          rememberHwSyncChainLayout(normalizedSlots);
-          const realBlocks = countRealBlocks(normalizedSlots);
-          const singleDsp = isSingleDspDevice(connectedDeviceName);
-          const dspSuffix = singleDsp ? ` (${realBlocks}/8 max)` : "";
-          const overLimit =
-            singleDsp && realBlocks > 8
-              ? " - warning: parsed blocks exceed Stomp DSP budget"
-              : "";
-          setStatus(
-            debugRoutingMode
-              ? `${realBlocks} blocks detected${dspSuffix} (debug routing ON)${overLimit}`
-              : `${realBlocks} blocks detected${dspSuffix}${overLimit}`,
-          );
+          try {
+            await logCatalogChainHexDiffIfNeeded(normalizedSlots, index);
+            await renderSlots(normalizedSlots, routingFlow, stompLayout);
+            rememberHwSyncChainLayout(normalizedSlots);
+            const realBlocks = countRealBlocks(normalizedSlots);
+            const singleDsp = isSingleDspDevice(connectedDeviceName);
+            const dspSuffix = singleDsp ? ` (${realBlocks}/8 max)` : "";
+            const overLimit =
+              singleDsp && realBlocks > 8
+                ? " - warning: parsed blocks exceed Stomp DSP budget"
+                : "";
+            setStatus(
+              debugRoutingMode
+                ? `${realBlocks} blocks detected${dspSuffix} (debug routing ON)${overLimit}`
+                : `${realBlocks} blocks detected${dspSuffix}${overLimit}`,
+            );
+          } catch (e) {
+            console.error("[PresetDebug][models] renderSlots error preset=", index, e);
+            setStatus("Erreur affichage preset (voir console).");
+          }
 
           // Le nom affiché est piloté par la liste presets backend (refresh global).
           // On évite ici un invoke additionnel request_active_preset_name qui peut
@@ -6801,6 +6703,8 @@ window.addEventListener("DOMContentLoaded", () => {
   void listen<Path1InputSourceChangedPayload>("models:path1-input-source-changed", (event) => {
     const p = event.payload;
     if (!p || typeof p.wireValue !== "number") return;
+    path1InputMatrixWire = p.wireValue;
+    void refreshPath1InputMatrixIcon();
     if (
       slotPickerIoLock?.kind !== "io" ||
       slotPickerIoLock.category !== "Input" ||

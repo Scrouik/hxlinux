@@ -3830,9 +3830,9 @@ pub fn run() {
                         apply_window_geometry(&main_window, main);
                     }
                 } else {
-                    let target_height = 760.0;
-                    let _ = main_window
-                        .set_size(Size::Logical(LogicalSize::new(1280.0, target_height)));
+                    let _ = main_window.set_size(Size::Logical(LogicalSize::new(
+                        1293.0, 1143.0,
+                    )));
                     let _ = main_window
                         .set_position(Position::Logical(LogicalPosition::new(80.0, 80.0)));
                 }

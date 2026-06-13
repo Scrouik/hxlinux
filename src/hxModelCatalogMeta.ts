@@ -663,6 +663,8 @@ export type CatalogPickerModelRow = {
   assignVariant?: string;
   /** Source I/O Path 1 (`ioSources[]`) — écriture `write_path1_input_source`, pas `probe_slot_model_usb`. */
   ioSource?: boolean;
+  /** PNG `icons_models/` (ioSources[]). */
+  image?: string;
   /** Type Split Path 1 (`splitSources[]`) — écriture `write_path1_split_type`. */
   splitSource?: boolean;
   catalogModelId?: string;
@@ -723,6 +725,7 @@ type UsbAssignIoSourceEntry = {
   subCategory?: string;
   wireValue?: number;
   devices?: string[];
+  image?: string;
 };
 
 type UsbAssignSplitSourceEntry = {
@@ -823,6 +826,7 @@ async function loadUsbAssignPickerDataFromJson(): Promise<CatalogPickerData> {
       parentModelId,
       wireValue: typeof src.wireValue === "number" ? src.wireValue : undefined,
       devices,
+      image: typeof src.image === "string" ? src.image.trim() || undefined : undefined,
     });
     modelsByCategoryAndSub.set(key, list);
   }
@@ -886,6 +890,41 @@ export function normalizeStompInputWireValue(raw: number): number {
   return v;
 }
 
+/** Ligne `ioSources[]` pour une valeur wire `@input` Stomp (ex. 1 / 4 / 6). */
+export function findIoSourceRowByWireValue(
+  data: CatalogPickerData,
+  parentModelId: string,
+  wireValue: number,
+  connectedDeviceName: string | null,
+): CatalogPickerModelRow | null {
+  const parent = parentModelId.trim();
+  const wire = normalizeStompInputWireValue(wireValue);
+  if (!parent || !Number.isFinite(wire)) return null;
+  const key = catalogPickerRowKey("Input", "Source");
+  const rows = data.modelsByCategoryAndSub.get(key) ?? [];
+  return (
+    rows.find(
+      (r) =>
+        r.ioSource &&
+        (r.parentModelId ?? "").trim() === parent &&
+        r.wireValue === wire &&
+        ioSourceMatchesConnectedDevice(r.devices, connectedDeviceName),
+    ) ?? null
+  );
+}
+
+/** Ligne `ioSources[]` par id (ex. `HelixStomp_Input_MainLR`). */
+export function findIoSourceRowById(
+  data: CatalogPickerData,
+  ioSourceId: string,
+): CatalogPickerModelRow | null {
+  const id = ioSourceId.trim();
+  if (!id) return null;
+  const key = catalogPickerRowKey("Input", "Source");
+  const rows = data.modelsByCategoryAndSub.get(key) ?? [];
+  return rows.find((r) => r.ioSource && r.id === id) ?? null;
+}
+
 /** Id `ioSources[]` pour une valeur wire `@input` Stomp (ex. 1 / 4 / 6). */
 export function findIoSourceIdByWireValue(
   data: CatalogPickerData,
@@ -893,19 +932,7 @@ export function findIoSourceIdByWireValue(
   wireValue: number,
   connectedDeviceName: string | null,
 ): string | null {
-  const parent = parentModelId.trim();
-  const wire = normalizeStompInputWireValue(wireValue);
-  if (!parent || !Number.isFinite(wire)) return null;
-  const key = catalogPickerRowKey("Input", "Source");
-  const rows = data.modelsByCategoryAndSub.get(key) ?? [];
-  const hit = rows.find(
-    (r) =>
-      r.ioSource &&
-      (r.parentModelId ?? "").trim() === parent &&
-      r.wireValue === wire &&
-      ioSourceMatchesConnectedDevice(r.devices, connectedDeviceName),
-  );
-  return hit?.id ?? null;
+  return findIoSourceRowByWireValue(data, parentModelId, wireValue, connectedDeviceName)?.id ?? null;
 }
 
 type ChainParamValueJson = boolean | number | string;
