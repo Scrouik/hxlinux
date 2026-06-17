@@ -32,6 +32,7 @@ pub enum Phase4Step {
     PbWait1a,   // on_enter: 1a ef                  ; attend IN 19 ef
     PbWait1b,   // on_enter: 1b 76:1b (ef')         ; attend IN 1f
     WaitIn1b26, // on_enter: 19 ed + 19 ef (f0/e9)  ; attend IN 1b + IN 26
+    PbCommit,   // on_enter: 1b 0c f1 (76:0f)       ; tour de fermeture HX ; attend IN 23/26
     // Terminal
     Done,
 }
@@ -52,6 +53,7 @@ impl Phase4Step {
                 | Phase4Step::PbWait1a
                 | Phase4Step::PbWait1b
                 | Phase4Step::WaitIn1b26
+                | Phase4Step::PbCommit
         )
     }
 
@@ -69,6 +71,7 @@ impl Phase4Step {
             Self::PbWait1a => "PbWait1a",
             Self::PbWait1b => "PbWait1b",
             Self::WaitIn1b26 => "WaitIn1b26",
+            Self::PbCommit => "PbCommit",
             Self::Done => "Done",
         }
     }
@@ -87,6 +90,24 @@ fn is_in_19_ef(data: &[u8]) -> bool {
         && data.first() == Some(&0x19)
         && data.get(4).copied() == Some(0xef)
         && data.get(5).copied() == Some(0x03)
+}
+
+/// PHASE B — `HX_PHASEB_COMMIT` (défaut ON) : aligne la fin du handshake
+/// d'abonnement sur HX (capture connexion) :
+///   (1) le 1er paquet proactif `ec` passe en `sub=0c` (comme HX, et comme ses
+///       frères `ed`/`ee`) au lieu de `sub=04` ;
+///   (2) sur le `1b 04 f0` du device (vu f417 dans ta capture), on émet le tour
+///       de fermeture `1b 0c f1` (queue `81 76 0f 00`, calqué HX) et on n'achève
+///       la PHASE B qu'au `23 04` (ou `26 ef`) — c'est ce « commit » qui, chez HX,
+///       arme l'abonnement persistant à la lane vivante (heartbeats `19 04` 0x67
+///       ensuite).
+/// Témoin `=0` : comportement actuel exact (ec en `sub=04`, Done direct sur le
+/// `26 ef`).
+fn phaseb_commit() -> bool {
+    !matches!(
+        std::env::var("HX_PHASEB_COMMIT").ok().as_deref(),
+        Some("0") | Some("false") | Some("off")
+    )
 }
 
 /// Appelé depuis usb_listener juste avant le check trailer.
@@ -300,10 +321,19 @@ pub fn handle_in_passive(state: &mut crate::helix::HelixState, data: &[u8]) {
             if is_keepalive {
                 return;
             }
-            // Chemin HX Edit : 1b/36o ed (1/2, log) puis 26/48o ef → Done.
+            // Chemin HX Edit : sur le `1b 04 f0` du device (f417), HX répond par
+            // le tour de fermeture `1b 0c f1` puis attend un `23 04`. Sans commit,
+            // on logue « 1/2 » et on part Done au `26 ef` (comportement actuel).
             if len == 36 && h == 0x1b && ep.first().copied() == Some(0xed) {
-                crate::helix::init_trace::trace("[PhaseB] WaitIn1b26 — IN 1b/36o ed (1/2)");
-                None
+                if phaseb_commit() {
+                    crate::helix::init_trace::trace(
+                        "[PhaseB] WaitIn1b26 -> PbCommit (IN 1b f0 device, commit HX)",
+                    );
+                    Some(Phase4Step::PbCommit)
+                } else {
+                    crate::helix::init_trace::trace("[PhaseB] WaitIn1b26 — IN 1b/36o ed (1/2)");
+                    None
+                }
             } else if len == 48 && h == 0x26 && ep.first().copied() == Some(0xef) {
                 crate::helix::init_trace::trace("[PhaseB] WaitIn1b26 -> Done (IN 26/48o ef)");
                 Some(Phase4Step::Done)
@@ -324,6 +354,29 @@ pub fn handle_in_passive(state: &mut crate::helix::HelixState, data: &[u8]) {
                     "[PhaseB] WaitIn1b26 -> Done (IN 68o ed head={:02x} Linux)",
                     h
                 ));
+                Some(Phase4Step::Done)
+            } else {
+                log_ignored(step, len, h, ep);
+                None
+            }
+        }
+        Phase4Step::PbCommit => {
+            if is_keepalive {
+                return;
+            }
+            // Après le close `1b 0c f1`, HX reçoit un `23 04` (ed). On tolère aussi
+            // le `26 ef` (déjà émis par le device en réponse au 19 ef, f419) et les
+            // 68o Linux comme terminal, pour ne jamais bloquer.
+            if h == 0x23 && ep.first().copied() == Some(0xed) {
+                crate::helix::init_trace::trace(
+                    "[PhaseB] PbCommit -> Done (IN 23 ed, commit confirmé)",
+                );
+                Some(Phase4Step::Done)
+            } else if len == 48 && h == 0x26 && ep.first().copied() == Some(0xef) {
+                crate::helix::init_trace::trace("[PhaseB] PbCommit -> Done (IN 26/48o ef)");
+                Some(Phase4Step::Done)
+            } else if len == 68 && matches!(h, 0x3c | 0x39) {
+                crate::helix::init_trace::trace("[PhaseB] PbCommit -> Done (IN 68o Linux)");
                 Some(Phase4Step::Done)
             } else {
                 log_ignored(step, len, h, ep);
@@ -469,7 +522,7 @@ pub fn on_enter_post_arm(state: &mut crate::helix::HelixState) {
         vec![
             0x1b, 0x00, 0x00, 0x18,
             0x80, 0x10, 0xed, 0x03,
-            0x00, cnt2, 0x00, 0x04,
+            0x00, cnt2, 0x00, if phaseb_commit() { 0x0c } else { 0x04 },
             lane[0], lane[1], 0x00, 0x00,
             0x01, 0x00, 0x06, 0x00,
             0x0b, 0x00, 0x00, 0x00,
@@ -562,6 +615,16 @@ pub fn on_enter_wait_in_1b26(state: &mut crate::helix::HelixState) {
         "[PhaseB] finalisation 19 ed+ef cnt={:02x}/{:02x} lane_ed={:02x}:{:02x} dbl_ed={:02x}:{:02x} dbl_ef={:02x}:{:02x}",
         cnt1, cnt2, lane1[0], lane1[1], d1[0], d1[1], d2[0], d2[1]
     ));
+}
+
+/// PbCommit — tour de fermeture du handshake d'abonnement, calqué sur HX :
+/// `1b 0c` (sub=0c), double `f1` (= f0+1), lane `+0x17`, queue `81 76 0f 00`.
+/// Émis en réponse au `1b 04 f0` du device (f417) ; c'est ce « commit » qui,
+/// chez HX, arme l'abonnement persistant à la lane vivante (heartbeats `19 04`
+/// par lecture ensuite). N'est atteint que si `HX_PHASEB_COMMIT` est ON
+/// (sinon la FSM va Done sur le `26 ef`).
+pub fn on_enter_pb_commit(state: &mut crate::helix::HelixState) {
+    send_phase_b_76(state, 0x1b, 0x0c, 0x0b, 0x0f, 0x00, "f1 1b 76:0f (commit)");
 }
 
 #[cfg(test)]

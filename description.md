@@ -7,6 +7,7 @@ Ce fichier est le **mémo technique** pour reprendre le développement sans l’
 | [`README.md`](README.md) | Présentation, prérequis, commandes de base |
 | [`TODO.md`](TODO.md) | Backlog priorisé (scroll, bulkHex, LT, DSP, UI grille…) |
 | [`docs/models-hardware-sync.md`](docs/models-hardware-sync.md) | Soft-sync UI, flags `localStorage`, events USB |
+| [`docs/matrix-edit-handoff.md`](docs/matrix-edit-handoff.md) | Matrice : copier/coller, DnD Pointer Events, cache session, bugs |
 | [`docs/Scroll_model_pull_handoff.md`](docs/Scroll_model_pull_handoff.md) | Scroll modèle HW (pull `1b`/`19`, lanes, pièges) |
 | [`docs/preset_bootstrap_analysis_traps.md`](docs/preset_bootstrap_analysis_traps.md) | Bootstrap preset / phase 4 |
 | [`captures/usb-wireshark/README.md`](captures/usb-wireshark/README.md) | Workflow captures → `bulkHex` |
@@ -18,7 +19,8 @@ Ce fichier est le **mémo technique** pour reprendre le développement sans l’
 ### Validé terrain — HX Stomp XL
 
 - Connexion USB, liste / activation / renommage presets, lecture dump preset.
-- Grille 16 + matrice stomp (`renderGrid16`), panneau paramètres (`.models` + valeurs chaîne depuis `preset_data`).
+- Grille 16 + matrice stomp (`renderGrid16`), panneau paramètres (`.models` + valeurs chaîne).
+- **Cache session params** : `preset_data` n’est lu qu’**au chargement / changement de preset** ; en session, valeurs via `slotChainSessionByKey` + overrides live write — voir [`docs/matrix-edit-handoff.md`](docs/matrix-edit-handoff.md).
 - Sync slot actif hardware → UI (`models:hardware-slot-changed`), soft-sync sans re-parse grille entre deux dumps.
 - **Scroll modèle FX** (~92 %) : pull USB sans `request_preset_content` à chaque cran — voir handoff scroll.
 - **Live write paramètres** : `write_live_param` (float / bool / discret).
@@ -30,7 +32,7 @@ Ce fichier est le **mémo technique** pour reprendre le développement sans l’
 
 - **Path 1 Output / Merge** : picker verrouillé + focus USB ; pas encore live write / scroll HW (LT à identifier — voir TODO § Path 1 structurel).
 - **Helix LT** : topologie 4 paths / 2 DSP, 32 segments — non implémenté (TODO § grille device).
-- **Édition preset** complète (insert slot vide, save preset, drag & drop) — captures Wireshark à compléter.
+- **Matrice — copier/coller, déplacer (v1)** : même path, Pointer Events, cache session — handoff [`docs/matrix-edit-handoff.md`](docs/matrix-edit-handoff.md) ; bugs et suite dans TODO § Matrice.
 - **Budget DSP** (`load` dans `.models`) — non calculé côté app.
 
 Le hardware Line 6 se comporte de façon cohérente ; les écarts viennent surtout du **protocole** (plusieurs conventions selon contexte select vs scroll).
@@ -126,7 +128,7 @@ Déclarées dans `lib.rs` — liste non exhaustive.
 | `get_preset_names`, `get_active_preset`, `activate_preset`, `rename_preset` | Presets |
 | `request_preset_content` | Dump preset actif |
 | `get_active_preset_slots`, `get_active_preset_stomp_layout` | Grille / routing |
-| `get_active_preset_slot_chain_param_values` | Valeurs chaîne slot 0..15 |
+| `get_active_preset_slot_chain_param_values` | Valeurs chaîne slot 0..15 — **hydratation load preset uniquement** (cache session côté TS) |
 | `get_active_preset_path1_io_chain_param_values` | Params Input/Output Path 1 |
 | `get_active_preset_kempline_flow_chain_param_values` | Params Split/Merge (flow) |
 | `get_active_hardware_slot_state` | Slot actif côté backend |
@@ -138,16 +140,27 @@ Déclarées dans `lib.rs` — liste non exhaustive.
 | `get_path1_input_source_wire_value`, `get_path1_split_type_wire_value` | Wire mémorisé IN USB |
 | `probe_slot_model_usb` | Assign / remove FX (picker) |
 
-Flux typique models : `request_preset_content` → `get_active_preset_slots` + layout → clic slot → chaîne + `.models`.
+Flux typique models : `request_preset_content` → `get_active_preset_slots` + layout → **`hydrateSlotChainSessionFromPresetData`** → clic slot → `resolveChainValuesForKemplineSlot` + `.models`.
+
+---
+
+## Matrice — édition preset
+
+Handoff détaillé (problèmes, solutions, architecture, bugs) : **[`docs/matrix-edit-handoff.md`](docs/matrix-edit-handoff.md)**.
+
+Backlog et cases à cocher : **[`TODO.md`](TODO.md)** § Matrice.
 
 ---
 
 ## Panneau paramètres (rappel court)
 
-- **Valeurs** : décodées dans `preset_data` (`preset_chain_params.rs`), pas dans `.models`.
+- **Valeurs au load** : hydratation unique depuis `preset_data` → `slotChainSessionByKey` (`preset_chain_params.rs`).
+- **Valeurs en session** : `resolveChainValuesForKemplineSlot` (cache + overrides live) ; assign picker / probe utilise défauts `.models` puis live write.
 - **Schéma UI** : `.models` + ordre/filtre via `HX_ModelCatalog.json` (`hxModelCatalogMeta.ts`).
 - **Formatage** : `HelixControls.json` + `formatChainParamValue` dans `models.ts`.
 - **Alignement** : `alignChainValuesToModelParamOrder` (mono / stéréo, `assign`, Amp+Cab).
+
+Ne **pas** relire `get_active_preset_slot_chain_param_values` au clic slot ou après probe/move — mettre à jour le cache session à la place.
 
 Split A/B vs Y : échelle fil **0…1** vs affichage Helix **−100…+100** — voir commentaires dans `models.ts` si régression d’échelle.
 

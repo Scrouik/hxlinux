@@ -941,7 +941,7 @@ type ChainParamValueJson = boolean | number | string;
 export function findIoSourceIdFromInputChainValues(
   data: CatalogPickerData,
   parentModelId: string,
-  chainValues: ChainParamValueJson[] | null | undefined,
+  chainValues: readonly (ChainParamValueJson | undefined)[] | null | undefined,
   inputParamChainIndex: number,
   connectedDeviceName: string | null,
 ): string | null {

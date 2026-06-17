@@ -69,12 +69,34 @@ fn read_params_hex(mut cur: &str, num_params: usize) -> Option<(Vec<ChainParamVa
     Some((out, consumed))
 }
 
-fn parse_c219_block_at(h: &str, c219_start: usize) -> Option<(Vec<ChainParamValue>, usize)> {
-    let slice = h.get(c219_start..)?;
-    let rel09 = slice.find("09")?;
+/// Position du délimiteur `09` (en indices **dans `slice`**, qui commence à `c219`) après l’id module.
+///
+/// Les ids `cd…09` (ex. `cd0209` Ampeg Scrambler) contiennent `09` en suffixe : un `find("09")`
+/// naïf confond ce suffixe avec le vrai séparateur qui suit toujours le marqueur `1aff`
+/// (`…cd02091aff09…`). On ancre donc sur `1aff` quand il est présent.
+pub(crate) fn c219_param_delim_rel_in_slice(slice: &str) -> Option<usize> {
+    const C219: &str = "c219";
+    if !slice.starts_with(C219) {
+        return None;
+    }
+    let after_c219 = &slice[C219.len()..];
+    if let Some(pos_1aff) = after_c219.find("1aff") {
+        let delim = C219.len() + pos_1aff + "1aff".len();
+        if slice.get(delim..delim + 2) == Some("09") {
+            return Some(delim);
+        }
+        return None;
+    }
+    let rel09 = after_c219.find("09")?;
     if rel09 < 4 {
         return None;
     }
+    Some(C219.len() + rel09)
+}
+
+fn parse_c219_block_at(h: &str, c219_start: usize) -> Option<(Vec<ChainParamValue>, usize)> {
+    let slice = h.get(c219_start..)?;
+    let rel09 = c219_param_delim_rel_in_slice(slice)?;
     let _type_hex = &slice[4..rel09];
     let mut br = c219_start + rel09;
     // Comme Python `user_slot_reader` : après le type, `bytes_read` est sur le **premier** caractère
@@ -283,6 +305,30 @@ mod tests {
 
     /// En-tête `85188317` / `c219` identique à la capture SVT-4 Pro (`cd0207`) : après `num_params`,
     /// quatre hex `00` + répétition du compteur précèdent les `ca…`.
+    /// Régression Ampeg Scrambler (`chainHex` `cd0209`) : le suffixe `09` de l’id ne doit pas
+    /// être pris pour le délimiteur `read_params` (valeurs UI absurdes / max).
+    #[test]
+    fn c219_cd0209_scrambler_parses_params_after_1aff_delim() {
+        let prefix = "85188317c219cd02091aff09110ac30b830206031504dc0006";
+        let params_hex = "ca3f428f5cca3f20a3d7ca3dd70a3dca3f28f5c3c3c2";
+        let seg = assignable_seg_from_ascii_hex(&format!("{prefix}{params_hex}"));
+        let blocks = parse_assignable_segment_param_blocks(&seg).expect("parse");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].len(), 6);
+        match blocks[0][0] {
+            ChainParamValue::Number(v) => assert!((v - 0.76f64).abs() < 1e-4),
+            _ => panic!("Drive"),
+        }
+        match blocks[0][4] {
+            ChainParamValue::Bool(true) => {}
+            _ => panic!("@enabled"),
+        }
+        match blocks[0][5] {
+            ChainParamValue::Bool(false) => {}
+            _ => panic!("@stereo"),
+        }
+    }
+
     #[test]
     fn c219_skips_zero_dup_count_before_read_params() {
         let prefix = "85188317c219cd02071aff09110ac30b830215031504dc0015";

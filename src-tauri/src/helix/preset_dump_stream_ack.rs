@@ -55,14 +55,15 @@ pub fn handle_in_layer(state: &mut HelixState, data: &[u8]) -> LayerResult {
         0x08, 0x00, 0x00, 0x18,
         0x80, 0x10, 0xed, 0x03,
         0x00, cnt, 0x00, 0x08,
-        lane[0], lane[1], 0x00, 0x00,
+        lane[0], lane[1], lane[2], 0x00,
     ]));
     if preset_dump_stream_ack_debug_enabled() {
         eprintln!(
-            "[PresetDumpStreamAck] IN len={} → OUT ed:03 sub=08 cnt={cnt:#04x} lane={:02x}:{:02x} editor={}",
+            "[PresetDumpStreamAck] IN len={} → OUT ed:03 sub=08 cnt={cnt:#04x} lane={:02x}:{:02x}:{:02x} editor={}",
             data.len(),
             lane[0],
             lane[1],
+            lane[2],
             HelixState::preset_dump_ack_use_editor_lane()
         );
     }

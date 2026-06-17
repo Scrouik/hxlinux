@@ -38,6 +38,44 @@ _Rust : `write_path1_input_source`, `write_path1_split_type`, `get_path1_*_wire_
 
 ---
 
+## Matrice — copier/coller, déplacer (drag & drop), cache params session
+
+> Handoff technique (problèmes, solutions Pointer Events, architecture cache) :
+> **[`docs/matrix-edit-handoff.md`](docs/matrix-edit-handoff.md)**
+
+### Réalisé (juin 2026)
+
+- [x] **Copier / coller inter-preset et multi-slot** — buffer persistant (`matrixSlotClipboard` non vidé au changement de preset) ; coller sur toute case FX vide (inter-path). Corrige le bug « plusieurs coller : UI OK, hardware pas à jour » (cause : copie perdue ou coller refusé hors même path/preset).
+- [x] **Déplacer slot (drag & drop)** — Pointer Events (`pointerdown` / `pointermove` / `pointerup` + `setPointerCapture`) ; HTML5 DnD abandonné (WebKitGTK ne déclenchait pas `drop`). Flux : copier → coller destination → vider source (`remove`).
+- [x] **Contraintes move v1** — même path (slots 0–7 ↔ 0–7, 8–15 ↔ 8–15) ; destination vide ; pas I/O / Split / Merge ; `mergeProbeSlotModelUntil` multi-slot après move.
+- [x] **Focus UI post-move** — sélection + panneau params sur le slot destination (hardware déjà positionné dessus).
+- [x] **Cache session params (`slotChainSessionByKey`)** — `preset_data` lu **une seule fois** au chargement / changement de preset (`hydrateSlotChainSessionFromPresetData`) ; ensuite `resolveChainValuesForKemplineSlot` (session + overrides live + défauts catalogue). **Plus de** `fetchSlotChainParamValuesReliable` au clic slot.
+- [x] **Scroll modèle HW** — plus de re-dump preset après molette (`schedulePresetRamRefreshAfterHwModelScroll` supprimé) ; défauts catalogue + cache session.
+- [x] **Fix params `cd0209` (Ampeg Scrambler)** — ancrage délimiteur `1aff` dans parse Rust (`preset_chain_params.rs`, `extract_c219_argument_type_hexes`).
+- [x] **Warnings compilation** — TS et Rust nettoyés (code mort supprimé).
+
+### Bug a Corriger
+
+_Détail et pistes : [`docs/matrix-edit-handoff.md`](docs/matrix-edit-handoff.md) §6._
+
+- [x] **Drag & drop — purge source HW** — copier → remove (focus USB) → délai → coller ; verrou UI `models-matrix-usb-busy`.
+- [ ] **Lecture preset après D&D** — après plusieurs moves, changement de preset souvent en échec. Correctif juin 2026 : reset `content_only` fantôme côté Rust + attente post-probe avant dump ; **à revalider terrain**.
+
+### À faire — drag & drop inter-path et structurel
+
+- [ ] **Move Path 1 → Path 2** (et réciproque ?) — étendre le DnD au-delà du même path (0–7 ↔ 8–15) ; contraintes DSP / budget load ; comportement hardware USB.
+1 - Lorsque l'on fait un drag & drop du path 1 vers le path 2 et que le path 2 est vide, un split se créer automatiquement juste apres le Input et un merge juste avant le Output
+2 - Il n'est pas possible de faire un drag & drop depuis un path vers un autre path sur un slot positionné avant le split ou apres le merge.
+- [ ] **Drag & drop Split et merge** — déplacement ou réassignation du bloc Split Path 1; trames live write / focus USB.
+1 - L'utilisateur peut drag & drop un split mais jamais apres le premier slot rempli du path 2
+2 - L'utilisateur peut drag & drop un merge mais jamais avant le dernier slot rempli du path 2
+3 - Comme pour le drag & drop de model, le split ou le merge d'origine est supprimé
+
+
+_Fichiers touchés en priorité : `src/models.ts` (`moveMatrixSlotFromTo`, `canMoveMatrixSlotToEmpty`, `bindMatrixSlotDragSource`), `src/styles.css` (feedback visuel `node--matrix-drag-*`)._
+
+---
+
 ## Budget DSP — limiter les models selon la capacité (Helix LT, Stomp XL)
 
 HX Edit refuse d’ajouter un model quand le **DSP est saturé** ; hxlinux fabrique des presets mais **ne calcule pas encore** cette limite (seul un warning « >8 blocs » sur Stomp, sans somme de charge).

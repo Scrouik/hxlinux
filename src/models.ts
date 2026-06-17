@@ -161,8 +161,6 @@ const HW_FORCE_PRESET_DUMP_ON_SLOT_NOTIFY_KEY = "models_hw_force_preset_dump_on_
  * (`sync_hardware_slot_focus_usb`) après notif slot. Défaut : actif.
  */
 const HW_SLOT_FOCUS_USB_KEY = "models_hw_slot_focus_usb";
-/** `localStorage.setItem("models_hw_slot_focus_await_chain", "1")` : avant lecture chaîne, attendre `sync_hardware_slot_focus_usb` (buffer preset vide / tests IN). */
-const HW_SLOT_FOCUS_AWAIT_CHAIN_KEY = "models_hw_slot_focus_await_chain";
 /**
  * Surveillance périodique du slot hardware actif (focus USB + diff empreinte).
  * Défaut 1200 ms ; `localStorage.setItem("models_hw_slot_content_watch_ms", "0")` pour désactiver.
@@ -195,11 +193,23 @@ let slotModelUsbProbeInFlight: number | null = null;
  */
 let mergeProbeSlotModelUntil: {
   ki: number;
+  /** Autres slots à préserver (ex. move drag & drop : source vide + destination remplie). */
+  extraKis?: number[];
   deadline: number;
   /** Évite de spammer `emitModelsSyncTrace` sur soft-sync répétés. */
   mergeTraceEmitted?: boolean;
 } | null = null;
 const PROBE_SLOT_MERGE_GRACE_MS = 20_000;
+
+function armProbeSlotMergeGrace(...kis: number[]): void {
+  const unique = [...new Set(kis.filter((k) => k >= 0 && k <= 15))];
+  if (unique.length === 0) return;
+  mergeProbeSlotModelUntil = {
+    ki: unique[0]!,
+    extraKis: unique.length > 1 ? unique.slice(1) : undefined,
+    deadline: Date.now() + PROBE_SLOT_MERGE_GRACE_MS,
+  };
+}
 /** Évite un `request_preset_content` (poll) collé au trafic `probe_slot_model_usb` → preset_data vidé → chainFetch null / hardwareSyncBusy long. */
 let suppressUsbPresetPollUntilMs = 0;
 const USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS = 10_000;
@@ -234,6 +244,9 @@ const pendingLiveWrites = new Map<string, PendingLiveWrite>();
  */
 const liveChainParamOverridesByPresetSlot = new Map<string, Map<string, ChainParamValueJson>>();
 
+/** Chaîne params par slot — hydratée **une fois** au chargement preset depuis `preset_data`, puis jamais relue. */
+const slotChainSessionByKey = new Map<string, ChainParamValueJson[]>();
+
 function liveChainOverrideStorageKey(preset: number, kemplineSlotIndex: number): string {
   return `${preset}|${kemplineSlotIndex}`;
 }
@@ -258,10 +271,86 @@ function recordLiveChainParamOverrideForKemplineSlot(
 
 function clearLiveChainOverridesForKemplineSlot(preset: number, kemplineSlotIndex: number): void {
   liveChainParamOverridesByPresetSlot.delete(liveChainOverrideStorageKey(preset, kemplineSlotIndex));
+  slotChainSessionByKey.delete(liveChainOverrideStorageKey(preset, kemplineSlotIndex));
 }
 
 function clearAllLiveChainParamOverrides(): void {
   liveChainParamOverridesByPresetSlot.clear();
+  slotChainSessionByKey.clear();
+}
+
+function clearSlotChainSessionForPreset(preset: number): void {
+  const prefix = `${preset}|`;
+  for (const k of [...slotChainSessionByKey.keys()]) {
+    if (k.startsWith(prefix)) slotChainSessionByKey.delete(k);
+  }
+}
+
+function setSlotChainSessionValues(
+  preset: number,
+  kemplineSlotIndex: number,
+  values: ChainParamValueJson[],
+): void {
+  if (preset < 0 || kemplineSlotIndex < 0 || kemplineSlotIndex > 15 || values.length === 0) return;
+  slotChainSessionByKey.set(liveChainOverrideStorageKey(preset, kemplineSlotIndex), values.slice());
+}
+
+/** **Seul** appel autorisé à `get_active_preset_slot_chain_param_values` hors chargement preset. */
+async function readChainValuesFromPresetDataOnce(slotIndex: number): Promise<ChainParamValueJson[] | null> {
+  try {
+    return await invoke<ChainParamValueJson[] | null>("get_active_preset_slot_chain_param_values", {
+      slotIndex,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Hydrate le cache session depuis `preset_data` — appelé une fois par chargement / changement de preset. */
+async function hydrateSlotChainSessionFromPresetData(presetIndex: number): Promise<void> {
+  if (presetIndex < 0) return;
+  clearSlotChainSessionForPreset(presetIndex);
+  let filled = 0;
+  for (let ki = 0; ki < 16; ki += 1) {
+    const vals = await readChainValuesFromPresetDataOnce(ki);
+    if (vals && vals.length > 0) {
+      slotChainSessionByKey.set(liveChainOverrideStorageKey(presetIndex, ki), vals);
+      filled += 1;
+    }
+  }
+  emitModelsSyncTrace(`hydrateSlotChainSession preset=${presetIndex} slots=${filled}/16`);
+}
+
+async function resolveChainValuesForKemplineSlot(
+  kemplineSlotIndex: number,
+  slot: SlotDebug,
+  catalogModelIdTrimmed: string,
+  categoryName: string | null,
+  catalogRoutingSignal: string | null,
+): Promise<ChainParamValueJson[] | null> {
+  const found = await findModelDefinitionForSlot(slot, catalogModelIdTrimmed, categoryName);
+  const params = found?.entry.params ?? [];
+  if (params.length === 0) return null;
+
+  const sessionKey = liveChainOverrideStorageKey(currentPresetIndex, kemplineSlotIndex);
+  let base = slotChainSessionByKey.get(sessionKey) ?? null;
+  if (!base || base.length === 0) {
+    base = buildDefaultChainValuesForSourceOrder(params, catalogRoutingSignal);
+  }
+  if (!base || base.length === 0) return null;
+
+  const om = liveChainParamOverridesByPresetSlot.get(sessionKey);
+  if (!om || om.size === 0) return base;
+
+  const bySid = new Map<string, ChainParamValueJson>();
+  const source = modelParamSourceOrderIds(params, catalogRoutingSignal, base.length);
+  const n = Math.min(base.length, source.length);
+  for (let i = 0; i < n; i += 1) {
+    const sid = source[i];
+    if (sid) bySid.set(sid, base[i]!);
+  }
+  for (const [sid, v] of om) bySid.set(sid, v);
+  return chainValuesUsbOrderFromSymbolicMap(bySid, params, catalogRoutingSignal);
 }
 
 function mergeLiveChainOverridesIntoAligned(
@@ -564,9 +653,34 @@ async function applyHardwareSlotModelParamsHeavy(
   catalogModelIdTrimmed: string,
   hex: string,
 ): Promise<void> {
+  if (currentPresetIndex >= 0) {
+    clearLiveChainOverridesForKemplineSlot(currentPresetIndex, ki);
+  }
+  paramsPaneCatalogBySlotKey.delete(makeSlotSelectionKey(slot, ki));
+  if (
+    selectedParamsKemplineSlotIndex === ki &&
+    selectedParamsPresetIndex === currentPresetIndex
+  ) {
+    selectedParamsValuesSig = null;
+    selectedParamsInPlaceUpdater = null;
+    selectedParamsInPlaceSlotKey = null;
+    showModelsParamsLoading();
+  }
   if (catalogModelIdTrimmed) {
     await loadAndShowModelsParamsFromCatalogDefaults(slot, catalogModelIdTrimmed, ki);
-  } else if (!hex) {
+    const meta = await getPresetMetaForId(catalogModelIdTrimmed);
+    const signal = pickSignal(meta, slot.moduleHex);
+    const sessionVals = await resolveChainValuesForKemplineSlot(
+      ki,
+      slot,
+      catalogModelIdTrimmed,
+      meta?.categoryName ?? null,
+      signal,
+    );
+    if (sessionVals) setSlotChainSessionValues(currentPresetIndex, ki, sessionVals);
+    return;
+  }
+  if (!hex) {
     showModelsParamsNotFound(slot, null);
   } else {
     showModelsParamsError(
@@ -877,43 +991,6 @@ async function waitUntilHardwareSyncIdle(maxWaitMs: number): Promise<void> {
   }
 }
 
-/** `request_preset_content` vide tout de suite `preset_data` côté Rust : l’invoke renvoie `null` pendant toute la relecture (souvent plusieurs secondes). */
-const SLOT_CHAIN_VALUES_DEFAULT_MAX_WAIT_MS = 14_000;
-const SLOT_CHAIN_VALUES_DEFAULT_POLL_MS = 120;
-/** Soft-sync : même plafond que le chargement manuel — un dump USB peut dépasser 5 s sans qu’il y ait anomalie. */
-const SLOT_CHAIN_VALUES_SOFT_REFRESH_MAX_WAIT_MS = 14_000;
-
-/**
- * Boucle jusqu’à ce que `get_active_preset_slot_chain_param_values` renvoie autre chose que `null`,
- * ou jusqu’à `maxWaitMs` (fenêtre couvrant un `request_preset_content` + attente slots du soft-sync).
- */
-async function fetchSlotChainParamValuesReliable(
-  slotIndex: number,
-  abortIfLoadSeq: number | null,
-  opts?: { maxWaitMs?: number; pollMs?: number },
-): Promise<ChainParamValueJson[] | null> {
-  const maxWaitMs = Math.max(200, opts?.maxWaitMs ?? SLOT_CHAIN_VALUES_DEFAULT_MAX_WAIT_MS);
-  const pollMs = Math.max(30, opts?.pollMs ?? SLOT_CHAIN_VALUES_DEFAULT_POLL_MS);
-  const deadline = Date.now() + maxWaitMs;
-  let last: ChainParamValueJson[] | null = null;
-  while (true) {
-    if (abortIfLoadSeq !== null && abortIfLoadSeq !== modelsParamsLoadSeq) return last;
-    try {
-      last = await invoke<ChainParamValueJson[] | null>("get_active_preset_slot_chain_param_values", {
-        slotIndex,
-      });
-    } catch {
-      last = null;
-    }
-    if (last !== null) return last;
-    if (Date.now() >= deadline) {
-      emitModelsSyncTrace(`chainFetch TIMEOUT null slot=${slotIndex} after ${maxWaitMs}ms`);
-      return last;
-    }
-    await delayMs(pollMs);
-  }
-}
-
 function normalizeSlotsPayloadFromInvoke(
   slots: [string, string][] | [string, string, string, string][] | [string, string, string, string, string][],
 ): SlotDebug[] {
@@ -1053,16 +1130,18 @@ function applyProbeSlotMergeToNormalized(normalized: SlotDebug[]): SlotDebug[] {
   }
   if (normalized.length !== 16) return normalized;
   if (!lastHwSyncNormalizedSlots || lastHwSyncNormalizedSlots.length !== 16) return normalized;
-  const ki = m.ki;
-  const optimistic = lastHwSyncNormalizedSlots[ki];
-  if (!optimistic) return normalized;
+  const indices = [m.ki, ...(m.extraKis ?? [])];
   if (!m.mergeTraceEmitted) {
     mergeProbeSlotModelUntil = { ...m, mergeTraceEmitted: true };
     emitModelsSyncTrace(
-      `softSync merge probe slot=${ki} (stale preset_data parse vs optimistic row; no post-probe dump)`,
+      `softSync merge probe slots=${indices.join(",")} (stale preset_data parse vs optimistic row; no post-probe dump)`,
     );
   }
-  return normalized.map((s, i) => (i === ki ? { ...optimistic } : { ...s }));
+  return normalized.map((s, i) => {
+    if (!indices.includes(i)) return { ...s };
+    const optimistic = lastHwSyncNormalizedSlots![i];
+    return optimistic ? { ...optimistic } : { ...s };
+  });
 }
 
 /**
@@ -1386,27 +1465,34 @@ async function softRefreshParamsPaneFromSlots(slots: SlotDebug[]): Promise<void>
     selectedParamsValuesSig = nextSig;
     return;
   }
-  const chainValues = await fetchSlotChainParamValuesReliable(idx, null, {
-    maxWaitMs: SLOT_CHAIN_VALUES_SOFT_REFRESH_MAX_WAIT_MS,
-    pollMs: SLOT_CHAIN_VALUES_DEFAULT_POLL_MS,
-  });
+  const idTrim =
+    (slot.catalogModelId ?? "").trim() || (await getCatalogModelIdForHex(slot.moduleHex)) || "";
+  const meta = idTrim ? await getPresetMetaForId(idTrim) : null;
+  const chainValues = idTrim
+    ? await resolveChainValuesForKemplineSlot(
+        idx,
+        slot,
+        idTrim,
+        meta?.categoryName ?? null,
+        pickSignal(meta, slot.moduleHex),
+      )
+    : null;
   const nextSig = `${currentPresetIndex}|${idx}|${chainValuesSignature(chainValues)}`;
   if (selectedParamsValuesSig === nextSig) return;
   const slotKey = makeSlotSelectionKey(slot, idx);
-  // Même slot + updater actif => patch des widgets in-place sans repasser par l'état "Chargement".
   if (
     selectedParamsInPlaceUpdater &&
     selectedParamsInPlaceSlotKey &&
-    selectedParamsInPlaceSlotKey === slotKey
+    selectedParamsInPlaceSlotKey === slotKey &&
+    chainValues !== null &&
+    chainValues.length > 0
   ) {
     selectedParamsInPlaceUpdater(chainValues);
     selectedParamsValuesSig = nextSig;
     return;
   }
-  // Ne pas mettre `selectedParamsValuesSig` avant la fin du load : sinon les polls suivants croient
-  // que l'UI est à jour alors que le panneau est encore sur « Chargement » → retour immédiat, chargement bloqué, flash vide.
   await loadAndShowModelsParamsForSlot(slot, idx);
-  selectedParamsValuesSig = `${currentPresetIndex}|${idx}|${chainValuesSignature(chainValues)}`;
+  selectedParamsValuesSig = nextSig;
 }
 
 function liveWriteProbeEnabled(): boolean {
@@ -1415,6 +1501,23 @@ function liveWriteProbeEnabled(): boolean {
 
 function liveWriteEnabled(): boolean {
   return localStorage.getItem(LIVE_WRITE_ENABLED_FLAG) === "1";
+}
+
+/** File d’attente + flush : sonde seule (`probe`) ou écriture USB/MIDI réelle (`enabled`). */
+function liveWriteQueueEnabled(): boolean {
+  return liveWriteProbeEnabled() || liveWriteEnabled();
+}
+
+let liveWriteFlushTimer: number | null = null;
+
+function scheduleLiveWriteFlushDebounced(): void {
+  if (liveWriteFlushTimer !== null) {
+    window.clearTimeout(liveWriteFlushTimer);
+  }
+  liveWriteFlushTimer = window.setTimeout(() => {
+    liveWriteFlushTimer = null;
+    void flushPendingLiveWrites();
+  }, 100);
 }
 
 function markLiveWriteUiInteraction(): void {
@@ -1448,7 +1551,7 @@ function scheduleLiveParamWriteProbe(
   p: ModelParamDefJson,
   rawValue: number,
 ): void {
-  if (!liveWriteProbeEnabled()) return;
+  if (!liveWriteQueueEnabled()) return;
   if (slotIndex === undefined || !Number.isInteger(slotIndex)) return;
   if (!Number.isFinite(rawValue)) return;
   const symbolicId = (p.symbolicID ?? "").trim();
@@ -1479,6 +1582,7 @@ function scheduleLiveParamWriteProbe(
     rawMin,
     rawMax,
   });
+  scheduleLiveWriteFlushDebounced();
 }
 
 function liveWriteParamIndexForRow(
@@ -1556,18 +1660,19 @@ function applyHardwareSlotParamChanged(p: SlotParamChangedPayload): void {
   hwUi.scheduleAfterHwGesture("params", () => {
     if (
       selectedParamsKemplineSlotIndex !== slotIndex ||
-      selectedParamsPresetIndex !== currentPresetIndex ||
-      !selectedParamsInPlaceUpdater
+      selectedParamsPresetIndex !== currentPresetIndex
     ) {
       return;
     }
-    selectedParamsInPlaceUpdater(null);
     selectedParamsValuesSig = `${currentPresetIndex}|${slotIndex}|hw:${sequence}:${paramIndex}:${String(cv)}`;
     emitModelsSyncTraceThrottled(
       "evt_slot_param_changed",
       `hw param slot=${slotIndex} pp=${paramIndex} ${sid}=${String(cv)}`,
       400,
     );
+    if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16) {
+      scheduleSoftRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
+    }
   });
 }
 
@@ -1777,7 +1882,7 @@ function clearPath1SplitTypeHighlightOverride(): void {
 
 function syncInputPickerHighlight(
   catalogModelId: string,
-  chainValues: ChainParamValueJson[] | null | undefined,
+  chainValues: readonly (ChainParamValueJson | undefined)[] | null | undefined,
   inputParamChainIndex: number,
 ): void {
   void syncInputPickerHighlightAsync(catalogModelId, chainValues, inputParamChainIndex);
@@ -1785,7 +1890,7 @@ function syncInputPickerHighlight(
 
 async function syncInputPickerHighlightAsync(
   catalogModelId: string,
-  chainValues: ChainParamValueJson[] | null | undefined,
+  chainValues: readonly (ChainParamValueJson | undefined)[] | null | undefined,
   inputParamChainIndex: number,
 ): Promise<void> {
   if (!catalogPickerDataCache) return;
@@ -1822,13 +1927,6 @@ async function syncInputPickerHighlightAsync(
     if (typeof row?.wireValue === "number") path1InputMatrixWire = row.wireValue;
     void refreshPath1InputMatrixIcon();
   }
-}
-
-function syncSplitPickerHighlight(
-  catalogModelId: string,
-  moduleHex?: string | null,
-): void {
-  void syncSplitPickerHighlightAsync(catalogModelId, moduleHex);
 }
 
 async function syncSplitPickerHighlightAsync(
@@ -2291,6 +2389,14 @@ async function applySlotModelFromPickerListClick(row: CatalogPickerModelRow): Pr
     emitModelsSyncTrace(
       `slot_model_probe ok slot=${ki} — no pendingForceUsbPresetContent (pas de relecture preset complète)`,
     );
+    const sessionVals = await resolveChainValuesForKemplineSlot(
+      ki,
+      optimisticSlot,
+      idTrim,
+      categoryName,
+      pickSignal(metaEarly, moduleHexOpt),
+    );
+    if (sessionVals) setSlotChainSessionValues(currentPresetIndex, ki, sessionVals);
   } catch (e) {
     console.warn("[SlotModelProbe]", e);
     if (prevSnapshot) {
@@ -2365,7 +2471,7 @@ async function syncModelsSlotPickerFromLoadedModel(
   /** Cab lié lu dans le preset (`get_active_preset_slot_linked_cab` [0]) — legacy hybrid vs IR. */
   linkedCabHex?: string | null,
   /** Valeurs chaîne lues (Path 1 Input : surligner la source `@input` courante). */
-  chainValues?: ChainParamValueJson[] | null,
+  chainValues?: readonly (ChainParamValueJson | undefined)[] | null,
   /** Index param `@input` dans `chainValues` alignées (défaut 0). */
   inputParamChainIndex?: number,
   slotName?: string,
@@ -2681,52 +2787,69 @@ function attachSelectedSlotRemoveButton(el: HTMLElement, slotIndex: number): voi
   btn.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    void (async () => {
-      const emptySlot: SlotDebug = { category: "", name: "<empty>" };
-      slotModelUsbProbeInFlight = slotIndex;
-      try {
-        const out = await invoke<string>("probe_slot_model_usb", {
-          op: "remove",
-          slotIndex,
-        });
-        console.info("[SlotModelProbe]", "remove", `slot=${slotIndex}`, out);
-        selectedParamsValuesSig = null;
-        // Comme `add`/`replace` : `probe_slot_model_usb` n’écrit pas dans `preset_data` Rust.
-        // Sans MAJ optimiste du snapshot, le soft-sync (~200 ms) re-parse l’ancien dump → fantôme.
-        if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16) {
-          const next = lastHwSyncNormalizedSlots.map((s, i) =>
-            i === slotIndex ? { ...emptySlot } : { ...s },
-          );
-          lastHwSyncNormalizedSlots = next;
-          lastHwSyncChainSignature = chainLayoutSignature(next);
-          patchMatrixSlotVisualFromSlot(slotIndex, emptySlot);
-          mergeProbeSlotModelUntil = {
-            ki: slotIndex,
-            deadline: Date.now() + PROBE_SLOT_MERGE_GRACE_MS,
-            mergeTraceEmitted: false,
-          };
-          suppressUsbPresetPollUntilMs = Date.now() + USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS;
-          lastSoftUsbPresetReadAt = Date.now();
-          emitModelsSyncTrace(
-            `slot_model_probe remove ok slot=${slotIndex} — optimistic empty + merge grace (preset_data inchangé côté Rust)`,
-          );
-        }
-        markLiveWriteUiInteraction();
-        if (currentPresetIndex >= 0) {
-          clearLiveChainOverridesForKemplineSlot(currentPresetIndex, slotIndex);
-        }
-        if (selectedParamsKemplineSlotIndex === slotIndex) {
-          suppressNextUiSlotHardwareSwitch = true;
-          selectParamsPaneByKemplineIndex(slotIndex);
-        }
-      } catch (e) {
-        console.warn("[SlotModelProbe][remove]", e);
-      } finally {
-        slotModelUsbProbeInFlight = null;
-      }
-    })();
+    if (isMatrixUsbInteractionLocked()) return;
+    void removeMatrixSlotFromCell(slotIndex);
   });
   el.appendChild(btn);
+}
+
+/** Vide le slot sur le HX (`probe_slot_model_usb` remove) + MAJ optimiste grille. */
+async function removeMatrixSlotFromCell(
+  slotIndex: number,
+  options?: { reselect?: boolean; skipInteractionLock?: boolean },
+): Promise<boolean> {
+  const run = async (): Promise<boolean> => {
+  if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex > 15) return false;
+  const emptySlot: SlotDebug = { category: "", name: "<empty>" };
+  slotModelUsbProbeInFlight = slotIndex;
+  try {
+    // Le remove doit cibler le slot source : focus USB explicite (après un add le HX est
+    // souvent sur le slot destination — sans switch, le bulk remove peut être ignoré).
+    await waitUntilHardwareSyncIdle(15_000);
+    await enqueueHardwareSlotSwitch(slotIndex);
+    await delayMs(100);
+    const out = await invoke<string>("probe_slot_model_usb", {
+      op: "remove",
+      slotIndex,
+    });
+    console.info("[SlotModelProbe]", "remove", `slot=${slotIndex}`, out);
+    selectedParamsValuesSig = null;
+    if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16) {
+      const next = lastHwSyncNormalizedSlots.map((s, i) =>
+        i === slotIndex ? { ...emptySlot } : { ...s },
+      );
+      lastHwSyncNormalizedSlots = next;
+      lastHwSyncChainSignature = chainLayoutSignature(next);
+      patchMatrixSlotVisualFromSlot(slotIndex, emptySlot);
+      mergeProbeSlotModelUntil = {
+        ki: slotIndex,
+        deadline: Date.now() + PROBE_SLOT_MERGE_GRACE_MS,
+        mergeTraceEmitted: false,
+      };
+      suppressUsbPresetPollUntilMs = Date.now() + USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS;
+      lastSoftUsbPresetReadAt = Date.now();
+      emitModelsSyncTrace(
+        `slot_model_probe remove ok slot=${slotIndex} — optimistic empty + merge grace (preset_data inchangé côté Rust)`,
+      );
+    }
+    markLiveWriteUiInteraction();
+    if (currentPresetIndex >= 0) {
+      clearLiveChainOverridesForKemplineSlot(currentPresetIndex, slotIndex);
+    }
+    if (options?.reselect !== false && selectedParamsKemplineSlotIndex === slotIndex) {
+      suppressNextUiSlotHardwareSwitch = true;
+      selectParamsPaneByKemplineIndex(slotIndex);
+    }
+    return true;
+  } catch (e) {
+    console.warn("[SlotModelProbe][remove]", e);
+    return false;
+  } finally {
+    slotModelUsbProbeInFlight = null;
+  }
+  };
+  if (options?.skipInteractionLock) return run();
+  return withMatrixUsbInteractionLock(`Suppression slot ${slotIndex + 1}…`, run);
 }
 
 function tryRestoreSelectedParamsPaneAfterRender(): boolean {
@@ -2763,6 +2886,53 @@ function selectParamsPaneByKemplineIndex(kemplineSlotIndex: number): boolean {
   suppressNextUiSlotHardwareSwitch = true;
   node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   return true;
+}
+
+/** Focus UI + panneau params sur un slot (sans commande HW — déjà positionné). */
+async function focusMatrixSlotParamsPane(kemplineSlotIndex: number): Promise<void> {
+  if (!Number.isInteger(kemplineSlotIndex) || kemplineSlotIndex < 0 || kemplineSlotIndex > 15) {
+    return;
+  }
+  suppressNextUiSlotHardwareSwitch = true;
+  lastUserHwSlotSwitchIndex = kemplineSlotIndex;
+  lastUserHwSlotSwitchAt = Date.now();
+  selectParamsPaneByKemplineIndex(kemplineSlotIndex);
+  const slot = lastHwSyncNormalizedSlots?.[kemplineSlotIndex];
+  if (!slot || slot.name === "<empty>") return;
+
+  selectedParamsInPlaceUpdater = null;
+  selectedParamsInPlaceSlotKey = null;
+  selectedParamsValuesSig = null;
+
+  const cb = matrixSlotClipboard;
+  if (
+    cb &&
+    cb.presetIndex === currentPresetIndex &&
+    cb.sourceKemplineIndex === kemplineSlotIndex &&
+    cb.chainParamsBySymbolicId.size > 0
+  ) {
+    const hint = await buildChainValuesFromMatrixClipboard(cb, slot);
+    if (hint) setSlotChainSessionValues(currentPresetIndex, kemplineSlotIndex, hint);
+  }
+
+  await loadAndShowModelsParamsForSlot(slot, kemplineSlotIndex);
+
+  if (selectedParamsKemplineSlotIndex === kemplineSlotIndex) {
+    const idTrim = (slot.catalogModelId ?? "").trim();
+    if (idTrim) {
+      const meta = await getPresetMetaForId(idTrim);
+      const resolved = await resolveChainValuesForKemplineSlot(
+        kemplineSlotIndex,
+        slot,
+        idTrim,
+        meta?.categoryName ?? null,
+        pickSignal(meta, slot.moduleHex),
+      );
+      if (resolved) {
+        selectedParamsValuesSig = `${currentPresetIndex}|${kemplineSlotIndex}|${chainValuesSignature(resolved)}`;
+      }
+    }
+  }
 }
 
 function selectParamsPaneByHwSlotBus(slotBus: number): boolean {
@@ -2849,6 +3019,719 @@ function clearModelsParamsPaneContent() {
   inner.replaceChildren();
   clearSlotPickerIoLock();
   // Ne pas resetSlotPickerToIdle : garder catégorie/modèle picker pour assigner sur ce slot vide FX.
+}
+
+// --- Copier / coller matrice (snapshot RAM → add + replay params) ---
+
+type MatrixSlotClipboard = {
+  presetIndex: number;
+  /** Libellé preset au moment de la copie (affichage inter-preset). */
+  sourcePresetLabel: string;
+  sourceKemplineIndex: number;
+  path: 0 | 1;
+  catalogModelId: string;
+  displayName: string;
+  categoryName: string;
+  assignVariant: string;
+  moduleHex?: string;
+  catalogSignal: string | null;
+  chainParamsBySymbolicId: Map<string, ChainParamValueJson>;
+};
+
+/** Délai entre purge source et coller destination (move) — laisser digérer le remove USB. */
+const MATRIX_USB_OP_SETTLE_MS = 150;
+/** Pause avant `request_preset_content` après probe matrice (évite collision avec dump). */
+const MATRIX_USB_BEFORE_PRESET_LOAD_MS = 400;
+
+async function waitForMatrixUsbIdle(maxWaitMs = 30_000): Promise<void> {
+  const deadline = Date.now() + maxWaitMs;
+  while (isMatrixUsbInteractionLocked()) {
+    if (Date.now() >= deadline) {
+      emitModelsSyncTrace("waitMatrixUsbIdle TIMEOUT");
+      return;
+    }
+    await delayMs(40);
+  }
+}
+
+async function settleUsbAfterMatrixProbe(): Promise<void> {
+  const sinceProbe = Date.now() - lastSoftUsbPresetReadAt;
+  if (sinceProbe < MATRIX_USB_BEFORE_PRESET_LOAD_MS) {
+    await delayMs(MATRIX_USB_BEFORE_PRESET_LOAD_MS - sinceProbe);
+  }
+}
+
+let matrixUsbInteractionLockDepth = 0;
+
+function isMatrixUsbInteractionLocked(): boolean {
+  return matrixUsbInteractionLockDepth > 0;
+}
+
+function pushMatrixUsbInteractionLock(statusHint?: string): void {
+  if (matrixUsbInteractionLockDepth === 0) {
+    hideMatrixContextMenu();
+    document.body.classList.add("models-matrix-usb-busy");
+    if (statusHint) setStatus(statusHint);
+  }
+  matrixUsbInteractionLockDepth += 1;
+}
+
+function popMatrixUsbInteractionLock(): void {
+  matrixUsbInteractionLockDepth = Math.max(0, matrixUsbInteractionLockDepth - 1);
+  if (matrixUsbInteractionLockDepth === 0) {
+    document.body.classList.remove("models-matrix-usb-busy");
+  }
+}
+
+async function withMatrixUsbInteractionLock<T>(
+  statusHint: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  pushMatrixUsbInteractionLock(statusHint);
+  try {
+    return await fn();
+  } finally {
+    popMatrixUsbInteractionLock();
+  }
+}
+
+let matrixSlotClipboard: MatrixSlotClipboard | null = null;
+let matrixCtxTargetKemplineIndex: number | null = null;
+/** Index source pendant un drag & drop matrice (move). */
+let matrixDragSourceKi: number | null = null;
+
+function clearMatrixSlotClipboard(): void {
+  matrixSlotClipboard = null;
+}
+
+function matrixSlotPath(kemplineSlotIndex: number): 0 | 1 {
+  return kemplineSlotIndex >= 8 ? 1 : 0;
+}
+
+function isStructuralMatrixCategory(category: string): boolean {
+  const nk = normalizeCategory(category);
+  return (
+    nk === "input" ||
+    nk === "output" ||
+    nk === "split" ||
+    nk === "merge" ||
+    nk === "routing"
+  );
+}
+
+function canCopyMatrixSlot(slot: SlotDebug): boolean {
+  if (isEmptyGridCell(slot)) return false;
+  if (isStructuralMatrixCategory(slot.category)) return false;
+  if ((slot.catalogModelId ?? "").trim().length > 0) return true;
+  // Grille preset : category + name + moduleHex (pas toujours catalogModelId).
+  return (slot.moduleHex ?? "").trim().length > 0;
+}
+
+function canPasteMatrixSlotToEmpty(kemplineSlotIndex: number, slots: SlotDebug[]): boolean {
+  const cb = matrixSlotClipboard;
+  if (!cb || currentPresetIndex < 0) return false;
+  const slot = slots[kemplineSlotIndex];
+  if (!slot || !isEmptyGridCell(slot)) return false;
+  return !isColumnPairedSlotBlocked(slots, kemplineSlotIndex);
+}
+
+/** Même règles que coller, sans clipboard (validation drag & drop move). */
+function canMoveMatrixSlotToEmpty(
+  sourceKi: number,
+  destKi: number,
+  slots: SlotDebug[],
+): boolean {
+  if (sourceKi === destKi) return false;
+  if (currentPresetIndex < 0 || loading || isMatrixUsbInteractionLocked()) return false;
+  const sourceSlot = slots[sourceKi];
+  if (!sourceSlot || !canCopyMatrixSlot(sourceSlot)) return false;
+  if (matrixSlotPath(sourceKi) !== matrixSlotPath(destKi)) return false;
+  const destSlot = slots[destKi];
+  if (!destSlot || !isEmptyGridCell(destSlot)) return false;
+  return !isColumnPairedSlotBlocked(slots, destKi);
+}
+
+function hideMatrixContextMenu(): void {
+  const menu = document.getElementById("models-ctx-menu");
+  menu?.classList.remove("visible");
+  matrixCtxTargetKemplineIndex = null;
+}
+
+async function buildChainParamsMapForCopy(
+  slot: SlotDebug,
+  kemplineSlotIndex: number,
+  catalogModelId: string,
+  categoryName: string,
+  catalogSignal: string | null,
+  rawChain: ChainParamValueJson[] | null,
+): Promise<Map<string, ChainParamValueJson>> {
+  const out = new Map<string, ChainParamValueJson>();
+  if (!rawChain || rawChain.length === 0) return out;
+  const found = await findModelDefinitionForSlot(slot, catalogModelId, categoryName);
+  const params = found?.entry.params ?? [];
+  if (params.length === 0) return out;
+  const aligned = alignChainValuesToModelParamOrder(
+    rawChain,
+    params,
+    params,
+    catalogSignal,
+  );
+  const merged =
+    mergeLiveChainOverridesIntoAligned(
+      currentPresetIndex,
+      kemplineSlotIndex,
+      params,
+      aligned,
+    ) ?? aligned;
+  if (!merged) return out;
+  for (let i = 0; i < params.length; i += 1) {
+    const sid = (params[i]?.symbolicID ?? "").trim();
+    const v = merged[i];
+    if (sid && v !== undefined) out.set(sid, v);
+  }
+  return out;
+}
+
+function modelParamSourceOrderIds(
+  allModelParams: ModelParamDefJson[],
+  catalogSignal: string | null | undefined,
+  valueCountHint?: number,
+): string[] {
+  const signal = normalizeCatalogSignal(catalogSignal);
+  const buildSourceOrderIdsFromModels = (includeStereoOnly: boolean): string[] => {
+    const out: string[] = [];
+    for (const p of allModelParams) {
+      if (!includeStereoOnly && p["stereo-only"] === true) continue;
+      const sid = (p.symbolicID ?? "").trim();
+      if (!sid) continue;
+      out.push(sid);
+    }
+    return out;
+  };
+  const sourceAll = buildSourceOrderIdsFromModels(true);
+  if (signal === "mono" && valueCountHint !== undefined) {
+    const sourceMono = buildSourceOrderIdsFromModels(false);
+    const diffAll = Math.abs(sourceAll.length - valueCountHint);
+    const diffMono = Math.abs(sourceMono.length - valueCountHint);
+    if (diffMono < diffAll) return sourceMono;
+  }
+  return sourceAll;
+}
+
+function chainValuesUsbOrderFromSymbolicMap(
+  chainParamsBySymbolicId: Map<string, ChainParamValueJson>,
+  allModelParams: ModelParamDefJson[],
+  catalogSignal: string | null | undefined,
+): ChainParamValueJson[] {
+  const source = modelParamSourceOrderIds(
+    allModelParams,
+    catalogSignal,
+    chainParamsBySymbolicId.size,
+  );
+  const out: ChainParamValueJson[] = [];
+  for (const sid of source) {
+    const v = chainParamsBySymbolicId.get(sid);
+    if (v !== undefined) out.push(v);
+  }
+  return out;
+}
+
+async function buildChainValuesFromMatrixClipboard(
+  cb: MatrixSlotClipboard,
+  slot: SlotDebug,
+): Promise<ChainParamValueJson[] | null> {
+  const found = await findModelDefinitionForSlot(slot, cb.catalogModelId, cb.categoryName);
+  const params = found?.entry.params ?? [];
+  if (params.length === 0 || cb.chainParamsBySymbolicId.size === 0) return null;
+  const values = chainValuesUsbOrderFromSymbolicMap(
+    cb.chainParamsBySymbolicId,
+    params,
+    cb.catalogSignal,
+  );
+  return values.length > 0 ? values : null;
+}
+
+async function copyMatrixSlotFromCell(kemplineSlotIndex: number, slot: SlotDebug): Promise<void> {
+  if (!canCopyMatrixSlot(slot) || currentPresetIndex < 0) return;
+  const idTrim =
+    (slot.catalogModelId ?? "").trim() ||
+    (await getCatalogModelIdForHex(slot.moduleHex, slot.category))?.trim() ||
+    "";
+  if (!idTrim) {
+    console.warn("[MatrixClipboard] copie impossible : pas d’id catalogue pour", slot.moduleHex);
+    return;
+  }
+  const meta = await getPresetMetaForId(idTrim);
+  const categoryName = ((meta?.categoryName ?? slot.category) || "").trim();
+  const catalogSignal = pickSignal(meta, slot.moduleHex);
+
+  let linkedCab: string | null = null;
+  let rawChain: ChainParamValueJson[] | null = null;
+  if (loadedPresetIndex === currentPresetIndex) {
+    rawChain = await resolveChainValuesForKemplineSlot(
+      kemplineSlotIndex,
+      slot,
+      idTrim,
+      categoryName,
+      catalogSignal,
+    );
+  }
+
+  const assignVariant = await usbAssignVariantForAmpCabSlot(
+    meta,
+    slot.moduleHex,
+    slot.category,
+    idTrim,
+    linkedCab,
+  );
+  const chainParamsBySymbolicId = await buildChainParamsMapForCopy(
+    slot,
+    kemplineSlotIndex,
+    idTrim,
+    categoryName,
+    catalogSignal,
+    rawChain,
+  );
+
+  matrixSlotClipboard = {
+    presetIndex: currentPresetIndex,
+    sourcePresetLabel: (presetLabelEl.textContent ?? "").trim() || `preset ${currentPresetIndex}`,
+    sourceKemplineIndex: kemplineSlotIndex,
+    path: matrixSlotPath(kemplineSlotIndex),
+    catalogModelId: idTrim,
+    displayName: slot.name.trim(),
+    categoryName,
+    assignVariant,
+    moduleHex: slot.moduleHex,
+    catalogSignal,
+    chainParamsBySymbolicId,
+  };
+  console.info(
+    "[MatrixClipboard] copié",
+    matrixSlotClipboard.displayName,
+    `from=${matrixSlotClipboard.sourcePresetLabel}`,
+    `path=${matrixSlotClipboard.path}`,
+    `params=${chainParamsBySymbolicId.size}`,
+  );
+  setStatus(
+    `Copié : ${matrixSlotClipboard.displayName} (${matrixSlotClipboard.sourcePresetLabel}) — coller sur case vide`,
+  );
+}
+
+async function replayMatrixClipboardParams(
+  destKi: number,
+  clipboard: MatrixSlotClipboard,
+  slot: SlotDebug,
+): Promise<void> {
+  if (clipboard.chainParamsBySymbolicId.size === 0) return;
+  const found = await findModelDefinitionForSlot(
+    slot,
+    clipboard.catalogModelId,
+    clipboard.categoryName,
+  );
+  const allParams = found?.entry.params ?? [];
+  if (allParams.length === 0) return;
+
+  const catalogSignal = clipboard.catalogSignal ?? pickSignal(await getPresetMetaForId(clipboard.catalogModelId), slot.moduleHex);
+  const writeOrder = paramsVisibleForSignal(allParams, catalogSignal);
+
+  await waitUntilHardwareSyncIdle(15_000);
+  await enqueueHardwareSlotSwitch(destKi);
+  await delayMs(80);
+
+  for (const p of writeOrder) {
+    const sid = (p.symbolicID ?? "").trim();
+    if (!sid || !clipboard.chainParamsBySymbolicId.has(sid)) continue;
+    const cv = clipboard.chainParamsBySymbolicId.get(sid)!;
+    let rawValue: number | null = null;
+    if (typeof cv === "boolean") rawValue = cv ? 1 : 0;
+    else if (typeof cv === "number" && Number.isFinite(cv)) rawValue = cv;
+    else continue;
+
+    const rowIndexInAll = allParams.indexOf(p);
+    const paramIndex = liveWriteParamIndexForRow(allParams, rowIndexInAll, catalogSignal);
+    const rawMin = typeof p.min === "number" && Number.isFinite(p.min) ? p.min : null;
+    const rawMax = typeof p.max === "number" && Number.isFinite(p.max) ? p.max : null;
+    const vtRaw = p.valueType;
+    const valueType =
+      vtRaw !== undefined && vtRaw !== null && Number.isFinite(Number(vtRaw))
+        ? Number(vtRaw)
+        : null;
+    const pending: PendingLiveWrite = {
+      slotIndex: destKi,
+      paramIndex,
+      symbolicId: sid,
+      displayType: (p.displayType ?? "").trim() || null,
+      valueType,
+      rawValue,
+      rawMin,
+      rawMax,
+    };
+    try {
+      await invoke("write_live_param", {
+        slotIndex: destKi,
+        paramIndex,
+        symbolicId: sid,
+        displayType: pending.displayType,
+        valueType,
+        rawValue: liveWriteUsbNormalized01(pending),
+        chainMin: rawMin ?? undefined,
+        chainMax: rawMax ?? undefined,
+      });
+      if (currentPresetIndex >= 0) {
+        recordLiveChainParamOverrideForKemplineSlot(currentPresetIndex, destKi, sid, cv);
+      }
+    } catch (e) {
+      console.warn("[MatrixPaste] param", sid, e);
+    }
+    await delayMs(15);
+  }
+  const sessionVals = await resolveChainValuesForKemplineSlot(
+    destKi,
+    slot,
+    clipboard.catalogModelId,
+    clipboard.categoryName,
+    catalogSignal,
+  );
+  if (sessionVals) setSlotChainSessionValues(currentPresetIndex, destKi, sessionVals);
+}
+
+async function pasteMatrixSlotToCell(
+  destKi: number,
+  options?: { skipInteractionLock?: boolean },
+): Promise<boolean> {
+  const run = async (): Promise<boolean> => {
+  const cb = matrixSlotClipboard;
+  const slots = lastHwSyncNormalizedSlots;
+  if (!cb || !slots || slots.length !== 16 || !canPasteMatrixSlotToEmpty(destKi, slots)) {
+    console.warn("[MatrixPaste] destination invalide");
+    return false;
+  }
+  if (loading || loadedPresetIndex !== currentPresetIndex) {
+    console.warn("[MatrixPaste] preset pas prêt");
+    return false;
+  }
+
+  const idTrim = cb.catalogModelId;
+  const metaEarly = await getPresetMetaForId(idTrim);
+  const moduleHexOpt =
+    (await moduleHexForUsbVariant(idTrim, cb.assignVariant, metaEarly))?.trim() ||
+    cb.moduleHex ||
+    undefined;
+  const optimisticSlot: SlotDebug = {
+    category: cb.categoryName,
+    name: cb.displayName,
+    catalogModelId: idTrim,
+    moduleHex: moduleHexOpt,
+  };
+
+  const prevSnapshot =
+    lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16
+      ? lastHwSyncNormalizedSlots.map((s) => ({ ...s }))
+      : null;
+
+  if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16) {
+    const next = lastHwSyncNormalizedSlots.map((s, i) =>
+      i === destKi ? { ...optimisticSlot } : { ...s },
+    );
+    lastHwSyncNormalizedSlots = next;
+    lastHwSyncChainSignature = chainLayoutSignature(next);
+  }
+
+  patchMatrixSlotVisualFromSlot(destKi, optimisticSlot);
+  if (selectedParamsKemplineSlotIndex === destKi) {
+    selectParamsPaneByKemplineIndex(destKi);
+  }
+  if (currentPresetIndex >= 0) {
+    clearLiveChainOverridesForKemplineSlot(currentPresetIndex, destKi);
+  }
+  markLiveWriteUiInteraction();
+  slotModelUsbProbeInFlight = destKi;
+  try {
+    await loadAndShowModelsParamsFromCatalogDefaults(optimisticSlot, idTrim, destKi);
+
+    const out = await invoke<string>("probe_slot_model_usb", {
+      op: "add",
+      slotIndex: destKi,
+      catalogModelId: idTrim,
+      assignVariant: cb.assignVariant,
+    });
+    console.info("[MatrixPaste] add", cb.displayName, idTrim, out);
+    mergeProbeSlotModelUntil = {
+      ki: destKi,
+      deadline: Date.now() + PROBE_SLOT_MERGE_GRACE_MS,
+      mergeTraceEmitted: false,
+    };
+    suppressUsbPresetPollUntilMs = Date.now() + USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS;
+    lastSoftUsbPresetReadAt = Date.now();
+
+    await replayMatrixClipboardParams(destKi, cb, optimisticSlot);
+
+    if (selectedParamsKemplineSlotIndex === destKi) {
+      await loadAndShowModelsParamsForSlot(optimisticSlot, destKi);
+    }
+    const fromLabel =
+      cb.presetIndex !== currentPresetIndex ? ` depuis ${cb.sourcePresetLabel}` : "";
+    setStatus(`Collé : ${cb.displayName}${fromLabel} → slot ${destKi + 1}`);
+    return true;
+  } catch (e) {
+    console.warn("[MatrixPaste]", e);
+    if (prevSnapshot) {
+      const old = prevSnapshot[destKi]!;
+      patchMatrixSlotVisualFromSlot(destKi, old);
+      lastHwSyncNormalizedSlots = prevSnapshot.map((s) => ({ ...s }));
+      lastHwSyncChainSignature = chainLayoutSignature(lastHwSyncNormalizedSlots);
+      if (selectedParamsKemplineSlotIndex === destKi) {
+        selectParamsPaneByKemplineIndex(destKi);
+        await loadAndShowModelsParamsForSlot(old, destKi);
+      }
+    } else {
+      scheduleLoadForPreset(currentPresetIndex, true);
+    }
+    return false;
+  } finally {
+    slotModelUsbProbeInFlight = null;
+  }
+  };
+  if (options?.skipInteractionLock) return run();
+  return withMatrixUsbInteractionLock(`Collage slot ${destKi + 1}…`, run);
+}
+
+/** Déplacer un bloc : copier → vider source → coller destination. */
+async function moveMatrixSlotFromTo(sourceKi: number, destKi: number): Promise<void> {
+  if (isMatrixUsbInteractionLocked()) return;
+  const slots = lastHwSyncNormalizedSlots;
+  if (!slots || slots.length !== 16) {
+    console.warn("[MatrixMove] snapshot grille absent");
+    return;
+  }
+  if (!canMoveMatrixSlotToEmpty(sourceKi, destKi, slots)) {
+    console.warn("[MatrixMove] déplacement invalide", sourceKi, "→", destKi);
+    return;
+  }
+  const sourceSlot = slots[sourceKi];
+  if (!sourceSlot) return;
+
+  await withMatrixUsbInteractionLock(
+    `Déplacement bloc ${sourceKi + 1} → ${destKi + 1}…`,
+    async () => {
+    await copyMatrixSlotFromCell(sourceKi, sourceSlot);
+    if (!matrixSlotClipboard) {
+      console.warn("[MatrixMove] copie échouée", sourceKi);
+      return;
+    }
+
+    // Purger la source **avant** le coller : après un add le HX est sur la destination ;
+    // un remove tardif sur la source est souvent ignoré (doublon HW slot source + dest).
+    const removed = await removeMatrixSlotFromCell(sourceKi, {
+      reselect: false,
+      skipInteractionLock: true,
+    });
+    if (!removed) {
+      console.warn("[MatrixMove] purge source échouée — déplacement annulé", sourceKi);
+      setStatus(`Déplacement annulé : impossible de vider le slot ${sourceKi + 1}`);
+      return;
+    }
+
+    await delayMs(MATRIX_USB_OP_SETTLE_MS);
+
+    const pasted = await pasteMatrixSlotToCell(destKi, { skipInteractionLock: true });
+    if (!pasted) {
+      console.warn("[MatrixMove] coller échoué après purge source — restauration", sourceKi);
+      const restored = await pasteMatrixSlotToCell(sourceKi, { skipInteractionLock: true });
+      if (restored) {
+        setStatus(`Déplacement annulé — bloc remis sur le slot ${sourceKi + 1}`);
+      } else {
+        setStatus(
+          `Erreur déplacement (slot ${sourceKi + 1} vidé) — utiliser Coller ou recharger le preset`,
+        );
+      }
+      return;
+    }
+
+    armProbeSlotMergeGrace(destKi, sourceKi);
+    suppressUsbPresetPollUntilMs = Date.now() + USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS;
+    lastSoftUsbPresetReadAt = Date.now();
+    console.info("[MatrixMove] ok", sourceKi, "→", destKi, matrixSlotClipboard.displayName);
+    setStatus(`Bloc déplacé (${sourceKi + 1} → ${destKi + 1})`);
+    await focusMatrixSlotParamsPane(destKi);
+    },
+  );
+}
+
+function matrixDropTargetFromElement(el: Element | null): HTMLElement | null {
+  if (!el) return null;
+  const host = el as HTMLElement;
+  const direct = host.closest?.(
+    "[data-kempline-slot-index].node-empty.node--hx-slot:not(.node-empty-column-blocked)",
+  ) as HTMLElement | null;
+  if (direct) return direct;
+  const cell = host.closest?.(".hx-matrix-cell") as HTMLElement | null;
+  if (!cell) return null;
+  return cell.querySelector(
+    "[data-kempline-slot-index].node-empty.node--hx-slot:not(.node-empty-column-blocked)",
+  ) as HTMLElement | null;
+}
+
+function matrixKiFromDropTarget(el: HTMLElement): number | null {
+  const ki = Number.parseInt(el.dataset.kemplineSlotIndex ?? "", 10);
+  return Number.isFinite(ki) && ki >= 0 && ki <= 15 ? ki : null;
+}
+
+function clearMatrixDragOverHighlights(): void {
+  contentEl
+    .querySelectorAll(".node--matrix-drag-over")
+    .forEach((n) => n.classList.remove("node--matrix-drag-over"));
+}
+
+function bindMatrixSlotDragSource(el: HTMLElement, slot: SlotDebug, ki: number): void {
+  if (!canCopyMatrixSlot(slot)) return;
+  el.classList.add("node--matrix-draggable");
+
+  el.addEventListener("pointerdown", (ev) => {
+    if (isMatrixUsbInteractionLocked()) return;
+    if ((ev.target as HTMLElement).closest(".models-slot-remove-btn")) return;
+    if (currentPresetIndex < 0 || loading || isMatrixUsbInteractionLocked()) return;
+    if (ev.button !== 0) return;
+
+    ev.preventDefault();
+    matrixDragSourceKi = ki;
+    el.setPointerCapture(ev.pointerId);
+    el.classList.add("node--matrix-drag-source");
+  });
+
+  el.addEventListener("pointermove", (ev) => {
+    if (matrixDragSourceKi !== ki) return;
+    clearMatrixDragOverHighlights();
+
+    const target = document.elementFromPoint(ev.clientX, ev.clientY);
+    const dropEl = matrixDropTargetFromElement(target);
+    if (!dropEl) return;
+
+    const destKi = matrixKiFromDropTarget(dropEl);
+    const slots = lastHwSyncNormalizedSlots;
+    if (
+      destKi === null ||
+      !slots ||
+      !canMoveMatrixSlotToEmpty(ki, destKi, slots)
+    ) {
+      return;
+    }
+
+    dropEl.classList.add("node--matrix-drag-over");
+  });
+
+  el.addEventListener("pointerup", (ev) => {
+    if (matrixDragSourceKi !== ki) return;
+    if (isMatrixUsbInteractionLocked()) {
+      matrixDragSourceKi = null;
+      el.classList.remove("node--matrix-drag-source");
+      clearMatrixDragOverHighlights();
+      return;
+    }
+
+    clearMatrixDragOverHighlights();
+    el.classList.remove("node--matrix-drag-source");
+    if (el.hasPointerCapture(ev.pointerId)) {
+      el.releasePointerCapture(ev.pointerId);
+    }
+
+    const target = document.elementFromPoint(ev.clientX, ev.clientY);
+    const dropEl = matrixDropTargetFromElement(target);
+
+    matrixDragSourceKi = null;
+
+    if (!dropEl) return;
+    const destKi = matrixKiFromDropTarget(dropEl);
+    if (destKi === null) return;
+
+    console.info("[MatrixMove] pointerup", ki, "→", destKi);
+    setStatus(`Déplacement bloc ${ki + 1} → ${destKi + 1}…`);
+    void moveMatrixSlotFromTo(ki, destKi);
+  });
+
+  el.addEventListener("pointercancel", (ev) => {
+    if (matrixDragSourceKi !== ki) return;
+    matrixDragSourceKi = null;
+    el.classList.remove("node--matrix-drag-source");
+    if (el.hasPointerCapture(ev.pointerId)) {
+      el.releasePointerCapture(ev.pointerId);
+    }
+    clearMatrixDragOverHighlights();
+  });
+}
+
+function bindMatrixSlotDropTarget(_el: HTMLElement, _destKi: number): void {
+  // Géré par pointermove/pointerup sur la source (Pointer Events)
+}
+
+function initMatrixDragDrop(): void {
+  // Géré par Pointer Events dans bindMatrixSlotDragSource
+}
+
+function onMatrixSlotContextMenu(ev: MouseEvent, el: HTMLElement, slot: SlotDebug | null): void {
+  const kRaw = el.dataset.kemplineSlotIndex;
+  const ki = kRaw !== undefined && kRaw !== "" ? Number.parseInt(kRaw, 10) : Number.NaN;
+  if (!Number.isFinite(ki) || ki < 0 || ki > 15) return;
+  if (currentPresetIndex < 0 || loading || isMatrixUsbInteractionLocked()) return;
+
+  const slots = lastHwSyncNormalizedSlots;
+  const slotNow =
+    slots && ki >= 0 && ki < slots.length ? slots[ki] : slot;
+  const isEmptyCell = slotNow === null || slotNow === undefined || isEmptyGridCell(slotNow);
+  const canCopy = slotNow != null && canCopyMatrixSlot(slotNow);
+  const canPaste =
+    isEmptyCell && slots !== null && slots.length === 16 && canPasteMatrixSlotToEmpty(ki, slots);
+  if (!canCopy && !canPaste) return;
+
+  matrixCtxTargetKemplineIndex = ki;
+  const menu = document.getElementById("models-ctx-menu");
+  const copyItem = document.getElementById("models-ctx-copy");
+  const pasteItem = document.getElementById("models-ctx-paste");
+  if (!menu || !copyItem || !pasteItem) return;
+
+  copyItem.classList.toggle("disabled", !canCopy);
+  pasteItem.classList.toggle("disabled", !canPaste);
+
+  const x = Math.min(ev.clientX, window.innerWidth - 200);
+  const y = Math.min(ev.clientY, window.innerHeight - 80);
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.classList.add("visible");
+}
+
+function initMatrixContextMenu(): void {
+  const menu = document.getElementById("models-ctx-menu");
+  const copyItem = document.getElementById("models-ctx-copy");
+  const pasteItem = document.getElementById("models-ctx-paste");
+  if (!menu || !copyItem || !pasteItem) return;
+
+  document.addEventListener("click", hideMatrixContextMenu);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") hideMatrixContextMenu();
+  });
+
+  copyItem.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (copyItem.classList.contains("disabled")) return;
+    const ki = matrixCtxTargetKemplineIndex;
+    const slots = lastHwSyncNormalizedSlots;
+    if (ki === null || !slots || ki < 0 || ki >= slots.length) return;
+    const slot = slots[ki];
+    if (!slot || !canCopyMatrixSlot(slot)) return;
+    hideMatrixContextMenu();
+    void copyMatrixSlotFromCell(ki, slot);
+  });
+
+  pasteItem.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (pasteItem.classList.contains("disabled")) return;
+    const ki = matrixCtxTargetKemplineIndex;
+    const slots = lastHwSyncNormalizedSlots;
+    if (ki === null || !slots || !canPasteMatrixSlotToEmpty(ki, slots)) return;
+    hideMatrixContextMenu();
+    void pasteMatrixSlotToCell(ki);
+  });
 }
 
 /**
@@ -2954,6 +3837,18 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
         return;
       }
       if (!userInitiated && hwUi.blockSyntheticParamsLoad) {
+        const deferSlot = slot;
+        const deferKi = Number.isFinite(kemplineSlotIndex) ? (kemplineSlotIndex as number) : undefined;
+        hwUi.scheduleAfterHwGesture("params", () => {
+          if (
+            deferSlot === null ||
+            selectedParamsKemplineSlotIndex !== deferKi ||
+            selectedParamsPresetIndex !== currentPresetIndex
+          ) {
+            return;
+          }
+          void loadAndShowModelsParamsForSlot(deferSlot, deferKi);
+        });
         return;
       }
       await loadAndShowModelsParamsForSlot(
@@ -2979,6 +3874,11 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
       activate(ev.isTrusted);
     }
   });
+  el.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    onMatrixSlotContextMenu(ev, el, slot);
+  });
 }
 
 function padNum(n: number): string {
@@ -2991,6 +3891,10 @@ function isEmpty(name: string): boolean {
 
 function purgeModelsUi() {
   connectedDeviceName = null;
+  matrixUsbInteractionLockDepth = 0;
+  document.body.classList.remove("models-matrix-usb-busy");
+  clearMatrixSlotClipboard();
+  hideMatrixContextMenu();
   clearPath1InputSourceHighlightOverride();
   clearPath1InputMatrixWire();
   clearPath1SplitTypeHighlightOverride();
@@ -3321,10 +4225,6 @@ function chainParamValuesJsonEqual(
   return a === b;
 }
 type LinkedCabInfoJson = [string, string, string, string];
-type LinkedCabWithParamsJson = {
-  cab: LinkedCabInfoJson;
-  values: ChainParamValueJson[];
-};
 type HelixControlFormatBandJson = {
   lowerBound?: number;
   upperBound?: number;
@@ -4229,7 +5129,7 @@ function appendModelsParamRows(
           sliderCell.title = s;
           micTrigger.title = s;
           syncMicCombo(String(clamped));
-          if (liveWriteProbeEnabled() && liveWriteEnabled()) {
+          if (liveWriteQueueEnabled()) {
             markLiveWriteUiInteraction();
           }
           const writeParamIndex = liveWriteParamIndexForRow(
@@ -4313,7 +5213,7 @@ function appendModelsParamRows(
         li.title = s;
         sliderCell.title = s;
         input.title = s;
-        if (liveWriteProbeEnabled() && liveWriteEnabled()) {
+        if (liveWriteQueueEnabled()) {
           markLiveWriteUiInteraction();
         }
         const writeParamIndex = liveWriteParamIndexForRow(
@@ -4386,7 +5286,7 @@ function appendModelsParamRows(
       /** Write live seulement depuis le geste utilisateur (comme les sliders float). */
       const applyBoolFromUserInput = (nextB: boolean): void => {
         applyBool(nextB, false);
-        if (liveWriteProbeEnabled() && liveWriteEnabled()) {
+        if (liveWriteQueueEnabled()) {
           markLiveWriteUiInteraction();
         }
         const writeParamIndex = liveWriteParamIndexForRow(
@@ -4777,62 +5677,6 @@ function showModelsParamsError(message: string) {
   inner.appendChild(p);
 }
 
-function showModelsParamsRawFallback(
-  slot: SlotDebug,
-  chainValues: ChainParamValueJson[] | null | undefined,
-) {
-  setModelsParamsPaneCategory(slot.category || "Unknown", slot.moduleHex, slot.slotTypeHex);
-  clearModelsParamsSubheadAndIcon();
-  resetSlotPickerToIdle();
-  setModelsParamsHeaderIcon(slot, null);
-  const inner = getModelsParamsInner();
-  if (!inner) return;
-  inner.replaceChildren();
-
-  const note = document.createElement("p");
-  note.className = "models-params-placeholder";
-  const hex = (slot.moduleHex ?? "").trim();
-  note.textContent = hex
-    ? `Jointure catalogue absente pour ${hex.toUpperCase()} — affichage brut des valeurs de chaîne.`
-    : "Jointure catalogue absente — affichage brut des valeurs de chaîne.";
-  inner.appendChild(note);
-
-  const list = document.createElement("ul");
-  list.className = "models-params-list";
-  const vals = chainValues ?? [];
-  for (let i = 0; i < vals.length; i += 1) {
-    const v = vals[i];
-    if (v === undefined) continue;
-    const li = document.createElement("li");
-    li.className = "models-params-row";
-
-    const name = document.createElement("span");
-    name.className = "models-params-row-name";
-    name.textContent = `Param ${i + 1}`;
-
-    const min = document.createElement("span");
-    min.className = "models-params-row-min";
-    min.textContent = "—";
-
-    const max = document.createElement("span");
-    max.className = "models-params-row-max";
-    max.textContent = "—";
-
-    const cell = document.createElement("div");
-    cell.className = "models-params-slider-cell";
-    const chain = document.createElement("span");
-    chain.className = "models-params-row-chain";
-    chain.textContent = formatChainParamValueJson(v);
-    const raw = formatRawChainParamValueJson(v);
-    li.title = raw;
-    cell.title = raw;
-    cell.appendChild(chain);
-    li.append(name, min, cell, max);
-    list.appendChild(li);
-  }
-  inner.appendChild(list);
-}
-
 async function loadAndShowModelsParamsForSlot(
   slot: SlotDebug,
   kemplineSlotIndex?: number,
@@ -4863,62 +5707,9 @@ async function loadAndShowModelsParamsForSlot(
   applyPickerForStructuralSlot(slot);
   try {
     let chainValues: ChainParamValueJson[] | null = null;
-    let linkedCab: LinkedCabInfoJson | null = null;
-    let linkedCabValues: ChainParamValueJson[] | null = null;
+    const linkedCab: LinkedCabInfoJson | null = null;
+    const linkedCabValues: ChainParamValueJson[] | null = null;
     let allCabDefinitions: ModelDefinitionJson[] | null = null;
-    if (kemplineSlotIndex !== undefined && Number.isInteger(kemplineSlotIndex)) {
-      if (
-        typeof localStorage !== "undefined" &&
-        localStorage.getItem(HW_SLOT_FOCUS_AWAIT_CHAIN_KEY) === "1" &&
-        slotFocusUsbSyncEnabled()
-      ) {
-        try {
-          await invoke("sync_hardware_slot_focus_usb", { slotIndex: kemplineSlotIndex });
-        } catch {
-          /* focus USB optionnel */
-        }
-      }
-      chainValues = await fetchSlotChainParamValuesReliable(kemplineSlotIndex, seq);
-      try {
-        const linkedCabFull = await invoke<LinkedCabWithParamsJson | null>(
-          "get_active_preset_slot_linked_cab_with_params",
-          { slotIndex: kemplineSlotIndex },
-        );
-        linkedCab = linkedCabFull?.cab ?? null;
-        linkedCabValues = linkedCabFull?.values ?? null;
-      } catch {
-        linkedCabValues = null;
-        try {
-          linkedCab = await invoke<LinkedCabInfoJson | null>(
-            "get_active_preset_slot_linked_cab",
-            { slotIndex: kemplineSlotIndex },
-          );
-        } catch {
-          linkedCab = null;
-        }
-      }
-    }
-    if ((nk === "input" || nk === "output") && (chainValues?.length ?? 0) === 0) {
-      try {
-        chainValues = await invoke<ChainParamValueJson[] | null>(
-          "get_active_preset_path1_io_chain_param_values",
-          { ioKind: nk === "input" ? "input" : "output" },
-        );
-      } catch {
-        chainValues = chainValues ?? null;
-      }
-    }
-    // Split / Merge : pas de `data-kempline-slot-index` sur les jonctions matrice — lire le segment flow 0x02 / 0x03.
-    if ((nk === "split" || nk === "merge") && (chainValues?.length ?? 0) === 0) {
-      try {
-        chainValues = await invoke<ChainParamValueJson[] | null>(
-          "get_active_preset_kempline_flow_chain_param_values",
-          { flowKind: nk },
-        );
-      } catch {
-        chainValues = chainValues ?? null;
-      }
-    }
     let catalogModelId =
       (slot.catalogModelId ?? "").trim() || (await getCatalogModelIdForHex(slot.moduleHex));
     let catalogModelIdTrimmed = (catalogModelId ?? "").trim();
@@ -4931,10 +5722,6 @@ async function loadAndShowModelsParamsForSlot(
     if (!catalogModelIdTrimmed) {
       if (seq !== modelsParamsLoadSeq) return;
       const hex = (slot.moduleHex ?? "").trim();
-      if ((chainValues?.length ?? 0) > 0) {
-        showModelsParamsRawFallback(slot, chainValues);
-        return;
-      }
       showModelsParamsError(
         hex
           ? `Jointure ID impossible : aucun modèle catalogue pour chainHex « ${hex.toUpperCase()} ».`
@@ -4964,6 +5751,22 @@ async function loadAndShowModelsParamsForSlot(
     const catalogBasedOn = pickBasedOn(meta);
     const catalogSubcategoryLabel = formatSubCategoryForHeader(meta, slot.moduleHex);
     const catalogRoutingSignal = pickSignal(meta, slot.moduleHex);
+    if (
+      kemplineSlotIndex !== undefined &&
+      Number.isInteger(kemplineSlotIndex) &&
+      nk !== "input" &&
+      nk !== "output" &&
+      nk !== "split" &&
+      nk !== "merge"
+    ) {
+      chainValues = await resolveChainValuesForKemplineSlot(
+        kemplineSlotIndex,
+        slot,
+        catalogModelIdTrimmed,
+        catalogPresetCategoryName,
+        catalogRoutingSignal,
+      );
+    }
     if (nk === "amp+cab") {
       try {
         const byId = new Map<string, ModelDefinitionJson>();
@@ -5005,7 +5808,7 @@ async function loadAndShowModelsParamsForSlot(
       selectedParamsInPlaceUpdater !== null &&
       selectedParamsInPlaceSlotKey === slotKeyNow;
 
-    if (canPatchValuesOnly) {
+    if (canPatchValuesOnly && chainValues !== null && chainValues.length > 0) {
       const patchFn = selectedParamsInPlaceUpdater;
       if (patchFn) patchFn(chainValues);
       paramsPaneCatalogBySlotKey.set(slotKeyNow, catalogModelIdTrimmed);
@@ -5937,11 +6740,15 @@ function gridSlotNode(
       isColumnPairedSlotBlocked(allSlots, kemplineSlotIndex);
     const n = makeEmptySlotNode({ columnBlocked });
     n.dataset.kemplineSlotIndex = String(kemplineSlotIndex);
+    if (!columnBlocked) {
+      bindMatrixSlotDropTarget(n, kemplineSlotIndex);
+    }
     return n;
   }
   /* Matrice : sur « Path 1 » / « Path 2 », la catégorie est sur la ligne Description ; la cellule slot = icône + infobulle nom. */
   const node = makeNode(slot, { showTypeAbbrev: false });
   node.dataset.kemplineSlotIndex = String(kemplineSlotIndex);
+  bindMatrixSlotDragSource(node, slot, kemplineSlotIndex);
   return node;
 }
 
@@ -6361,11 +7168,26 @@ async function requestLoadForPreset(index: number) {
     `requestLoadForPreset start index=${index} currentPreset=${currentPresetIndex} loaded=${loadedPresetIndex}`,
   );
 
+  await waitForMatrixUsbIdle();
+  await settleUsbAfterMatrixProbe();
+
   try {
     lastRequestPresetInvokeAt = Date.now();
     await invoke("request_preset_content");
   } catch (e) {
     const msg = String(e);
+    if (msg.includes("throttled")) {
+      pendingPresetIndex = index;
+      loading = false;
+      hardwareSyncPausedForPresetLoad = false;
+      emitModelsSyncTraceThrottled(
+        "preset_load_defer_throttle",
+        `requestLoadForPreset reporté (throttle Rust) preset=${index}`,
+        1_000,
+      );
+      armQueuedPresetLoadAfterCooldown();
+      return;
+    }
     if (
       msg.includes("molette modèle") ||
       msg.includes("scroll/pull") ||
@@ -6479,6 +7301,7 @@ async function requestLoadForPreset(index: number) {
             await logCatalogChainHexDiffIfNeeded(normalizedSlots, index);
             await renderSlots(normalizedSlots, routingFlow, stompLayout);
             rememberHwSyncChainLayout(normalizedSlots);
+            void hydrateSlotChainSessionFromPresetData(index);
             const realBlocks = countRealBlocks(normalizedSlots);
             const singleDsp = isSingleDspDevice(connectedDeviceName);
             const dspSuffix = singleDsp ? ` (${realBlocks}/8 max)` : "";
@@ -6602,6 +7425,8 @@ async function refresh() {
 window.addEventListener("DOMContentLoaded", () => {
   hwUi.configure({ setParamsBrowsingMode: setModelsParamsBrowsingMode });
   void mountModelsSlotPicker();
+  initMatrixContextMenu();
+  initMatrixDragDrop();
 
   window.addEventListener("keydown", (e) => {
     if (e.ctrlKey && e.altKey && (e.key === "d" || e.key === "D")) {

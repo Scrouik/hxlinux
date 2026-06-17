@@ -88,12 +88,6 @@ impl HelixState {
         self.firmware_scroll_lane_double()
     }
 
-    /// Alias historique : avance la lane et renvoie le double pour un OUT `f0:03` sub=`08`.
-    /// Identique à [`Self::advance_firmware_scroll_lane`] — l'avance est unique par notif.
-    pub fn next_firmware_scroll_ack_out(&mut self, head: u8) -> [u8; 2] {
-        self.advance_firmware_scroll_lane(head)
-    }
-
     /// Armement **lane** au bootstrap (`ARM_f0`) : réinitialise l'état du compteur scroll
     /// et marque la lane prête. ⚠ Ceci n'autorise PAS encore l'ACK fond : le gate réel est
     /// `EditorReady` (cf. `handle_in_layer`). Spec A §44 : l'amorçage **arme** le fond,
@@ -200,7 +194,7 @@ mod tests {
     fn first_1d_after_bootstrap_advances_to_1048() {
         let mut state = HelixState::new();
         state.note_firmware_scroll_bootstrap_sent();
-        let d = state.next_firmware_scroll_ack_out(0x1d);
+        let d = state.advance_firmware_scroll_lane(0x1d);
         assert_eq!(d, [0x48, 0x10]);
         assert_eq!(state.firmware_scroll_ack_ctr, 0x1048);
     }

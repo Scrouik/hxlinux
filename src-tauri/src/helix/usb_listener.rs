@@ -193,6 +193,9 @@ pub fn start_listener(
                                     P::WaitIn1b26 => {
                                         crate::helix::phase4_state::on_enter_wait_in_1b26(&mut s)
                                     }
+                                    P::PbCommit => {
+                                        crate::helix::phase4_state::on_enter_pb_commit(&mut s)
+                                    }
                                     _ => {}
                                 }
                             }

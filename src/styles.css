@@ -1442,6 +1442,21 @@ html, body {
   z-index: 6;
 }
 
+.models-pane .node.node--hx-slot.node--matrix-draggable {
+  cursor: grab;
+}
+
+.models-pane .node.node--matrix-drag-source {
+  opacity: 0.55;
+  cursor: grabbing;
+}
+
+.models-pane .node.node-empty.node--matrix-drag-over:not(.node-empty-column-blocked) {
+  outline: 2px solid var(--amber);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+}
+
 .models-pane .node-icon-wrap {
   display: flex;
   align-items: center;
@@ -1999,4 +2014,24 @@ html, body {
   object-fit: contain;
   display: block;
   opacity: 0.95;
+}
+
+/* Verrou UI pendant probe USB matrice (move / coller / supprimer). */
+body.models-matrix-usb-busy {
+  user-select: none;
+}
+
+body.models-matrix-usb-busy::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  pointer-events: auto;
+  cursor: wait;
+  background: rgba(10, 10, 14, 0.28);
+}
+
+body.models-matrix-usb-busy .app {
+  pointer-events: none;
+  cursor: wait;
 }

@@ -1457,7 +1457,11 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
                 if elapsed_ms >= PRESET_RECOVER_MIN_REQUEST_AGE_MS {
                     app.preset_recover_in_flight = false;
                 }
-                return Ok(());
+                return Err(format!(
+                    "request_preset_content throttled ({} ms < {} ms)",
+                    elapsed_ms,
+                    PRESET_REQUEST_MIN_GAP_MS
+                ));
             }
         }
         (
@@ -1481,7 +1485,21 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
         );
     }
     if s.preset_content_only {
-        return Ok(());
+        if s.want_content_only_after_x2 {
+            // activate_preset + attente écho MIDI PC — ne pas réinitialiser ni dupliquer.
+            eprintln!(
+                "[PresetDebug][request_preset_content] content_only déjà actif (attente MIDI PC)"
+            );
+            return Ok(());
+        }
+        // Session fantôme fréquente après rafales `probe_slot_model_usb` : content_only
+        // reste posé sans RequestPreset actif → les relances UI étaient ignorées silencieusement.
+        eprintln!(
+            "[PresetDebug][request_preset_content] content_only fantôme — reset session avant relance"
+        );
+        s.preset_content_only = false;
+        s.preset_data_ready = false;
+        s.preset_data.clear();
     }
     // L'UI met à jour `active_preset` (ex. après `activate_preset` + MIDI PC) avant cette
     // commande, alors que `preset_index` côté Helix ne bouge qu'avec les paquets USB x2 ou
@@ -2053,217 +2071,6 @@ fn read_models_definition_file(app: tauri::AppHandle, file_base: String) -> Resu
         .join("resources/models")
         .join(format!("{}.models", file_base));
     fs::read_to_string(&path).map_err(|e| format!("{}: {}", path.display(), e))
-}
-
-/// Remplit `map` depuis `HX_ModelCatalog.json` : chaque `presetMeta.chainHex` (chaîne ou tableau)
-/// → `[catégorie, nom modèle]` (`presetMeta.categoryName` + `name` si liste plate `models[]`, sinon
-/// `categories[].name` + `models[].name` en format historique).
-fn insert_chainhex_into_module_map(
-    map: &mut HashMap<String, [String; 2]>,
-    pair: &[String; 2],
-    hex_v: &Value,
-) {
-    match hex_v {
-        Value::String(s) => {
-            let h = s.trim().to_lowercase();
-            if !h.is_empty() {
-                map.insert(h, pair.clone());
-            }
-        }
-        Value::Array(a) => {
-            for x in a {
-                if let Some(s) = x.as_str() {
-                    let h = s.trim().to_lowercase();
-                    if !h.is_empty() {
-                        map.insert(h, pair.clone());
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn insert_hex_from_flat_models_list(map: &mut HashMap<String, [String; 2]>, models: &[Value]) {
-    for m in models {
-        let Some(obj) = m.as_object() else {
-            continue;
-        };
-        let Some(model_name) = obj.get("name").and_then(|x| x.as_str()) else {
-            continue;
-        };
-        let model_name = model_name.trim();
-        if model_name.is_empty() {
-            continue;
-        };
-        let Some(pm) = obj.get("presetMeta").and_then(|p| p.as_object()) else {
-            continue;
-        };
-        let cat_name = pm
-            .get("categoryName")
-            .and_then(|n| n.as_str())
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("Unknown");
-        let Some(hex_v) = pm.get("chainHex") else {
-            continue;
-        };
-        let pair = [cat_name.to_string(), model_name.to_string()];
-        insert_chainhex_into_module_map(map, &pair, hex_v);
-    }
-}
-
-fn insert_modules_from_hx_catalog(map: &mut HashMap<String, [String; 2]>, catalog: &Value) {
-    if let Some(models) = catalog.get("models").and_then(|m| m.as_array()) {
-        if !models.is_empty() {
-            insert_hex_from_flat_models_list(map, models);
-            return;
-        }
-    }
-    let Some(categories) = catalog.get("categories").and_then(|c| c.as_array()) else {
-        return;
-    };
-    for cat in categories {
-        let Some(cat_name) = cat.get("name").and_then(|n| n.as_str()) else {
-            continue;
-        };
-        let cat_name = cat_name.trim();
-        if cat_name.is_empty() {
-            continue;
-        }
-        insert_hex_from_catalog_model_list(map, cat_name, cat.get("models"));
-        if let Some(subs) = cat.get("subcategories").and_then(|s| s.as_array()) {
-            for sub in subs {
-                insert_hex_from_catalog_model_list(map, cat_name, sub.get("models"));
-            }
-        }
-    }
-}
-
-fn insert_hex_from_catalog_model_list(
-    map: &mut HashMap<String, [String; 2]>,
-    cat_name: &str,
-    models: Option<&Value>,
-) {
-    let Some(arr) = models.and_then(|m| m.as_array()) else {
-        return;
-    };
-    for m in arr {
-        let Some(obj) = m.as_object() else {
-            continue;
-        };
-        let Some(model_name) = obj.get("name").and_then(|x| x.as_str()) else {
-            continue;
-        };
-        let model_name = model_name.trim();
-        if model_name.is_empty() {
-            continue;
-        };
-        let Some(pm) = obj.get("presetMeta").and_then(|p| p.as_object()) else {
-            continue;
-        };
-        let Some(hex_v) = pm.get("chainHex") else {
-            continue;
-        };
-        let pair = [cat_name.to_string(), model_name.to_string()];
-        insert_chainhex_into_module_map(map, &pair, hex_v);
-    }
-}
-
-fn insert_model_id_hexes(map: &mut HashMap<String, String>, model_id: &str, hex_v: &Value) {
-    match hex_v {
-        Value::String(s) => {
-            let h = s.trim().to_lowercase();
-            if !h.is_empty() {
-                map.insert(h, model_id.to_string());
-            }
-        }
-        Value::Array(a) => {
-            for x in a {
-                if let Some(s) = x.as_str() {
-                    let h = s.trim().to_lowercase();
-                    if !h.is_empty() {
-                        map.insert(h, model_id.to_string());
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn insert_model_ids_from_flat_models(map: &mut HashMap<String, String>, models: &[Value]) {
-    for m in models {
-        let Some(obj) = m.as_object() else {
-            continue;
-        };
-        let Some(model_id) = obj
-            .get("id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-        else {
-            continue;
-        };
-        let Some(pm) = obj.get("presetMeta").and_then(|p| p.as_object()) else {
-            continue;
-        };
-        let Some(hex_v) = pm.get("chainHex") else {
-            continue;
-        };
-        insert_model_id_hexes(map, &model_id, hex_v);
-    }
-}
-
-/// Remplit `map` hex -> `id` modèle (catalogue), depuis `HX_ModelCatalog.json`.
-fn insert_model_ids_from_hx_catalog(map: &mut HashMap<String, String>, catalog: &Value) {
-    if let Some(models) = catalog.get("models").and_then(|m| m.as_array()) {
-        if !models.is_empty() {
-            insert_model_ids_from_flat_models(map, models);
-            return;
-        }
-    }
-    let Some(categories) = catalog.get("categories").and_then(|c| c.as_array()) else {
-        return;
-    };
-    let mut insert_for_models = |models: Option<&Value>| {
-        let Some(arr) = models.and_then(|m| m.as_array()) else {
-            return;
-        };
-        for m in arr {
-            let Some(obj) = m.as_object() else {
-                continue;
-            };
-            let model_id = obj
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-            let Some(model_id) = model_id else {
-                continue;
-            };
-            let Some(pm) = obj.get("presetMeta").and_then(|p| p.as_object()) else {
-                continue;
-            };
-            let Some(hex_v) = pm.get("chainHex") else {
-                continue;
-            };
-            insert_model_id_hexes(map, &model_id, hex_v);
-        }
-    };
-    for cat in categories {
-        let Some(cat_obj) = cat.as_object() else {
-            continue;
-        };
-        insert_for_models(cat_obj.get("models"));
-        if let Some(subs) = cat_obj.get("subcategories").and_then(|s| s.as_array()) {
-            for sub in subs {
-                if let Some(sub_obj) = sub.as_object() {
-                    insert_for_models(sub_obj.get("models"));
-                }
-            }
-        }
-    }
 }
 
 lazy_static! {
@@ -3029,7 +2836,7 @@ fn extract_c219_argument_type_hexes(h: &str) -> Vec<String> {
         let Some(slice) = h.get(start..) else {
             break;
         };
-        let Some(rel09) = slice.find("09").filter(|&p| p >= 4) else {
+        let Some(rel09) = preset_chain_params::c219_param_delim_rel_in_slice(slice) else {
             search = start.saturating_add(4);
             continue;
         };
@@ -4613,6 +4420,17 @@ mod assignable_amp_cab_chunk_tests {
     #[test]
     fn is_amp_cab_false_without_marker() {
         assert!(!is_amp_cab_assignable_chunk(&[0x08, 0x00, 0x00]));
+    }
+
+    #[test]
+    fn extract_c219_types_cd0209_not_truncated_to_cd02() {
+        let h = "85188317c219cd02091aff09110ac30b830206031504dc0006";
+        let types = super::extract_c219_argument_type_hexes(h);
+        assert_eq!(types.len(), 1);
+        assert_eq!(
+            super::chain_hex_key_from_c219_argument_type(&types[0]),
+            "cd0209"
+        );
     }
 }
 

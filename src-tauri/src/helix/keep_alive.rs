@@ -190,7 +190,7 @@ impl KeepAliveManager {
                     let pkt = OutPacket::new(vec![
                         0x08, 0x00, 0x00, 0x18,
                         0x02, 0x10, 0xf0, 0x03,
-                        0x00, cnt, 0x00, 0x10,
+                        0x00, cnt, 0x00, POLL_SUB,
                         TAIL_F0[0], TAIL_F0[1], TAIL_F0[2], TAIL_F0[3],
                     ]);
                     s.send(pkt);
@@ -207,7 +207,7 @@ impl KeepAliveManager {
                     let pkt = OutPacket::new(vec![
                         0x08, 0x00, 0x00, 0x18,
                         0x80, 0x10, 0xed, 0x03,
-                        0x00, cnt, 0x00, 0x10,
+                        0x00, cnt, 0x00, POLL_SUB,
                         TAIL_ED[0], TAIL_ED[1], TAIL_ED[2], TAIL_ED[3],
                     ]);
                     s.send(pkt);
@@ -223,7 +223,7 @@ impl KeepAliveManager {
                     let pkt = OutPacket::new(vec![
                         0x08, 0x00, 0x00, 0x18,
                         0x01, 0x10, 0xef, 0x03,
-                        0x00, cnt, 0x00, 0x10,
+                        0x00, cnt, 0x00, POLL_SUB,
                         TAIL_EF[0], TAIL_EF[1], TAIL_EF[2], TAIL_EF[3],
                     ]);
                     s.send(pkt);

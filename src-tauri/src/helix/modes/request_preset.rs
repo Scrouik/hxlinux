@@ -13,6 +13,28 @@ use crate::helix::packet::{OutPacket, byte_cmp};
 use crate::helix::modes::standard::Standard;
 use crate::pattern;
 
+/// Watchdog normal d'une transaction de lecture (Phase 1/2, chunks).
+const WATCHDOG_MS: u64 = 2000;
+
+/// Fenêtre de confirmation de fin-de-dump §10 (écho `sub=08` SANS trailer partiel).
+///
+/// Un écho `sub=08` de 16 o et le vrai écho de fin §10 sont INDISTINGUABLES au
+/// niveau trame (même `sub`, même queue = ctr du dump). Le seul discriminant est
+/// *ce qui suit* : un chunk 272 (→ l'écho était PARASITE, ex. provoqué par le wrap
+/// du compteur en plein dump) ou rien/idle (→ vraie fin §10). On diffère donc la
+/// clôture de cette fenêtre : un chunk qui arrive annule (on poursuit) ; sinon le
+/// watchdog court clôture. Mesure log : inter-chunk ≈ 3–4 ms, donc 150 ms est ~40×
+/// le pire écart réel — aucun risque de clôturer en plein dump.
+///
+/// `HX_DUMP_END_CONFIRM_MS=0` → ancien comportement (clôture immédiate sur l'écho =
+/// témoin pour revert/comparaison).
+fn dump_end_confirm_ms() -> u64 {
+    std::env::var("HX_DUMP_END_CONFIRM_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(150)
+}
+
 pub struct RequestPreset {
     preset_data:             Vec<u8>,
     /// true = Phase 1 envoyée, en attente de la réponse 68 octets
@@ -23,6 +45,11 @@ pub struct RequestPreset {
     mode_tx:                 Option<mpsc::Sender<ModeRequest>>,
     /// Dernier chunk reçu était un 272 o plein (256 o utiles) — la fin arrive par écho IN sub=`08`.
     await_dump_end_after_full_chunk: bool,
+    /// Au moins un chunk flux 272 o (`08:01:ed:03`) reçu — évite de terminer sur un préambule partiel.
+    saw_full_272_chunk: bool,
+    /// Un écho `sub=08` a été vu après une rafale 272 ; clôture DIFFÉRÉE le temps de
+    /// confirmer qu'aucun chunk ne suit (sinon l'écho était parasite → on poursuit).
+    dump_end_pending: bool,
 }
 
 impl RequestPreset {
@@ -34,11 +61,14 @@ impl RequestPreset {
             watchdog_cancel_tx:      None,
             mode_tx:                 None,
             await_dump_end_after_full_chunk: false,
+            saw_full_272_chunk: false,
+            dump_end_pending: false,
         }
     }
 
     fn finish_preset_transfer(&mut self, state: &mut HelixState) {
         self.await_dump_end_after_full_chunk = false;
+        self.dump_end_pending = false;
         self.cancel_watchdog();
         let next_mode = if state.preset_content_only {
             ModeRequest::StandardPresetRead(state.preset_read_generation)
@@ -56,13 +86,19 @@ impl RequestPreset {
         }
     }
 
-    fn arm_watchdog(&mut self, mode_tx: Option<mpsc::Sender<ModeRequest>>, content_only: bool, generation: u64) {
+    fn arm_watchdog(
+        &mut self,
+        mode_tx: Option<mpsc::Sender<ModeRequest>>,
+        content_only: bool,
+        generation: u64,
+        timeout_ms: u64,
+    ) {
         self.cancel_watchdog();
         if let Some(tx) = mode_tx {
             let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
             self.watchdog_cancel_tx = Some(cancel_tx);
             thread::spawn(move || {
-                match cancel_rx.recv_timeout(Duration::from_millis(2000)) {
+                match cancel_rx.recv_timeout(Duration::from_millis(timeout_ms)) {
                     Ok(_) => {}
                     Err(_) => {
                         let next_mode = if content_only {
@@ -72,8 +108,8 @@ impl RequestPreset {
                         };
                         if preset_debug_verbose_enabled() {
                             eprintln!(
-                                "[PresetDebug][RequestPreset::watchdog] timeout -> switch {:?}",
-                                next_mode
+                                "[PresetDebug][RequestPreset::watchdog] timeout({}ms) -> switch {:?}",
+                                timeout_ms, next_mode
                             );
                         }
                         let _ = tx.send(next_mode);
@@ -97,7 +133,7 @@ impl RequestPreset {
                 0x19, 0x00, 0x00, 0x18,
                 0x80, 0x10, 0xed, 0x03,
                 0x00, cnt,  0x00, 0x0c,
-                lane[0], lane[1], 0x00, 0x00,
+                lane[0], lane[1], state.editor_ed03_lane_b14, 0x00,
                 0x01, 0x00, 0x06, 0x00,
                 0x09, 0x00, 0x00, 0x00,
                 0x83, 0x66, 0xcd, cmd_type,
@@ -107,8 +143,8 @@ impl RequestPreset {
             state.send(pkt);
             if preset_debug_verbose_enabled() {
                 eprintln!(
-                    "[PresetDebug][RequestPreset::send_phase2] cnt={cnt:#04x} lane={:02x}:{:02x} double={:02x}:{:02x} editor=1",
-                    lane[0], lane[1], d[0], d[1]
+                    "[PresetDebug][RequestPreset::send_phase2] cnt={cnt:#04x} lane={:02x}:{:02x}:{:02x} double={:02x}:{:02x} editor=1",
+                    lane[0], lane[1], state.editor_ed03_lane_b14, d[0], d[1]
                 );
             }
         } else {
@@ -134,7 +170,7 @@ impl RequestPreset {
         }
         self.waiting_phase1_response = false;
 
-        self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only, state.preset_read_generation);
+        self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only, state.preset_read_generation, WATCHDOG_MS);
     }
 }
 
@@ -145,6 +181,8 @@ impl Mode for RequestPreset {
         self.waiting_phase1_response = true;
         self.watchdog_cancel_tx = None;
         self.await_dump_end_after_full_chunk = false;
+        self.saw_full_272_chunk = false;
+        self.dump_end_pending = false;
         self.mode_tx = state.mode_tx.clone();
 
         let cnt      = state.next_x80_cnt();
@@ -187,7 +225,7 @@ impl Mode for RequestPreset {
         ]);
         state.send(pkt);
 
-        self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only, state.preset_read_generation);
+        self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only, state.preset_read_generation, WATCHDOG_MS);
     }
 
     fn data_in(&mut self, data: &[u8], state: &mut HelixState) -> bool {
@@ -261,19 +299,49 @@ impl Mode for RequestPreset {
             return true;
         }
 
+        // ── Fin de dump §10 (écho `sub=08`, pas de trailer partiel) ─────────────
+        // ATTENTION : un écho `sub=08` peut être PARASITE en plein dump (observé :
+        // provoqué par le wrap du compteur byte-9 0xff→0x00 ; cf. preset SVT-4 Pro,
+        // dump de 9×256 o exact). Clôturer dessus tronquait le transfert et envoyait
+        // les chunks restants vers la couche preset_dump_stream_ack, ce qui
+        // DÉSYNCHRONISAIT la lane editor → lecture suivante ignorée par le device →
+        // preset « ne s'affiche plus » définitivement.
+        //
+        // On DIFFÈRE donc la clôture : si un chunk 272 suit (cf. branche chunk plus
+        // bas, qui remet `dump_end_pending=false`), l'écho était parasite et le dump
+        // continue ; sinon le watchdog court (confirm_ms) clôture la vraie fin §10.
         if !self.waiting_phase1_response
             && self.await_dump_end_after_full_chunk
             && sub == 0x08
             && data.len() == 16
             && !self.preset_data.is_empty()
         {
-            if preset_debug_verbose_enabled() {
-                eprintln!(
-                    "[PresetDebug][RequestPreset::data_in] écho ACK sub=08 après rafale 272 o → transfert complet total={}",
-                    self.preset_data.len()
+            let confirm_ms = dump_end_confirm_ms();
+            if confirm_ms == 0 {
+                // Témoin : ancien comportement (clôture immédiate sur l'écho).
+                if preset_debug_verbose_enabled() {
+                    eprintln!(
+                        "[PresetDebug][RequestPreset::data_in] écho sub=08 → fin immédiate (HX_DUMP_END_CONFIRM_MS=0) total={}",
+                        self.preset_data.len()
+                    );
+                }
+                self.finish_preset_transfer(state);
+            } else if !self.dump_end_pending {
+                self.dump_end_pending = true;
+                self.arm_watchdog(
+                    state.mode_tx.clone(),
+                    state.preset_content_only,
+                    state.preset_read_generation,
+                    confirm_ms,
                 );
+                if preset_debug_verbose_enabled() {
+                    eprintln!(
+                        "[PresetDebug][RequestPreset::data_in] écho sub=08 après rafale 272 → fin DIFFÉRÉE {}ms (confirmation §10) total={}",
+                        confirm_ms,
+                        self.preset_data.len()
+                    );
+                }
             }
-            self.finish_preset_transfer(state);
             return true;
         }
 
@@ -297,7 +365,7 @@ impl Mode for RequestPreset {
                     (
                         self.last_ack_lane[0].wrapping_add(0x10),
                         self.last_ack_lane[1],
-                        0x00,
+                        state.editor_ed03_lane_b14,
                         0x00,
                     )
                 } else {
@@ -327,41 +395,81 @@ impl Mode for RequestPreset {
                 true
             }
 
-            // Chunk de données preset : ACK sur editor_ed03_lane (HX : 9d:11, 9d:12, …)
-            (_, 0x04) if data.len() > 16 => {
-                let chunk_data_len = data.len() - 16;
+            // Chunk flux preset (`08:01:ed:03`, sub=04) — pas les enveloppes Phase 1/2 (ex. 36 o head `1c`).
+            (_, 0x04)
+                if crate::helix::preset_dump_stream_ack::is_preset_dump_stream_chunk_in(data) =>
+            {
+                // Un chunk qui arrive APRÈS un écho sub=08 prouve que l'écho était
+                // PARASITE : on annule la clôture différée et on poursuit le dump.
+                if self.dump_end_pending {
+                    self.dump_end_pending = false;
+                    if preset_debug_verbose_enabled() {
+                        eprintln!(
+                            "[PresetDebug][RequestPreset::data_in] chunk 272 après écho sub=08 → écho PARASITE ignoré, dump poursuivi total={}",
+                            self.preset_data.len()
+                        );
+                    }
+                }
+
+                let chunk_data_len = data.len().saturating_sub(16);
                 self.preset_data.extend_from_slice(&data[16..]);
+                if data.len() == 272 {
+                    self.saw_full_272_chunk = true;
+                }
                 let cnt = state.next_x80_cnt();
                 let lane = state.next_preset_stream_chunk_ack_lane();
                 state.send(OutPacket::new(vec![
                     0x08, 0x00, 0x00, 0x18,
                     0x80, 0x10, 0xed, 0x03,
                     0x00, cnt, 0x00, 0x08,
-                    lane[0], lane[1], 0x00, 0x00,
+                    lane[0], lane[1], lane[2], 0x00,
                 ]));
-                self.last_ack_lane = lane;
+                self.last_ack_lane = [lane[0], lane[1]];
                 if preset_debug_verbose_enabled() {
                     eprintln!(
-                        "[PresetDebug][RequestPreset::data_in] chunk len={} total={} ack cnt={:#04x} lane={:02x}:{:02x}",
+                        "[PresetDebug][RequestPreset::data_in] chunk len={} total={} ack cnt={:#04x} lane={:02x}:{:02x}:{:02x}",
                         chunk_data_len,
                         self.preset_data.len(),
                         cnt,
                         lane[0],
-                        lane[1]
+                        lane[1],
+                        lane[2]
                     );
                 }
                 if chunk_data_len < 256 {
-                    if preset_debug_verbose_enabled() {
+                    if self.saw_full_272_chunk {
+                        if preset_debug_verbose_enabled() {
+                            eprintln!(
+                                "[PresetDebug][RequestPreset::data_in] chunk partiel → transfert complet total={}",
+                                self.preset_data.len()
+                            );
+                        }
+                        self.finish_preset_transfer(state);
+                    } else if preset_debug_verbose_enabled() {
                         eprintln!(
-                            "[PresetDebug][RequestPreset::data_in] chunk partiel → transfert complet total={}",
-                            self.preset_data.len()
+                            "[PresetDebug][RequestPreset::data_in] chunk partiel {}o ignoré pour fin (pas encore de 272o plein)",
+                            data.len()
                         );
                     }
-                    self.finish_preset_transfer(state);
                 } else {
                     self.await_dump_end_after_full_chunk = true;
-                    self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only, state.preset_read_generation);
+                    self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only, state.preset_read_generation, WATCHDOG_MS);
                 }
+                true
+            }
+
+            // Idle (`sub=10`) reçu pendant une clôture différée et SANS chunk intercalé :
+            // confirmation immédiate de la vraie fin §10 (évite d'attendre le watchdog
+            // court). Inoffensif si l'idle est mangé en amont par check_keep_alive — le
+            // watchdog court reste le filet.
+            (_, 0x10) if self.dump_end_pending => {
+                if preset_debug_verbose_enabled() {
+                    eprintln!(
+                        "[PresetDebug][RequestPreset::data_in] idle après écho sub=08 (aucun chunk intercalé) → fin §10 confirmée total={}",
+                        self.preset_data.len()
+                    );
+                }
+                self.finish_preset_transfer(state);
                 true
             }
 
@@ -403,20 +511,150 @@ impl Mode for RequestPreset {
             state.preset_last_ack_double = [0, 0];
             state.request_preset_session_id = 0xf4;
         }
+        let [lane_lo, lane_hi] = state.editor_ed03_lane_bytes();
         crate::helix::init_trace::trace_fmt(format_args!(
-            "RequestPreset::shutdown preset_data_ready={} bytes={}",
+            "RequestPreset::shutdown preset_data_ready={} bytes={} lane={:02x}:{:02x}:{:02x} ed03_cmd={:#04x}",
             state.preset_data_ready,
-            state.preset_data.len()
+            state.preset_data.len(),
+            lane_lo,
+            lane_hi,
+            state.editor_ed03_lane_b14,
+            state.ed03_cmd_type,
         ));
-        if preset_debug_verbose_enabled() {
+        if preset_debug_verbose_enabled() || !has_data {
             eprintln!(
-                "[PresetDebug][RequestPreset::shutdown] preset_data_ready={} bytes={} session_no={:#04x} ed03_cmd_type={:#04x}",
+                "[PresetDebug][RequestPreset::shutdown] preset_data_ready={} bytes={} lane={:02x}:{:02x}:{:02x} session_no={:#04x} ed03_cmd_type={:#04x} double={:02x}:{:02x}",
                 state.preset_data_ready,
                 state.preset_data.len(),
+                lane_lo,
+                lane_hi,
+                state.editor_ed03_lane_b14,
                 state.session_no,
-                state.ed03_cmd_type
+                state.ed03_cmd_type,
+                state.editor_ed03_double_val()[0],
+                state.editor_ed03_double_val()[1],
             );
         }
 
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::helix::HelixState;
+
+    /// Réponse Phase 2 observée en capture (36 o, head `1c`) — ne doit pas alimenter `preset_data`.
+    fn sample_phase2_envelope_36() -> Vec<u8> {
+        vec![
+            0x1c, 0x00, 0x00, 0x18, 0xed, 0x03, 0x80, 0x10, 0x00, 0x47, 0x00, 0x04, 0x19, 0x06,
+            0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x83, 0x66, 0xcd, 0x11,
+            0x14, 0x67, 0xcc, 0xff, 0x68, 0x81, 0x6f, 0xf6,
+        ]
+    }
+
+    fn minimal_helix_state() -> HelixState {
+        let mut s = HelixState::new();
+        s.connecting = false;
+        s
+    }
+
+    fn full_272_chunk() -> Vec<u8> {
+        let mut full = vec![0u8; 272];
+        full[0] = 0x08;
+        full[1] = 0x01;
+        full[3] = 0x18;
+        full[4] = 0xed;
+        full[5] = 0x03;
+        full[6] = 0x80;
+        full[7] = 0x10;
+        full[11] = 0x04;
+        full[16..].fill(0xAB);
+        full
+    }
+
+    fn echo_sub08_16() -> Vec<u8> {
+        vec![
+            0x08, 0x00, 0x00, 0x18, 0xed, 0x03, 0x80, 0x10, 0x00, 0x29, 0x00, 0x08, 0x00, 0x06,
+            0x00, 0x00,
+        ]
+    }
+
+    #[test]
+    fn phase2_envelope_36_not_treated_as_preset_chunk() {
+        let mut rp = RequestPreset::new();
+        let mut state = minimal_helix_state();
+        rp.waiting_phase1_response = false;
+        assert!(rp.data_in(&sample_phase2_envelope_36(), &mut state));
+        assert!(rp.preset_data.is_empty());
+        assert!(!rp.saw_full_272_chunk);
+    }
+
+    #[test]
+    fn stream_272_then_partial_trailer_completes_transfer() {
+        let mut rp = RequestPreset::new();
+        let mut state = minimal_helix_state();
+        rp.waiting_phase1_response = false;
+        rp.mode_tx = state.mode_tx.clone();
+
+        let full = full_272_chunk();
+        assert!(rp.data_in(&full, &mut state));
+        assert_eq!(rp.preset_data.len(), 256);
+        assert!(rp.saw_full_272_chunk);
+
+        let mut trailer = full.clone();
+        trailer.truncate(140);
+        assert!(rp.data_in(&trailer, &mut state));
+        assert!(rp.preset_data.len() > 256);
+    }
+
+    /// Régression bug « lane morte » : un écho sub=08 PARASITE en plein dump ne doit
+    /// PAS clôturer le transfert tant qu'un chunk peut encore suivre. Avec la fenêtre
+    /// de confirmation active (défaut), `data_in` met `dump_end_pending` et n'éjecte
+    /// pas ; le chunk suivant l'annule et poursuit l'accumulation.
+    #[test]
+    fn stray_sub08_midstream_does_not_truncate() {
+        std::env::remove_var("HX_DUMP_END_CONFIRM_MS"); // défaut 150 ms
+        let mut rp = RequestPreset::new();
+        let mut state = minimal_helix_state();
+        rp.waiting_phase1_response = false;
+        rp.mode_tx = state.mode_tx.clone();
+
+        // 5 chunks pleins → await_dump_end_after_full_chunk = true
+        for _ in 0..5 {
+            assert!(rp.data_in(&full_272_chunk(), &mut state));
+        }
+        assert_eq!(rp.preset_data.len(), 5 * 256);
+        assert!(rp.await_dump_end_after_full_chunk);
+
+        // Écho sub=08 parasite → clôture DIFFÉRÉE (pas de finish), pending armé
+        assert!(rp.data_in(&echo_sub08_16(), &mut state));
+        assert!(rp.dump_end_pending, "l'écho parasite arme la confirmation différée");
+        assert_eq!(rp.preset_data.len(), 5 * 256, "aucune troncature");
+
+        // Un chunk suit → l'écho était parasite, pending annulé, dump poursuivi
+        assert!(rp.data_in(&full_272_chunk(), &mut state));
+        assert!(!rp.dump_end_pending, "le chunk suivant annule la confirmation");
+        assert_eq!(rp.preset_data.len(), 6 * 256, "le 6e chunk a bien été accumulé");
+    }
+
+    /// Témoin : HX_DUMP_END_CONFIRM_MS=0 restaure l'ancien comportement (clôture
+    /// immédiate sur l'écho sub=08, sans confirmation).
+    #[test]
+    fn confirm_zero_restores_immediate_finish() {
+        std::env::set_var("HX_DUMP_END_CONFIRM_MS", "0");
+        let mut rp = RequestPreset::new();
+        let mut state = minimal_helix_state();
+        rp.waiting_phase1_response = false;
+        rp.mode_tx = state.mode_tx.clone();
+
+        for _ in 0..3 {
+            assert!(rp.data_in(&full_272_chunk(), &mut state));
+        }
+        assert!(rp.data_in(&echo_sub08_16(), &mut state));
+        // Clôture immédiate : pending jamais armé, await remis à false par finish.
+        assert!(!rp.dump_end_pending);
+        assert!(!rp.await_dump_end_after_full_chunk);
+        std::env::remove_var("HX_DUMP_END_CONFIRM_MS");
     }
 }

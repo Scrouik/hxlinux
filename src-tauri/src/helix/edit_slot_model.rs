@@ -496,11 +496,11 @@ pub fn build_slot_model_probe_packets(
         } else {
             patch_slot_bus_in_bulk(&mut bulk, slot_bus);
         }
-        if matches!(op, SlotModelProbeOp::ReplaceOccupied) {
+        if matches!(op, SlotModelProbeOp::ReplaceOccupied | SlotModelProbeOp::RemoveFromOccupied) {
             patch_kempline_lane_after_cd03_or_cd04(&mut bulk, kempline_index);
             patch_slot_bus_in_bulk(&mut bulk, slot_bus);
         }
-    } else if matches!(op, SlotModelProbeOp::ReplaceOccupied) {
+    } else if matches!(op, SlotModelProbeOp::ReplaceOccupied | SlotModelProbeOp::RemoveFromOccupied) {
         patch_kempline_lane_after_cd03_or_cd04(&mut bulk, kempline_index);
         patch_slot_bus_in_bulk(&mut bulk, slot_bus);
     }

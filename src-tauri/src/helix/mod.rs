@@ -167,23 +167,50 @@ pub struct HelixState {
     /// Valeur initiale : 0x64e8 (observée HX Edit cold boot, Start_Model_change.json).
     /// S'incrémente de +1 à chaque OUT 36 bytes cd:03 (phase 4, pull 1b/19).
     /// NE PAS mélanger avec preset_dump_ack_ctr ni live_write_ctr.
+    ///
+    /// IMPORTANT (capture select_presets.json, HX Edit) : le hi (octet 29) reste
+    /// FIGÉ à `0x64`. Au passage `0x64ff`, HX bascule en `0x64xx` (jamais `0x65xx`)
+    /// et bumpe `cd` (octet 27). HXLinux bumpe déjà `ed03_cmd_type` par lecture, donc
+    /// pinner le hi suffit — voir `next_editor_ed03_double`.
     pub editor_ed03_double: u16,
 
     /// Compteur "lane ED03" (octets 12-13 des OUT 80:10:ed:03), distinct du
     /// double cd:03 (octets 28-29 = `editor_ed03_double`).
     ///
     /// u16 little-endian = lo (octet 12) + hi (octet 13), deux sous-compteurs
-    /// logés dans un même mot, observés byte-pour-byte sur 3 captures HX :
+    /// logés dans un même mot, observés byte-pour-byte sur 4 captures HX
+    /// (dont select_presets.json) :
     ///   - lo (octet 12) : position de transaction. += 0x17 par commande
-    ///     19/1b/1c de PHASE B ; figé pendant les rafales d'ACK chunks.
-    ///   - hi (octet 13) : compteur de chunks. += 1 (=+0x0100) par ACK
-    ///     chunk `08 sub=08` émis ; inchangé sinon.
+    ///     19/1b/1c de PHASE B ; FIGÉ pendant les rafales d'ACK chunks (confirmé :
+    ///     rafale de 12 chunks, lo constant, hi qui monte).
+    ///   - hi (octet 13) : compteur de chunks GLOBAL. += 1 (=+0x0100) par ACK
+    ///     chunk `08 sub=08` émis ; jamais resetté par lecture.
+    ///
+    /// La paire est lue **octet 12 = MAJEUR** : l'incrément +1 porte sur l'octet 13,
+    /// et au débordement de l'octet 13 il faut RETENIR sur l'octet 12 (voir
+    /// `advance_editor_ed03_lane_hi`), sinon le u16 recule (`ffdc→00dc` = `dc:00`
+    /// sur le fil) et le device gèle le dump.
     ///
     /// Valeur initiale 0x1009 (lo=09, hi=10) — point d'ancrage FIXE observé
     /// au 1er `19 e8` du bootstrap, identique sur tous les presets/slots.
     /// Distinct de `preset_dump_ack_ctr` (qui force lo=f4, vision tronquée
     /// réservée aux ACK hors RequestPreset) et de `editor_ed03_double`.
     pub editor_ed03_lane: u16,
+
+    /// Octet 14 du OUT `80:10:ed:03` (Phase-2 `19` sub=0c ET ACK chunk `08` sub=08) =
+    /// POIDS FORT du compteur de chunks. La paire (octet 13, octet 14) est un compteur
+    /// 16 bits little-endian (octet 13 = lo, octet 14 = hi) ; l'octet 12 (= lo de
+    /// `editor_ed03_lane`, position de transaction) est INDÉPENDANT et n'entre PAS dans
+    /// cette retenue.
+    ///
+    /// BUG C (vrai diagnostic, capture HX `out_only.txt` 16-06-2026) : au débordement de
+    /// l'octet 13 (`ff → 00`), HX incrémente l'octet 14 (`00→01→02`), octet 12 inchangé.
+    /// Trace observée : `95 ff 00` → `95 00 01` (et `fd ff 01` → `fd 00 02`). L'ancien
+    /// code figeait l'octet 14 à `0x00` → au franchissement de `0xff` le device voyait un
+    /// compteur désynchronisé et avortait le dump. Les pistes « retenue sur octet 12 »
+    /// (HX_LANE_HI_CARRY) et « skip 0x00 » sont FAUSSES (réfutées par la même capture).
+    /// Init `0x00`. Avancé par `advance_editor_ed03_lane_hi3`. Témoin : `HX_LANE_B14_CARRY=0`.
+    pub editor_ed03_lane_b14: u8,
 
     // Compteurs keep-alive
     pub x1_cnt:  u8,
@@ -454,6 +481,50 @@ pub fn usb_trace_fingerprint(data: &[u8]) -> Vec<u8> {
     fp
 }
 
+/// Helper flag « ON sauf si explicitement désactivé » (témoin = `0`/`false`/`no`).
+fn env_flag_on_by_default(var: &str) -> bool {
+    match std::env::var(var).as_deref() {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// Bug A — `HX_EDITOR_DOUBLE_PIN_HI` (défaut ON) : pinne le hi du double éditeur à `0x64`.
+/// Confirmé capture HX Edit `select_presets.json` : `0x64ff → 0x64xx` (jamais `0x65xx`).
+/// `=0` → témoin : ancien comportement (u16 plein, le hi roule à `0x65`, stub `1c`).
+fn editor_double_pin_hi() -> bool {
+    env_flag_on_by_default("HX_EDITOR_DOUBLE_PIN_HI")
+}
+
+/// Bug A (raffinement) — `HX_EDITOR_DOUBLE_SKIP_00` (défaut ON) : au franchissement du
+/// lo du double éditeur, HX SAUTE `0x00` (`0x64ff → 0x6401`, jamais `0x6400`). Confirmé
+/// sur `out_only.txt` (HX Edit). `lo=0x00` est une valeur que HX n'émet jamais.
+/// `=0` → témoin : ancien `0x6400`. N.B. : fidélité HX ; n'adresse PAS le décrochage §5.
+fn editor_double_skip_00() -> bool {
+    env_flag_on_by_default("HX_EDITOR_DOUBLE_SKIP_00")
+}
+
+/// Bug C — `HX_LANE_HI_CARRY` (DÉPRÉCIÉ, plus appelé). Hypothèse réfutée par la capture
+/// `out_only.txt` (16-06) : au wrap de l'octet 13, la retenue NE va PAS sur l'octet 12
+/// (qui reste figé). Conservé pour mémoire ; remplacé par `lane_b14_carry`.
+#[allow(dead_code)]
+fn editor_lane_hi_carry() -> bool {
+    env_flag_on_by_default("HX_LANE_HI_CARRY")
+}
+
+/// Bug C (vrai fix) — `HX_LANE_B14_CARRY` (défaut ON) : le compteur de chunks est 16 bits
+/// little-endian sur (octet 13 = lo, octet 14 = hi). Au débordement de l'octet 13
+/// (`ff → 00`), la retenue va dans l'**octet 14** (l'octet 12 = position de transaction
+/// reste figé). Confirmé byte-pour-byte sur `out_only.txt` (HX Edit) : `95 ff 00 → 95 00 01`.
+/// Témoin `=0` : octet 14 figé à `0x00` + octet 13 qui wrappe `ff→00` (comportement
+/// d'origine, échoue au franchissement de `0xff` — revert instantané).
+fn lane_b14_carry() -> bool {
+    env_flag_on_by_default("HX_LANE_B14_CARRY")
+}
+
 impl HelixState {
     pub fn new() -> Self {
         Self {
@@ -487,6 +558,7 @@ impl HelixState {
             firmware_scroll_armed: false,
             editor_ed03_double: Self::preset_ed03_transaction_counter_before_first(),
             editor_ed03_lane:   Self::EDITOR_ED03_LANE_FIRST,
+            editor_ed03_lane_b14: 0x00,
             preset_last_ack_double: [0, 0],
             request_preset_session_id: 0xf4,
             ed03_cmd_type:      0x01,
@@ -897,16 +969,20 @@ impl HelixState {
         }
     }
 
-    /// Octets 12–13 du OUT `ed:03` sub=`08` (ACK d'un chunk 272 du flux preset).
-    pub fn next_preset_stream_chunk_ack_lane(&mut self) -> [u8; 2] {
+    /// Octets 12–13–14 du OUT `ed:03` sub=`08` (ACK d'un chunk 272 du flux preset).
+    /// Renvoie 3 octets : `[o12 = position transaction, o13 = compteur chunks lo,
+    /// o14 = compteur chunks hi]`. Voir `advance_editor_ed03_lane_hi3` / champ
+    /// `editor_ed03_lane_b14`.
+    pub fn next_preset_stream_chunk_ack_lane(&mut self) -> [u8; 3] {
         if Self::preset_dump_ack_use_editor_lane() {
-            return self.advance_editor_ed03_lane_hi();
+            return self.advance_editor_ed03_lane_hi3();
         }
         // Témoin f4 : continuer à faire monter editor_ed03_lane en phase 4 (PHASE B).
         if self.phase4_bootstrap_active {
-            let _ = self.advance_editor_ed03_lane_hi();
+            let _ = self.advance_editor_ed03_lane_hi3();
         }
-        self.next_preset_dump_ack_f4_lane()
+        let f4 = self.next_preset_dump_ack_f4_lane();
+        [f4[0], f4[1], 0x00]
     }
 
     /// Lane témoin `f4:1d` → `f4:1e` (expérience HW — voir `preset_dump_stream_ack`).
@@ -936,16 +1012,38 @@ impl HelixState {
         [lo, hi]
     }
 
+    /// Avance le double éditeur d'un cran.
+    ///
+    /// BUG A (corrigé) — confirmé sur `select_presets.json` (HX Edit) : le hi (octet 29
+    /// sur le fil) reste **figé à `0x64`**. À `0x64ff`, HX repasse en page `0x64`
+    /// (`…→0x6401`, jamais `0x6500`) et bumpe `cd` (octet 27). Or HXLinux incrémente
+    /// déjà `ed03_cmd_type` à chaque lecture (shutdown) — la « page neuve » qui rend
+    /// le reset du lo acceptable est donc déjà fournie. Il suffit de pinner le hi.
+    ///
+    /// Ancien comportement (témoin `HX_EDITOR_DOUBLE_PIN_HI=0`) : `wrapping_add(1)` sur
+    /// le u16 plein → `0x64ff + 1 = 0x6500` (hi roule à `0x65`) → le device renvoie un
+    /// stub `1c` (pas de dump) → `bytes=0` → ralentissement (récupéré au retry car le
+    /// shutdown reset le double à `0x64e7`).
     pub fn next_editor_ed03_double(&mut self) -> [u8; 2] {
-        self.editor_ed03_double = self.editor_ed03_double.wrapping_add(1);
+        if editor_double_pin_hi() {
+            let mut lo = (self.editor_ed03_double & 0xff).wrapping_add(1) & 0xff;
+            // HX saute 0x00 au franchissement : 0x64ff -> 0x6401 (jamais 0x6400).
+            // Observé sur out_only.txt. Aligne HXLinux exactement sur HX.
+            if editor_double_skip_00() && lo == 0x00 {
+                lo = 0x01;
+            }
+            self.editor_ed03_double = 0x6400 | lo; // hi figé 0x64 (page éditeur)
+        } else {
+            self.editor_ed03_double = self.editor_ed03_double.wrapping_add(1);
+        }
         self.editor_ed03_double_val()
     }
 
     // ── Compteur lane ED03 (octets 12-13 des OUT 80:10:ed:03) ────────────────
     //
-    // Décodé byte-pour-byte sur 3 captures HX (1 preset × 2, 1 slot différent) :
+    // Décodé byte-pour-byte sur 4 captures HX (dont select_presets.json) :
     // lo (octet 12) = position transaction (+0x17/commande, figé pendant ACK),
-    // hi (octet 13) = compteur chunks (+1/ACK chunk). Voir `editor_ed03_lane`.
+    // hi (octet 13) = compteur chunks GLOBAL (+1/ACK chunk). Voir `editor_ed03_lane`.
 
     /// Valeur d'ancrage du compteur lane ED03 au 1er OUT bootstrap (`19 e8`).
     /// Observée fixe (`09:10`) sur toutes les captures HX.
@@ -953,9 +1051,6 @@ impl HelixState {
 
     /// Pas du lo (octet 12) pour une commande PHASE B (`19`/`1b`/`1c` courte).
     pub const EDITOR_ED03_LANE_CMD_DELTA: u16 = 0x0017;
-
-    /// Pas du lo pour le `1c` de lecture preset initiale (double `e9`).
-    pub const EDITOR_ED03_LANE_PRESET_1C_DELTA: u16 = 0x004c;
 
     /// Octets 12-13 courants (lo, hi) pour insertion dans un paquet.
     pub fn editor_ed03_lane_bytes(&self) -> [u8; 2] {
@@ -975,17 +1070,46 @@ impl HelixState {
         out
     }
 
-    /// Avance le hi (octet 13) de +1 (=+0x0100, ACK chunk), lo inchangé.
-    /// Renvoie les octets **avant** avance.
-    pub fn advance_editor_ed03_lane_hi(&mut self) -> [u8; 2] {
-        let out = self.editor_ed03_lane_bytes();
-        self.editor_ed03_lane = self.editor_ed03_lane.wrapping_add(0x0100);
+    /// Avance le compteur de chunks de +1 et renvoie `[o12, o13, o14]` **avant** avance
+    /// (sémantique émettre-puis-avancer, observée sur le fil HX).
+    ///
+    /// BUG C (vrai fix, capture `out_only.txt` 16-06) — le compteur de chunks est 16 bits
+    /// little-endian sur **(octet 13 = lo, octet 14 = hi)**. L'octet 12 (= lo de
+    /// `editor_ed03_lane`, position de transaction) est INDÉPENDANT et reste figé pendant
+    /// le dump. L'incrément +1 porte sur l'octet 13 ; au débordement `0xff → 0x00`, la
+    /// retenue va sur l'**octet 14** (`editor_ed03_lane_b14`), JAMAIS sur l'octet 12.
+    ///
+    /// Trace HX reproduite : `95 fe 00 → 95 ff 00 → 95 00 01 → 95 01 01`. Les deux
+    /// anciennes pistes (retenue octet 12 = `HX_LANE_HI_CARRY` ; « skip 0x00 ») sont
+    /// réfutées par cette même capture. Témoin : `HX_LANE_B14_CARRY=0` (octet 14 figé
+    /// `0x00`, octet 13 wrappe `ff→00` → comportement d'origine).
+    pub fn advance_editor_ed03_lane_hi3(&mut self) -> [u8; 3] {
+        let b12 = (self.editor_ed03_lane & 0x00ff) as u8;
+        let b13 = ((self.editor_ed03_lane >> 8) & 0xff) as u8;
+        let b14 = self.editor_ed03_lane_b14;
+        let out = [b12, b13, b14];
+        // Avance l'octet 13 de +1 ; octet 12 inchangé.
+        let b13_next = b13.wrapping_add(1);
+        self.editor_ed03_lane = (self.editor_ed03_lane & 0x00ff) | ((b13_next as u16) << 8);
+        // Retenue sur l'octet 14 quand l'octet 13 vient de wrapper ff→00.
+        if lane_b14_carry() && b13 == 0xff {
+            self.editor_ed03_lane_b14 = self.editor_ed03_lane_b14.wrapping_add(1);
+        }
         out
+    }
+
+    /// Shim 2 octets `[o12, o13]` pour les appelants hors RequestPreset
+    /// (`phase4_state.rs`, pull scroll…) qui n'émettent pas l'octet 14. Avance le
+    /// compteur à l'identique — l'octet 14 reste suivi en interne pour cohérence globale.
+    pub fn advance_editor_ed03_lane_hi(&mut self) -> [u8; 2] {
+        let [b12, b13, _b14] = self.advance_editor_ed03_lane_hi3();
+        [b12, b13]
     }
 
     /// Repositionne le compteur lane au démarrage de la phase 4 (ancrage fixe).
     pub fn reset_editor_ed03_lane(&mut self) {
         self.editor_ed03_lane = Self::EDITOR_ED03_LANE_FIRST;
+        self.editor_ed03_lane_b14 = 0x00;
     }
 
     /// Aligne `preset_index` sur le nom lu par `RequestPresetName` (octet [24] seul est

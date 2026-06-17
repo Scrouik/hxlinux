@@ -20,6 +20,7 @@ pub enum LayerEffect {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerResult {
     Ignored,
+    #[allow(dead_code)]
     Observed { effect: LayerEffect },
     Consumed { effect: LayerEffect },
 }

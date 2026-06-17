@@ -227,11 +227,6 @@ pub fn resolve_chain_hex_entry(module_hex: &str) -> Option<ChainHexCatalogEntry>
     None
 }
 
-/// Retourne `(chainHexHint, nom modèle)` si trouvé dans `HX_ModelUsbAssign.json`.
-pub fn resolve_chain_hex_and_name(module_hex: &str) -> Option<(String, String)> {
-    resolve_chain_hex_entry(module_hex).map(|e| (e.chain_hex, e.name))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
