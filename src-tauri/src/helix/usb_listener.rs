@@ -167,12 +167,13 @@ pub fn start_listener(
                             if s.phase4_step != prev_phase4_step {
                                 use crate::helix::phase4_state::Phase4Step as P;
                                 // Armer le timeout secours à l'entrée de PostArm (début PHASE B).
-                                if s.phase4_step == P::PostArm && s.phase4_post1a_timeout.is_none() {
+                                if matches!(s.phase4_step, P::PostArm | P::WaitIn1b26 | P::PbCommit) {
                                     s.phase4_post1a_timeout =
                                         Some(Instant::now() + Duration::from_millis(2000));
-                                    crate::helix::init_trace::trace(
-                                        "[PhaseB] timeout secours armé (2s)",
-                                    );
+                                    crate::helix::init_trace::trace_fmt(format_args!(
+                                        "[PhaseB] timeout secours armé (2s, état={})",
+                                        s.phase4_step.label()
+                                    ));
                                 }
                                 match s.phase4_step {
                                     P::PostArm => {

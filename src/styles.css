@@ -2016,12 +2016,14 @@ html, body {
   opacity: 0.95;
 }
 
-/* Verrou UI pendant probe USB matrice (move / coller / supprimer). */
-body.models-matrix-usb-busy {
+/* Verrou UI pendant probe USB matrice (move / coller / supprimer) ou lecture preset. */
+body.models-matrix-usb-busy,
+body.models-preset-load-busy {
   user-select: none;
 }
 
-body.models-matrix-usb-busy::before {
+body.models-matrix-usb-busy::before,
+body.models-preset-load-busy::before {
   content: "";
   position: fixed;
   inset: 0;
@@ -2031,7 +2033,8 @@ body.models-matrix-usb-busy::before {
   background: rgba(10, 10, 14, 0.28);
 }
 
-body.models-matrix-usb-busy .app {
+body.models-matrix-usb-busy .app,
+body.models-preset-load-busy .app {
   pointer-events: none;
   cursor: wait;
 }

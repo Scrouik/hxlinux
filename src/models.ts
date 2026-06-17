@@ -3062,6 +3062,31 @@ async function settleUsbAfterMatrixProbe(): Promise<void> {
 }
 
 let matrixUsbInteractionLockDepth = 0;
+/** Overlay « sablier » pendant lecture preset (USB + rendu grille). */
+let presetLoadUiLockDepth = 0;
+
+function isPresetLoadUiLocked(): boolean {
+  return presetLoadUiLockDepth > 0;
+}
+
+function isModelsContentBusy(): boolean {
+  return loading || isMatrixUsbInteractionLocked() || isPresetLoadUiLocked();
+}
+
+function pushPresetLoadUiLock(): void {
+  if (presetLoadUiLockDepth === 0) {
+    hideMatrixContextMenu();
+    document.body.classList.add("models-preset-load-busy");
+  }
+  presetLoadUiLockDepth += 1;
+}
+
+function popPresetLoadUiLock(): void {
+  presetLoadUiLockDepth = Math.max(0, presetLoadUiLockDepth - 1);
+  if (presetLoadUiLockDepth === 0) {
+    document.body.classList.remove("models-preset-load-busy");
+  }
+}
 
 function isMatrixUsbInteractionLocked(): boolean {
   return matrixUsbInteractionLockDepth > 0;
@@ -3142,7 +3167,7 @@ function canMoveMatrixSlotToEmpty(
   slots: SlotDebug[],
 ): boolean {
   if (sourceKi === destKi) return false;
-  if (currentPresetIndex < 0 || loading || isMatrixUsbInteractionLocked()) return false;
+  if (currentPresetIndex < 0 || isModelsContentBusy()) return false;
   const sourceSlot = slots[sourceKi];
   if (!sourceSlot || !canCopyMatrixSlot(sourceSlot)) return false;
   if (matrixSlotPath(sourceKi) !== matrixSlotPath(destKi)) return false;
@@ -3591,7 +3616,7 @@ function bindMatrixSlotDragSource(el: HTMLElement, slot: SlotDebug, ki: number):
   el.addEventListener("pointerdown", (ev) => {
     if (isMatrixUsbInteractionLocked()) return;
     if ((ev.target as HTMLElement).closest(".models-slot-remove-btn")) return;
-    if (currentPresetIndex < 0 || loading || isMatrixUsbInteractionLocked()) return;
+    if (currentPresetIndex < 0 || isModelsContentBusy()) return;
     if (ev.button !== 0) return;
 
     ev.preventDefault();
@@ -3673,7 +3698,7 @@ function onMatrixSlotContextMenu(ev: MouseEvent, el: HTMLElement, slot: SlotDebu
   const kRaw = el.dataset.kemplineSlotIndex;
   const ki = kRaw !== undefined && kRaw !== "" ? Number.parseInt(kRaw, 10) : Number.NaN;
   if (!Number.isFinite(ki) || ki < 0 || ki > 15) return;
-  if (currentPresetIndex < 0 || loading || isMatrixUsbInteractionLocked()) return;
+  if (currentPresetIndex < 0 || isModelsContentBusy()) return;
 
   const slots = lastHwSyncNormalizedSlots;
   const slotNow =
@@ -3892,7 +3917,9 @@ function isEmpty(name: string): boolean {
 function purgeModelsUi() {
   connectedDeviceName = null;
   matrixUsbInteractionLockDepth = 0;
+  presetLoadUiLockDepth = 0;
   document.body.classList.remove("models-matrix-usb-busy");
+  document.body.classList.remove("models-preset-load-busy");
   clearMatrixSlotClipboard();
   hideMatrixContextMenu();
   clearPath1InputSourceHighlightOverride();
@@ -7151,6 +7178,9 @@ async function requestLoadForPreset(index: number) {
   }
 
   loading = true;
+  if (presetLoadUiLockDepth === 0) {
+    pushPresetLoadUiLock();
+  }
   hardwareSyncPausedForPresetLoad = true;
   if (index !== currentPresetIndex) {
     clearPath1InputSourceHighlightOverride();
@@ -7179,6 +7209,7 @@ async function requestLoadForPreset(index: number) {
     if (msg.includes("throttled")) {
       pendingPresetIndex = index;
       loading = false;
+      popPresetLoadUiLock();
       hardwareSyncPausedForPresetLoad = false;
       emitModelsSyncTraceThrottled(
         "preset_load_defer_throttle",
@@ -7195,6 +7226,7 @@ async function requestLoadForPreset(index: number) {
     ) {
       pendingPresetIndex = index;
       loading = false;
+      popPresetLoadUiLock();
       hardwareSyncPausedForPresetLoad = false;
       emitModelsSyncTraceThrottled(
         msg.includes("Initialisation USB") ? "preset_load_defer_init_settle" : "preset_load_defer_hw_scroll",
@@ -7323,9 +7355,13 @@ async function requestLoadForPreset(index: number) {
           // On évite ici un invoke additionnel request_active_preset_name qui peut
           // amplifier les rafales pendant les changements rapides de preset.
         }
+        const chainNext = pendingPresetIndex >= 0 && pendingPresetIndex !== loadedPresetIndex;
         loading = false;
-        hardwareSyncPausedForPresetLoad = pendingPresetIndex >= 0;
-        if (pendingPresetIndex >= 0 && pendingPresetIndex !== loadedPresetIndex) {
+        hardwareSyncPausedForPresetLoad = chainNext;
+        if (!chainNext) {
+          popPresetLoadUiLock();
+        }
+        if (chainNext) {
           const next = pendingPresetIndex;
           pendingPresetIndex = -1;
           void requestLoadForPreset(next);

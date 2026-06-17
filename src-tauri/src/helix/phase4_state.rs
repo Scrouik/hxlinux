@@ -92,6 +92,30 @@ fn is_in_19_ef(data: &[u8]) -> bool {
         && data.get(5).copied() == Some(0x03)
 }
 
+/// IN `1b 04` lane ed après finalisation PHASE B (capture HX f417) — déclenche le commit.
+fn is_in_1b_ed_device_commit_trigger(data: &[u8]) -> bool {
+    data.len() == 36
+        && data.first() == Some(&0x1b)
+        && data.get(4..8) == Some(&[0xed, 0x03, 0x80, 0x10])
+        && data.get(11) == Some(&0x04)
+}
+
+/// IN `26 04` lane ef (capture HX f419) — ne doit PAS clôturer PHASE B tant que le commit
+/// n'a pas été émis (`HX_PHASEB_COMMIT`).
+fn is_in_26_ef(data: &[u8]) -> bool {
+    data.len() == 48
+        && data.first() == Some(&0x26)
+        && data.get(4).copied() == Some(0xef)
+}
+
+/// IN `23 04` lane ed — confirmation du commit (capture HX post `1b 0c f1`).
+fn is_in_23_ed_commit_confirm(data: &[u8]) -> bool {
+    data.len() >= 8
+        && data.first() == Some(&0x23)
+        && data.get(4..8) == Some(&[0xed, 0x03, 0x80, 0x10])
+        && data.get(11) == Some(&0x04)
+}
+
 /// PHASE B — `HX_PHASEB_COMMIT` (défaut ON) : aligne la fin du handshake
 /// d'abonnement sur HX (capture connexion) :
 ///   (1) le 1er paquet proactif `ec` passe en `sub=0c` (comme HX, et comme ses
@@ -321,28 +345,32 @@ pub fn handle_in_passive(state: &mut crate::helix::HelixState, data: &[u8]) {
             if is_keepalive {
                 return;
             }
-            // Chemin HX Edit : sur le `1b 04 f0` du device (f417), HX répond par
-            // le tour de fermeture `1b 0c f1` puis attend un `23 04`. Sans commit,
-            // on logue « 1/2 » et on part Done au `26 ef` (comportement actuel).
-            if len == 36 && h == 0x1b && ep.first().copied() == Some(0xed) {
+            // §5 — Chemin HX : sur le `1b 04 f0` du device (f417), émettre le commit
+            // `1b 0c f1` puis attendre `23 04`. Le `26 ef` (f419) peut arriver avant
+            // ou après le `1b` : avec commit ON, il ne doit JAMAIS court-circuiter vers
+            // Done (c'était la cause du §5 : Done au 26 sans tour de fermeture).
+            if is_in_1b_ed_device_commit_trigger(data) {
                 if phaseb_commit() {
                     crate::helix::init_trace::trace(
-                        "[PhaseB] WaitIn1b26 -> PbCommit (IN 1b f0 device, commit HX)",
+                        "[PhaseB] WaitIn1b26 -> PbCommit (IN 1b 04 ed device, commit HX)",
                     );
                     Some(Phase4Step::PbCommit)
                 } else {
                     crate::helix::init_trace::trace("[PhaseB] WaitIn1b26 — IN 1b/36o ed (1/2)");
                     None
                 }
-            } else if len == 48 && h == 0x26 && ep.first().copied() == Some(0xef) {
-                crate::helix::init_trace::trace("[PhaseB] WaitIn1b26 -> Done (IN 26/48o ef)");
-                Some(Phase4Step::Done)
-            // Chemin Linux : 2× 68o head=3c|39 (ef puis ed) → Done sur le 2ᵉ.
-            // NOTE (vigilance snapshot) : même fragilité de head/len en dur qu'ex-
-            // Waiting68o. Si un preset snapshot répond ici avec une autre forme
-            // (ex. 72o/3e), la PHASE B calera. À traiter de la même façon
-            // (reconnaissance structurelle) UNE FOIS la forme observée en capture —
-            // ce run n'a jamais atteint la PHASE B, on ne devine pas.
+            } else if is_in_26_ef(data) {
+                if phaseb_commit() {
+                    crate::helix::init_trace::trace(
+                        "[PhaseB] WaitIn1b26 — IN 26 ef (1/2) ; commit en attente du 1b device",
+                    );
+                    None
+                } else {
+                    crate::helix::init_trace::trace("[PhaseB] WaitIn1b26 -> Done (IN 26/48o ef)");
+                    Some(Phase4Step::Done)
+                }
+            // Chemin Linux : 2× 68o head=3c|39 (ef puis ed). Avec commit ON, le 2ᵉ
+            // déclenche PbCommit (équivalent du 1b device) au lieu de Done direct.
             } else if len == 68 && matches!(h, 0x3c | 0x39) && ep.first().copied() == Some(0xef) {
                 crate::helix::init_trace::trace_fmt(format_args!(
                     "[PhaseB] WaitIn1b26 — IN 68o ef head={:02x} (1/2 Linux)",
@@ -350,11 +378,19 @@ pub fn handle_in_passive(state: &mut crate::helix::HelixState, data: &[u8]) {
                 ));
                 None
             } else if len == 68 && matches!(h, 0x3c | 0x39) && ep.first().copied() == Some(0xed) {
-                crate::helix::init_trace::trace_fmt(format_args!(
-                    "[PhaseB] WaitIn1b26 -> Done (IN 68o ed head={:02x} Linux)",
-                    h
-                ));
-                Some(Phase4Step::Done)
+                if phaseb_commit() {
+                    crate::helix::init_trace::trace_fmt(format_args!(
+                        "[PhaseB] WaitIn1b26 -> PbCommit (IN 68o ed head={:02x} Linux, commit)",
+                        h
+                    ));
+                    Some(Phase4Step::PbCommit)
+                } else {
+                    crate::helix::init_trace::trace_fmt(format_args!(
+                        "[PhaseB] WaitIn1b26 -> Done (IN 68o ed head={:02x} Linux)",
+                        h
+                    ));
+                    Some(Phase4Step::Done)
+                }
             } else {
                 log_ignored(step, len, h, ep);
                 None
@@ -364,17 +400,20 @@ pub fn handle_in_passive(state: &mut crate::helix::HelixState, data: &[u8]) {
             if is_keepalive {
                 return;
             }
-            // Après le close `1b 0c f1`, HX reçoit un `23 04` (ed). On tolère aussi
-            // le `26 ef` (déjà émis par le device en réponse au 19 ef, f419) et les
-            // 68o Linux comme terminal, pour ne jamais bloquer.
-            if h == 0x23 && ep.first().copied() == Some(0xed) {
+            // Après le close `1b 0c f1`, HX attend le `23 04` ed (confirmation commit).
+            // Le `26 ef` (f419) est souvent déjà en vol / réémis juste après le commit —
+            // l'accepter comme terminal court-circuite l'armement lane vivante (§5).
+            // Filets : `23 04` ed (HX), 68o Linux, timeout secours 2 s (usb_listener).
+            if is_in_23_ed_commit_confirm(data) {
                 crate::helix::init_trace::trace(
-                    "[PhaseB] PbCommit -> Done (IN 23 ed, commit confirmé)",
+                    "[PhaseB] PbCommit -> Done (IN 23 04 ed, commit confirmé)",
                 );
                 Some(Phase4Step::Done)
-            } else if len == 48 && h == 0x26 && ep.first().copied() == Some(0xef) {
-                crate::helix::init_trace::trace("[PhaseB] PbCommit -> Done (IN 26/48o ef)");
-                Some(Phase4Step::Done)
+            } else if is_in_26_ef(data) {
+                crate::helix::init_trace::trace(
+                    "[PhaseB] PbCommit — IN 26 ef ignoré (attente 23 04 ed, écho f419 ?)",
+                );
+                None
             } else if len == 68 && matches!(h, 0x3c | 0x39) {
                 crate::helix::init_trace::trace("[PhaseB] PbCommit -> Done (IN 68o Linux)");
                 Some(Phase4Step::Done)
@@ -644,5 +683,77 @@ mod tests {
         handle_in_passive(&mut state, &echo);
         assert_eq!(state.phase4_step, Phase4Step::PostArm);
         assert_eq!(state.phase4_dump_full_272_count, 0);
+    }
+
+    fn sample_in_1b_ed_device() -> Vec<u8> {
+        let mut b = vec![0u8; 36];
+        b[0] = 0x1b;
+        b[4..8].copy_from_slice(&[0xed, 0x03, 0x80, 0x10]);
+        b[11] = 0x04;
+        b[28] = 0xf0;
+        b[29] = 0x67;
+        b
+    }
+
+    fn sample_in_26_ef() -> Vec<u8> {
+        let mut b = vec![0u8; 48];
+        b[0] = 0x26;
+        b[4] = 0xef;
+        b[5] = 0x03;
+        b
+    }
+
+    fn sample_in_23_ed() -> Vec<u8> {
+        let mut b = vec![0u8; 36];
+        b[0] = 0x23;
+        b[4..8].copy_from_slice(&[0xed, 0x03, 0x80, 0x10]);
+        b[11] = 0x04;
+        b
+    }
+
+    #[test]
+    fn wait_in1b26_commit_on_blocks_done_on_26_alone() {
+        std::env::set_var("HX_PHASEB_COMMIT", "1");
+        let mut state = HelixState::new();
+        state.phase4_step = Phase4Step::WaitIn1b26;
+        handle_in_passive(&mut state, &sample_in_26_ef());
+        assert_eq!(state.phase4_step, Phase4Step::WaitIn1b26);
+        std::env::remove_var("HX_PHASEB_COMMIT");
+    }
+
+    #[test]
+    fn wait_in1b26_commit_on_goes_pb_commit_on_device_1b() {
+        std::env::set_var("HX_PHASEB_COMMIT", "1");
+        let mut state = HelixState::new();
+        state.phase4_step = Phase4Step::WaitIn1b26;
+        handle_in_passive(&mut state, &sample_in_1b_ed_device());
+        assert_eq!(state.phase4_step, Phase4Step::PbCommit);
+        std::env::remove_var("HX_PHASEB_COMMIT");
+    }
+
+    #[test]
+    fn wait_in1b26_commit_off_done_on_26() {
+        std::env::set_var("HX_PHASEB_COMMIT", "0");
+        let mut state = HelixState::new();
+        state.phase4_step = Phase4Step::WaitIn1b26;
+        handle_in_passive(&mut state, &sample_in_26_ef());
+        assert_eq!(state.phase4_step, Phase4Step::Done);
+        std::env::remove_var("HX_PHASEB_COMMIT");
+    }
+
+    #[test]
+    fn pb_commit_done_on_23_ed() {
+        let mut state = HelixState::new();
+        state.phase4_step = Phase4Step::PbCommit;
+        handle_in_passive(&mut state, &sample_in_23_ed());
+        assert_eq!(state.phase4_step, Phase4Step::Done);
+    }
+
+    #[test]
+    fn pb_commit_ignores_stale_26_ef() {
+        let mut state = HelixState::new();
+        state.phase4_step = Phase4Step::PbCommit;
+        handle_in_passive(&mut state, &sample_in_26_ef());
+        assert_eq!(state.phase4_step, Phase4Step::PbCommit);
     }
 }
