@@ -191,6 +191,34 @@ fn raw_to_discrete_index(raw: f32, steps: u8) -> u8 {
     i.clamp(0, max_i as i32) as u8
 }
 
+/// Index discret wire : entiers catalogue (`valueType=0`, min/max entiers) → valeur physique
+/// (captures `cabMICir` : octet après `77` = index mic 0..11, pas une norme 0..1 brute).
+fn discrete_wire_index(
+    raw_norm: f32,
+    value_type: Option<i32>,
+    chain_min: Option<f64>,
+    chain_max: Option<f64>,
+    steps: u8,
+) -> u8 {
+    if let (Some(lo), Some(hi)) = (chain_min, chain_max) {
+        if matches!(value_type, Some(0)) {
+            let lo_i = lo.round();
+            let hi_i = hi.round();
+            if (lo - lo_i).abs() < 1e-6
+                && (hi - hi_i).abs() < 1e-6
+                && hi_i > lo_i
+                && lo_i >= 0.0
+                && hi_i <= 255.0
+            {
+                let span = hi_i - lo_i;
+                let v = lo_i + f64::from(raw_norm.clamp(0.0, 1.0)) * span;
+                return v.round().clamp(lo_i, hi_i) as u8;
+            }
+        }
+    }
+    raw_to_discrete_index(raw_norm, steps)
+}
+
 /// Règle générique discrète: pour `valueType=0` avec bornes entières (`min..max`),
 /// on déduit `N = max - min + 1` positions (ex. 0..5 => 6).
 /// Utilisée en fallback quand `displayType` n'est pas explicitement mappé.
@@ -243,7 +271,7 @@ pub fn build_live_write_frames_from_state(
             cfg.bool_mark_off
         }
     } else if let Some(n) = disc_steps {
-        raw_to_discrete_index(raw_value, n)
+        discrete_wire_index(raw_value, value_type, chain_min, chain_max, n)
     } else {
         0
     };
@@ -487,4 +515,212 @@ fn diff_packet_hex(reference: &[u8], actual: &[u8]) -> String {
         diffs.push(format!("+{} more", remaining));
     }
     diffs.join(",")
+}
+
+/// Résultat write live **minimal** Cab dual IR — captures `add_dual_cab_modif_param_cab2.json` :
+/// `08` sub=`08` (armement, défaut) + `23` ou paire `27` `04`/`0c` (pas de pré `08:10` / `f0:03`).
+pub struct CabDualMinimalLiveWrite {
+    pub packets: Vec<Vec<u8>>,
+    pub primary_opcode: u8,
+    pub slot_bus: u8,
+    pub pp: u8,
+    pub pp_source: &'static str,
+    pub param_selector: u8,
+    pub param_selector_source: &'static str,
+    pub model_block_kind: &'static str,
+}
+
+/// `HX_CAB_DUAL_PARAM_ED08` (défaut ON) : arme chaque écriture param cab dual d'un `ed:08`
+/// (octet 11 = `08`) AU MÊME ctr que la jambe A — HX Edit envoie un `08` avant chaque `23`/`27`
+/// (capture `add_dual_cab_modif_param_cab2.json`). `=0` restaure l'ancien comportement (A/B).
+pub fn cab_dual_param_ed08_enabled() -> bool {
+    !matches!(
+        std::env::var("HX_CAB_DUAL_PARAM_ED08")
+            .map(|s| s.trim().to_ascii_lowercase())
+            .as_deref(),
+        Ok("0") | Ok("false") | Ok("off")
+    )
+}
+
+/// Construit les trames param Cab dual (HX Edit : `08` armement + 1×`23` discret ou paire `27`).
+pub fn build_cab_dual_minimal_param_packets_from_state(
+    state: &mut HelixState,
+    raw_value: f32,
+    slot_index: u32,
+    display_type: Option<&str>,
+    value_type: Option<i32>,
+    chain_min: Option<f64>,
+    chain_max: Option<f64>,
+    route: LiveWriteRouteOverride,
+) -> CabDualMinimalLiveWrite {
+    let cfg = live_write_cfg();
+    let bool_23 = infer_bool_wire_payload(display_type, value_type);
+    let disc_steps = discrete_23_step_count(display_type)
+        .or_else(|| inferred_discrete_steps_from_bounds(value_type, chain_min, chain_max));
+    let wire_23 = bool_23 || disc_steps.is_some();
+    let mark_23: u8 = if bool_23 {
+        if raw_value >= 0.5 {
+            cfg.bool_mark_on
+        } else {
+            cfg.bool_mark_off
+        }
+    } else if let Some(n) = disc_steps {
+        discrete_wire_index(raw_value, value_type, chain_min, chain_max, n)
+    } else {
+        0
+    };
+
+    let float_be_a = raw_value.to_bits().to_be_bytes();
+    let leg_b = float_leg_b_from_norm(raw_value, chain_min, chain_max);
+    let float_be_b = leg_b.to_bits().to_be_bytes();
+    let slot_bus = slot_bus_byte_from_kempline_index(slot_index);
+    let pp = route.pp;
+    let pp_source = route.pp_source;
+    let param_selector = route.param_selector;
+    let param_selector_source = route.param_selector_source;
+    let primary_opcode: u8 = if wire_23 { 0x23 } else { 0x27 };
+
+    let arm_ed08 = cab_dual_param_ed08_enabled();
+    let mut packets: Vec<Vec<u8>> = Vec::new();
+
+    let ctr_a = state.live_write_ctr;
+    if arm_ed08 {
+        let ed08_seq = state.next_x80_cnt();
+        packets.push(vec![
+            0x08, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, ed08_seq, 0x00, 0x08,
+            (ctr_a & 0xff) as u8, ((ctr_a >> 8) & 0xff) as u8, 0x00, 0x00,
+        ]);
+    }
+
+    let seq_a = state.next_x80_cnt();
+    let yy_a = state.live_write_yy;
+    let mut packet_a = if wire_23 {
+        assemble_23_bool_write(seq_a, 0x04, ctr_a, yy_a, pp, param_selector, slot_bus, mark_23)
+    } else {
+        assemble_27_write(
+            seq_a,
+            0x04,
+            ctr_a,
+            yy_a,
+            pp,
+            param_selector,
+            slot_bus,
+            float_be_a,
+        )
+    };
+    apply_model_block(
+        &mut packet_a,
+        state,
+        route.model_block,
+        !route.preserve_model_tag,
+    );
+    finalize_primary_packet(
+        &mut packet_a,
+        primary_opcode,
+        slot_bus,
+        param_selector,
+        float_be_a,
+        mark_23,
+    );
+    packets.push(packet_a);
+
+    state.live_write_ctr = state.live_write_ctr.wrapping_add(0x1f);
+    state.live_write_yy = state.live_write_yy.wrapping_add(1);
+
+    if !wire_23 {
+        let seq_b = state.next_x80_cnt();
+        let ctr_b = state.live_write_ctr;
+        let yy_b = state.live_write_yy;
+        let mut packet_b = assemble_27_write(
+            seq_b,
+            0x0c,
+            ctr_b,
+            yy_b,
+            pp,
+            param_selector,
+            slot_bus,
+            float_be_b,
+        );
+        apply_model_block(
+            &mut packet_b,
+            state,
+            route.model_block,
+            !route.preserve_model_tag,
+        );
+        finalize_primary_packet(
+            &mut packet_b,
+            primary_opcode,
+            slot_bus,
+            param_selector,
+            float_be_b,
+            mark_23,
+        );
+        packets.push(packet_b);
+        state.live_write_ctr = state.live_write_ctr.wrapping_add(0x1f);
+        state.live_write_yy = state.live_write_yy.wrapping_add(1);
+    }
+
+    CabDualMinimalLiveWrite {
+        packets,
+        primary_opcode,
+        slot_bus,
+        pp,
+        pp_source,
+        param_selector,
+        param_selector_source,
+        model_block_kind: "amp_cab_cab_route",
+    }
+}
+
+#[cfg(test)]
+mod cab_dual_minimal_tests {
+    use super::*;
+    use crate::helix::cab_dual_live_write::resolve_cab_dual_live_write_route;
+    use crate::helix::HelixState;
+
+    #[test]
+    fn cab_dual_mic_minimal_is_single_23() {
+        let state = HelixState::new();
+        let route = resolve_cab_dual_live_write_route(&state, 0, 0, 0, false).expect("route");
+        let mut state = HelixState::new();
+        let out = build_cab_dual_minimal_param_packets_from_state(
+            &mut state,
+            0.0,
+            0,
+            Some("cabMICir"),
+            Some(0),
+            Some(0.0),
+            Some(11.0),
+            route,
+        );
+        assert_eq!(out.primary_opcode, 0x23);
+        let params: Vec<&Vec<u8>> = out.packets.iter().filter(|p| p[0] != 0x08).collect();
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0][0], 0x23);
+        assert_eq!(params[0][11], 0x04);
+        assert_eq!(out.packets[0][0], 0x08, "ed:08 d'armement en tête");
+    }
+
+    #[test]
+    fn cab_dual_float_minimal_is_27_pair() {
+        let state = HelixState::new();
+        let route = resolve_cab_dual_live_write_route(&state, 0, 1, 0, false).expect("route");
+        let mut state = HelixState::new();
+        let out = build_cab_dual_minimal_param_packets_from_state(
+            &mut state,
+            0.5,
+            0,
+            Some("CabMicIr_Position"),
+            Some(1),
+            Some(0.0),
+            Some(1.0),
+            route,
+        );
+        assert_eq!(out.primary_opcode, 0x27);
+        let params: Vec<&Vec<u8>> = out.packets.iter().filter(|p| p[0] != 0x08).collect();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0][11], 0x04);
+        assert_eq!(params[1][11], 0x0c);
+        assert_eq!(out.packets[0][0], 0x08);
+    }
 }

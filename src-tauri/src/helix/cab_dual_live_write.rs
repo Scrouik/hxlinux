@@ -2,8 +2,11 @@
 //!
 //! Capture `add_dual_cab_modif_param_cab2.json` (HX Edit, 2026-06) :
 //! - **Cab 1** : PP `0x03`, `param_selector` = index local 0..n (comme Amp+Cab cab IR).
-//! - **Cab 2** : PP `0x04`, `param_selector` = index local + offset Cab 1 (UI envoie déjà l’offset).
-//! - Bloc modèle : `83:66:cd:PP:YY:64:1e:65:85:62:bus:1d:c3:1a:01:1c` (pas de trame focus `1b`).
+//! - **Cab 2** : PP `0x04`, même `param_selector` wire que Cab 1 (index global dans le slot dual).
+//! - Bloc modèle IR : `…1d:c3:1a:01:1c` ; legacy hybrid : `…64:83:17:c3:19`.
+//! - **Param write** : HX Edit n’envoie que `23`/`27` (capture `add_dual_cab_modif_param_cab2.json`) ;
+//!   focus onglet **une fois** au clic UI (`focus_cab_dual_usb_part`), pas de pré `08` avant chaque param.
+//! - `prepare_cab_dual_param_live_write` : focus lane `live_write` + ed:08 (handshake replace cab2).
 //!
 //! FOCUS onglet Cab 1 / Cab 2 — capture HX Edit `cab2_cab1_change.json` (2026-06) :
 //! les **deux** onglets envoient `1d` + `83:66:cd:03` + `82:62:bus:1a:XX` (`XX=00` Cab 1, `01` Cab 2).
@@ -12,7 +15,8 @@
 
 use std::time::{Duration, Instant};
 
-use crate::helix::amp_cab_live_write::build_amp_cab_ir_param_model_block;
+use crate::helix::amp_cab_live_write::build_amp_cab_legacy_param_model_block;
+use crate::helix::cab_dual::replace_fire::build_ed08_short;
 use crate::helix::live_write::LiveWriteRouteOverride;
 use crate::helix::packet::OutPacket;
 use crate::helix::{echo_model_cache_key, kempline_index_to_slot_bus, HelixState};
@@ -60,10 +64,21 @@ fn cab2_focus_sub() -> u8 {
     }
 }
 
-/// Bloc modèle param **Cab 2** d’un slot Cab dual IR.
+/// Bloc modèle param **Cab 1** d'un slot Cab dual IR. Kind cd:03, suffixe **1a:00** (cab1).
+/// Le suffixe `1a:00`/`1a:01` est la SEULE distinction cab1/cab2 sur le fil — ne pas réutiliser
+/// le bloc Amp+Cab (`build_amp_cab_ir_param_model_block`, qui porte `1a:01` car le cab y est partie 1).
+pub fn build_cab_dual_cab1_ir_param_model_block(slot_bus: u8, tag_yy: u8) -> [u8; 16] {
+    [
+        0x83, 0x66, 0xcd, 0x03, tag_yy, 0x64, 0x1e, 0x65, 0x85, 0x62, slot_bus, 0x1d, 0xc3,
+        0x1a, 0x00, 0x1c,
+    ]
+}
+
+/// Bloc modèle param **Cab 2** d'un slot Cab dual IR. Kind **cd:03** (param/live),
+/// PAS cd:04 (replace/focus) — capture `add_dual_cab_modif_param_cab2.json`.
 pub fn build_cab_dual_cab2_ir_param_model_block(slot_bus: u8, tag_yy: u8) -> [u8; 16] {
     [
-        0x83, 0x66, 0xcd, 0x04, tag_yy, 0x64, 0x1e, 0x65, 0x85, 0x62, slot_bus, 0x1d, 0xc3,
+        0x83, 0x66, 0xcd, 0x03, tag_yy, 0x64, 0x1e, 0x65, 0x85, 0x62, slot_bus, 0x1d, 0xc3,
         0x1a, 0x01, 0x1c,
     ]
 }
@@ -243,7 +258,8 @@ fn build_cab_dual_cab1_focus_packet(state: &mut HelixState, slot_bus: u8) -> Vec
 }
 
 /// Focus Cab 1 + poke `f0:08` (onglet UI).
-pub fn send_cab_dual_cab1_focus_and_poke(state: &mut HelixState, _slot_index: u32, slot_bus: u8) {
+pub fn send_cab_dual_cab1_focus_and_poke(state: &mut HelixState, slot_index: u32, slot_bus: u8) {
+    state.cab_dual_live_write_tab_focus = Some((slot_index, 0));
     state.cab_dual_cab2_handshake_capture.clear();
     state.cab_dual_cab2_handshake_until = None;
     state.cab_dual_cab2_focus_sent_for_slot = None;
@@ -261,6 +277,7 @@ pub fn send_cab_dual_cab1_focus_and_poke(state: &mut HelixState, _slot_index: u3
 
 /// Focus onglet Cab 2 + poke `f0:08`.
 pub fn send_cab_dual_cab2_focus_and_poke(state: &mut HelixState, slot_index: u32, slot_bus: u8) {
+    state.cab_dual_live_write_tab_focus = Some((slot_index, 1));
     state.cab_dual_cab2_handshake_capture.clear();
     state.cab_dual_cab2_handshake_until =
         Some(Instant::now() + Duration::from_millis(700));
@@ -317,8 +334,82 @@ pub fn cab_dual_ed08_ctr_for_handshake(focus: &[u8], _in36: &[u8]) -> u16 {
     cab_dual_ed08_ctr_from_focus(focus).unwrap_or(0)
 }
 
-/// Focus Cab 2 immédiatement avant replace / live write (HX Edit renvoie `1d` à chaque action).
+fn force_ed03_lane_ctr(packet: &mut [u8], ctr: u16) {
+    if packet.len() > 14 {
+        packet[12] = (ctr & 0xff) as u8;
+        packet[13] = ((ctr >> 8) & 0xff) as u8;
+        packet[14] = 0x00;
+    }
+}
+
+/// Prépare le device avant write live param Cab dual : focus onglet (`L`) puis ed:08 (`L+0x11`).
+///
+/// Même règle lane que replace cab2 ([`crate::helix::cab_dual::replace_fire`]) — sans ed:08 le HW
+/// ignore les trames `23`/`27` (captures `add_dual_cab_modif_param_cab2.json`).
+pub fn prepare_cab_dual_param_live_write(
+    state: &mut HelixState,
+    slot_index: u32,
+    slot_bus: u8,
+    cab_index: u8,
+) {
+    if state.cab_dual_live_write_tab_focus == Some((slot_index, cab_index)) {
+        return;
+    }
+    let l = state.live_write_ctr;
+    let mut focus = if cab_index == 0 {
+        build_cab_dual_focus_packet_with_lane(
+            state,
+            slot_bus,
+            Cab2FocusLane::LiveWrite,
+            cab2_focus_sub(),
+            0x03,
+            0x00,
+        )
+    } else {
+        build_cab_dual_cab2_tab_focus_packet_with_lane(
+            state,
+            slot_bus,
+            Cab2FocusLane::LiveWrite,
+            cab2_focus_sub(),
+        )
+    };
+    force_ed03_lane_ctr(&mut focus, l);
+    let ctr_model = l.wrapping_add(0x11);
+    crate::helix::init_trace::trace_fmt(format_args!(
+        "cab_dual_param_prepare cab={} slot={} bus={:#04x} focus_L={:#06x} ed08={:#06x} cd={:#04x} 1a={:#04x}",
+        cab_index,
+        slot_index,
+        slot_bus,
+        l,
+        ctr_model,
+        focus[27],
+        focus[36]
+    ));
+    state.send(OutPacket::new(focus));
+    state.live_write_yy = state.live_write_yy.wrapping_add(1);
+    state.slot_model_lane_seq = Some(state.live_write_yy);
+    let ed08 = build_ed08_short(state, ctr_model);
+    state.send(OutPacket::with_delay(ed08, 93));
+    state.live_write_ctr = ctr_model;
+    state.cab_dual_live_write_tab_focus = Some((slot_index, cab_index));
+    if cab_index == 1 {
+        state.cab_dual_cab2_focus_sent_for_slot = Some(slot_index);
+    }
+}
+
+/// Alias historique.
+pub fn send_cab_dual_tab_focus_for_live_write(
+    state: &mut HelixState,
+    slot_index: u32,
+    slot_bus: u8,
+    cab_index: u8,
+) {
+    prepare_cab_dual_param_live_write(state, slot_index, slot_bus, cab_index);
+}
+
+/// Focus Cab 2 immédiatement avant replace (HX Edit : `cd:04` + `1a:01`, pas l’onglet).
 pub fn send_cab_dual_cab2_focus(state: &mut HelixState, slot_index: u32, slot_bus: u8) {
+    state.cab_dual_live_write_tab_focus = None;
     state.cab_dual_cab2_suppress_standard_ed08_until =
         Some(Instant::now() + Duration::from_secs(45));
     state.cab_dual_cab2_handshake_ed08_ctr = None;
@@ -333,11 +424,18 @@ pub fn send_cab_dual_cab2_focus(state: &mut HelixState, slot_index: u32, slot_bu
     state.cab_dual_cab2_focus_sent_for_slot = Some(slot_index);
 }
 
+/// Segment preset dual legacy hybrid (suffixe modèle `64:83:17:c3:19`).
+pub fn cab_dual_preset_segment_is_legacy_hybrid(seg: &[u8]) -> bool {
+    seg.windows(5)
+        .any(|w| w == [0x64, 0x83, 0x17, 0xc3, 0x19])
+}
+
 pub fn resolve_cab_dual_live_write_route(
     state: &HelixState,
     cab_index: u8,
     param_index: u32,
     slot_index: u32,
+    legacy_hybrid: bool,
 ) -> Option<LiveWriteRouteOverride> {
     if cab_index > 1 {
         return None;
@@ -361,14 +459,22 @@ pub fn resolve_cab_dual_live_write_route(
         });
     }
 
-    let model_block = if cab_index == 0 {
-        build_amp_cab_ir_param_model_block(slot_bus, state.live_write_yy)
+    let model_block = if legacy_hybrid {
+        build_amp_cab_legacy_param_model_block(pp, state.live_write_yy, slot_bus)
+    } else if cab_index == 0 {
+        build_cab_dual_cab1_ir_param_model_block(slot_bus, state.live_write_yy)
     } else {
         build_cab_dual_cab2_ir_param_model_block(slot_bus, state.live_write_yy)
     };
     Some(LiveWriteRouteOverride {
         pp,
-        pp_source: if cab_index == 0 {
+        pp_source: if legacy_hybrid {
+            if cab_index == 0 {
+                "cab_dual:cab1_legacy_capture"
+            } else {
+                "cab_dual:cab2_legacy_capture"
+            }
+        } else if cab_index == 0 {
             "cab_dual:cab1_capture"
         } else {
             "cab_dual:cab2_capture"
@@ -377,7 +483,7 @@ pub fn resolve_cab_dual_live_write_route(
         param_selector_source: if cab_index == 0 {
             "cab_dual:cab1_local_index"
         } else {
-            "cab_dual:cab2_offset_index"
+            "cab_dual:cab2_local_index"
         },
         model_block,
         preserve_model_tag: false,
@@ -390,12 +496,26 @@ mod tests {
     use crate::helix::HelixState;
 
     #[test]
-    fn cab2_level_uses_pp_04_and_offset_selector() {
+    fn cab1_param_block_uses_1a_00() {
+        let blk = build_cab_dual_cab1_ir_param_model_block(3, 0x17);
+        assert_eq!(blk[3], 0x03, "kind param cd:03");
+        assert_eq!(&blk[13..16], &[0x1a, 0x00, 0x1c], "suffixe cab1");
+    }
+
+    #[test]
+    fn cab2_param_block_uses_1a_01() {
+        let blk = build_cab_dual_cab2_ir_param_model_block(3, 0x17);
+        assert_eq!(&blk[13..16], &[0x1a, 0x01, 0x1c], "suffixe cab2");
+    }
+
+    #[test]
+    fn cab2_level_uses_pp_04_and_local_selector() {
         let state = HelixState::new();
-        let route = resolve_cab_dual_live_write_route(&state, 1, 5, 3).expect("route");
+        let route = resolve_cab_dual_live_write_route(&state, 1, 5, 3, false).expect("route");
         assert_eq!(route.pp, 0x04);
         assert_eq!(route.param_selector, 0x05);
-        assert_eq!(route.model_block[3], 0x04);
+        assert_eq!(route.model_block[3], 0x03, "kind param cd:03 sur le fil");
+        assert_eq!(&route.model_block[13..16], &[0x1a, 0x01, 0x1c], "suffixe cab2");
     }
 
     /// DÉFAUT : lane `editor` (la seule qui fait dumper le device sur HW) + octet 11 `0x04`.
@@ -564,8 +684,26 @@ mod tests {
     #[test]
     fn cab1_mic_is_pp_03_sel_00() {
         let state = HelixState::new();
-        let route = resolve_cab_dual_live_write_route(&state, 0, 0, 3).expect("route");
+        let route = resolve_cab_dual_live_write_route(&state, 0, 0, 3, false).expect("route");
         assert_eq!(route.pp, 0x03);
         assert_eq!(route.param_selector, 0x00);
+        assert_eq!(&route.model_block[13..16], &[0x1a, 0x00, 0x1c]);
+    }
+
+    #[test]
+    fn legacy_hybrid_uses_c319_model_suffix() {
+        let state = HelixState::new();
+        let route = resolve_cab_dual_live_write_route(&state, 1, 2, 3, true).expect("route");
+        assert_eq!(route.pp, 0x04);
+        assert_eq!(&route.model_block[11..16], &[0x64, 0x83, 0x17, 0xc3, 0x19]);
+    }
+
+    #[test]
+    fn param_live_write_prepare_bumps_ctr_by_0x11() {
+        let mut state = HelixState::new();
+        state.live_write_ctr = 0x6cbd;
+        prepare_cab_dual_param_live_write(&mut state, 2, 3, 1);
+        assert_eq!(state.cab_dual_live_write_tab_focus, Some((2, 1)));
+        assert_eq!(state.live_write_ctr, 0x6cce);
     }
 }

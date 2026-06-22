@@ -3,6 +3,8 @@
 > **Contexte.** HXLinux, éditeur Linux natif pour le Line 6 HX Stomp XL (Rust/Tauri). Aucune doc Line 6 : toute la compréhension du protocole `ed:03` vient de mes propres captures USB (usbmon / Wireshark → JSON). Référence d'implémentation : `kempline/helix_usb`.
 >
 > **Principe de travail.** *Capture d'abord, jamais de spéculation.* Chaque hypothèse est validée sur trace avant la moindre ligne de code, chaque changement de comportement est gardé derrière un flag à témoin (`=0` restaure l'ancien comportement), et les fausses pistes sont documentées et fermées au même titre que les trouvailles confirmées.
+>
+> **English:** [Blocage ed3 Lecture presets.en.md](./Blocage%20ed3%20Lecture%20presets.en.md)
 
 ---
 
@@ -14,7 +16,7 @@
 | 2 | Freeze au scroll multi-cran | Saturation ED03 + lane mal couplée | Couplage `double`+`ctr` vivants + throttle de settling | `HX_PULL_COUPLE_LANE` | ✅ Résolu |
 | 3 | Décrochage au-delà de ~256 chunks (**BUG C**) | Compteur de chunks 16 bits ; retenue ignorée (octet 14 figé à 0) | Octet 14 = vrai octet haut, retenue sur débordement de l'octet 13 | `HX_LANE_B14_CARRY` | ✅ Résolu (confirmé terrain) |
 | 4 | Désync du double éditeur au wrap (**BUG A**) | HX saute la valeur `lo=0x00` au double wrap, pas nous | Saut du `0x00` sur le `lo` du double éditeur | `HX_EDITOR_DOUBLE_SKIP_00` | ✅ Résolu |
-| 5 | Décrochage récurrent au tournant de page `05→06` (**§5**) | Abonnement « lane vivante » jamais armé : il manque le tour de fermeture PHASE B | Émission du commit `1b 0c f1` + `ec` en `sub=0c` | `HX_PHASEB_COMMIT` | 🟡 Implémenté, **test en attente** |
+| 5 | Décrochage au tournant de page `05→06` (**§5**) | Abonnement « lane vivante » jamais armé : tour de fermeture PHASE B incomplet ou court-circuité | Commit `1b 0c f1` + attente `23 04` ; FSM sans `Done` prématuré sur `26 ef` | `HX_PHASEB_COMMIT` | 🟡 Handshake **validé log** ; terrain **en attente** |
 
 ---
 
@@ -62,7 +64,7 @@ L'ancien code reconnaissait ce préambule par une **liste de têtes/longueurs en
 | **13** | compteur de chunk, octet **bas** (lo) |
 | **14** | compteur de chunk, octet **haut** (hi) |
 
-Le compteur de chunk n'est **pas** l'octet 13 seul : c'est une valeur **16 bits little-endian sur byte13 (lo) + byte14 (hi)**. HXLinux avait byte14 **codé en dur à `0x00`** dans les trois builders d'ACK ED03. Tant que byte13 restait sous `0xff`, ça passait. Mais au franchissement `fe → ff → 00`, le compteur doit **retenir dans byte14** ; figé à 0, il retombait à une valeur basse → désync → le device abandonne.
+Le compteur de chunk n'est **pas** l'octet 13 seul : c'est une valeur **16 bits little-endian sur byte13 (lo) + byte14 (hi)**. HXLinux avait byte14 **codé en dur à `0x00`** dans les trois builders d'ACK ED03 (`RequestPreset`, `preset_dump_stream_ack`, FDT). Tant que byte13 restait sous `0xff`, ça passait. Mais au franchissement `fe → ff → 00`, le compteur doit **retenir dans byte14** ; figé à 0, il retombait à une valeur basse → désync → le device abandonne.
 
 **Preuve capture (HX).** byte12 figé, retenue dans byte14 :
 
@@ -72,9 +74,11 @@ Le compteur de chunk n'est **pas** l'octet 13 seul : c'est une valeur **16 bits 
 95 00 01   ← byte13 repasse à 00, byte14 RETIENT → 01
 ```
 
-**Le comment.** byte14 devient un vrai octet haut, incrémenté à chaque débordement de byte13 (`ff→00`). L'`advance` du compteur renvoie maintenant `[byte12, byte13, byte14]` (au lieu de deux octets). Gardé derrière `HX_LANE_B14_CARRY` (`=0` = byte14 figé à 0 = bug d'origine).
+**Le comment.** byte14 devient un vrai octet haut, incrémenté à chaque débordement de byte13 (`ff→00`). L'`advance` du compteur renvoie `[byte12, byte13, byte14]`. Gardé derrière `HX_LANE_B14_CARRY` (`=0` = byte14 figé à 0 = bug d'origine).
 
 > *Confirmé terrain : franchissement passé au paquet près (`c5:ff:00 → c5:00:01`), dump complet. Deux fausses pistes fermées par cette même capture : la retenue n'allait **pas** dans byte12, et il n'y avait **pas** de saut du `0x00` sur byte13.*
+
+> *Ne pas confondre avec le §5 : BUG C = compteur de chunks au-delà de `0xff` ; §5 = abonnement lane vivante à la connexion.*
 
 ---
 
@@ -84,23 +88,27 @@ Le compteur de chunk n'est **pas** l'octet 13 seul : c'est une valeur **16 bits 
 
 **Le pourquoi.** Le `double` éditeur est une valeur 16 bits dont le `hi` est épinglé à `0x64`. Au wrap du `lo`, **HX saute la valeur `0x00`** : il fait `0x64ff → 0x6401`, jamais `0x6400`. HXLinux, lui, émettait `0x6400` → un cran de décalage avec ce qu'attend le device.
 
-**Le comment.** Au wrap du `lo`, si `lo == 0x00` alors `lo = 0x01`. Gardé derrière `HX_EDITOR_DOUBLE_SKIP_00`.
+**Le comment.** Au wrap du `lo`, si `lo == 0x00` alors `lo = 0x01`. Gardé derrière `HX_EDITOR_DOUBLE_SKIP_00` (et pin hi `0x64` via `HX_EDITOR_DOUBLE_PIN_HI`).
 
-> *Champ confirmé : sans le saut, échec à la lecture 19 ; avec, lectures survivantes jusqu'à 23. **Ce n'était pas** la cause du décrochage de fond (les lectures après `0x6400` étaient propres) — c'est un alignement de fidélité HX, distinct du §5.*
+> *Champ confirmé : sans le saut, échec à la lecture 19 ; avec, lectures survivantes jusqu'à 23+. **Ce n'était pas** la cause du décrochage de fond — alignement de fidélité HX, distinct du §5.*
 
 ---
 
 ## 5. §5 — la « lane vivante » et le décrochage au tournant de page
 
-**Symptôme.** Une fois BUG C et BUG A réglés, les lectures franchissent le wrap mais **décrochent toujours**, invariablement quand le compteur de page du device (lane IN, byte13) passe **`05 → 06`** — indépendamment du nombre de lectures, de la valeur du double ou du contenu du preset.
+**Symptôme.** Une fois BUG C et BUG A réglés, les lectures franchissent le wrap du compteur de chunks mais **décrochent toujours** (observé historiquement) quand le compteur de page du device (lane IN, byte13) passe **`05 → 06`** — indépendamment du nombre de lectures, de la valeur du double ou du contenu du preset.
 
-**Le pourquoi.** Fait mesuré, brutal :
+**Le pourquoi.** Fait mesuré sur captures HX :
 - HX reçoit **exactement un heartbeat `19 04` par lecture** (25 lectures = 25 heartbeats), porté par la lane vivante du device (`hi = 0x67`) ;
-- HXLinux en reçoit **zéro**.
+- HXLinux n'en recevait **aucun** tant que le commit PHASE B n'était pas correctement achevé.
 
-Les paquets OUT en régime de lecture (Phase-1/2, ACK, keepalive) sont **octet pour octet identiques** entre HX et HXLinux. Le §5 n'est donc **pas** un paquet par-lecture : c'est un **mode/abonnement à armer au moment de la connexion**. Sans cet abonnement, la lane `0x67` s'endort, plus de heartbeats, et le device lâche au tournant de page.
+Les paquets OUT en régime de lecture (Phase-1/2, ACK, keepalive) sont **octet pour octet identiques** entre HX et HXLinux. Le §5 n'est donc **pas** un paquet manquant par lecture : c'est un **mode/abonnement à armer une fois à la connexion**. Sans cet abonnement, la lane `0x67` s'endort, plus de heartbeats, et le device lâche au tournant de page.
 
-Ta capture de connexion l'a montré au paquet près. La PHASE B est bien atteinte et propre, mais il manque la fin :
+**Ce que montrent les captures (pas un cache local).** HX Edit ne consulte pas une table des 125 corps de preset en RAM : à chaque changement de preset UI, la capture `02_change_preset_*_HXEdit.json` montre la même séquence two-phase `RequestPreset` (`19 ed:03` phase 1 puis phase 2 + chunks). Seuls le **dump bootstrap phase 4** et la **liste des 125 noms** sont one-shot par connexion (cf. [`preset_bootstrap_analysis_traps.md`](./preset_bootstrap_analysis_traps.md)).
+
+### 5.1 Diagnostic initial — le commit manquant
+
+La PHASE B est atteinte, mais l'ancienne FSM terminait trop tôt :
 
 | frame | sens | paquet | double | note |
 |---|---|---|---|---|
@@ -108,21 +116,79 @@ Ta capture de connexion l'a montré au paquet près. La PHASE B est bien atteint
 | f413 | OUT | `19` sub=0c | 0x64**f0** | finalisation ed |
 | f415 | OUT | `19` sub=04 | 0x64e9 | finalisation ef |
 | **f417** | **IN** | **`1b` sub=04 ep=ed** | **0x67f0** | **le `1b 04 f0` du device** |
-| f419 | IN | `26` sub=04 ep=ef | 0x67e9 | → ton FSM part `Done` ici |
+| f419 | IN | `26` sub=04 ep=ef | 0x67e9 | → ancienne FSM : `Done` ici ❌ |
 
-Chez HX, sur le `1b 04 f0` (f417), l'hôte **répond** par un tour de fermeture `1b 0c f1` (queue `81 76 0f 00`) et attend un `23 04`. HXLinux, lui, loguait « 1/2 » et filait `Done` au `26 ef`. **Ce tour de fermeture manquant = le « commit » qui arme l'abonnement persistant.**
+Chez HX, sur f417, l'hôte **répond** par `1b 0c f1` (queue `81 76 0f 00`) et attend **`IN 23 04 ed`**. **Ce tour de fermeture = le commit qui arme l'abonnement persistant.**
 
-**Le comment.** Deux corrections, derrière `HX_PHASEB_COMMIT` :
-1. le `ec` proactif passe en `sub=0c` (comme HX et comme ses frères `ed`/`ee`) ;
-2. sur le `1b 04 f0`, on entre dans un nouvel état `PbCommit` qui émet `1b 0c f1` (double `f1`, lane +0x17, queue `81 76 0f 00`) et n'achève la PHASE B qu'au `23 04` (avec `26 ef` / 68o Linux en filets, plus le timeout secours 2 s).
+**Première vague de correctifs** (`HX_PHASEB_COMMIT`, défaut ON) :
+1. `ec` proactif en `sub=0c` (comme HX et les frères `ed`/`ee`) ;
+2. état `PbCommit` : émission `1b 0c f1` sur `IN 1b 04 ed` device ;
+3. chemin Linux alternatif : `IN 68o ed` → `PbCommit` (au lieu de `Done` direct).
 
-Flux PHASE B après finalisation :
+Fichiers : `phase4_state.rs`, `usb_listener.rs`.
+
+### 5.2 Deuxième vague — le piège du `26 ef` (défaut de conception corrigé)
+
+Après la première vague, le commit **partait** sur le fil mais la FSM se fermait quand même **sans confirmation d'abonnement** — reproduisant le §5 par un autre chemin.
+
+**Symptôme log (terrain).** ~2 ms après l'envoi du commit :
 
 ```
-IN 1b 04 f0 (f417)  →  OUT 1b 0c f1 (76:0f, commit)  →  IN 23 04 f1  →  Done
+WaitIn1b26 -> PbCommit (IN 1b 04 ed device)
+OUT 1b 0c f1 (commit)
+PbCommit -> Done (IN 26/48o ef)    ← faux positif
 ```
 
-**Test décisif (en attente).** Une capture connexion + ~25 lectures, filtre large. Trois critères : (1) le `1b 0c f1` sort-il, et le device répond-il `23 04` ? (2) les heartbeats `19 04` (lane `0x67`, un par lecture) apparaissent-ils ? (3) franchit-on `05→06` sans décrocher ? Si oui aux trois → §5 confirmé et réglé. Sinon, on élimine proprement le commit et on repivote sur les snapshots.
+**Raisonnement.** Le `IN 26 ef` (f419) est l'**écho de la finalisation `19 ef`**, souvent déjà en vol quand le device émet son `1b 04 f0`. Ce n'est **pas** la confirmation du commit. L'accepter comme « filet » dans `WaitIn1b26` **ou** `PbCommit` envoyait le commit puis clôturait PHASE B sur l'écho → abonnement **non confirmé** — exactement le §5 qu'on voulait tuer.
+
+**Correctifs (juin 2026, commit `f09f12c`)** :
+
+| État | Avant | Après |
+|---|---|---|
+| `WaitIn1b26` + `IN 26 ef` | `Done` immédiat (ou avant le `1b` device) | **Reste** en attente ; log « 1/2, commit en attente du 1b device » |
+| `WaitIn1b26` + `IN 1b 04 ed` | partiel | → `PbCommit` → `OUT 1b 0c f1` |
+| `PbCommit` + `IN 26 ef` | `Done` (filet) | **Ignoré** — log explicite |
+| `PbCommit` + `IN 23 04 ed` | — | **`Done`** (confirmation HX) |
+| Timeout secours | armé surtout à `PostArm` | réarmé à `PostArm`, `WaitIn1b26`, `PbCommit` (2 s) |
+
+**Séquence validée sur hardware (log `InitTrace`)** :
+
+```
+WaitIn1b26 -> PbCommit (IN 1b 04 ed device, commit HX)
+OUT 1b 0c f1 (commit) lane=10:1e double=f1:64
+PbCommit — IN 26 ef ignoré (attente 23 04 ed, écho f419 ?)
+PbCommit -> Done (IN 23 04 ed, commit confirmé)   ~11 ms après le commit
+```
+
+➜ **Handshake PHASE B fidèle à HX, validé au paquet près.** Cela prouve que le commit est bien formé et reconnu par le device. **Cela ne prouve pas encore** que les heartbeats `19 04` (lane `0x67`) apparaissent à chaque lecture ni que le passage `05→06` tient.
+
+### 5.3 Niveaux de confiance §5
+
+| Niveau | Affirmation | État |
+|---|---|---|
+| Prouvé log | `1b 0c f1` émis ; `26 ef` ignoré ; `23 04 ed` reçu ; `Done` propre | ✅ |
+| Hypothèse forte | Abonnement lane vivante armé → heartbeats + tenue `05→06` | 🟡 **à confirmer terrain** |
+| Vigilance | `23 04` doit arriver à **chaque** connexion (sinon timeout 2 s) | ⚠️ surveiller |
+| Vigilance | Chemin Linux `68o ed → PbCommit` : têtes/len en dur comme ex-`Waiting68o` | ⚠️ reconnaissance structurelle si forme observée |
+
+**Test décisif (toujours en attente).** Connexion + ~25 lectures. Trois critères :
+1. `1b 0c f1` + `23 04` à chaque connexion ;
+2. heartbeats `IN 19 04` lane `0x67` (un par lecture) ;
+3. passage `05→06` sans décrochage.
+
+Tant que (2) et (3) ne sont pas verts, on ne déclare pas le §5 **opérationnellement** réglé — seulement le **handshake** validé.
+
+---
+
+## 6. Faux filets et fausses pistes (fermées)
+
+| Piste | Verdict |
+|---|---|
+| Retenue chunk sur **octet 12** (ancien `HX_LANE_HI_CARRY`) | ❌ Réfutée — capture `out_only.txt` |
+| « Saut du 0x00 » sur byte13 seul | ❌ Réfutée — même capture |
+| HX Edit = cache des 125 presets en RAM | ❌ Les captures montrent un `RequestPreset` à chaque switch UI |
+| `reset_editor_ed03_lane()` dans `force_recover` | ❌ Retiré — le compteur chunks (13+14) est **global** ; reset host seul aggrave la désync (§3) |
+| Lenteur perçue = protocole USB | ❌ Surtout latence host (poll 200 ms, throttles) ; dump USB comparable à HX |
 
 ---
 
@@ -138,12 +204,13 @@ Le signe annonciateur était une erreur de compilation : ton `usb_listener.rs` a
 
 ## Principes consolidés
 
-- **Capture d'abord.** Aucune hypothèse sans trace ; les fausses pistes (retenue→byte12, saut-0x00 sur byte13, byte13=0x00 terminateur, théories scroll v1–v4) sont documentées et fermées formellement.
+- **Capture d'abord.** Aucune hypothèse sans trace ; les fausses pistes sont documentées et fermées formellement.
 - **Couplage multi-variables.** Aligner une seule de deux variables couplées échoue *et* fabrique de fausses causes racines (démontré au scroll).
-- **Asymétries du device.** Il valide `19` strictement contre sa lane vivante, mais sert `1b` de façon lâche — cette asymétrie a bloqué la Proposition A.
+- **Asymétries du device.** Il valide `19` strictement contre sa lane vivante, mais sert `1b` de façon lâche — asymétrie qui a bloqué la Proposition A.
 - **Flag-gating systématique** avec témoin (`=0` restaure l'ancien comportement).
-- **Niveaux de confiance explicites.** La surconfiance n'a pas sa place ; les incertitudes sont posées directement.
+- **Niveaux de confiance explicites.** Handshake validé ≠ comportement opérationnel validé.
 - **Prédicats par nature, pas par valeurs figées** (généralisation du correctif `Waiting68o`).
+- **Un « filet » FSM mal choisi peut recréer le bug** (cas du `26 ef` en `PbCommit`).
 
 ---
 
@@ -155,8 +222,9 @@ Le signe annonciateur était une erreur de compilation : ton `usb_listener.rs` a
 | BUG A (saut 0x00) | ✅ Clos |
 | Blocage `Waiting68o` | ✅ Clos (125/125) |
 | Freeze scroll | ✅ Clos |
-| §5 commit (`HX_PHASEB_COMMIT`) | 🟡 Implémenté sur ta base saine — **à tester** |
-| Vigilance snapshot en `WaitIn1b26` | ⚠️ Fragilité tête/len en dur signalée, à traiter par reconnaissance structurelle **une fois la forme observée** |
-| `WaitIn1b26` / `WaitInb26` fragilité | ⚠️ Surveillance |
+| §5 handshake (`1b 0c f1` → `23 04`) | ✅ Validé log terrain |
+| §5 opérationnel (heartbeats, `05→06`, ~25 lectures) | 🟡 **En attente** |
+| Vigilance `23 04` à chaque connexion | ⚠️ Surveillance |
+| Vigilance snapshot sur chemin `68o → PbCommit` | ⚠️ Si commit absent, checker forme IN |
 
-*Prochaine action concrète : lancer le test décisif du §5 (capture large connexion + ~25 lectures), juger sur les trois critères ci-dessus. Si le §5 tombe, l'hypothèse snapshot du décrochage tombe avec ; sinon, on aura éliminé le commit proprement et on attaquera les snapshots sur une base d'amorçage saine.*
+*Prochaine action : enchaîner ~25 changements de preset ; vérifier heartbeats `19 04` lane `0x67` et tenue au tournant `05→06`. Si oui → §5 clos opérationnellement ; sinon, diagnostic sur une base dont le handshake est sain.*

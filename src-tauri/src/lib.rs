@@ -38,6 +38,7 @@ use helix::{
     usb_packet_trace_max_len, usb_packet_trace_should_log,
 };
 use helix::packet::OutPacket;
+use helix::live_write::build_cab_dual_minimal_param_packets_from_state;
 use helix::live_write::build_live_write_frames_from_state;
 use helix::live_write::LiveWriteRouteOverride;
 use helix::live_write_config::validate_usb_live_write_metadata;
@@ -1234,6 +1235,14 @@ fn probe_live_param_write(
     Ok(())
 }
 
+fn cab_dual_legacy_hybrid_for_slot(state: &helix::HelixState, slot_index: u32) -> bool {
+    let seg = match kempline_assignable_segment_bytes(&state.preset_data, slot_index as usize) {
+        Some(s) => s,
+        None => return false,
+    };
+    helix::cab_dual_live_write::cab_dual_preset_segment_is_legacy_hybrid(seg)
+}
+
 fn resolve_live_write_route_override(
     state: &helix::HelixState,
     slot_index: u32,
@@ -1254,13 +1263,15 @@ fn resolve_live_write_route_override(
             )
         }
         Some("cab1") => {
+            let legacy = cab_dual_legacy_hybrid_for_slot(state, slot_index);
             helix::cab_dual_live_write::resolve_cab_dual_live_write_route(
-                state, 0, param_index, slot_index,
+                state, 0, param_index, slot_index, legacy,
             )
         }
         Some("cab2") => {
+            let legacy = cab_dual_legacy_hybrid_for_slot(state, slot_index);
             helix::cab_dual_live_write::resolve_cab_dual_live_write_route(
-                state, 1, param_index, slot_index,
+                state, 1, param_index, slot_index, legacy,
             )
         }
         _ => None,
@@ -1377,15 +1388,10 @@ fn write_live_param(
     validate_usb_live_write_metadata(dt, vt)?;
 
     // Utilise la valeur réelle du slider, bornée dans l'intervalle machine attendu.
-  let raw = raw_value.clamp(0.0, 1.0) as f32;
+    let raw = raw_value.clamp(0.0, 1.0) as f32;
     let dual_part_ref = dual_part.as_deref().map(str::trim);
     let variant_ref = amp_cab_assign_variant.as_deref().map(str::trim);
     let mut s = helix_arc.lock().unwrap();
-    if dual_part_ref == Some("cab2") {
-        if let Some(slot_bus) = kempline_index_to_slot_bus(slot_index as usize) {
-            helix::cab_dual_live_write::send_cab_dual_cab2_focus(&mut s, slot_index, slot_bus);
-        }
-    }
     if dual_part_ref == Some("cab") && s.amp_cab_cab_focus_sent_for_slot != Some(slot_index) {
         let legacy = variant_ref
             .map(|v| v.eq_ignore_ascii_case("amp+cab-legacy"))
@@ -1406,6 +1412,66 @@ fn write_live_param(
         dual_part_ref,
         variant_ref,
     );
+
+    let leg_b = match (chain_min, chain_max) {
+        (Some(lo), Some(hi)) if hi > lo && lo.is_finite() && hi.is_finite() => {
+            lo + f64::from(raw) * (hi - lo)
+        }
+        _ => f64::from(raw),
+    };
+
+    if matches!(dual_part_ref, Some("cab1") | Some("cab2")) {
+        let route = route_override.ok_or_else(|| {
+            "route Cab dual introuvable (slot ou param_index invalide)".to_string()
+        })?;
+        let minimal = build_cab_dual_minimal_param_packets_from_state(
+            &mut s,
+            raw,
+            slot_index,
+            dt,
+            vt,
+            chain_min,
+            chain_max,
+            route,
+        );
+        for (i, pkt) in minimal.packets.iter().enumerate() {
+            let delay = if i == 0 { 0 } else { 8 };
+            s.send(OutPacket::with_delay(pkt.clone(), delay));
+        }
+        eprintln!(
+            "[LiveWrite][sent] slot={} param={} symbolicId={} displayType={} valueType={:?} opcode={:02x} rawValue={} sentRaw={} legBChain={} chainMin={:?} chainMax={:?} slotBus={:02x} pp={:02x} ppSource={} pSel={:02x} pSelSource={} model_block={} cab_dual=minimal packets={} frame_a={} frame_b={}",
+            slot_index,
+            param_index,
+            sid,
+            display_type.unwrap_or_default(),
+            value_type,
+            minimal.primary_opcode,
+            raw_value,
+            raw,
+            leg_b,
+            chain_min,
+            chain_max,
+            minimal.slot_bus,
+            minimal.pp,
+            minimal.pp_source,
+            minimal.param_selector,
+            minimal.param_selector_source,
+            minimal.model_block_kind,
+            minimal.packets.len(),
+            minimal
+                .packets
+                .first()
+                .map(|p| p.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" "))
+                .unwrap_or_default(),
+            minimal
+                .packets
+                .get(1)
+                .map(|p| p.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" "))
+                .unwrap_or_default(),
+        );
+        return Ok(());
+    }
+
     let frames = build_live_write_frames_from_state(
         &mut s,
         raw,
@@ -1429,12 +1495,6 @@ fn write_live_param(
 
     drop(s);
 
-    let leg_b = match (chain_min, chain_max) {
-        (Some(lo), Some(hi)) if hi > lo && lo.is_finite() && hi.is_finite() => {
-            lo + f64::from(raw) * (hi - lo)
-        }
-        _ => f64::from(raw),
-    };
     eprintln!(
         "[LiveWrite][sent] slot={} param={} symbolicId={} displayType={} valueType={:?} opcode={:02x} rawValue={} sentRaw={} legBChain={} chainMin={:?} chainMax={:?} slotBus={:02x} pp={:02x} ppSource={} pSel={:02x} pSelSource={} model_block={} frame_diff={} pre_x80={} pre_x2={} pre_x80_sel={} frame_a={} frame_b={} post_x80_sel={}",
         slot_index,

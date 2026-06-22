@@ -1713,19 +1713,21 @@ function liveWriteParamIndexForRow(
   return paramIndexBase + rowIndex;
 }
 
-/** Index wire USB du 1er param du panneau Cab (ou Cab 2) dans un slot double. */
+/**
+ * Décalage d'index wire pour le 2ᵉ panneau Amp+Cab (cab après l'ampli).
+ * Cab dual : toujours 0 — `dualPart` (`cab1`/`cab2`) cible le sous-modèle, l'index param est local.
+ */
 function dualPaneLiveWriteParamIndexBase(
   dualSlotKind: "amp_cab" | "cab_dual",
   paneIndex: number,
   tabPanes: DualTabPaneConfig[],
 ): number {
   if (paneIndex <= 0) return 0;
+  if (dualSlotKind === "cab_dual") return 0;
   const primary = tabPanes[0];
   if (!primary) return 0;
-  if (dualSlotKind === "cab_dual") {
-    const chainLen = primary.chainValues?.length ?? 0;
-    if (chainLen > 0) return chainLen;
-  }
+  const chainLen = primary.chainValues?.length ?? 0;
+  if (chainLen > 0) return chainLen;
   return paramsVisibleForSignal(primary.params, primary.catalogRoutingSignal).length;
 }
 
@@ -7259,10 +7261,7 @@ function renderModelsParamsDualTabs(
             ? "cab1"
             : "cab2"
           : null;
-    const paramIndexBase =
-      dualSlotKind === "cab_dual"
-        ? dualPaneLiveWriteParamIndexBase(dualSlotKind, idx, tabPanes)
-        : 0;
+    const paramIndexBase = 0;
     const updater = appendModelsParamRows(
       list,
       pane.params,

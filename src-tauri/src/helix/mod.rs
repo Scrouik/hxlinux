@@ -292,6 +292,8 @@ pub struct HelixState {
     pub amp_cab_cab_focus_sent_for_slot: Option<u32>,
     /// Slot Kempline pour lequel le focus Cab 2 dual (`1d` + `cd:04` + `1a:01`) a été envoyé.
     pub cab_dual_cab2_focus_sent_for_slot: Option<u32>,
+    /// Dernier focus onglet Cab dual pour write live param (`(slot, cab_index)`).
+    pub cab_dual_live_write_tab_focus: Option<(u32, u8)>,
     /// Dernier OUT focus Cab 2 (`1d`) — sert au ctr `ed:08` post-IN 36o.
     pub last_cab_dual_cab2_focus_packet: Option<Vec<u8>>,
     /// Ctr `ed:08` calculé après IN `19`/36o (lane `cd:04` Stomp).
@@ -601,6 +603,7 @@ impl HelixState {
             ed03_live_write_seq_sent: None,
             amp_cab_cab_focus_sent_for_slot: None,
             cab_dual_cab2_focus_sent_for_slot: None,
+            cab_dual_live_write_tab_focus: None,
             last_cab_dual_cab2_focus_packet: None,
             cab_dual_cab2_handshake_ed08_ctr: None,
             cab_dual_cab2_last_in36_ed08_ctr: None,
