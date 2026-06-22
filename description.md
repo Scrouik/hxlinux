@@ -31,7 +31,9 @@ Ce fichier est le **mémo technique** pour reprendre le développement sans l’
 ### Partiel / à faire
 
 - **Path 1 Output / Merge** : picker verrouillé + focus USB ; pas encore live write / scroll HW (LT à identifier — voir TODO § Path 1 structurel).
-- **Cab dual IR** (onglets Cab 1 / Cab 2) : **Cab 1 = picker libre** ; **Cab 2 = picker verrouillé** Cab / Single IR (affichage). Surbrillance Cab 2 = id **single** (`dualTabPanes[1].catalogModelId`). **USB replace cab2** : entrée assign `dual` / WithPan (hint `c319`), via `resolveCabDualCab2UsbWireFromPicker` + `build_cab_dual_replace_cab_bulk` (`variant=dual`). Implémentation : `syncPickerForCabDualTab` dans `models.ts`.
+- **Cab dual IR** (onglets Cab 1 / Cab 2) : **Cab 1 = picker libre** ; **Cab 2 = picker verrouillé** Cab / Single IR (affichage). Surbrillance Cab 2 = id **single** (`dualTabPanes[1].catalogModelId`). **USB replace cab2** : entrée assign `dual` / WithPan (hint `c319`), via `resolveCabDualCab2UsbWireFromPicker` + `build_cab_dual_replace_cab_bulk` (`variant=dual`). Implémentation : `syncPickerForCabDualTab` dans `models.ts`. **Doc :** [Cab_dual_fonctionnement_no_legacy.md](docs/Cab_dual_fonctionnement_no_legacy.md) · legacy : [Cab_dual_fonctionnement_legacy.md](docs/Cab_dual_fonctionnement_legacy.md).
+- **Amp+Cab IR** (onglets Amp / Cab) : un bulk `c319` + `<amp> 1a <cab>` ; `dualPart` `amp`/`cab`, index param **local** ; focus cab IR = `1d` `cd:03` `1a:01` ; live write cab `pp=03`. **Doc :** [Amp_cab_fonctionnement_no_legacy.md](docs/Amp_cab_fonctionnement_no_legacy.md).
+- **Amp+Cab Legacy** (`amp+cab-legacy`) : focus cab `1b`, params cab `pp=08`, tables sélecteurs guitar/compact. **Doc :** [Amp_cab_fonctionnement_legacy.md](docs/Amp_cab_fonctionnement_legacy.md).
 - **Helix LT** : topologie 4 paths / 2 DSP, 32 segments — non implémenté (TODO § grille device).
 - **Matrice — copier/coller, déplacer (v1)** : même path, Pointer Events, cache session — handoff [`docs/matrix-edit-handoff.md`](docs/matrix-edit-handoff.md) ; bugs et suite dans TODO § Matrice.
 - **Budget DSP** (`load` dans `.models`) — non calculé côté app.

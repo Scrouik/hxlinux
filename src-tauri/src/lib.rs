@@ -1043,6 +1043,8 @@ fn probe_slot_model_usb(
     .ok_or_else(|| "HX non connecté".to_string())?;
 
     let cab_dual_cab2_replace = cab_dual_cab_index == Some(1);
+    let amp_cab_cab_replace =
+        cab_id_for_log.is_some() && cab_dual_cab_index.is_none() && matches!(probe_op, SlotModelProbeOp::ReplaceOccupied);
     if cab_dual_cab2_replace {
         {
             let s = helix_arc.lock().unwrap();
@@ -1070,6 +1072,47 @@ fn probe_slot_model_usb(
         )?;
         eprintln!(
             "[SlotModelProbe] op={:?} slot_index={} slot_bus={:#04x} catalog_id={:?} variant={} cab_id={:?} cab_variant={} cab_dual_idx=Some(1) usb_json=true cab_dual_handshake=true {}",
+            probe_op,
+            slot_index,
+            slot_bus,
+            id_for_log,
+            variant_lc,
+            cab_id_for_log,
+            cab_variant_lc,
+            summary
+        );
+        return Ok(summary);
+    }
+
+    if amp_cab_cab_replace {
+        {
+            let s = helix_arc.lock().unwrap();
+            if s.init_usb_settle_active() {
+                return Err(format!(
+                    "probe_slot_model_usb ignoré (init USB ~{} ms, ACK seulement)",
+                    helix::keep_alive::POST_PHASE4_SETTLE_MS
+                ));
+            }
+            if !s.connected || s.preset_content_only {
+                return Err(
+                    "probe_slot_model_usb ignoré (HX non prêt ou lecture preset en cours)"
+                        .to_string(),
+                );
+            }
+        }
+        let bulk = usb_bulk_from_json
+            .as_deref()
+            .ok_or_else(|| "amp+cab cab replace sans bulk JSON".to_string())?;
+        let legacy = variant_lc == "amp+cab-legacy";
+        let summary = helix::amp_cab_cab_replace::execute_amp_cab_cab_replace(
+            helix_arc.clone(),
+            slot_index,
+            slot_bus,
+            bulk,
+            legacy,
+        )?;
+        eprintln!(
+            "[SlotModelProbe] op={:?} slot_index={} slot_bus={:#04x} catalog_id={:?} variant={} cab_id={:?} cab_variant={} amp_cab_cab_handshake=true {}",
             probe_op,
             slot_index,
             slot_bus,
@@ -1235,41 +1278,40 @@ fn probe_live_param_write(
     Ok(())
 }
 
-fn cab_dual_legacy_hybrid_for_slot(state: &helix::HelixState, slot_index: u32) -> bool {
-    let seg = match kempline_assignable_segment_bytes(&state.preset_data, slot_index as usize) {
-        Some(s) => s,
-        None => return false,
-    };
-    helix::cab_dual_live_write::cab_dual_preset_segment_is_legacy_hybrid(seg)
-}
-
 fn resolve_live_write_route_override(
     state: &helix::HelixState,
     slot_index: u32,
     param_index: u32,
     dual_part: Option<&str>,
     amp_cab_assign_variant: Option<&str>,
+    cab_dual_assign_variant: Option<&str>,
+    amp_cab_amp_param_count: Option<u32>,
 ) -> Option<LiveWriteRouteOverride> {
     match dual_part.map(str::trim) {
         Some("cab") => {
             let variant = amp_cab_assign_variant.unwrap_or("amp+cab");
-            let seg = kempline_assignable_segment_bytes(&state.preset_data, slot_index as usize)?;
             helix::amp_cab_live_write::resolve_cab_live_write_route(
                 state,
-                seg,
                 param_index,
                 variant,
                 slot_index,
+                amp_cab_amp_param_count,
             )
         }
         Some("cab1") => {
-            let legacy = cab_dual_legacy_hybrid_for_slot(state, slot_index);
+            let legacy =
+                helix::cab_dual_live_write::cab_dual_assign_variant_is_legacy_hybrid(
+                    cab_dual_assign_variant,
+                );
             helix::cab_dual_live_write::resolve_cab_dual_live_write_route(
                 state, 0, param_index, slot_index, legacy,
             )
         }
         Some("cab2") => {
-            let legacy = cab_dual_legacy_hybrid_for_slot(state, slot_index);
+            let legacy =
+                helix::cab_dual_live_write::cab_dual_assign_variant_is_legacy_hybrid(
+                    cab_dual_assign_variant,
+                );
             helix::cab_dual_live_write::resolve_cab_dual_live_write_route(
                 state, 1, param_index, slot_index, legacy,
             )
@@ -1301,11 +1343,15 @@ fn focus_amp_cab_usb_part(
             .as_deref()
             .map(|v| v.eq_ignore_ascii_case("amp+cab-legacy"))
             .unwrap_or(false);
-        if !legacy {
-            return Ok(());
-        }
         let mut s = helix_arc.lock().unwrap();
-        let focus = helix::amp_cab_live_write::build_amp_cab_cab_focus_packet(&mut s, slot_bus);
+        if !s.connected || s.preset_content_only {
+            return Err("focus Amp+Cab cab ignoré (HX non prêt ou lecture preset)".to_string());
+        }
+        let focus = if legacy {
+            helix::amp_cab_live_write::build_amp_cab_cab_focus_packet(&mut s, slot_bus)
+        } else {
+            helix::amp_cab_live_write::build_amp_cab_ir_cab_focus_packet(&mut s, slot_bus)
+        };
         s.send(crate::helix::packet::OutPacket::new(focus));
         s.amp_cab_cab_focus_sent_for_slot = Some(slot_index);
         return Ok(());
@@ -1368,6 +1414,8 @@ fn write_live_param(
     chain_max: Option<f64>,
     dual_part: Option<String>,
     amp_cab_assign_variant: Option<String>,
+    cab_dual_assign_variant: Option<String>,
+    amp_cab_amp_param_count: Option<u32>,
 ) -> Result<(), String> {
     if slot_index >= 16 {
         return Err("slotIndex hors plage (0..15)".to_string());
@@ -1391,18 +1439,21 @@ fn write_live_param(
     let raw = raw_value.clamp(0.0, 1.0) as f32;
     let dual_part_ref = dual_part.as_deref().map(str::trim);
     let variant_ref = amp_cab_assign_variant.as_deref().map(str::trim);
+    let cab_dual_variant_ref = cab_dual_assign_variant.as_deref().map(str::trim);
+    let amp_cab_amp_count = amp_cab_amp_param_count;
     let mut s = helix_arc.lock().unwrap();
     if dual_part_ref == Some("cab") && s.amp_cab_cab_focus_sent_for_slot != Some(slot_index) {
-        let legacy = variant_ref
-            .map(|v| v.eq_ignore_ascii_case("amp+cab-legacy"))
-            .unwrap_or(false);
-        if legacy {
-            if let Some(slot_bus) = kempline_index_to_slot_bus(slot_index as usize) {
-                let focus =
-                    helix::amp_cab_live_write::build_amp_cab_cab_focus_packet(&mut s, slot_bus);
-                s.send(crate::helix::packet::OutPacket::new(focus));
-                s.amp_cab_cab_focus_sent_for_slot = Some(slot_index);
-            }
+        if let Some(slot_bus) = kempline_index_to_slot_bus(slot_index as usize) {
+            let legacy = variant_ref
+                .map(|v| v.eq_ignore_ascii_case("amp+cab-legacy"))
+                .unwrap_or(false);
+            let focus = if legacy {
+                helix::amp_cab_live_write::build_amp_cab_cab_focus_packet(&mut s, slot_bus)
+            } else {
+                helix::amp_cab_live_write::build_amp_cab_ir_cab_focus_packet(&mut s, slot_bus)
+            };
+            s.send(crate::helix::packet::OutPacket::new(focus));
+            s.amp_cab_cab_focus_sent_for_slot = Some(slot_index);
         }
     }
     let route_override = resolve_live_write_route_override(
@@ -1411,6 +1462,8 @@ fn write_live_param(
         param_index,
         dual_part_ref,
         variant_ref,
+        cab_dual_variant_ref,
+        amp_cab_amp_count,
     );
 
     let leg_b = match (chain_min, chain_max) {

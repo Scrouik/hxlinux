@@ -25,7 +25,7 @@ fn env_delay_ms(var: &str, default_ms: u64) -> u64 {
 }
 
 /// Patche les octets 12-13 (ctr LE) et 14 (=0) d'un paquet `80:10:ed:03`.
-fn force_ed03_ctr(pkt: &mut [u8], ctr: u16) {
+pub(crate) fn force_ed03_ctr(pkt: &mut [u8], ctr: u16) {
     if pkt.len() > 14 {
         pkt[12] = (ctr & 0xff) as u8;
         pkt[13] = ((ctr >> 8) & 0xff) as u8;

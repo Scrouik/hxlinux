@@ -8,7 +8,6 @@ use std::collections::HashMap;
 
 use crate::helix::live_write::LiveWriteRouteOverride;
 use crate::helix::{echo_model_cache_key, kempline_index_to_slot_bus, HelixState};
-use crate::preset_chain_params;
 
 /// `(param_selector, model_tag)` — guitar legacy hybrid (non assignable sur Stomp XL actuel).
 const LEGACY_GUITAR_CAB_ROUTES: &[(u8, u8)] = &[
@@ -58,6 +57,11 @@ pub fn build_amp_cab_legacy_param_model_block(pp: u8, tag: u8, slot_bus: u8) -> 
         0x83, 0x66, 0xcd, pp, tag, 0x64, 0x28, 0x65, 0x82, 0x62, slot_bus, 0x64, 0x83, 0x17,
         0xc3, 0x19,
     ]
+}
+
+/// Focus sous-bloc cab **IR** (`1d`, `cd:03`, `1a:01`) — même suffixe que le bloc param IR.
+pub fn build_amp_cab_ir_cab_focus_packet(state: &mut HelixState, slot_bus: u8) -> Vec<u8> {
+    crate::helix::cab_dual_live_write::build_cab_dual_cab2_tab_focus_packet(state, slot_bus)
 }
 
 /// Focus sous-bloc cab legacy (`1b`, capture legacy guitar) — absent sur IR.
@@ -110,16 +114,14 @@ pub fn cache_ed03_model_blocks_from_echo(
 
 pub fn resolve_cab_live_write_route(
     state: &HelixState,
-    seg: &[u8],
     local_param_index: u32,
     assign_variant: &str,
     slot_index: u32,
+    amp_param_count: Option<u32>,
 ) -> Option<LiveWriteRouteOverride> {
     let slot_bus = kempline_index_to_slot_bus(slot_index as usize)?;
     let legacy = is_legacy_variant(assign_variant);
-    let amp_block_len = preset_chain_params::parse_assignable_segment_param_blocks(seg)
-        .and_then(|blocks| blocks.first().map(|b| b.len()))
-        .unwrap_or(0);
+    let amp_block_len = amp_param_count.unwrap_or(0) as usize;
 
     if legacy {
         let (param_selector, tag) = legacy_cab_wire_pair(local_param_index, amp_block_len)?;
@@ -182,7 +184,7 @@ mod tests {
     fn ir_cab_level_is_sel_00_pp_03() {
         use crate::helix::HelixState;
         let state = HelixState::new();
-        let route = resolve_cab_live_write_route(&state, &[], 0, "amp+cab", 3).expect("route");
+        let route = resolve_cab_live_write_route(&state, 0, "amp+cab", 3, Some(12)).expect("route");
         assert_eq!(route.pp, 0x03);
         assert_eq!(route.param_selector, 0x00);
         assert_eq!(route.model_block[3], 0x03);

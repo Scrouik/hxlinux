@@ -315,14 +315,18 @@ export async function usbAssignVariantForAmpFamilyScroll(
   modelId: string,
   _moduleHex: string | undefined,
   categoryHint?: string | null,
-  _cabHexHint?: string | null,
+  cabHexHint?: string | null,
 ): Promise<UsbAssignVariant> {
   const id = modelId.trim();
   if (!id) return "mono";
   const slotCat = normalizeSlotCategoryHint(categoryHint);
   if (slotCat === "preamp") return "preamp";
-  // Stomp XL : slot Amp+Cab n'accepte que des cabs IR (`single`) — pas de hybrid legacy.
-  if (isAmpCabFamilySlotCategory(categoryHint)) return "amp+cab";
+  if (isAmpCabLegacySlotCategory(categoryHint)) return "amp+cab-legacy";
+  if (isAmpCabFamilySlotCategory(categoryHint)) {
+    const cab = (cabHexHint ?? "").trim();
+    if (cab && (await isLegacyCabChainHex(cab))) return "amp+cab-legacy";
+    return "amp+cab";
+  }
   return "amp";
 }
 

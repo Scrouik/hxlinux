@@ -119,8 +119,8 @@ Utiliser `--allow-partial` si une entrée assign manque encore.
 | Filter | `filter mono/stereo/legacy.json` | **19/19** | **`cd:05`** ; hints 4 nibbles (`cc89`) + longs (`cd012c`) |
 | Wah | `wah mono/stereo.json` | **22/22** | mono **`cd:05`**, stéréo **`cd:06`** ; terminaison hint `1aff` (ex. `cd011a`, pas `cd01`) |
 | Amp (sans cab) | `amp guitar.json`, `amp bass.json` | **111/111** | clés **`guitar`** / **`bass`** ; `c219` + hints courts/longs ; Guitar `cd:06`, Bass `cd:06`/`cd:07` |
-| Amp+Cab IR | `amp_cab guitar/bass.json` | **111/111** | **`8317c319`** + `<amp> 1a <cab>` dans **un** bulk ; cab IR `cd:03:xx` |
-| Amp+Cab Legacy | `amp_cab legacy guitar/bass.json` | **111/111** | même `c319` ; cab hybrid **2 nibbles** (`47:00`) ; 44/48 o |
+| Amp+Cab IR | `amp_cab guitar/bass.json` | **111/111** | **`8317c319`** + `<amp> 1a <cab>` dans **un** bulk ; cab IR `cd:03:xx` — doc [Amp_cab_fonctionnement_no_legacy.md](../../docs/Amp_cab_fonctionnement_no_legacy.md) |
+| Amp+Cab Legacy | `amp_cab legacy guitar/bass.json` | **111/111** | même `c319` ; cab hybrid **2 nibbles** (`47:00`) ; 44/48 o — doc [Amp_cab_fonctionnement_legacy.md](../../docs/Amp_cab_fonctionnement_legacy.md) |
 | Preamp | `preamp guitar/bass/mic.json` | **113/113** | `c219` ; **`cd:08`** ; clés `guitar`/`bass`/`mic` |
 | Cab IR single | `cab single.json` | **46/46** | `c219` ; `subCategory: Single` ; `cd:09`/`cd:0a` |
 | Cab IR dual | `cab dual.json` | **46/46** | `c319` ; `hint 1a cd02d6` (voie droite défaut Jazz Rivet) ; **≠** bulk single (`27:00`) |

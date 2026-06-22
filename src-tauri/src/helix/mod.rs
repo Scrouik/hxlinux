@@ -12,6 +12,7 @@ pub mod modes;
 pub mod live_write;
 pub mod live_write_config;
 pub mod amp_cab_live_write;
+pub mod amp_cab_cab_replace;
 pub mod cab_dual_live_write;
 pub mod cab_dual;
 pub mod cab_dual_cab2_replace;

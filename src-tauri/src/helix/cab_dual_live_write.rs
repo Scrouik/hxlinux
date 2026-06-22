@@ -424,10 +424,18 @@ pub fn send_cab_dual_cab2_focus(state: &mut HelixState, slot_index: u32, slot_bu
     state.cab_dual_cab2_focus_sent_for_slot = Some(slot_index);
 }
 
-/// Segment preset dual legacy hybrid (suffixe modèle `64:83:17:c3:19`).
+/// Segment preset dual legacy hybrid (suffixe modèle `64:83:17:c3:19`) — tests / debug uniquement.
 pub fn cab_dual_preset_segment_is_legacy_hybrid(seg: &[u8]) -> bool {
     seg.windows(5)
         .any(|w| w == [0x64, 0x83, 0x17, 0xc3, 0x19])
+}
+
+/// Variante catalogue live write : `dual-legacy` / `dual legacy` (hybrid `c3:19`), sinon IR.
+pub fn cab_dual_assign_variant_is_legacy_hybrid(variant: Option<&str>) -> bool {
+    variant.map_or(false, |v| {
+        let t = v.trim();
+        t.eq_ignore_ascii_case("dual-legacy") || t.eq_ignore_ascii_case("dual legacy")
+    })
 }
 
 pub fn resolve_cab_dual_live_write_route(
@@ -688,6 +696,14 @@ mod tests {
         assert_eq!(route.pp, 0x03);
         assert_eq!(route.param_selector, 0x00);
         assert_eq!(&route.model_block[13..16], &[0x1a, 0x00, 0x1c]);
+    }
+
+    #[test]
+    fn assign_variant_dual_legacy_enables_c319_block() {
+        assert!(cab_dual_assign_variant_is_legacy_hybrid(Some("dual-legacy")));
+        assert!(cab_dual_assign_variant_is_legacy_hybrid(Some("dual legacy")));
+        assert!(!cab_dual_assign_variant_is_legacy_hybrid(Some("dual")));
+        assert!(!cab_dual_assign_variant_is_legacy_hybrid(None));
     }
 
     #[test]

@@ -235,6 +235,7 @@ struct UsbAssignEntry {
     id: String,
     variant: String,
     bulk: Vec<u8>,
+    chain_hex_hint: String,
 }
 
 static USB_ASSIGN_ENTRIES: OnceLock<Vec<UsbAssignEntry>> = OnceLock::new();
@@ -262,13 +263,44 @@ fn load_usb_assign_entries() -> Vec<UsbAssignEntry> {
         let Some(hex) = e.get("bulkHex").and_then(|x| x.as_str()) else {
             continue;
         };
+        let chain_hex_hint = e
+            .get("chainHexHint")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
         if let Some(bulk) = parse_hex_bytes(hex) {
             if bulk.len() >= 32 {
-                out.push(UsbAssignEntry { id, variant, bulk });
+                out.push(UsbAssignEntry {
+                    id,
+                    variant,
+                    bulk,
+                    chain_hex_hint,
+                });
             }
         }
     }
     out
+}
+
+/// `chainHexHint` catalogue pour `id` + `variant` (ex. cab legacy `33` ou `cd024d`).
+pub fn resolve_usb_assign_chain_hex_hint(model_id: &str, variant: &str) -> Option<String> {
+    let id = model_id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let v = variant.trim().to_ascii_lowercase();
+    let entries = USB_ASSIGN_ENTRIES.get_or_init(load_usb_assign_entries);
+    for e in entries {
+        if e.id == id && e.variant == v {
+            let h = e.chain_hex_hint.trim();
+            if h.is_empty() {
+                return None;
+            }
+            return Some(h.to_string());
+        }
+    }
+    None
 }
 
 /// Bulk complet issu de `HX_ModelUsbAssign.json` pour `id` + `variant` (`mono` | `stereo` | `legacy`).
@@ -791,6 +823,55 @@ pub fn build_cab_dual_replace_cab_bulk(
     Ok(bulk)
 }
 
+/// Champ cab pour replace Amp+Cab : longueur = slot parent ; legacy = `chainHexHint` catalogue.
+fn cab_field_bytes_for_amp_cab_replace(
+    parent_amp_bulk: &[u8],
+    amp_cab_variant: &str,
+    cab_model_id: &str,
+    cab_variant: &str,
+    cab_bulk: &[u8],
+) -> Result<Vec<u8>, String> {
+    use crate::helix::cab_dual::legacy::wire::chain_hint_to_cab_field_bytes;
+
+    let (cab_start, cab_end) = amp_cab_cab_field_range_in_bulk(parent_amp_bulk)
+        .ok_or_else(|| "bulk ampli sans marqueur amp+cab (c319/1a)".to_string())?;
+    let target_len = cab_end - cab_start;
+
+    if amp_cab_variant.eq_ignore_ascii_case("amp+cab-legacy") {
+        if let Some(hint) = resolve_usb_assign_chain_hex_hint(cab_model_id, cab_variant) {
+            if let Some(field) = chain_hint_to_cab_field_bytes(&hint) {
+                if field.len() == target_len {
+                    return Ok(field);
+                }
+                if target_len == 1 && field.len() == 3 {
+                    return Err(format!(
+                        "cab legacy {:?} (hint {hint}) incompatible avec ampli compact legacy \
+                         (cab 1 o) — choisir un cab hybrid court",
+                        cab_model_id
+                    ));
+                }
+            }
+        }
+    }
+
+    let from_c219 = module_field_bytes_after_c219(cab_bulk)
+        .ok_or_else(|| format!("bulk cab sans bloc c219 exploitable ({cab_model_id})"))?;
+    if from_c219.len() == target_len || amp_cab_variant.eq_ignore_ascii_case("amp+cab") {
+        return Ok(from_c219);
+    }
+    Err(format!(
+        "cab {:?} : champ {from_c219:?} ({} o) incompatible avec le slot parent ({} o)",
+        cab_model_id,
+        from_c219.len(),
+        target_len
+    ))
+}
+
+/// Têtes bulk replace cab Amp+Cab (IR `0x27`, legacy court `0x23`, legacy long `0x25`).
+pub fn accepted_amp_cab_cab_replace_heads() -> &'static [u8] {
+    &[0x27, 0x23, 0x25]
+}
+
 /// Bulk `replace` Amp+Cab : même ampli (`amp+cab` / `amp+cab-legacy`), cab issu d'une entrée cab.
 pub fn build_amp_cab_replace_cab_bulk(
     amp_model_id: &str,
@@ -817,8 +898,13 @@ pub fn build_amp_cab_replace_cab_bulk(
             cab_model_id, cab_variant
         )
     })?;
-    let cab_field = module_field_bytes_after_c219(&cab_bulk)
-        .ok_or_else(|| format!("bulk cab sans bloc c219 exploitable ({cab_model_id})"))?;
+    let cab_field = cab_field_bytes_for_amp_cab_replace(
+        &bulk,
+        &amp_v,
+        cab_model_id,
+        cab_variant,
+        &cab_bulk,
+    )?;
     patch_amp_cab_bulk_cab_field(&mut bulk, &cab_field)?;
     Ok(bulk)
 }
@@ -855,6 +941,34 @@ mod amp_cab_replace_cab_tests {
         .unwrap();
         let (s, e) = amp_cab_cab_field_range_in_bulk(&bulk).unwrap();
         assert_eq!(&bulk[s..e], cab.as_slice());
+    }
+
+    #[test]
+    fn build_legacy_amp_cab_replace_cab_one_byte_hint() {
+        let bulk = build_amp_cab_replace_cab_bulk(
+            "HD2_AmpTucknGo",
+            "amp+cab-legacy",
+            "HD2_Cab1x6x9SoupProEllipse",
+            "single",
+        )
+        .expect("build");
+        assert_eq!(bulk.len(), 44);
+        assert_eq!(bulk.first().copied(), Some(0x23));
+        let (s, e) = amp_cab_cab_field_range_in_bulk(&bulk).expect("range");
+        assert_eq!(e - s, 1);
+        assert_eq!(bulk[s], 0x33);
+    }
+
+    #[test]
+    fn legacy_long_cab_rejected_on_compact_amp_cab_slot() {
+        let err = build_amp_cab_replace_cab_bulk(
+            "HD2_AmpTucknGo",
+            "amp+cab-legacy",
+            "HD2_Cab1x10PrincessCopperhead",
+            "single",
+        )
+        .expect_err("cd024d on 1-byte slot");
+        assert!(err.contains("incompatible"));
     }
 
     #[test]

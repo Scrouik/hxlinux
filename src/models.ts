@@ -263,6 +263,10 @@ type PendingLiveWrite = {
   /** Sous-bloc double : Amp+Cab (`amp`/`cab`) ou Cab dual (`cab1`/`cab2`). */
   dualPart?: "amp" | "cab" | "cab1" | "cab2" | null;
   ampCabAssignVariant?: string | null;
+  /** Nombre de params visibles du panneau Amp (route legacy guitar vs compact). */
+  ampCabAmpParamCount?: number | null;
+  /** Cab dual IR (`dual`) vs hybrid legacy (`dual-legacy`) — route bloc modèle live write. */
+  cabDualAssignVariant?: string | null;
 };
 const pendingLiveWrites = new Map<string, PendingLiveWrite>();
 /**
@@ -1660,6 +1664,8 @@ function scheduleLiveParamWriteProbe(
   rawValue: number,
   dualPart: "amp" | "cab" | "cab1" | "cab2" | null = null,
   ampCabAssignVariant: string | null = null,
+  cabDualAssignVariant: string | null = null,
+  ampCabAmpParamCount: number | null = null,
 ): void {
   if (!liveWriteQueueEnabled()) return;
   if (slotIndex === undefined || !Number.isInteger(slotIndex)) return;
@@ -1693,6 +1699,8 @@ function scheduleLiveParamWriteProbe(
     rawMax,
     dualPart,
     ampCabAssignVariant,
+    cabDualAssignVariant,
+    ampCabAmpParamCount,
   });
   scheduleLiveWriteFlushDebounced();
 }
@@ -1900,6 +1908,8 @@ async function flushPendingLiveWrites(): Promise<boolean> {
           chainMax: w.rawMax ?? undefined,
           dualPart: w.dualPart ?? undefined,
           ampCabAssignVariant: w.ampCabAssignVariant ?? undefined,
+          cabDualAssignVariant: w.cabDualAssignVariant ?? undefined,
+          ampCabAmpParamCount: w.ampCabAmpParamCount ?? undefined,
         });
       }
     } catch (e) {
@@ -1930,7 +1940,7 @@ let slotPickerMountPromise: Promise<void> | null = null;
 type SlotPickerLock =
   | { kind: "io"; category: "Input" | "Output"; parentModelId: string }
   | { kind: "routing"; category: "Split" | "Merge" }
-  /** Onglet Cab d’un slot Amp+Cab : picker figé sur Cab / Single. */
+  /** Onglet Cab d’un slot Amp+Cab : picker figé sur Cab / Single ou Single Legacy. */
   | { kind: "amp_cab_cab"; highlightModelId: string; lockedSub: string };
 let slotPickerIoLock: SlotPickerLock | null = null;
 /** Contexte picker Amp+Cab (onglets Amp / Cab). */
@@ -2334,14 +2344,17 @@ function applySlotPickerRoutingLock(
   applySlotPickerFromCatalogSelection(category, sub, highlightModelId ?? null);
 }
 
-/** Onglet Cab (Amp+Cab) : liste limitée à Cab / Single (IR uniquement). */
-function applySlotPickerAmpCabCabLock(highlightCabModelId: string): void {
+/** Onglet Cab (Amp+Cab) : liste limitée à Cab / Single (IR) ou Single Legacy (hybrid). */
+function applySlotPickerAmpCabCabLock(
+  highlightCabModelId: string,
+  lockedSub: string = "Single",
+): void {
   const id = highlightCabModelId.trim();
-  const lockedSub = "Single";
-  slotPickerIoLock = { kind: "amp_cab_cab", highlightModelId: id, lockedSub };
+  const sub = lockedSub.trim() || "Single";
+  slotPickerIoLock = { kind: "amp_cab_cab", highlightModelId: id, lockedSub: sub };
   if (slotPickerCategoryEl) slotPickerCategoryEl.disabled = true;
   if (slotPickerSubEl) slotPickerSubEl.disabled = true;
-  applySlotPickerFromCatalogSelection("Cab", lockedSub, id || null);
+  applySlotPickerFromCatalogSelection("Cab", sub, id || null);
 }
 
 /** Libère le verrou Cab / Single (Amp+Cab onglet Cab, Cab dual) et ré-ouvre le picker. */
@@ -2683,12 +2696,35 @@ async function ensureCabDualPickerSynced(tabIndex: 0 | 1): Promise<void> {
   }
 }
 
+async function isAmpCabSlotLegacy(
+  slotCategory: string,
+  linkedCabHex: string | null | undefined,
+  cabCatalogModelId: string,
+): Promise<boolean> {
+  if (isAmpCabLegacySlotCategory(slotCategory)) return true;
+  const cab = (linkedCabHex ?? "").trim();
+  if (cab && (await isLegacyCabChainHex(cab))) return true;
+  const id = cabCatalogModelId.trim();
+  if (id && isCabLegacyFromMeta(await getPresetMetaForId(id))) return true;
+  return false;
+}
+
 async function syncPickerForAmpCabDualTab(tabIndex: 0 | 1): Promise<void> {
   if (!ampCabDualPickerSync || !catalogPickerDataCache) return;
   ampCabDualActiveTab = tabIndex;
   const ctx = ampCabDualPickerSync;
   if (tabIndex === 1) {
-    applySlotPickerAmpCabCabLock(ctx.cabCatalogModelId);
+    const legacy = await isAmpCabSlotLegacy(
+      ctx.slotCategory,
+      ctx.linkedCabHex,
+      ctx.cabCatalogModelId,
+    );
+    const lockedSub = resolveCabDualCab2PickerSub(
+      ctx.cabCatalogModelId,
+      ctx.slotCategory,
+      legacy,
+    );
+    applySlotPickerAmpCabCabLock(ctx.cabCatalogModelId, lockedSub);
     return;
   }
   if (slotPickerIoLock?.kind === "amp_cab_cab") {
@@ -2983,7 +3019,14 @@ async function applyAmpCabCabFromPickerListClick(
   if (!ctx) return;
 
   const cabIdTrim = row.id.trim();
-  const cabAssignVariant = "single";
+  const legacy = await isAmpCabSlotLegacy(
+    ctx.slotCategory,
+    ctx.linkedCabHex,
+    cabIdTrim,
+  );
+  const cabUsb = await resolveCabDualWireCabTarget(cabIdTrim, legacy);
+  const cabAssignVariant = cabUsb.cabAssignVariant;
+  const cabIdForUsb = cabUsb.cabCatalogModelId;
   const ampIdTrim = ctx.ampCatalogModelId.trim();
   const ampAssignVariant = await usbAssignVariantForAmpCabSlot(
     ctx.meta,
@@ -2992,9 +3035,9 @@ async function applyAmpCabCabFromPickerListClick(
     ampIdTrim,
     ctx.linkedCabHex,
   );
-  const cabMeta = await getPresetMetaForId(cabIdTrim);
+  const cabMeta = await getPresetMetaForId(cabIdForUsb);
   const cabHex =
-    (await moduleHexForUsbVariant(cabIdTrim, cabAssignVariant, cabMeta))?.trim() || "";
+    (await moduleHexForUsbVariant(cabIdForUsb, cabAssignVariant, cabMeta))?.trim() || "";
 
   const prevSnapshot =
     lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16
@@ -3045,7 +3088,7 @@ async function applyAmpCabCabFromPickerListClick(
       slotIndex: ki,
       catalogModelId: ampIdTrim,
       assignVariant: ampAssignVariant,
-      cabCatalogModelId: cabIdTrim,
+      cabCatalogModelId: cabIdForUsb,
       cabAssignVariant,
     });
     console.info("[SlotModelProbe] amp+cab cab", row.name, cabIdTrim, out);
@@ -3601,9 +3644,19 @@ async function syncModelsSlotPickerFromLoadedModel(
   if (
     ampCabDualPickerSync &&
     ampCabDualActiveTab === 1 &&
-    normalizeCategory(slotCategory ?? "") === "amp+cab"
+    isAmpCabFamilySlotCategory(slotCategory)
   ) {
-    applySlotPickerAmpCabCabLock(ampCabDualPickerSync.cabCatalogModelId);
+    const legacy = await isAmpCabSlotLegacy(
+      ampCabDualPickerSync.slotCategory,
+      ampCabDualPickerSync.linkedCabHex,
+      ampCabDualPickerSync.cabCatalogModelId,
+    );
+    const lockedSub = resolveCabDualCab2PickerSub(
+      ampCabDualPickerSync.cabCatalogModelId,
+      ampCabDualPickerSync.slotCategory,
+      legacy,
+    );
+    applySlotPickerAmpCabCabLock(ampCabDualPickerSync.cabCatalogModelId, lockedSub);
     return;
   }
   if (
@@ -3615,18 +3668,28 @@ async function syncModelsSlotPickerFromLoadedModel(
     return;
   }
   clearSlotPickerIoLock();
-  const assignVariant = await usbAssignVariantForAmpCabSlot(
-    meta,
-    moduleHex,
-    slotCategory,
-    catalogModelId,
-    linkedCabHex,
-  );
+  const pickerKi = selectedParamsKemplineSlotIndex;
+  const probePickerCtx =
+    pickerKi !== null &&
+    lastProbePickerAssignContext &&
+    lastProbePickerAssignContext.ki === pickerKi
+      ? lastProbePickerAssignContext
+      : null;
+  const assignVariant =
+    probePickerCtx?.assignVariant?.trim().toLowerCase() ||
+    (await usbAssignVariantForAmpCabSlot(
+      meta,
+      moduleHex,
+      slotCategory,
+      catalogModelId,
+      linkedCabHex,
+    ));
+  const preferPickerCategory = probePickerCtx?.category?.trim() || slotCategory;
   const loc = findUsbAssignPickerLocation(
     catalogPickerDataCache,
     catalogModelId,
     assignVariant,
-    slotCategory,
+    preferPickerCategory,
   );
   if (!loc) {
     const prefer = (slotCategory ?? "").trim();
@@ -5512,6 +5575,11 @@ function isCabLegacyFromMeta(meta: PresetMetaJson | null | undefined): boolean {
   return cabDualSubCategoryHint(meta).includes("legacy");
 }
 
+/** Variante USB live write Cab dual : IR moderne vs hybrid legacy (`c3:19`). */
+function cabDualAssignVariantFromMeta(meta: PresetMetaJson | null | undefined): string {
+  return isCabLegacyFromMeta(meta) ? "dual-legacy" : "dual";
+}
+
 /** Sous-catégorie picker pour le cab 2 d'un dual IR (hardware : single IR uniquement). */
 function cabDualCab2PickerSub(legacy: boolean): string {
   return legacy ? "Single Legacy" : "Single";
@@ -5730,11 +5798,16 @@ async function mountAmpCabPickerSyncForSlot(
       (await moduleHexForUsbVariant(cabHint, "single", cabMeta))?.trim() ||
       linkedCabHex;
   }
+  const probeSlotCategory =
+    kemplineSlotIndex !== undefined &&
+    lastProbePickerAssignContext?.ki === kemplineSlotIndex
+      ? (lastProbePickerAssignContext.category ?? "").trim()
+      : "";
   ampCabDualPickerSync = {
     ampCatalogModelId: catalogModelIdTrimmed,
     meta,
     moduleHex: slot.moduleHex,
-    slotCategory: slot.category,
+    slotCategory: probeSlotCategory || slot.category,
     linkedCabHex,
     cabCatalogModelId: cabId,
   };
@@ -6842,6 +6915,8 @@ function appendModelsParamRows(
   liveWriteParamIndexBase = 0,
   liveWriteDualPart: "amp" | "cab" | "cab1" | "cab2" | null = null,
   liveWriteAmpCabAssignVariant: string | null = null,
+  liveWriteCabDualAssignVariant: string | null = null,
+  liveWriteAmpCabAmpParamCount: number | null = null,
 ): (nextChainValues: Array<ChainParamValueJson | undefined> | null | undefined) => void {
   const eqIdx = modelsEqMasterIndex(params);
   const eqOn =
@@ -6937,6 +7012,8 @@ function appendModelsParamRows(
             clamped,
             liveWriteDualPart,
             liveWriteAmpCabAssignVariant,
+            liveWriteCabDualAssignVariant,
+            liveWriteAmpCabAmpParamCount,
           );
         },
         micAria,
@@ -7029,6 +7106,8 @@ function appendModelsParamRows(
           v,
           liveWriteDualPart,
           liveWriteAmpCabAssignVariant,
+          liveWriteCabDualAssignVariant,
+          liveWriteAmpCabAmpParamCount,
         );
       });
       sliderCell.append(input);
@@ -7110,6 +7189,8 @@ function appendModelsParamRows(
           nextB ? 1 : 0,
           liveWriteDualPart,
           liveWriteAmpCabAssignVariant,
+          liveWriteCabDualAssignVariant,
+          liveWriteAmpCabAmpParamCount,
         );
       };
       input.addEventListener("input", () => {
@@ -7199,6 +7280,7 @@ function renderModelsParamsDualTabs(
   slot: SlotDebug,
   dualSlotKind: "amp_cab" | "cab_dual",
   ampCabAssignVariant: string | null = null,
+  cabDualAssignVariant: string | null = null,
 ): (rawPrimaryChainValues: ChainParamValueJson[] | null) => void {
   const wrap = document.createElement("div");
   wrap.className = "models-params-dual-tabs";
@@ -7220,6 +7302,11 @@ function renderModelsParamsDualTabs(
         : (0 as 0 | 1);
 
   applyModelsParamsDualHeader(slot, tabPanes[initialActiveTab]);
+
+  const ampCabAmpParamCount =
+    dualSlotKind === "amp_cab"
+      ? paramsVisibleForSignal(tabPanes[0]!.params, tabPanes[0]!.catalogRoutingSignal).length
+      : 0;
 
   tabPanes.forEach((pane, idx) => {
     const tab = document.createElement("button");
@@ -7273,6 +7360,8 @@ function renderModelsParamsDualTabs(
       paramIndexBase,
       dualPart,
       dualSlotKind === "amp_cab" ? ampCabAssignVariant : null,
+      dualSlotKind === "cab_dual" ? cabDualAssignVariant : null,
+      dualSlotKind === "amp_cab" && dualPart === "cab" ? ampCabAmpParamCount : null,
     );
     updaters.push(updater);
     panel.appendChild(list);
@@ -7300,11 +7389,7 @@ function renderModelsParamsDualTabs(
       if (dualSlotKind === "amp_cab") {
         ampCabDualActiveTab = idx as 0 | 1;
         void syncPickerForAmpCabDualTab(idx as 0 | 1);
-        if (
-          idx === 1 &&
-          kemplineSlotIndex !== undefined &&
-          ampCabAssignVariant?.toLowerCase() === "amp+cab-legacy"
-        ) {
+        if (idx === 1 && kemplineSlotIndex !== undefined) {
           void invoke("focus_amp_cab_usb_part", {
             slotIndex: kemplineSlotIndex,
             part: "cab",
@@ -7332,8 +7417,7 @@ function renderModelsParamsDualTabs(
   if (
     dualSlotKind === "amp_cab" &&
     initialActiveTab === 1 &&
-    kemplineSlotIndex !== undefined &&
-    ampCabAssignVariant?.toLowerCase() === "amp+cab-legacy"
+    kemplineSlotIndex !== undefined
   ) {
     void invoke("focus_amp_cab_usb_part", {
       slotIndex: kemplineSlotIndex,
@@ -7927,6 +8011,7 @@ function renderModelsParamsPane(
   dualTabPanes?: DualTabPaneConfig[] | null,
   dualSlotKind?: "amp_cab" | "cab_dual" | null,
   ampCabAssignVariant?: string | null,
+  cabDualAssignVariant?: string | null,
 ) {
   const inner = getModelsParamsInner();
   if (!inner) return;
@@ -7985,6 +8070,7 @@ function renderModelsParamsPane(
       slot,
       dualSlotKind ?? "cab_dual",
       ampCabAssignVariant ?? null,
+      cabDualAssignVariant ?? null,
     );
   } else {
   const list = document.createElement("ul");
@@ -8161,6 +8247,7 @@ async function loadAndShowModelsParamsForSlot(
     let dualSlotKind: "amp_cab" | "cab_dual" | null = null;
     let linkedCabHexForPicker: string | null = null;
     let ampCabDualResolve: AmpCabDualResolve | null = null;
+    let cabDualAssignVariant: string | null = null;
     let catalogModelIdTrimmed = await resolveSlotCatalogModelId(slot);
     const mergeLike =
       nk === "merge" ||
@@ -8283,6 +8370,7 @@ async function loadAndShowModelsParamsForSlot(
       if (cabDual.dualTabPanes) {
         dualSlotKind = "cab_dual";
         dualTabPanes = cabDual.dualTabPanes;
+        cabDualAssignVariant = cabDualAssignVariantFromMeta(meta);
         lastCabDualTabPanesContext = {
           dualTabPanes: cabDual.dualTabPanes,
           dualCatalogModelId: catalogModelIdTrimmed,
@@ -8416,6 +8504,7 @@ async function loadAndShowModelsParamsForSlot(
       dualTabPanes,
       dualSlotKind,
       ampCabDualResolve?.assignVariant ?? null,
+      cabDualAssignVariant,
     );
     void mountModelsSlotPicker().then(async () => {
       if (dualSlotKind === "amp_cab" && ampCabDualResolve) {
@@ -8536,6 +8625,7 @@ async function loadAndShowModelsParamsFromCatalogDefaults(
     let dualSlotKind: "amp_cab" | "cab_dual" | null = null;
     let linkedCabHexForPicker: string | null = null;
     let ampCabDualResolve: AmpCabDualResolve | null = null;
+    let cabDualAssignVariant: string | null = null;
     if (slotWantsAmpCabDualTabs(slot, options?.assignVariant)) {
       const ampCabDual = await resolveAmpCabDualTabPanes(
         kemplineSlotIndex,
@@ -8583,6 +8673,7 @@ async function loadAndShowModelsParamsFromCatalogDefaults(
       if (cabDual.dualTabPanes) {
         dualSlotKind = "cab_dual";
         dualTabPanes = cabDual.dualTabPanes;
+        cabDualAssignVariant = cabDualAssignVariantFromMeta(meta);
         lastCabDualTabPanesContext = {
           dualTabPanes: cabDual.dualTabPanes,
           dualCatalogModelId: catalogModelIdTrimmed,
@@ -8608,6 +8699,7 @@ async function loadAndShowModelsParamsFromCatalogDefaults(
       dualTabPanes,
       dualSlotKind,
       ampCabDualResolve?.assignVariant ?? null,
+      cabDualAssignVariant,
     );
     void mountModelsSlotPicker().then(async () => {
       if (dualSlotKind === "amp_cab" && ampCabDualResolve) {
