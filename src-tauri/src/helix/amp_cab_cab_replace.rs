@@ -42,10 +42,10 @@ fn prepare_amp_cab_cab_replace_bulk(bulk: &mut [u8]) {
     reframe_cd0a_to_cd04(bulk);
 }
 
-/// Ne pas écraser les octets 14–15 sur les bulks assign legacy 44 o (`02 00` dans les captures).
+/// Ne pas écraser les octets 14–15 sur les bulks assign Amp+Cab (`02 00` dans toutes les captures 23/25/27).
 fn finalize_amp_cab_replace_bulk(bulk: &mut [u8]) {
     let head = bulk.first().copied().unwrap_or(0);
-    if matches!(head, 0x23 | 0x25) {
+    if matches!(head, 0x23 | 0x25 | 0x27) {
         return;
     }
     if bulk.len() > 15 {

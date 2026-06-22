@@ -52,7 +52,7 @@ Bulk is built from **`HX_ModelUsbAssign.json`** (`build_amp_cab_replace_cab_bulk
 |------|-------------------------|--------------|
 | Preamble | **`ef` → `f0`** (16 B each) | `1d` cab focus → **`ed:08`** |
 | Bulk | head **`0x23`** (44 B) or **`0x25`** (48 B) | **`0x27`** / `0x25` per catalog |
-| Bulk bytes **14–15** | keep **`02 00`** | `0x27`: may zero; `0x25`: keep `02 00` |
+| Bulk bytes **14–15** | keep **`02 00`** (heads `0x23` / `0x25` / `0x27`) | same |
 
 **Fixed pitfall:** `focus → ed:08 → bulk` or zeroing bytes 14–15 logged “OK” but the device ignored the replace. Legacy must match **initial assign** (`AddToEmpty`: `ef/f0/bulk`). Ref. capture: `amp_cab legacy bass.json` frame **1357**.
 

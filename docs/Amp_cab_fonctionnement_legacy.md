@@ -61,7 +61,7 @@ Changer le cab depuis l’onglet Cab **ne remplace pas** tout le slot. Le bulk e
 |-------|-------------------------|---------------------------|
 | Préambule | **`ef` → `f0`** (16 o chacun) | `1d` focus cab → **`ed:08`** (16 o) |
 | Bulk | head **`0x23`** (44 o) ou **`0x25`** (48 o) | head **`0x27`** / `0x25` selon entrée catalogue |
-| Octets **14–15** du bulk | **`02 00`** — **ne pas écraser** | head `0x27` : zéros autorisés (chemin Cab dual) ; `0x25` : conserver `02 00` |
+| Octets **14–15** du bulk | **`02 00`** — **ne pas écraser** (heads `0x23` / `0x25` / `0x27`) | idem |
 
 **Piège corrigé (juin 2026) :** réutiliser `focus → ed:08 → bulk` (comme Cab dual IR) ou forcer les octets 14–15 à `00 00` envoyait un bulk « OK » côté app mais **ignoré par le device**. Le legacy doit reprendre la **même séquence que l’assign initial** (`AddToEmpty` : `ef/f0/bulk`).
 

@@ -84,7 +84,7 @@ Changer le cab depuis l’onglet Cab **ne doit pas** remplacer tout le slot par 
 | Cinématique **IR** | **`1d` focus cab** → **`ed:08`** (16 o) → **bulk** (head souvent **`0x27`** ou **`0x25`** 48 o pour certains amplis guitar) |
 | Cinématique **legacy** | **`ef` → `f0` → bulk`** — voir [Amp_cab_fonctionnement_legacy.md](Amp_cab_fonctionnement_legacy.md) §4 (≠ IR) |
 
-Implémentation fire IR : `execute_amp_cab_cab_replace` (`legacy=false`) dans `amp_cab_cab_replace.rs` — lane `live_write` alignée sur Cab dual cab2 (`focus → ed:08 → bulk`). Sur head `0x27`, les octets 14–15 du bulk peuvent être mis à `00 00` (comme Cab dual) ; sur head `0x25`, conserver `02 00`.
+Implémentation fire IR : `execute_amp_cab_cab_replace` (`legacy=false`) dans `amp_cab_cab_replace.rs` — lane `live_write` alignée sur Cab dual cab2 (`focus → ed:08 → bulk`). Octets bulk **14–15** = `02 00` conservés sur tous les heads assign (`0x23` / `0x25` / `0x27`).
 
 Fichiers : `amp_cab_cab_replace.rs`, `edit_slot_model.rs`, `applyAmpCabCabFromPicker` dans `models.ts`.
 
