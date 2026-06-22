@@ -67,9 +67,15 @@ Logs: `ppSource=amp_cab:ir_capture`, `pSelSource=amp_cab:ir_local_index`.
 
 ## 5. **Cab-only** replace (picker)
 
-Use `probe_slot_model_usb` with amp id + `cabCatalogModelId`, variant **`amp+cab`**. Rust: `build_amp_cab_replace_cab_bulk` patches only the cab field after `c319`/`1a`.
+Use `probe_slot_model_usb` `replace` with amp id + `cabCatalogModelId`, variant **`amp+cab`**.
 
-Lane rule: same `focus → ed:08 → bulk` coherence as Cab dual ([Cab_dual_operation_no_legacy.md](Cab_dual_operation_no_legacy.md) §3).
+| Layer | IR `amp+cab` |
+|-------|----------------|
+| Bulk source | `HX_ModelUsbAssign.json` via `build_amp_cab_replace_cab_bulk` — **not** `preset_data` |
+| USB sequence | **`1d` cab focus** → **`ed:08`** → **bulk** (heads **`0x27`** or **`0x25`** per catalog) |
+| Legacy variant | **`ef` → `f0` → bulk`** — see [Amp_cab_operation_legacy.md](Amp_cab_operation_legacy.md) §4 |
+
+Fire path: `execute_amp_cab_cab_replace` (`legacy=false`) in `amp_cab_cab_replace.rs` — same lane idea as Cab dual cab2 ([Cab_dual_operation_no_legacy.md](Cab_dual_operation_no_legacy.md) §3).
 
 ---
 
@@ -77,8 +83,9 @@ Lane rule: same `focus → ed:08 → bulk` coherence as Cab dual ([Cab_dual_oper
 
 | File | Role |
 |------|------|
+| `src-tauri/src/helix/amp_cab_cab_replace.rs` | Replace fire: `focus/ed:08/bulk` (IR) vs `ef/f0/bulk` (legacy) |
 | `src-tauri/src/helix/amp_cab_live_write.rs` | IR/legacy blocks, focus, route resolver |
-| `src-tauri/src/lib.rs` | `focus_amp_cab_usb_part`, `write_live_param` |
+| `src-tauri/src/lib.rs` | `probe_slot_model_usb`, `focus_amp_cab_usb_part`, `write_live_param` |
 | `src/models.ts` | Amp/Cab tabs, variants, picker |
 | `src/hxModelCatalogMeta.ts` | `amp+cab` variant helpers |
 
@@ -90,3 +97,9 @@ Lane rule: same `focus → ed:08 → bulk` coherence as Cab dual ([Cab_dual_oper
 - [ ] Cab params → local `pSel`, `pp=03` (IR)
 - [ ] Picker cab change → slot stays Amp+Cab
 - [ ] No per-slider `preset_data` parse in session
+
+## 8. Pitfalls
+
+1. **`assignVariant: single`** from Cab tab replaces the whole slot with a lone Cab — use `amp+cab` + `cabCatalogModelId`.
+2. **Global param index** (amp offset) → wrong block on device — use `dualPart=cab` + local index.
+3. **Legacy vs IR replace** — legacy needs **`ef → f0 → bulk`**, not `focus → ed:08 → bulk` ([Amp_cab_operation_legacy.md](Amp_cab_operation_legacy.md) §4).

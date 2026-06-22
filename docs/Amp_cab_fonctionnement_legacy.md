@@ -51,15 +51,39 @@ Capture : `amp_cab legacy guitar.json`. Envoyé au clic onglet Cab et en secours
 
 ---
 
-## 4. UI HXLinux
+## 4. Remplacement du **cab** seul (picker) — validé HW juin 2026
+
+Changer le cab depuis l’onglet Cab **ne remplace pas** tout le slot. Le bulk est construit depuis **`HX_ModelUsbAssign.json`** (`build_amp_cab_replace_cab_bulk`) : seul le champ cab après `c319` / `1a` est patché. **`preset_data` n’intervient pas** sur ce chemin (il peut rester en retard en RAM ; l’UI utilise merge grace optimiste).
+
+### 4.1 Cinématique USB legacy (≠ IR, ≠ Cab dual)
+
+| Étape | Legacy `amp+cab-legacy` | IR `amp+cab` (référence) |
+|-------|-------------------------|---------------------------|
+| Préambule | **`ef` → `f0`** (16 o chacun) | `1d` focus cab → **`ed:08`** (16 o) |
+| Bulk | head **`0x23`** (44 o) ou **`0x25`** (48 o) | head **`0x27`** / `0x25` selon entrée catalogue |
+| Octets **14–15** du bulk | **`02 00`** — **ne pas écraser** | head `0x27` : zéros autorisés (chemin Cab dual) ; `0x25` : conserver `02 00` |
+
+**Piège corrigé (juin 2026) :** réutiliser `focus → ed:08 → bulk` (comme Cab dual IR) ou forcer les octets 14–15 à `00 00` envoyait un bulk « OK » côté app mais **ignoré par le device**. Le legacy doit reprendre la **même séquence que l’assign initial** (`AddToEmpty` : `ef/f0/bulk`).
+
+Capture assign de référence : `amp_cab legacy bass.json` frame **1357** (bulk `23…c319061a32`, octets 14–15 = `02 00`).
+
+Implémentation : `execute_amp_cab_cab_replace` dans `amp_cab_cab_replace.rs` (branche `legacy=true`).
+
+### 4.2 Champ cab sur le fil (hybrid compact)
+
+Pour les slots legacy **1 octet** (ex. TucknGo bass), le token cab vient du **`chainHexHint`** de l’entrée cab catalogue (`33`, `37`, …), pas du bulk IR `cd02xx`. Un cab trop long (`cd024d` sur slot compact) est **refusé** avant envoi (`cab_field_bytes_for_amp_cab_replace`).
+
+### 4.3 UI / picker
 
 | Élément | Valeur |
 |---------|--------|
-| `dualPart` onglet Amp | `amp` |
-| `dualPart` onglet Cab | `cab` |
-| `ampCabAssignVariant` | `"amp+cab-legacy"` |
-| `ampCabAmpParamCount` | Longueur params visibles Amp (route guitar vs compact) |
-| Replace cab picker | `assignVariant` ampli **legacy** + cab `single` / single legacy |
+| `dualPart` onglet Amp / Cab | `amp` / `cab` |
+| `ampCabAssignVariant` | `"amp+cab-legacy"` (ne pas basculer vers `amp+cab` IR au scroll ampli) |
+| `ampCabAmpParamCount` | Params visibles Amp → tables guitar vs compact |
+| Picker onglet Cab | Catégorie **Cab** / sous-cat **Single Legacy** (pas forcer `Single` IR) |
+| Probe | `probe_slot_model_usb` `replace` + `cabCatalogModelId` + variante ampli **legacy** |
+
+Focus **`1b`** (§3) : onglet Cab et **params** live write — **pas** la cinématique du replace modèle cab.
 
 ---
 
@@ -67,18 +91,21 @@ Capture : `amp_cab legacy guitar.json`. Envoyé au clic onglet Cab et en secours
 
 | Fichier | Rôle |
 |---------|------|
+| `amp_cab_cab_replace.rs` | Fire replace cab : `ef/f0/bulk` (legacy) vs `focus/ed:08/bulk` (IR) |
 | `amp_cab_live_write.rs` | `build_amp_cab_legacy_param_model_block`, tables, focus `1b` |
-| `edit_slot_model.rs` | `build_amp_cab_replace_cab_bulk`, `amp_cab_cab_field_range_in_bulk` |
-| `models.ts` | `usbAssignVariantForAmpCabSlot`, onglets, `applyAmpCabCabFromPicker` |
+| `edit_slot_model.rs` | `build_amp_cab_replace_cab_bulk`, `chainHexHint`, champ cab 1 octet |
+| `models.ts` | Variante picker, `applyAmpCabCabFromPicker`, `isAmpCabSlotLegacy` |
+| `hxModelCatalogMeta.ts` | `usbAssignVariantForAmpFamilyScroll` respecte Amp+Cab Legacy |
 
 ---
 
 ## 6. Checklist non-régression legacy
 
-- [ ] Focus onglet Cab → HW sur cab
+- [ ] Focus onglet Cab → HW sur cab (`1b`)
 - [ ] Params cab (Level, …) → `pp=08`, sélecteur table guitar/compact cohérent
-- [ ] Changement cab picker → bulk `amp+cab-legacy` patché, slot reste Amp+Cab Legacy
-- [ ] Pas de fallback IR (`pp=03`) quand la variante est legacy
+- [x] Changement cab picker → `ef/f0/bulk`, cab patché, octets 14–15 = `02 00`, HW réagit
+- [ ] Picker reste **Amp+Cab Legacy** / **Single Legacy** après assign ampli
+- [ ] Pas de fallback IR (`pp=03`, variante `amp+cab`) quand la variante est legacy
 
 ---
 

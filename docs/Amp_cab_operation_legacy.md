@@ -42,14 +42,36 @@ Sent on Cab tab click and before first cab `write_live_param` if not yet focused
 
 ---
 
-## 4. HXLinux UI
+## 4. **Cab-only** replace (picker) — HW validated Jun 2026
+
+Bulk is built from **`HX_ModelUsbAssign.json`** (`build_amp_cab_replace_cab_bulk`); only the cab field after `c319`/`1a` is patched. **`preset_data` is not used** on this path.
+
+### 4.1 Legacy USB sequence (≠ IR, ≠ Cab dual)
+
+| Step | Legacy `amp+cab-legacy` | IR `amp+cab` |
+|------|-------------------------|--------------|
+| Preamble | **`ef` → `f0`** (16 B each) | `1d` cab focus → **`ed:08`** |
+| Bulk | head **`0x23`** (44 B) or **`0x25`** (48 B) | **`0x27`** / `0x25` per catalog |
+| Bulk bytes **14–15** | keep **`02 00`** | `0x27`: may zero; `0x25`: keep `02 00` |
+
+**Fixed pitfall:** `focus → ed:08 → bulk` or zeroing bytes 14–15 logged “OK” but the device ignored the replace. Legacy must match **initial assign** (`AddToEmpty`: `ef/f0/bulk`). Ref. capture: `amp_cab legacy bass.json` frame **1357**.
+
+Code: `execute_amp_cab_cab_replace` in `amp_cab_cab_replace.rs` (`legacy=true`).
+
+### 4.2 Compact cab token
+
+1-byte legacy slots use the cab entry’s **`chainHexHint`** (`33`, `37`, …), not full IR `cd02xx`. Oversized cabs are rejected before send.
+
+### 4.3 UI
 
 | Field | Value |
 |-------|--------|
 | `dualPart` | `amp` / `cab` |
 | `ampCabAssignVariant` | `"amp+cab-legacy"` |
 | `ampCabAmpParamCount` | Visible amp param count |
-| Cab picker replace | amp variant **legacy** + cab single entry |
+| Cab picker | **Cab / Single Legacy**; probe `replace` + `cabCatalogModelId` |
+
+`1b` focus (§3) is for the Cab tab and **param** live writes, not the cab **model** replace sequence.
 
 ---
 
@@ -57,9 +79,11 @@ Sent on Cab tab click and before first cab `write_live_param` if not yet focused
 
 | File | Role |
 |------|------|
+| `amp_cab_cab_replace.rs` | Replace fire: `ef/f0/bulk` (legacy) vs `focus/ed:08/bulk` (IR) |
 | `amp_cab_live_write.rs` | Legacy blocks, tables, `1b` focus |
-| `edit_slot_model.rs` | `build_amp_cab_replace_cab_bulk` |
-| `models.ts` | Tabs, picker, variant resolution |
+| `edit_slot_model.rs` | `build_amp_cab_replace_cab_bulk`, `chainHexHint`, 1-byte cab field |
+| `models.ts` | Picker variant, `applyAmpCabCabFromPicker` |
+| `hxModelCatalogMeta.ts` | Amp family scroll keeps Legacy variant |
 
 ---
 

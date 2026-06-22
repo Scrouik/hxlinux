@@ -79,11 +79,14 @@ Changer le cab depuis l’onglet Cab **ne doit pas** remplacer tout le slot par 
 
 | Étape | Comportement |
 |-------|----------------|
-| UI | `probe_slot_model_usb` avec `catalogModelId` = ampli, `cabCatalogModelId` = nouveau cab, `assignVariant` = `amp+cab` |
-| Bulk | `build_amp_cab_replace_cab_bulk` — patch **uniquement** le champ cab après `c319` / `1a` (`patch_amp_cab_bulk_cab_field`) |
-| Lane | Même loi `focus → ed:08 → bulk` que Cab dual (voir [Cab_dual_fonctionnement_no_legacy.md](Cab_dual_fonctionnement_no_legacy.md) §3) |
+| UI | `probe_slot_model_usb` `replace` : `catalogModelId` = ampli, `cabCatalogModelId` = nouveau cab, `assignVariant` = **`amp+cab`** |
+| Bulk | `build_amp_cab_replace_cab_bulk` depuis **`HX_ModelUsbAssign.json`** — patch **uniquement** le champ cab après `c319` / `1a`. **`preset_data` n’alimente pas ce bulk.** |
+| Cinématique **IR** | **`1d` focus cab** → **`ed:08`** (16 o) → **bulk** (head souvent **`0x27`** ou **`0x25`** 48 o pour certains amplis guitar) |
+| Cinématique **legacy** | **`ef` → `f0` → bulk`** — voir [Amp_cab_fonctionnement_legacy.md](Amp_cab_fonctionnement_legacy.md) §4 (≠ IR) |
 
-Fichiers : `edit_slot_model.rs`, `applyAmpCabCabFromPicker` dans `models.ts`.
+Implémentation fire IR : `execute_amp_cab_cab_replace` (`legacy=false`) dans `amp_cab_cab_replace.rs` — lane `live_write` alignée sur Cab dual cab2 (`focus → ed:08 → bulk`). Sur head `0x27`, les octets 14–15 du bulk peuvent être mis à `00 00` (comme Cab dual) ; sur head `0x25`, conserver `02 00`.
+
+Fichiers : `amp_cab_cab_replace.rs`, `edit_slot_model.rs`, `applyAmpCabCabFromPicker` dans `models.ts`.
 
 ---
 
@@ -91,8 +94,9 @@ Fichiers : `edit_slot_model.rs`, `applyAmpCabCabFromPicker` dans `models.ts`.
 
 | Fichier | Rôle |
 |---------|------|
+| `src-tauri/src/helix/amp_cab_cab_replace.rs` | Fire replace cab : `focus/ed:08/bulk` (IR) vs `ef/f0/bulk` (legacy) |
 | `src-tauri/src/helix/amp_cab_live_write.rs` | Blocs modèle IR/legacy, focus, `resolve_cab_live_write_route` |
-| `src-tauri/src/lib.rs` | `focus_amp_cab_usb_part`, `write_live_param` (branche `dualPart=cab`) |
+| `src-tauri/src/lib.rs` | `probe_slot_model_usb` (branche `amp_cab_cab_replace`), `focus_amp_cab_usb_part`, `write_live_param` |
 | `src/models.ts` | Onglets Amp/Cab, `ampCabAssignVariant`, `ampCabAmpParamCount`, picker cab |
 | `src/hxModelCatalogMeta.ts` | Variantes `amp+cab` / détection Amp+Cab |
 
@@ -111,4 +115,5 @@ Fichiers : `edit_slot_model.rs`, `applyAmpCabCabFromPicker` dans `models.ts`.
 
 1. **Envoyer `assignVariant: single`** depuis l’onglet Cab → le device traite un **Cab seul** (slot entier remplacé) — toujours `amp+cab` + `cabCatalogModelId`.
 2. **Index global** (offset nombre de params ampli) → le device ignore ou modifie le mauvais bloc — `dualPart=cab` + index local.
-3. **Oublier le focus cab** avant édition → params peuvent partir sur l’ampli côté HW.
+3. **Oublier le focus cab** avant édition **params** → risque d’écrire sur l’ampli ; le **replace modèle** cab IR utilise `focus → ed:08 → bulk`, le legacy **`ef → f0 → bulk`** (pas le même chemin).
+4. **Confondre replace legacy et IR** — `focus → ed:08 → bulk` sur legacy loggue « OK » mais le HW ignore ; voir [Amp_cab_fonctionnement_legacy.md](Amp_cab_fonctionnement_legacy.md) §4.
