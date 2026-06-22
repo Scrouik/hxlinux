@@ -833,9 +833,11 @@ fn cab_field_bytes_for_amp_cab_replace(
 ) -> Result<Vec<u8>, String> {
     use crate::helix::cab_dual::legacy::wire::chain_hint_to_cab_field_bytes;
 
-    let (cab_start, cab_end) = amp_cab_cab_field_range_in_bulk(parent_amp_bulk)
-        .ok_or_else(|| "bulk ampli sans marqueur amp+cab (c319/1a)".to_string())?;
-    let target_len = cab_end - cab_start;
+    let target_len = {
+        let (start, end) = amp_cab_cab_field_range_in_bulk(parent_amp_bulk)
+            .ok_or_else(|| "bulk ampli sans marqueur amp+cab (c319/1a)".to_string())?;
+        end - start
+    };
 
     if amp_cab_variant.eq_ignore_ascii_case("amp+cab-legacy") {
         if let Some(hint) = resolve_usb_assign_chain_hex_hint(cab_model_id, cab_variant) {

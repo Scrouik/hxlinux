@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::helix::amp_cab_live_write::build_amp_cab_ir_cab_focus_packet;
 use crate::helix::cab_dual::legacy::wire::reframe_cd0a_to_cd04;
-use crate::helix::cab_dual::replace_fire::{build_ed08_short, force_ed03_ctr};
+use crate::helix::ed03_lane::{build_ed08_short, force_ed03_ctr};
 use crate::helix::edit_slot_model::{
     accepted_amp_cab_cab_replace_heads, build_slot_model_probe_packets, SlotModelProbeOp,
 };

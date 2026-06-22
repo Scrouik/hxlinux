@@ -12,6 +12,7 @@ use crate::helix::cab_dual::legacy::wire::{
     accepted_cab2_replace_heads, prepare_cab2_replace_bulk, CAB2_REPLACE_HEAD_LEGACY,
     CAB2_REPLACE_HEAD_IR, DUAL_PARENT_REPLACE_HEAD,
 };
+use crate::helix::ed03_lane::{build_ed08_short, force_ed03_ctr};
 use crate::helix::edit_slot_model::{build_slot_model_probe_packets, SlotModelProbeOp};
 use crate::helix::init_trace;
 use crate::helix::packet::OutPacket;
@@ -22,27 +23,6 @@ fn env_delay_ms(var: &str, default_ms: u64) -> u64 {
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(default_ms)
-}
-
-/// Patche les octets 12-13 (ctr LE) et 14 (=0) d'un paquet `80:10:ed:03`.
-pub(crate) fn force_ed03_ctr(pkt: &mut [u8], ctr: u16) {
-    if pkt.len() > 14 {
-        pkt[12] = (ctr & 0xff) as u8;
-        pkt[13] = ((ctr >> 8) & 0xff) as u8;
-        pkt[14] = 0x00;
-    }
-}
-
-/// Construit un court `08 … 80:10:ed:03` (ed:08), ctr posé sur les octets 12-13.
-pub(crate) fn build_ed08_short(state: &mut HelixState, ctr: u16) -> Vec<u8> {
-    let seq = state.next_x80_cnt();
-    vec![
-        0x08, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, seq, 0x00, 0x08,
-        (ctr & 0xff) as u8,
-        ((ctr >> 8) & 0xff) as u8,
-        0x00,
-        0x00,
-    ]
 }
 
 fn find_cab2_replace_bulk(packs: Vec<Vec<u8>>) -> Result<Vec<u8>, String> {

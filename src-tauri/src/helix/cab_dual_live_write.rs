@@ -16,7 +16,7 @@
 use std::time::{Duration, Instant};
 
 use crate::helix::amp_cab_live_write::build_amp_cab_legacy_param_model_block;
-use crate::helix::cab_dual::replace_fire::build_ed08_short;
+use crate::helix::ed03_lane::build_ed08_short;
 use crate::helix::live_write::LiveWriteRouteOverride;
 use crate::helix::packet::OutPacket;
 use crate::helix::{echo_model_cache_key, kempline_index_to_slot_bus, HelixState};

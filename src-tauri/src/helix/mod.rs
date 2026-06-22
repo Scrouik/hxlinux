@@ -3,6 +3,7 @@
 // Déclaration des modules + état partagé HelixState
 // ===========================================================
 
+pub mod ed03_lane;
 pub mod packet;
 pub mod usb_monitor;
 pub mod usb_listener;
