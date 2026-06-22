@@ -39,11 +39,12 @@ use helix::{
 };
 use helix::packet::OutPacket;
 use helix::live_write::build_live_write_frames_from_state;
+use helix::live_write::LiveWriteRouteOverride;
 use helix::live_write_config::validate_usb_live_write_metadata;
 use helix::path1_io_live_write::send_path1_input_source;
 use helix::path1_split_live_write::send_path1_split_type;
 use helix::edit_slot_model::{
-    build_slot_model_probe_packets, change_model_hxedit_replace_test_bulk,
+    build_amp_cab_replace_cab_bulk, build_cab_dual_replace_cab_bulk, build_slot_model_probe_packets, change_model_hxedit_replace_test_bulk,
     resolve_catalog_model_chain_bytes, resolve_usb_assign_bulk, slot_probe_use_change_model_test_bulk,
     SlotModelProbeOp,
 };
@@ -932,6 +933,10 @@ fn sync_hardware_slot_focus_usb(
 /// Sans `catalogModelId` en **replace**, le bulk reste le template embarqué (sonde seule).
 /// Avec `catalogModelId`, une entrée JSON est **requise** (plus de repli sur le
 /// template unique type `cd01fe` pour tout le catalogue), sauf si la variable de test ci-dessus est active.
+/// `cab_catalog_model_id` + `cab_assign_variant` : remplacement **cab seul** sur Amp+Cab
+/// (`catalog_model_id` = id ampli, `assign_variant` = `amp+cab` ou `amp+cab-legacy`).
+/// Avec `cab_dual_cab_index` (`0` = Cab 1, `1` = Cab 2) : patch d’un cab dans un slot **Cab dual**
+/// (`catalog_model_id` = id dual, `assign_variant` = `dual`).
 #[tauri::command]
 fn probe_slot_model_usb(
     state: tauri::State<Arc<Mutex<AppState>>>,
@@ -939,6 +944,10 @@ fn probe_slot_model_usb(
     slot_index: u32,
     catalog_model_id: Option<String>,
     assign_variant: Option<String>,
+    cab_catalog_model_id: Option<String>,
+    cab_assign_variant: Option<String>,
+    cab_dual_cab_index: Option<u32>,
+    skip_cab_dual_focus: Option<bool>,
 ) -> Result<String, String> {
     if slot_index >= 16 {
         return Err("slotIndex hors plage (0..15)".to_string());
@@ -963,10 +972,42 @@ fn probe_slot_model_usb(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "mono".to_string());
     let variant_lc = variant_raw.to_ascii_lowercase();
+    let cab_id_for_log = cab_catalog_model_id
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let cab_variant_lc = cab_assign_variant
+        .as_ref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "single".to_string());
     let use_change_model_test_bulk = matches!(probe_op, SlotModelProbeOp::ReplaceOccupied)
-        && slot_probe_use_change_model_test_bulk();
+        && slot_probe_use_change_model_test_bulk()
+        && cab_id_for_log.is_none();
     let usb_bulk_from_json: Option<Vec<u8>> = if use_change_model_test_bulk {
         Some(change_model_hxedit_replace_test_bulk())
+    } else if let Some(cab_id) = cab_id_for_log.as_deref() {
+        let parent_id = id_for_log.as_deref().ok_or_else(|| {
+            "cab_catalog_model_id requiert catalog_model_id (parent Amp+Cab ou Cab dual)".to_string()
+        })?;
+        if let Some(idx) = cab_dual_cab_index {
+            if idx > 1 {
+                return Err(format!("cabDualCabIndex hors plage: {idx} (attendu 0 ou 1)"));
+            }
+            Some(build_cab_dual_replace_cab_bulk(
+                parent_id,
+                cab_id,
+                &cab_variant_lc,
+                idx as u8,
+            )?)
+        } else {
+            Some(build_amp_cab_replace_cab_bulk(
+                parent_id,
+                &variant_lc,
+                cab_id,
+                &cab_variant_lc,
+            )?)
+        }
     } else {
         id_for_log
             .as_deref()
@@ -1000,6 +1041,46 @@ fn probe_slot_model_usb(
     }
     .ok_or_else(|| "HX non connecté".to_string())?;
 
+    let cab_dual_cab2_replace = cab_dual_cab_index == Some(1);
+    if cab_dual_cab2_replace {
+        {
+            let s = helix_arc.lock().unwrap();
+            if s.init_usb_settle_active() {
+                return Err(format!(
+                    "probe_slot_model_usb ignoré (init USB ~{} ms, ACK seulement)",
+                    helix::keep_alive::POST_PHASE4_SETTLE_MS
+                ));
+            }
+            if !s.connected || s.preset_content_only {
+                return Err(
+                    "probe_slot_model_usb ignoré (HX non prêt ou lecture preset en cours)"
+                        .to_string(),
+                );
+            }
+        }
+        let bulk = usb_bulk_from_json
+            .as_deref()
+            .ok_or_else(|| "cab dual cab2 replace sans bulk JSON".to_string())?;
+        let summary = helix::cab_dual::execute_cab_dual_cab2_replace(
+            helix_arc.clone(),
+            slot_index,
+            slot_bus,
+            bulk,
+        )?;
+        eprintln!(
+            "[SlotModelProbe] op={:?} slot_index={} slot_bus={:#04x} catalog_id={:?} variant={} cab_id={:?} cab_variant={} cab_dual_idx=Some(1) usb_json=true cab_dual_handshake=true {}",
+            probe_op,
+            slot_index,
+            slot_bus,
+            id_for_log,
+            variant_lc,
+            cab_id_for_log,
+            cab_variant_lc,
+            summary
+        );
+        return Ok(summary);
+    }
+
     let mut s = helix_arc.lock().unwrap();
     if s.init_usb_settle_active() {
         return Err(format!(
@@ -1019,6 +1100,7 @@ fn probe_slot_model_usb(
         slot_bus,
         chain_bytes.as_deref(),
         usb_bulk_from_json.as_deref(),
+        false,
     );
     let mono_0310_json_timing_strict = usb_bulk_from_json
         .as_deref()
@@ -1041,12 +1123,15 @@ fn probe_slot_model_usb(
 
     let summary = lines.join(" | ");
     eprintln!(
-        "[SlotModelProbe] op={:?} slot_index={} slot_bus={:#04x} catalog_id={:?} variant={} usb_json={} change_model_test_bulk={} {}",
+        "[SlotModelProbe] op={:?} slot_index={} slot_bus={:#04x} catalog_id={:?} variant={} cab_id={:?} cab_variant={} cab_dual_idx={:?} usb_json={} change_model_test_bulk={} {}",
         probe_op,
         slot_index,
         slot_bus,
         id_for_log,
         variant_lc,
+        cab_id_for_log,
+        cab_variant_lc,
+        cab_dual_cab_index,
         usb_bulk_from_json.is_some(),
         use_change_model_test_bulk,
         summary
@@ -1149,6 +1234,111 @@ fn probe_live_param_write(
     Ok(())
 }
 
+fn resolve_live_write_route_override(
+    state: &helix::HelixState,
+    slot_index: u32,
+    param_index: u32,
+    dual_part: Option<&str>,
+    amp_cab_assign_variant: Option<&str>,
+) -> Option<LiveWriteRouteOverride> {
+    match dual_part.map(str::trim) {
+        Some("cab") => {
+            let variant = amp_cab_assign_variant.unwrap_or("amp+cab");
+            let seg = kempline_assignable_segment_bytes(&state.preset_data, slot_index as usize)?;
+            helix::amp_cab_live_write::resolve_cab_live_write_route(
+                state,
+                seg,
+                param_index,
+                variant,
+                slot_index,
+            )
+        }
+        Some("cab1") => {
+            helix::cab_dual_live_write::resolve_cab_dual_live_write_route(
+                state, 0, param_index, slot_index,
+            )
+        }
+        Some("cab2") => {
+            helix::cab_dual_live_write::resolve_cab_dual_live_write_route(
+                state, 1, param_index, slot_index,
+            )
+        }
+        _ => None,
+    }
+}
+
+/// Focus USB sous-bloc cab d'un slot Amp+Cab (trame `1b`, voir captures legacy guitar).
+#[tauri::command]
+fn focus_amp_cab_usb_part(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_index: u32,
+    part: String,
+    amp_cab_assign_variant: Option<String>,
+) -> Result<(), String> {
+    if slot_index >= 16 {
+        return Err("slotIndex hors plage (0..15)".to_string());
+    }
+    if part.trim().eq_ignore_ascii_case("cab") {
+        let helix_arc = {
+            let app = state.lock().unwrap();
+            app.helix_state.clone()
+        };
+        let helix_arc = helix_arc.ok_or("HX non connecté")?;
+        let slot_bus = kempline_index_to_slot_bus(slot_index as usize)
+            .ok_or_else(|| "slotIndex invalide".to_string())?;
+        let legacy = amp_cab_assign_variant
+            .as_deref()
+            .map(|v| v.eq_ignore_ascii_case("amp+cab-legacy"))
+            .unwrap_or(false);
+        if !legacy {
+            return Ok(());
+        }
+        let mut s = helix_arc.lock().unwrap();
+        let focus = helix::amp_cab_live_write::build_amp_cab_cab_focus_packet(&mut s, slot_bus);
+        s.send(crate::helix::packet::OutPacket::new(focus));
+        s.amp_cab_cab_focus_sent_for_slot = Some(slot_index);
+        return Ok(());
+    }
+    Ok(())
+}
+
+/// Focus USB sous-bloc **Cab 1** ou **Cab 2** d’un slot Cab dual (`1d`, capture HX Edit).
+#[tauri::command]
+fn focus_cab_dual_usb_part(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_index: u32,
+    part: String,
+) -> Result<(), String> {
+    if slot_index >= 16 {
+        return Err("slotIndex hors plage (0..15)".to_string());
+    }
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let slot_bus = kempline_index_to_slot_bus(slot_index as usize)
+        .ok_or_else(|| "slotIndex invalide".to_string())?;
+    let mut s = helix_arc.lock().unwrap();
+    if !s.connected || s.preset_content_only {
+        return Err("focus Cab dual ignoré (HX non prêt ou lecture preset)".to_string());
+    }
+    match part.trim().to_ascii_lowercase().as_str() {
+        "cab2" => {
+            helix::cab_dual_live_write::send_cab_dual_cab2_focus_and_poke(
+                &mut s, slot_index, slot_bus,
+            );
+        }
+        "cab1" | "cab" => {
+            helix::cab_dual_live_write::send_cab_dual_cab1_focus_and_poke(
+                &mut s, slot_index, slot_bus,
+            );
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Écriture live USB paramètre : **seul** chemin d’envoi « valeur bloc » depuis le panneau models
 /// (bool → trame `23`, float → `27` ; voir `helix/live_write.rs` + `HelixLiveWrite.json`).
 /// Alternative : `write_live_param_midi_cc` si transport `midi_cc`. **Ne pas** dupliquer d’envoi ED03 ailleurs pour ce cas d’usage.
@@ -1165,6 +1355,8 @@ fn write_live_param(
     raw_value: f64,
     chain_min: Option<f64>,
     chain_max: Option<f64>,
+    dual_part: Option<String>,
+    amp_cab_assign_variant: Option<String>,
 ) -> Result<(), String> {
     if slot_index >= 16 {
         return Err("slotIndex hors plage (0..15)".to_string());
@@ -1185,11 +1377,35 @@ fn write_live_param(
     validate_usb_live_write_metadata(dt, vt)?;
 
     // Utilise la valeur réelle du slider, bornée dans l'intervalle machine attendu.
-    let raw = raw_value.clamp(0.0, 1.0) as f32;
-    // Trames calquées sur capture USBPcap HX Edit.
-    // Cette construction est déléguée à `helix/live_write.rs` pour itérer
-    // rapidement sur le protocole reverse-engineered sans gonfler `lib.rs`.
+  let raw = raw_value.clamp(0.0, 1.0) as f32;
+    let dual_part_ref = dual_part.as_deref().map(str::trim);
+    let variant_ref = amp_cab_assign_variant.as_deref().map(str::trim);
     let mut s = helix_arc.lock().unwrap();
+    if dual_part_ref == Some("cab2") {
+        if let Some(slot_bus) = kempline_index_to_slot_bus(slot_index as usize) {
+            helix::cab_dual_live_write::send_cab_dual_cab2_focus(&mut s, slot_index, slot_bus);
+        }
+    }
+    if dual_part_ref == Some("cab") && s.amp_cab_cab_focus_sent_for_slot != Some(slot_index) {
+        let legacy = variant_ref
+            .map(|v| v.eq_ignore_ascii_case("amp+cab-legacy"))
+            .unwrap_or(false);
+        if legacy {
+            if let Some(slot_bus) = kempline_index_to_slot_bus(slot_index as usize) {
+                let focus =
+                    helix::amp_cab_live_write::build_amp_cab_cab_focus_packet(&mut s, slot_bus);
+                s.send(crate::helix::packet::OutPacket::new(focus));
+                s.amp_cab_cab_focus_sent_for_slot = Some(slot_index);
+            }
+        }
+    }
+    let route_override = resolve_live_write_route_override(
+        &s,
+        slot_index,
+        param_index,
+        dual_part_ref,
+        variant_ref,
+    );
     let frames = build_live_write_frames_from_state(
         &mut s,
         raw,
@@ -1200,6 +1416,7 @@ fn write_live_param(
         vt,
         chain_min,
         chain_max,
+        route_override,
     );
 
     s.send(OutPacket::new(frames.pre_packet_x80.clone()));
@@ -2055,6 +2272,330 @@ fn get_active_preset_slot_linked_cab_with_params(
     Some(LinkedCabWithParams { cab, values })
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DualSlotPartOut {
+    chain_hex: String,
+    category: String,
+    name: String,
+    model_id: String,
+    values: Vec<preset_chain_params::ChainParamValue>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DualSlotPartsOut {
+    /// `amp_cab` ou `cab_dual`.
+    kind: String,
+    parts: Vec<DualSlotPartOut>,
+}
+
+fn module_quadruple_from_chain_hex(hex: &str) -> Option<[String; 4]> {
+    let h = hex.trim().to_lowercase();
+    if h.is_empty() {
+        return None;
+    }
+    if let Some(cab) = cab_info_from_module_id(&h) {
+        return Some(cab);
+    }
+    let entry = HX_CATALOG_MODULE_BY_HEX.get(&h)?;
+    let model_id = MODEL_ID_BY_HEX.get(&h).cloned().unwrap_or_default();
+    Some([
+        h,
+        entry[0].clone(),
+        entry[1].clone(),
+        model_id,
+    ])
+}
+
+fn dual_slot_kind(seg: &[u8], blocks_len: usize) -> Option<&'static str> {
+    if blocks_len < 2 {
+        return None;
+    }
+    if cab_dual_c219_cab_hexes(seg)
+        .map(|v| v.len() >= 2)
+        .unwrap_or(false)
+    {
+        return Some("cab_dual");
+    }
+    let ids = augmented_module_ids_for_assignable_chunk(seg, blocks_len);
+    let h0 = block_chain_hex_for_c219(0, &ids)?;
+    let h1 = block_chain_hex_for_c219(1, &ids)?;
+    let k0 = catalog_slot_kind_for_chain_hex(&h0);
+    let k1 = catalog_slot_kind_for_chain_hex(&h1);
+    if matches!(k0, CatalogSlotKind::CabLike) && matches!(k1, CatalogSlotKind::CabLike) {
+        return Some("cab_dual");
+    }
+    if matches!(k0, CatalogSlotKind::AmpLike) && matches!(k1, CatalogSlotKind::CabLike) {
+        return Some("amp_cab");
+    }
+    if is_amp_cab_assignable_chunk(seg) {
+        return Some("amp_cab");
+    }
+    None
+}
+
+/// Indices des blocs `c219` pour les deux sous-modèles (ampli+cab ou cab dual).
+fn dual_slot_block_indices(
+    seg: &[u8],
+    blocks_len: usize,
+    kind: &str,
+) -> Option<(usize, usize)> {
+    if blocks_len < 2 {
+        return None;
+    }
+    let ids = augmented_module_ids_for_assignable_chunk(seg, blocks_len);
+    match kind {
+        "cab_dual" => {
+            let h = assignable_segment_hex_lower_body(seg);
+            let types = extract_c219_argument_type_hexes(&h);
+            let mut cab_indices: Vec<usize> = Vec::new();
+            for (bi, t) in types.iter().enumerate() {
+                let k = chain_hex_key_from_c219_argument_type(t);
+                if matches!(
+                    catalog_slot_kind_for_chain_hex(&k),
+                    CatalogSlotKind::CabLike
+                ) {
+                    cab_indices.push(bi);
+                }
+            }
+            if cab_indices.len() >= 2 {
+                return Some((cab_indices[0], cab_indices[1]));
+            }
+            let mut cab_indices_legacy: Vec<usize> = Vec::new();
+            for bi in 0..blocks_len {
+                let Some(h) = block_chain_hex_for_c219(bi, &ids) else {
+                    continue;
+                };
+                if matches!(
+                    catalog_slot_kind_for_chain_hex(&h),
+                    CatalogSlotKind::CabLike
+                ) {
+                    cab_indices_legacy.push(bi);
+                }
+            }
+            if cab_indices_legacy.len() >= 2 {
+                return Some((cab_indices_legacy[0], cab_indices_legacy[1]));
+            }
+            Some((0, 1))
+        }
+        "amp_cab" => {
+            let mut amp_bi: Option<usize> = None;
+            let mut cab_bi: Option<usize> = None;
+            for bi in 0..blocks_len {
+                let Some(h) = block_chain_hex_for_c219(bi, &ids) else {
+                    continue;
+                };
+                let k = catalog_slot_kind_for_chain_hex(&h);
+                if matches!(k, CatalogSlotKind::AmpLike) && amp_bi.is_none() {
+                    amp_bi = Some(bi);
+                }
+                if matches!(k, CatalogSlotKind::CabLike) && cab_bi.is_none() {
+                    cab_bi = Some(bi);
+                }
+            }
+            match (amp_bi, cab_bi) {
+                (Some(a), Some(c)) if a != c => Some((a, c)),
+                _ if blocks_len >= 2 => Some((0, blocks_len - 1)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Tous les `chainHex` cab repérés dans l’ordre des blocs `c219` (vérité trame scroll / preset).
+fn cab_dual_c219_cab_hexes(seg: &[u8]) -> Option<Vec<String>> {
+    if !matches!(seg.first().copied(), Some(0x06 | 0x08)) {
+        return None;
+    }
+    let h = assignable_segment_hex_lower_body(seg);
+    let types = extract_c219_argument_type_hexes(&h);
+    let cabs: Vec<String> = types
+        .iter()
+        .map(|t| chain_hex_key_from_c219_argument_type(t))
+        .filter(|k| matches!(catalog_slot_kind_for_chain_hex(k), CatalogSlotKind::CabLike))
+        .collect();
+    if cabs.len() >= 2 {
+        Some(cabs)
+    } else {
+        None
+    }
+}
+
+/// `chainHex` d’un bloc `c219` à l’index `block_index` (vérité matérielle dans la trame).
+pub(crate) fn chain_hex_for_c219_block_index(seg: &[u8], block_index: usize) -> Option<String> {
+    let h = assignable_segment_hex_lower_body(seg);
+    let types = extract_c219_argument_type_hexes(&h);
+    types
+        .get(block_index)
+        .map(|t| chain_hex_key_from_c219_argument_type(t))
+        .filter(|k| !k.is_empty())
+}
+
+/// Suffixe Cab 2 usine sur le fil `c319` (ex. Jazz Rivet `cd02d6` sur Soup Pro Ellipse dual).
+pub(crate) const CAB_DUAL_FACTORY_CAB2_SUFFIX: &str = "cd02d6";
+
+/// Cab 2 affiché : fil `c319` scroll en priorité ; `c219` seulement si le fil a encore le suffixe usine.
+pub(crate) fn cab_dual_effective_cab2_hex(wire_cab2: &str, c219_cab2: Option<&str>) -> String {
+    let wire = wire_cab2.trim().to_ascii_lowercase();
+    if !wire.is_empty() {
+        if let Some(c2) = c219_cab2.filter(|c| !c.trim().is_empty()) {
+            let c2 = c2.trim().to_ascii_lowercase();
+            if wire == CAB_DUAL_FACTORY_CAB2_SUFFIX && c2 != CAB_DUAL_FACTORY_CAB2_SUFFIX {
+                return c2;
+            }
+        }
+        return wire;
+    }
+    c219_cab2
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default()
+}
+
+/// 2ᵉ cab `c219` brut (sans fusion fil `c319`).
+fn raw_cab_dual_cab2_c219_hex(seg: &[u8]) -> Option<String> {
+    cab_dual_c219_cab_hexes(seg).and_then(|v| v.get(1).cloned())
+}
+
+/// Cab 2 d’un slot Cab dual : fil `c319` + override `c219` si suffixe usine encore sur le fil.
+pub(crate) fn linked_cab_dual_cab2_hex_from_assignable_chunk(chunk: &[u8]) -> Option<String> {
+    let (_, wire_cab2) = resolve_cab_dual_wire_pair(chunk)?;
+    let c219_cab2 = raw_cab_dual_cab2_c219_hex(chunk);
+    let effective = cab_dual_effective_cab2_hex(&wire_cab2, c219_cab2.as_deref());
+    if effective.is_empty() {
+        None
+    } else {
+        Some(effective)
+    }
+}
+
+pub(crate) fn extract_cab_dual_cab2_hex_for_hw_scroll_dump(buf: &[u8]) -> Option<String> {
+    let chunk = assignable_chunk_for_hw_scroll_dump(buf)?;
+    raw_cab_dual_cab2_c219_hex(chunk)
+}
+
+/// Si le fil combiné dual a un Cab 2 périmé (`c319`) mais le `c219` scroll dit autre chose, corrige le fil.
+pub(crate) fn reconcile_cab_dual_module_wire_with_cab2(module_hex: &str, cab2: &str) -> String {
+    let combined = module_hex.trim().to_ascii_lowercase();
+    let cab2 = cab2.trim().to_ascii_lowercase();
+    if combined.is_empty() || cab2.is_empty() {
+        return combined;
+    }
+    let Some((cab1, wire_cab2)) = combined.split_once("1a") else {
+        return combined;
+    };
+    if cab1.is_empty() || wire_cab2.trim() == cab2 {
+        return combined;
+    }
+    if !matches!(
+        catalog_slot_kind_for_chain_hex(cab1),
+        CatalogSlotKind::CabLike
+    ) || !matches!(
+        catalog_slot_kind_for_chain_hex(&cab2),
+        CatalogSlotKind::CabLike
+    ) {
+        return combined;
+    }
+    format!("{cab1}1a{cab2}")
+}
+
+pub(crate) fn dual_slot_parts_from_segment(seg: &[u8]) -> Option<DualSlotPartsOut> {
+    let blocks = preset_chain_params::parse_assignable_segment_param_blocks(seg)?;
+    let kind = dual_slot_kind(seg, blocks.len())?;
+    let (bi_a, bi_b) = dual_slot_block_indices(seg, blocks.len(), kind)?;
+    let ids = augmented_module_ids_for_assignable_chunk(seg, blocks.len());
+    let cab_dual = kind == "cab_dual";
+    let cab_dual_wire = cab_dual.then(|| resolve_cab_dual_wire_pair(seg)).flatten();
+    let cab_dual_hexes = cab_dual.then(|| cab_dual_c219_cab_hexes(seg)).flatten();
+    let mut parts: Vec<DualSlotPartOut> = Vec::with_capacity(2);
+    for (part_i, bi) in [bi_a, bi_b].into_iter().enumerate() {
+        let hex = if cab_dual {
+            if part_i == 0 {
+                cab_dual_wire
+                    .as_ref()
+                    .map(|(c1, _)| c1.clone())
+                    .or_else(|| cab_dual_hexes.as_ref().and_then(|v| v.get(0).cloned()))
+                    .or_else(|| chain_hex_for_c219_block_index(seg, bi))
+                    .or_else(|| block_chain_hex_for_c219(bi, &ids))
+            } else {
+                cab_dual_wire
+                    .as_ref()
+                    .map(|(_, c2)| {
+                        cab_dual_effective_cab2_hex(
+                            c2,
+                            cab_dual_hexes.as_ref().and_then(|v| v.get(1).map(String::as_str)),
+                        )
+                    })
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| cab_dual_hexes.as_ref().and_then(|v| v.get(1).cloned()))
+                    .or_else(|| chain_hex_for_c219_block_index(seg, bi))
+                    .or_else(|| block_chain_hex_for_c219(bi, &ids))
+            }
+        } else {
+            block_chain_hex_for_c219(bi, &ids)
+        }?;
+        let [chain_hex, category, name, model_id] = module_quadruple_from_chain_hex(&hex)?;
+        let values = blocks.get(bi)?.clone();
+        parts.push(DualSlotPartOut {
+            chain_hex,
+            category,
+            name,
+            model_id,
+            values,
+        });
+    }
+    if parts.len() != 2 {
+        return None;
+    }
+    Some(DualSlotPartsOut {
+        kind: kind.to_string(),
+        parts,
+    })
+}
+
+/// Deux sous-modèles d’un slot (Amp+Cab ou Cab dual) : noms catalogue + valeurs par bloc `c219`.
+#[tauri::command]
+fn get_active_preset_slot_dual_parts(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_index: u32,
+) -> Option<DualSlotPartsOut> {
+    if slot_index >= 16 {
+        return None;
+    }
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        (app.active_preset, app.helix_state.clone()?)
+    };
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() {
+        return None;
+    }
+    if s.preset_index != active_preset {
+        return None;
+    }
+    let seg = kempline_assignable_segment_bytes(&s.preset_data, slot_index as usize)?;
+    dual_slot_parts_from_segment(seg)
+}
+
+/// Cab 2 dual lu dans le **dernier pull scroll** (bloc `c219`), pas le défaut `bulkHex` JSON.
+#[tauri::command]
+fn get_hw_slot_cab_dual_cab2_hex(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_index: u32,
+) -> Option<String> {
+    if slot_index >= 16 {
+        return None;
+    }
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()?
+    };
+    let s = helix_arc.lock().unwrap();
+    s.last_hw_cab_dual_cab2_hex[slot_index as usize].clone()
+}
+
 /// Lecture d’un fichier JSON de définition de modèles (`resources/models/{file_base}.models`).
 #[tauri::command]
 fn read_models_definition_file(app: tauri::AppHandle, file_base: String) -> Result<String, String> {
@@ -2354,6 +2895,12 @@ fn should_use_amp_cab_combined_wire_hex(amp: &str, cab: &str) -> bool {
     if amp.is_empty() || cab.is_empty() || amp == cab {
         return false;
     }
+    let amp_k = catalog_slot_kind_for_chain_hex(&amp);
+    let cab_k = catalog_slot_kind_for_chain_hex(&cab);
+    // Deux cabs : Cab dual, pas Amp+Cab (évite `cd03xx` + `cd03yy` classé à tort en ampli+cab).
+    if matches!(amp_k, CatalogSlotKind::CabLike) && matches!(cab_k, CatalogSlotKind::CabLike) {
+        return false;
+    }
     if amp == "06" {
         return false;
     }
@@ -2384,6 +2931,62 @@ fn try_extract_amp_cab_combined_hex_from_chunk(chunk: &[u8]) -> Option<String> {
         return None;
     }
     Some(format!("{amp}1a{cab}"))
+}
+
+/// Paire cab1+cab2 sur le fil preset — marqueurs `c319` / `19…1a…09` et types `c219`.
+fn resolve_cab_dual_wire_pair(chunk: &[u8]) -> Option<(String, String)> {
+    infer_cab_dual_hex_pair_from_c319_1a_09_tail(chunk)
+        .or_else(|| infer_cab_dual_hex_pair_from_19_1a_09_markers(chunk))
+        .or_else(|| {
+            let h = assignable_segment_hex_lower_body(chunk);
+            infer_cab_dual_hex_pair_from_segment_hex_body(&h)
+        })
+}
+
+fn should_use_cab_dual_combined_wire_hex(cab1: &str, cab2: &str) -> bool {
+    let cab1 = cab1.trim().to_ascii_lowercase();
+    let cab2 = cab2.trim().to_ascii_lowercase();
+    if cab1.is_empty() || cab2.is_empty() {
+        return false;
+    }
+    if cab1 == cab2 {
+        return matches!(
+            catalog_slot_kind_for_chain_hex(&cab1),
+            CatalogSlotKind::CabLike
+        );
+    }
+    matches!(
+        catalog_slot_kind_for_chain_hex(&cab1),
+        CatalogSlotKind::CabLike
+    ) && matches!(
+        catalog_slot_kind_for_chain_hex(&cab2),
+        CatalogSlotKind::CabLike
+    )
+}
+
+/// Chemin dédié **Cab dual** : fil combiné `cab1Hex1acab2Hex` pour la grille preset.
+fn try_extract_cab_dual_combined_hex_from_chunk(chunk: &[u8]) -> Option<String> {
+    let (cab1, cab2) = resolve_cab_dual_wire_pair(chunk)?;
+    if !should_use_cab_dual_combined_wire_hex(&cab1, &cab2) {
+        return None;
+    }
+    Some(format!("{cab1}1a{cab2}"))
+}
+
+fn parsed_slot_from_cab_dual_combined(chunk: &[u8], combined: &str) -> ParsedSlot {
+    let (grid_x, grid_y) = extract_grid_xy_after_id(chunk, 0);
+    let cab1 = combined.split("1a").next().unwrap_or(combined);
+    let (category, name) = HX_CATALOG_MODULE_BY_HEX
+        .get(cab1)
+        .map(|e| (e[0].clone(), e[1].clone()))
+        .unwrap_or_else(|| (String::from("Cab"), combined.to_string()));
+    ParsedSlot {
+        category,
+        name,
+        grid_x,
+        grid_y,
+        module_hex: combined.to_string(),
+    }
 }
 
 fn parsed_slot_from_amp_cab_combined(chunk: &[u8], combined: &str) -> ParsedSlot {
@@ -2417,8 +3020,11 @@ fn parsed_slot_from_amp_cab_combined(chunk: &[u8], combined: &str) -> ParsedSlot
     }
 }
 
-/// Résout `module_hex` depuis un segment assignable — route par famille (Amp+Cab, standard, looper).
+/// Résout `module_hex` depuis un segment assignable — route par famille (Cab dual, Amp+Cab, standard, looper).
 fn extract_module_hex_from_assignable_chunk(chunk: &[u8]) -> Option<String> {
+    if let Some(hex) = try_extract_cab_dual_combined_hex_from_chunk(chunk) {
+        return Some(hex);
+    }
     if let Some(hex) = try_extract_amp_cab_combined_hex_from_chunk(chunk) {
         return Some(hex);
     }
@@ -3002,6 +3608,69 @@ fn infer_amp_cab_hex_pair_from_19_1a_09_markers(chunk: &[u8]) -> Option<(String,
     None
 }
 
+/// Après `85188317c319` : paire `<cab1> 1a <cab2> 09` (Cab dual sur le même marqueur que Amp+Cab).
+fn infer_cab_dual_hex_pair_from_c319_1a_09_tail(chunk: &[u8]) -> Option<(String, String)> {
+    if !is_amp_cab_assignable_chunk(chunk) {
+        return None;
+    }
+    let pos = chunk
+        .windows(AMP_CAB_MARKER.len())
+        .position(|w| w == AMP_CAB_MARKER)?;
+    let mut cursor = pos + AMP_CAB_MARKER.len();
+    while cursor + 2 < chunk.len() {
+        let Some(rel_sep) = chunk.get(cursor..)?.iter().position(|&b| b == 0x1a) else {
+            break;
+        };
+        let cab1_end = cursor + rel_sep;
+        let cab2_start = cab1_end + 1;
+        let Some(rel09) = chunk.get(cab2_start..)?.iter().position(|&b| b == 0x09) else {
+            cursor = cab1_end.saturating_add(1);
+            continue;
+        };
+        let cab2_end = cab2_start + rel09;
+        let cab1_key = chain_hex_key_from_raw_field_bytes(&chunk[cursor..cab1_end])?;
+        let cab2_key = chain_hex_key_from_raw_field_bytes(&chunk[cab2_start..cab2_end])?;
+        if should_use_cab_dual_combined_wire_hex(&cab1_key, &cab2_key) {
+            return Some((cab1_key, cab2_key));
+        }
+        cursor = cab2_end.saturating_add(1);
+    }
+    None
+}
+
+/// Cab dual depuis marqueurs `0x19 <cab1> 0x1a <cab2> 0x09`.
+fn infer_cab_dual_hex_pair_from_19_1a_09_markers(chunk: &[u8]) -> Option<(String, String)> {
+    if !matches!(chunk.first().copied(), Some(0x06 | 0x08)) {
+        return None;
+    }
+    let mut cursor = 0usize;
+    while cursor < chunk.len() {
+        if chunk[cursor] != 0x19 {
+            cursor += 1;
+            continue;
+        }
+        let cab1_start = cursor + 1;
+        let Some(rel_sep) = chunk.get(cab1_start..)?.iter().position(|&b| b == 0x1a) else {
+            cursor += 1;
+            continue;
+        };
+        let cab1_end = cab1_start + rel_sep;
+        let cab2_start = cab1_end + 1;
+        let Some(rel_end09) = chunk.get(cab2_start..)?.iter().position(|&b| b == 0x09) else {
+            cursor = cab2_start;
+            continue;
+        };
+        let cab2_end = cab2_start + rel_end09;
+        let cab1_key = chain_hex_key_from_raw_field_bytes(&chunk[cab1_start..cab1_end])?;
+        let cab2_key = chain_hex_key_from_raw_field_bytes(&chunk[cab2_start..cab2_end])?;
+        if should_use_cab_dual_combined_wire_hex(&cab1_key, &cab2_key) {
+            return Some((cab1_key, cab2_key));
+        }
+        cursor = cab2_end.saturating_add(1);
+    }
+    None
+}
+
 /// Module principal extrait d'une structure dual-slot `0x19 <A> 0x1a <B> 0x09`.
 /// Retourne:
 /// - `A1aB` si la combinaison existe au catalogue,
@@ -3036,10 +3705,13 @@ fn infer_module_hex_from_19_1a_09_fields(chunk: &[u8]) -> Option<String> {
             if HX_CATALOG_MODULE_BY_HEX.contains_key(&combined) {
                 return Some(combined);
             }
-            let a_known = HX_CATALOG_MODULE_BY_HEX.contains_key(a);
-            let b_known = HX_CATALOG_MODULE_BY_HEX.contains_key(b);
             let a_kind = catalog_slot_kind_for_chain_hex(a);
             let b_kind = catalog_slot_kind_for_chain_hex(b);
+            if should_use_cab_dual_combined_wire_hex(a, b) {
+                return Some(combined);
+            }
+            let a_known = HX_CATALOG_MODULE_BY_HEX.contains_key(a);
+            let b_known = HX_CATALOG_MODULE_BY_HEX.contains_key(b);
             // Priorité affichage slot principal: Amp/Preamp avant Cab/IR.
             if a_known
                 && matches!(a_kind, CatalogSlotKind::AmpLike)
@@ -3081,6 +3753,30 @@ fn infer_module_hex_from_19_1a_09_fields(chunk: &[u8]) -> Option<String> {
     None
 }
 
+/// Paire cab1 + cab2 à partir des types d’argument `c219` (deux champs CabLike).
+fn infer_cab_dual_hex_pair_from_segment_hex_body(h: &str) -> Option<(String, String)> {
+    let types = extract_c219_argument_type_hexes(h);
+    if types.len() < 2 {
+        return None;
+    }
+    let keys: Vec<String> = types
+        .iter()
+        .map(|t| chain_hex_key_from_c219_argument_type(t))
+        .collect();
+    let mut cab_keys: Vec<String> = keys
+        .into_iter()
+        .filter(|k| matches!(catalog_slot_kind_for_chain_hex(k), CatalogSlotKind::CabLike))
+        .collect();
+    if cab_keys.len() >= 2 {
+        let cab1 = cab_keys.remove(0);
+        let cab2 = cab_keys.remove(0);
+        if should_use_cab_dual_combined_wire_hex(&cab1, &cab2) {
+            return Some((cab1, cab2));
+        }
+    }
+    None
+}
+
 /// Paire ampli + cab à partir des types d’argument de **tous** les `c219` visibles dans le corps hex du segment.
 /// Plusieurs blocs `c219` (ampli + effet interne + cab, etc.) : premier type **AmpLike** catalogue puis premier **CabLike** après ;
 /// si le catalogue ne classe pas, repli = premier et dernier préfixe 6 hex.
@@ -3115,6 +3811,17 @@ fn infer_amp_cab_hex_pair_from_segment_hex_body(h: &str) -> Option<(String, Stri
 /// infère `[hex_ampli, hex_cab]` depuis les types `c219` (y compris ampli + cab + blocs intermédiaires).
 fn augmented_module_ids_for_assignable_chunk(seg: &[u8], blocks_len: usize) -> Vec<String> {
     let ids = extract_module_ids_from_assignable_chunk(seg);
+    if blocks_len >= 2 {
+        if let Some((cab1, cab2)) = resolve_cab_dual_wire_pair(seg) {
+            let inferred = vec![cab1.clone(), cab2.clone()];
+            if ids.len() == 1 && (ids[0] == cab1 || ids[0] == cab2) {
+                return inferred;
+            }
+            if ids.is_empty() {
+                return inferred;
+            }
+        }
+    }
     if !is_amp_cab_assignable_chunk(seg) || blocks_len < 2 {
         return ids;
     }
@@ -3237,8 +3944,11 @@ fn amp_cab_combined_chain_hex_for_slot_if_better(chunk: &[u8], extracted_id_hex:
     None
 }
 
-/// Premier module dans un segment assignable — routeur (Amp+Cab puis standard).
+/// Premier module dans un segment assignable — routeur (Cab dual, Amp+Cab, puis standard).
 fn extract_first_module_from_assignable_chunk(chunk: &[u8]) -> ParsedSlot {
+    if let Some(combined) = try_extract_cab_dual_combined_hex_from_chunk(chunk) {
+        return parsed_slot_from_cab_dual_combined(chunk, &combined);
+    }
     if let Some(combined) = try_extract_amp_cab_combined_hex_from_chunk(chunk) {
         return parsed_slot_from_amp_cab_combined(chunk, &combined);
     }
@@ -3606,6 +4316,8 @@ pub fn run() {
             probe_live_param_write,
             probe_slot_model_usb,
             write_live_param,
+            focus_amp_cab_usb_part,
+            focus_cab_dual_usb_part,
             write_live_param_midi_cc,
             write_path1_input_source,
             get_path1_input_source_wire_value,
@@ -3627,6 +4339,9 @@ pub fn run() {
             get_active_preset_slot_assignable_usb_json,
             get_active_preset_slot_linked_cab,
             get_active_preset_slot_linked_cab_with_params,
+            get_active_preset_slot_dual_parts,
+            get_hw_slot_cab_dual_cab2_hex,
+            helix::hx_edit_console_cmds::hx_console_change_cab2,
             get_preset_data_hex,
             read_models_definition_file,
         ])
@@ -4430,6 +5145,29 @@ mod assignable_amp_cab_chunk_tests {
         assert_eq!(
             super::chain_hex_key_from_c219_argument_type(&types[0]),
             "cd0209"
+        );
+    }
+
+    #[test]
+    fn reconcile_cab_dual_wire_replaces_stale_c319_cab2_with_c219() {
+        let out = super::reconcile_cab_dual_module_wire_with_cab2("cd031c1acd02d6", "cd031c");
+        assert_eq!(out, "cd031c1acd031c");
+    }
+
+    #[test]
+    fn cab_dual_effective_cab2_prefers_wire_when_c219_absent() {
+        assert_eq!(super::cab_dual_effective_cab2_hex("cd02d6", None), "cd02d6");
+    }
+
+    #[test]
+    fn cab_dual_effective_cab2_overrides_stale_factory_suffix_from_c219() {
+        assert_eq!(
+            super::cab_dual_effective_cab2_hex("cd02d6", Some("cd031c")),
+            "cd031c"
+        );
+        assert_eq!(
+            super::cab_dual_effective_cab2_hex("cd031c", Some("cd02d6")),
+            "cd031c"
         );
     }
 }

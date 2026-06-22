@@ -11,6 +11,11 @@ pub mod keep_alive;
 pub mod modes;
 pub mod live_write;
 pub mod live_write_config;
+pub mod amp_cab_live_write;
+pub mod cab_dual_live_write;
+pub mod cab_dual;
+pub mod cab_dual_cab2_replace;
+pub mod hx_edit_console_cmds;
 pub mod path1_io_live_write;
 pub mod path1_split_live_write;
 pub mod edit_slot_model;
@@ -28,6 +33,7 @@ pub mod amorcage;
 pub mod phase4_state;
 pub mod init_trace;
 
+use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -74,6 +80,11 @@ pub fn kempline_index_to_slot_bus(slot_index: usize) -> Option<u8> {
     } else {
         Some(i + 3)
     }
+}
+
+/// Clé cache écho ED03 : `(slot_bus, PP bloc modèle, param_selector wire)`.
+pub fn echo_model_cache_key(slot_bus: u8, route_pp: u8, param_selector: u8) -> (u8, u8, u8) {
+    (slot_bus, route_pp, param_selector)
 }
 
 /// Mapping slot bus USB -> index grille Kempline (0..15).
@@ -273,8 +284,22 @@ pub struct HelixState {
     /// Dernier bloc `83 66 cd 05 … 1c` extrait d’un écho IN `27 … ed 03 03 10`
     /// (capture HX Edit). Sert à aligner les écritures live sur la session USB réelle.
     pub last_ed03_echo_model: Option<[u8; 16]>,
+    /// Bloc modèle `83:66:cd` mémorisé par `(slot_bus, route_pp, param_selector)` depuis les échos IN.
+    pub ed03_echo_model_by_slot_param: HashMap<(u8, u8, u8), [u8; 16]>,
     /// Dernier octet de séquence (`… cd 05 XX …`) envoyé en OUT live tant qu’on n’a pas reçu d’écho IN.
     pub ed03_live_write_seq_sent: Option<u8>,
+    /// Slot Kempline pour lequel le focus cab `1b` a déjà été envoyé cette session USB.
+    pub amp_cab_cab_focus_sent_for_slot: Option<u32>,
+    /// Slot Kempline pour lequel le focus Cab 2 dual (`1d` + `cd:04` + `1a:01`) a été envoyé.
+    pub cab_dual_cab2_focus_sent_for_slot: Option<u32>,
+    /// Dernier OUT focus Cab 2 (`1d`) — sert au ctr `ed:08` post-IN 36o.
+    pub last_cab_dual_cab2_focus_packet: Option<Vec<u8>>,
+    /// Ctr `ed:08` calculé après IN `19`/36o (lane `cd:04` Stomp).
+    pub cab_dual_cab2_handshake_ed08_ctr: Option<u16>,
+    /// Dernier ctr appris depuis un IN `19`/36o Cab 2 (`cd:04`) pendant focus/handshake.
+    pub cab_dual_cab2_last_in36_ed08_ctr: Option<u16>,
+    /// Dernière trame IN `19`/36o Cab 2 (`cd:04`) — réponse au focus onglet Cab 2.
+    pub cab_dual_cab2_last_in36_frame: Option<Vec<u8>>,
     /// Compteurs dédiés au write live `27` (reverse-engineering HX Edit).
     pub live_write_ctr: u16,
     pub live_write_yy: u8,
@@ -309,6 +334,12 @@ pub struct HelixState {
     /// Remplie par `usb_listener` tant que `Instant::now() < deadline` (courte, ~55 ms ; max ~40 trames).
     pub usb_slot_focus_capture_deadline: Option<Instant>,
     pub usb_slot_focus_capture: Vec<Vec<u8>>,
+    /// Capture IN pendant replace Cab dual (#14–#28 `cab dual change right.json`).
+    pub cab_dual_cab2_handshake_until: Option<Instant>,
+    pub cab_dual_cab2_handshake_capture: Vec<Vec<u8>>,
+    /// Après focus Cab 2 (`1d` + `1a:01`) : bloque l’ACK `ed:08` auto du mode standard
+    /// (sinon double ACK → pas de `IN 21` avant le bulk replace).
+    pub cab_dual_cab2_suppress_standard_ed08_until: Option<Instant>,
     /// Dernier paquet IN « focus slot » parsé par index Kempline (rempli par `sync_hardware_slot_focus_usb`).
     pub last_slot_focus_capsule: [Option<slot_focus_in::SlotFocusInCapsule>; 16],
     /// Empreinte précédente pour surveillance contenu slot (modèle / vide / params).
@@ -338,6 +369,8 @@ pub struct HelixState {
     pub hw_model_last_scroll_in_at: Option<Instant>,
     /// Dernier `IN 1d` scroll en attente d’ACK (paire 1d→1f avant pull).
     pub hw_model_scroll_deferred_1d: Option<Vec<u8>>,
+    /// Cab 2 lu dans le dernier pull scroll (bloc `c219`), par slot Kempline 0..15.
+    pub last_hw_cab_dual_cab2_hex: [Option<String>; 16],
 
     /// Déduplication des événements paramètre IN (`85:62…1c:PP:77`).
     pub slot_param_emit: slot_param_in::SlotParamEmitState,
@@ -564,7 +597,14 @@ impl HelixState {
             ed03_cmd_type:      0x01,
             session_quadruple: [0xf4, 0x1e, 0x00, 0x00],
             last_ed03_echo_model: None,
+            ed03_echo_model_by_slot_param: HashMap::new(),
             ed03_live_write_seq_sent: None,
+            amp_cab_cab_focus_sent_for_slot: None,
+            cab_dual_cab2_focus_sent_for_slot: None,
+            last_cab_dual_cab2_focus_packet: None,
+            cab_dual_cab2_handshake_ed08_ctr: None,
+            cab_dual_cab2_last_in36_ed08_ctr: None,
+            cab_dual_cab2_last_in36_frame: None,
             live_write_ctr: 0x6cbd,
             live_write_yy: 0x17,
             slot_model_lane_seq: None,
@@ -579,6 +619,9 @@ impl HelixState {
             path1_split_type_wire: None,
             usb_slot_focus_capture_deadline: None,
             usb_slot_focus_capture: Vec::new(),
+            cab_dual_cab2_handshake_until: None,
+            cab_dual_cab2_handshake_capture: Vec::new(),
+            cab_dual_cab2_suppress_standard_ed08_until: None,
             last_slot_focus_capsule: std::array::from_fn(|_| None),
             slot_watch_prev: std::array::from_fn(|_| slot_watch::SlotWatchSnapshot::default()),
             hw_slot_content_sequence: 0,
@@ -599,6 +642,7 @@ impl HelixState {
             hw_model_post_pull_deadline: None,
             hw_model_last_scroll_in_at: None,
             hw_model_scroll_deferred_1d: None,
+            last_hw_cab_dual_cab2_hex: std::array::from_fn(|_| None),
             slot_param_emit: slot_param_in::SlotParamEmitState::default(),
             init_usb_settle_until: None,
             suppress_1d_firmware_notify_ack: false,
@@ -763,6 +807,11 @@ impl HelixState {
             return;
         };
         self.last_ed03_echo_model = Some(b);
+        amp_cab_live_write::cache_ed03_model_blocks_from_echo(
+            &mut self.ed03_echo_model_by_slot_param,
+            data,
+            b,
+        );
         // Nouvel écho device : on repart de sa séquence pour les prochains OUT.
         self.ed03_live_write_seq_sent = None;
         eprintln!(
@@ -1002,6 +1051,22 @@ impl HelixState {
     /// ACK lane `f4:xx` — réservé aux réponses `f0:03` (preset switch), pas aux chunks 272.
     pub fn next_preset_dump_ack_double(&mut self) -> [u8; 2] {
         self.next_preset_dump_ack_f4_lane()
+    }
+
+    /// Fenêtre active de replace Cab dual #2 (évite les ACK `ed:08` automatiques du mode standard).
+    pub fn cab_dual_cab2_handshake_active(&self) -> bool {
+        self.cab_dual_cab2_handshake_until
+            .as_ref()
+            .is_some_and(|d| Instant::now() < *d)
+    }
+
+    /// Ne pas laisser `standard` acquitter un IN `19`/36o post-focus Cab 2.
+    pub fn cab_dual_cab2_block_standard_auto_ack(&self) -> bool {
+        self.cab_dual_cab2_handshake_active()
+            || self
+                .cab_dual_cab2_suppress_standard_ed08_until
+                .as_ref()
+                .is_some_and(|d| Instant::now() < *d)
     }
 
     /// Double pour la lane éditeur ed:03 36 bytes (phase 4, pull 1b/19).

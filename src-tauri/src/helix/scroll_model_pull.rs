@@ -892,10 +892,30 @@ fn finalize_pull_capture(
         .iter()
         .find_map(|f| crate::extract_category_hint_for_hw_scroll_dump(f));
 
-    let cab_hex_hint = frames
+    // Cab dual scroll : identité Cab 2 = fil `c319` ; `c219` seulement si suffixe usine encore sur le fil.
+    let cab2_from_c219 = frames
         .iter()
-        .find_map(|f| crate::extract_linked_cab_hex_for_hw_scroll_dump(f))
-        .or_else(|| crate::cab_hex_from_combined_module_wire(&module_hex));
+        .find_map(|f| crate::extract_cab_dual_cab2_hex_for_hw_scroll_dump(f));
+    let wire_cab2 = crate::cab_hex_from_combined_module_wire(&module_hex);
+    let cab2_override = wire_cab2.as_ref().and_then(|wire| {
+        cab2_from_c219.as_ref().map(|c2| {
+            crate::cab_dual_effective_cab2_hex(wire, Some(c2.as_str()))
+        }).filter(|effective| effective != wire)
+    });
+
+    let module_hex = cab2_override
+        .as_ref()
+        .map(|cab2| crate::reconcile_cab_dual_module_wire_with_cab2(&module_hex, cab2))
+        .unwrap_or(module_hex);
+
+    let cab_hex_hint = cab2_override
+        .clone()
+        .or(wire_cab2.clone())
+        .or_else(|| {
+            frames
+                .iter()
+                .find_map(|f| crate::extract_linked_cab_hex_for_hw_scroll_dump(f))
+        });
 
     log_hw_model_changed(
         &module_hex,
@@ -912,6 +932,14 @@ fn finalize_pull_capture(
         state.hw_model_pull_last_at = Some(Instant::now());
         return None;
     };
+
+    if let Some(cab2) = cab2_override.as_ref().filter(|s| !s.is_empty()) {
+        if slot_index < 16 {
+            state.last_hw_cab_dual_cab2_hex[slot_index as usize] = Some(cab2.clone());
+        }
+    } else if slot_index < 16 {
+        state.last_hw_cab_dual_cab2_hex[slot_index as usize] = None;
+    }
 
     send_post_pull_resume_traffic(state);
 
@@ -1097,6 +1125,27 @@ fn scroll_log_extra_notes(
 }
 
 /// `chainHexHint` = hex **fil** retenu (souvent ampli court) ; `cabHexHint` = cab lu dans le bulk (`c219`).
+fn cab_dual_wire_parts(module_hex: &str) -> Option<(&str, &str)> {
+    if !module_hex.contains("1a") || module_hex.len() <= 12 {
+        return None;
+    }
+    let cab1 = module_hex.split("1a").next().unwrap_or("").trim();
+    let cab2 = module_hex.split("1a").nth(1).unwrap_or("").trim();
+    if cab1.is_empty() || cab2.is_empty() {
+        return None;
+    }
+    let is_cab = |hex: &str| {
+        model_catalog::resolve_chain_hex_entry(hex)
+            .map(|e| e.category.eq_ignore_ascii_case("cab"))
+            .unwrap_or(false)
+    };
+    if is_cab(cab1) && is_cab(cab2) {
+        Some((cab1, cab2))
+    } else {
+        None
+    }
+}
+
 fn log_hw_model_changed(
     module_hex: &str,
     simple_hex: Option<&str>,
@@ -1137,7 +1186,14 @@ fn log_hw_model_changed(
     } else if amp_cab_wire {
         let amp_part = module_hex.split("1a").next().unwrap_or(module_hex);
         let cab_part = module_hex.split("1a").nth(1).unwrap_or("");
-        if let Some(entry) = model_catalog::resolve_chain_hex_entry(amp_part) {
+        if let Some((cab1, cab2)) = cab_dual_wire_parts(module_hex) {
+            let name = model_catalog::resolve_chain_hex_entry(cab1)
+                .map(|e| e.name)
+                .unwrap_or_else(|| "(cab dual)".to_string());
+            eprintln!(
+                "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"dump_len\": {dump_len}, \"cabDualWire\": true, \"cab1Hex\": \"{cab1}\", \"cab2Hex\": \"{cab2}\", \"name\": \"{name}\", \"category\": \"Cab\", \"subCategory\": \"Dual\"{extra}"
+            );
+        } else if let Some(entry) = model_catalog::resolve_chain_hex_entry(amp_part) {
             eprintln!(
                 "[ScrollModelPull] \"chainHexHint\": \"{module_hex}\", \"dump_len\": {dump_len}, \"ampCabWire\": true, \"ampHex\": \"{amp_part}\", \"cabHexWire\": \"{cab_part}\", \"name\": \"{}\", \"category\": \"Amp+Cab (fil)\", \"subCategory\": \"{}\"{extra}",
                 entry.name,

@@ -31,6 +31,7 @@ Ce fichier est le **mémo technique** pour reprendre le développement sans l’
 ### Partiel / à faire
 
 - **Path 1 Output / Merge** : picker verrouillé + focus USB ; pas encore live write / scroll HW (LT à identifier — voir TODO § Path 1 structurel).
+- **Cab dual IR** (onglets Cab 1 / Cab 2) : **Cab 1 = picker libre** ; **Cab 2 = picker verrouillé** Cab / Single IR (affichage). Surbrillance Cab 2 = id **single** (`dualTabPanes[1].catalogModelId`). **USB replace cab2** : entrée assign `dual` / WithPan (hint `c319`), via `resolveCabDualCab2UsbWireFromPicker` + `build_cab_dual_replace_cab_bulk` (`variant=dual`). Implémentation : `syncPickerForCabDualTab` dans `models.ts`.
 - **Helix LT** : topologie 4 paths / 2 DSP, 32 segments — non implémenté (TODO § grille device).
 - **Matrice — copier/coller, déplacer (v1)** : même path, Pointer Events, cache session — handoff [`docs/matrix-edit-handoff.md`](docs/matrix-edit-handoff.md) ; bugs et suite dans TODO § Matrice.
 - **Budget DSP** (`load` dans `.models`) — non calculé côté app.

@@ -16,6 +16,17 @@ use crate::helix::live_write_config::{
 };
 use crate::helix::{kempline_index_to_slot_bus, HelixState};
 
+#[derive(Clone)]
+pub struct LiveWriteRouteOverride {
+    pub pp: u8,
+    pub pp_source: &'static str,
+    pub param_selector: u8,
+    pub param_selector_source: &'static str,
+    pub model_block: [u8; 16],
+    /// Si vrai, ne pas écraser l'octet tag (index 4) avec la séquence live write.
+    pub preserve_model_tag: bool,
+}
+
 pub struct LiveWriteFrames {
     pub model_block_kind: &'static str,
     /// Premier octet de la paire principale : `0x27` (float) ou `0x23` (bool ou discret indexé HX Edit).
@@ -103,15 +114,25 @@ fn assemble_23_bool_write(
     ]
 }
 
-fn apply_echo_model_block(packet: &mut [u8], state: &mut HelixState, last_echo: [u8; 16]) {
-    let mut model_block = last_echo;
-    let next_seq = match state.ed03_live_write_seq_sent {
-        Some(prev) => prev.wrapping_add(1),
-        None => model_block[4].wrapping_add(1),
-    };
-    model_block[4] = next_seq;
-    state.ed03_live_write_seq_sent = Some(next_seq);
+fn apply_model_block(
+    packet: &mut [u8],
+    state: &mut HelixState,
+    mut model_block: [u8; 16],
+    advance_seq_on_tag: bool,
+) {
+    if advance_seq_on_tag {
+        let next_seq = match state.ed03_live_write_seq_sent {
+            Some(prev) => prev.wrapping_add(1),
+            None => model_block[4].wrapping_add(1),
+        };
+        model_block[4] = next_seq;
+        state.ed03_live_write_seq_sent = Some(next_seq);
+    }
     packet[24..40].copy_from_slice(&model_block);
+}
+
+fn apply_echo_model_block(packet: &mut [u8], state: &mut HelixState, last_echo: [u8; 16]) {
+    apply_model_block(packet, state, last_echo, true);
 }
 
 fn finalize_primary_packet(
@@ -208,6 +229,7 @@ pub fn build_live_write_frames_from_state(
     value_type: Option<i32>,
     chain_min: Option<f64>,
     chain_max: Option<f64>,
+    route_override: Option<LiveWriteRouteOverride>,
 ) -> LiveWriteFrames {
     let cfg = live_write_cfg();
     let bool_23 = infer_bool_wire_payload(display_type, value_type);
@@ -245,8 +267,16 @@ pub fn build_live_write_frames_from_state(
         0x00, pre_cnt_x2, 0x00, 0x10, scroll_double[0], scroll_double[1], 0x00, 0x00,
     ];
 
-    let (pp, pp_source) = pp_for_live_write(display_type);
-    let (param_selector, param_selector_source) = param_selector_byte_from_index(param_index);
+    let (pp, pp_source) = if let Some(ref r) = route_override {
+        (r.pp, r.pp_source)
+    } else {
+        pp_for_live_write(display_type)
+    };
+    let (param_selector, param_selector_source) = if let Some(ref r) = route_override {
+        (r.param_selector, r.param_selector_source)
+    } else {
+        param_selector_byte_from_index(param_index)
+    };
 
     let seq_sel = state.next_x80_cnt();
     let ctr_a = state.live_write_ctr;
@@ -274,7 +304,25 @@ pub fn build_live_write_frames_from_state(
         )
     };
 
-    let (model_block_kind, _) = if let Some(last_echo) = state.last_ed03_echo_model {
+    let route_ref = route_override.as_ref();
+
+    let (model_block_kind, _) = if let Some(r) = route_ref {
+        apply_model_block(
+            &mut packet_a,
+            state,
+            r.model_block,
+            !r.preserve_model_tag,
+        );
+        finalize_primary_packet(
+            &mut packet_a,
+            primary_opcode,
+            slot_bus,
+            param_selector,
+            float_be_a,
+            mark_23,
+        );
+        ("amp_cab_cab_route", ())
+    } else if let Some(last_echo) = state.last_ed03_echo_model {
         apply_echo_model_block(&mut packet_a, state, last_echo);
         finalize_primary_packet(
             &mut packet_a,
@@ -326,7 +374,22 @@ pub fn build_live_write_frames_from_state(
         )
     };
 
-    if let Some(last_echo) = state.last_ed03_echo_model {
+    if let Some(r) = route_ref {
+        apply_model_block(
+            &mut packet_b,
+            state,
+            r.model_block,
+            !r.preserve_model_tag,
+        );
+        finalize_primary_packet(
+            &mut packet_b,
+            primary_opcode,
+            slot_bus,
+            param_selector,
+            float_be_b,
+            mark_23,
+        );
+    } else if let Some(last_echo) = state.last_ed03_echo_model {
         apply_echo_model_block(&mut packet_b, state, last_echo);
         finalize_primary_packet(
             &mut packet_b,

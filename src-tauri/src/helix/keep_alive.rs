@@ -23,6 +23,16 @@
 // IMPORTANT : c'est le POLL idle (sub=10). Les ARM bootstrap (`amorcage`) et les
 // ACK scroll (`firmware_scroll_ack`) restent sur sub=08 / 09:10 — ne pas confondre.
 //
+// ⚠ LANE ed:03 FIGÉE (`TAIL_ED = 7e 1c`) vs HX DYNAMIQUE — voir `keepalive_ed_lane`.
+// Sur la capture HX `add_dual_cab_soup_pro_2x12bluebell_HXEdit`, le keepalive ed:03
+// n'est PAS figé : il porte la lane modèle COURANTE (`8a 1c` pendant l'op, puis `9b 1c`
+// après l'écriture). HX a UNE seule lane host (keepalive = focus = ed:08 − 0x11) qui
+// avance de 0x11 à chaque écriture. Le device valide l'`IN 21` sur la continuité
+// `ed:08 == dernière lane keepalive + 0x11`. Ici on fige `7e 1c` (suffisant en idle car
+// le device est laxiste sur le trailer du poll) ; le focus Cab 2 reprend donc cette même
+// lane figée (`keepalive_ed_lane`) pour que l'ed:08 = `7e 1c + 0x11 = 8f 1c` raccorde et
+// débloque l'`IN 21`. Refonte propre (lane host unique qui avance comme HX) = chantier §5.
+//
 // FERMETURE GRACIEUSE (sub=02) : voir `graceful_close_packets` plus bas. À l'instant
 // du close, HX Edit envoie un DERNIER tour sur les 3 lanes avec `byte 11 = 0x02`
 // (le sous-type du *subscribe*), chacun ACKé par le Stomp, puis silence HID. C'est
@@ -93,6 +103,19 @@ pub const POLL_SUB: u8 = 0x10;
 /// Sous-type « fermeture / désabonnement éditeur » (octet 11), relevé sur
 /// `08_close_HXEdit.json` : c'est le sous-type du *subscribe*, réutilisé au close.
 pub const CLOSE_SUB: u8 = 0x02;
+
+/// Lane ed:03 (octets 12-13) que le keepalive idle déclare au device (`TAIL_ED` = `7e 1c`).
+///
+/// Le focus Cab 2 (`1d`) et l'ed:08 du handshake DOIVENT reprendre cette lane : sur la
+/// capture HX `add_dual_cab_soup_pro_2x12bluebell_HXEdit`, le device renvoie l'`IN 21`
+/// uniquement quand `ed:08 == dernière lane keepalive + 0x11` (`8a 1c` → `9b 1c`). La lane
+/// d'écho du device (`ec 02` côté HX, `5f 03` côté Stomp) est INDÉPENDANTE et ne sert pas
+/// à valider l'ed:08. Comme notre keepalive est figé sur `7e 1c`, le focus doit porter
+/// `7e 1c` → ed:08 `8f 1c`. Si un jour le keepalive devient dynamique (lane host unique qui
+/// avance comme HX, chantier §5), cette fonction restera la source unique à interroger.
+pub fn keepalive_ed_lane() -> [u8; 2] {
+    [TAIL_ED[0], TAIL_ED[1]]
+}
 
 /// Construit les 3 paquets de fermeture gracieuse (un par lane, `sub=0x02`).
 ///

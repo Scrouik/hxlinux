@@ -15,6 +15,13 @@
 // `83 66 cd` jusqu’à la fin du bulk (troncature si trop long) puis on ré-applique le
 // `slot_bus` sur `82 62 **`.
 //
+// **CRÉATION dual (juin 2026)** : le bulkHex `assign48_cd0a` de `HX_ModelUsbAssign.json` est
+// en réalité une forme REMPLACEMENT (head=27, sans le segment de création `82 13 06 14 83 18`).
+// Sur slot VIDE, HX Edit envoie un head=31 complet (capture `add_dual_cab_soup_pro_2x12bluebell`
+// fr1853) qui enregistre cab2 comme élément focusable. Sans lui, cab2 n'est jamais modifiable.
+// Voir `CAB_DUAL_CREATE_BULK60_HEAD31_TEMPLATE` + `build_cab_dual_create_bulk` (flag
+// `HX_CAB_DUAL_CREATE_HEAD31`, défaut ON).
+//
 // **Hex long déjà présent dans vos captures** (fichiers `Paquets Json/`) :
 // - **Replace / swap modèle (Preset33, mai 2026)** — même preset, slots 1–3 : bulk **48 o**,
 //   tout en **`80:10:ed:03`** (cf. `Preset33 Slot1 cd0184 to cd01fe.json` …). Après `83 66 cd 04`,
@@ -90,6 +97,21 @@ const REMOVE_MODEL_BULK36_CD03_TEMPLATE: [u8; 36] = [
     0x1b, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, 0x5c, 0x00, 0x04, 0xbb, 0x2a, 0x00, 0x00,
     0x01, 0x00, 0x06, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x83, 0x66, 0xcd, 0x03, 0xfa, 0x64, 0x1c, 0x65,
     0x81, 0x62, 0x04, 0x00,
+];
+
+/// Template **CRÉATION dual** — capture HX Edit `add_dual_cab_soup_pro_2x12bluebell_HXEdit.json`
+/// frame 1853 (head=**31**, 60 o). Contient la structure de création complète
+/// (`82 13 06 14 83 18` + trailer `09 20 0a c3`) ABSENTE du bulkHex `assign48_cd0a` de
+/// `HX_ModelUsbAssign.json` (forme REMPLACEMENT head=27, sans enregistrement de cab2). Sur slot
+/// vide, HX Edit envoie CE head=31 ; sans lui, le device crée un dual où cab2 n'est jamais
+/// focusable → le focus `1d` n'est jamais honoré. Variable par dual : le cab1 (identité),
+/// repatché depuis le bulkHex `dual`. cab2 = défaut `cd 02 d6` (Jazz Rivet, comme HX Edit).
+/// `slot_bus`/compteurs patchés au runtime.
+const CAB_DUAL_CREATE_BULK60_HEAD31_TEMPLATE: [u8; 60] = [
+    0x31, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, 0x24, 0x00, 0x04, 0xff, 0x1b, 0x00, 0x00,
+    0x01, 0x00, 0x06, 0x00, 0x21, 0x00, 0x00, 0x00, 0x83, 0x66, 0xcd, 0x03, 0xf1, 0x64, 0x27, 0x65,
+    0x82, 0x62, 0x01, 0x63, 0x82, 0x13, 0x06, 0x14, 0x83, 0x18, 0x83, 0x17, 0xc3, 0x19, 0xcd, 0x03,
+    0x1c, 0x1a, 0xcd, 0x02, 0xd6, 0x09, 0x20, 0x0a, 0xc3, 0x00, 0x00, 0x00,
 ];
 
 fn patch_short_ed03_16(
@@ -171,6 +193,41 @@ fn ed_op_from_assign_bulk_prefix(bulk: &[u8]) -> [u8; 4] {
         return [0xed, 0x03, bulk[4], bulk[5]];
     }
     [0xed, 0x03, 0x80, 0x10]
+}
+
+/// `HX_CAB_DUAL_CREATE_HEAD31` (défaut ON) : sur slot vide, créer le dual avec le head=31
+/// complet au lieu du bulkHex `assign48_cd0a` (head=27, sans enregistrement de cab2).
+/// `=0` → témoin : ancien comportement (head=27, cab2 non modifiable).
+fn cab_dual_create_head31_enabled() -> bool {
+    match std::env::var("HX_CAB_DUAL_CREATE_HEAD31").as_deref() {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// Reconnaît un bulkHex de dual (`assign48_cd0a`) : présence de `83 66 cd 0a`.
+fn bulk_is_cab_dual_cd0a(bulk: &[u8]) -> bool {
+    bulk.windows(4).any(|w| w == [0x83, 0x66, 0xcd, 0x0a])
+}
+
+/// Construit la commande de CRÉATION dual (head=31) à partir du bulkHex `assign48_cd0a`.
+/// On reprend le cab1 (identité du dual, entre `c3 19` et `1a`) et on l'insère dans le template
+/// de création. cab2 reste le défaut `cd 02 d6` (Jazz Rivet) — modifiable ensuite par le
+/// handshake focus → ed:08 → IN 21 → bulk `27`.
+pub fn build_cab_dual_create_bulk(dual_assign_bulk: &[u8]) -> Option<Vec<u8>> {
+    let (c1s, c1e) = cab_dual_cab1_field_range_in_bulk(dual_assign_bulk)?;
+    let cab1: Vec<u8> = dual_assign_bulk[c1s..c1e].to_vec();
+    let mut create = CAB_DUAL_CREATE_BULK60_HEAD31_TEMPLATE.to_vec();
+    let (t1s, t1e) = cab_dual_cab1_field_range_in_bulk(&create)?;
+    if cab1.len() == t1e - t1s {
+        create[t1s..t1e].copy_from_slice(&cab1);
+    } else {
+        create.splice(t1s..t1e, cab1.iter().copied());
+    }
+    Some(create)
 }
 
 #[derive(Debug, Clone)]
@@ -384,6 +441,8 @@ pub fn build_slot_model_probe_packets(
     slot_bus: u8,
     catalog_chain_bytes: Option<&[u8]>,
     usb_assign_full_bulk: Option<&[u8]>,
+    // Replace cab 2 après focus `1d` : pas de préambule `ef`/`f0` (capture `cab dual change right.json`).
+    cab_dual_cab2_replace_after_focus: bool,
 ) -> Vec<Vec<u8>> {
     // -------------------------------------------------------------------------
     // NOTE MAINTENANCE (importante)
@@ -402,6 +461,29 @@ pub fn build_slot_model_probe_packets(
     // comme `edOpcode`/`bulkKind`), jamais du nom de modèle.
     // -------------------------------------------------------------------------
     let mut packets: Vec<Vec<u8>> = Vec::new();
+
+    // CRÉATION dual sur slot VIDE : le bulkHex `assign48_cd0a` est une forme REMPLACEMENT
+    // (head=27, sans le segment de création `82 13 06 14 83 18`). HX Edit crée le dual avec un
+    // head=31 complet qui enregistre cab2 comme focusable. On substitue ici la commande de
+    // création (le cab1 = identité du dual est repris depuis le bulkHex d'origine).
+    let cab_dual_create_owned: Option<Vec<u8>> = if matches!(op, SlotModelProbeOp::AddToEmpty)
+        && cab_dual_create_head31_enabled()
+        && matches!(usb_assign_full_bulk, Some(b) if bulk_is_cab_dual_cd0a(b))
+    {
+        let made = usb_assign_full_bulk.and_then(build_cab_dual_create_bulk);
+        if let Some(ref c) = made {
+            eprintln!(
+                "[SlotModelProbe] cab dual CREATE head=31 ({} o) substitué au bulkHex assign48 (head=27) — \
+                 enregistre cab2 comme focusable",
+                c.len()
+            );
+        }
+        made
+    } else {
+        None
+    };
+    let usb_assign_full_bulk: Option<&[u8]> =
+        cab_dual_create_owned.as_deref().or(usb_assign_full_bulk);
 
     let (_op_short, bulk_template): ([u8; 4], Cow<'_, [u8]>) = match (op, usb_assign_full_bulk) {
         (_, Some(b)) if b.len() >= 32 => (ed_op_from_assign_bulk_prefix(b), Cow::Borrowed(b)),
@@ -427,7 +509,7 @@ pub fn build_slot_model_probe_packets(
     // Préambule unifié: deux courts de contexte (ef puis f0) avant le bulk.
     // Cela évite les transitions de session "bloquées" après un envoi 0310 qui
     // peuvent ensuite faire ignorer les bulks 8010 (et inversement).
-    if use_json_bulk {
+    if use_json_bulk && !cab_dual_cab2_replace_after_focus {
         let mut pre_ef = [0u8; 16];
         let mut pre_f0 = [0u8; 16];
         let ctr0 = state.live_write_ctr;
@@ -540,4 +622,394 @@ pub fn build_slot_model_probe_packets(
     }
 
     packets
+}
+
+const AMP_CAB_BULK_MARKER: [u8; 2] = [0xc3, 0x19];
+const C219_BULK_MARKER: [u8; 2] = [0xc2, 0x19];
+
+/// Champ module (`<hex…>`) après un marqueur `c219` dans un bulk cab `single` / `legacy`.
+pub fn module_field_bytes_after_c219(bulk: &[u8]) -> Option<Vec<u8>> {
+    let pos = bulk
+        .windows(C219_BULK_MARKER.len())
+        .position(|w| w == C219_BULK_MARKER)?;
+    let start = pos + C219_BULK_MARKER.len();
+    let tail = bulk.get(start..)?;
+    let end = tail.iter().position(|&b| b == 0x1a).unwrap_or(tail.len());
+    if end == 0 {
+        return None;
+    }
+    Some(tail[..end].to_vec())
+}
+
+/// Bornes `[start, end)` du champ cab dans un bulk assign `amp+cab` / `amp+cab-legacy`.
+fn amp_cab_cab_field_range_in_bulk(bulk: &[u8]) -> Option<(usize, usize)> {
+    let pos = bulk
+        .windows(AMP_CAB_BULK_MARKER.len())
+        .position(|w| w == AMP_CAB_BULK_MARKER)?;
+    let cursor = pos + AMP_CAB_BULK_MARKER.len();
+    let sep = bulk.get(cursor..)?.iter().position(|&b| b == 0x1a)?;
+    let cab_start = cursor + sep + 1;
+    if cab_start >= bulk.len() {
+        return None;
+    }
+    let tail = &bulk[cab_start..];
+    let cab_end = if let Some(p) = tail.iter().position(|&b| b == 0x09) {
+        cab_start + p
+    } else if tail.first() == Some(&0xcd) && tail.len() >= 3 {
+        cab_start + 3
+    } else if tail.first() == Some(&0x00) {
+        return None;
+    } else {
+        cab_start + 1
+    };
+    if cab_end <= cab_start {
+        return None;
+    }
+    Some((cab_start, cab_end))
+}
+
+/// Remplace la partie cab (`… 1a <cab> …`) dans un bulk Amp+Cab existant.
+pub fn patch_amp_cab_bulk_cab_field(bulk: &mut Vec<u8>, new_cab: &[u8]) -> Result<(), String> {
+    if new_cab.is_empty() {
+        return Err("champ cab vide".into());
+    }
+    let (start, end) =
+        amp_cab_cab_field_range_in_bulk(bulk).ok_or_else(|| "marqueur amp+cab (c319/1a) introuvable".to_string())?;
+    let old_len = end - start;
+    if new_cab.len() == old_len {
+        bulk[start..end].copy_from_slice(new_cab);
+        return Ok(());
+    }
+    bulk.splice(start..end, new_cab.iter().copied());
+    Ok(())
+}
+
+/// Bornes `[start, end)` du premier cab (`<cab1> 1a <cab2>`) dans un bulk Cab dual.
+pub(crate) fn cab_dual_cab1_field_range_in_bulk(bulk: &[u8]) -> Option<(usize, usize)> {
+    let pos = bulk
+        .windows(AMP_CAB_BULK_MARKER.len())
+        .position(|w| w == AMP_CAB_BULK_MARKER)?;
+    let cursor = pos + AMP_CAB_BULK_MARKER.len();
+    let sep = bulk.get(cursor..)?.iter().position(|&b| b == 0x1a)?;
+    let cab_start = cursor;
+    let cab_end = cursor + sep;
+    if cab_end <= cab_start {
+        return None;
+    }
+    Some((cab_start, cab_end))
+}
+
+/// Sur slot occupé après add dual : replace `83:66:cd:04` (Stomp XL + `cab dual change right.json`).
+fn reframe_cab_dual_bulk_cd0a_to_cd04_for_replace(bulk: &mut [u8]) {
+    for i in 0..bulk.len().saturating_sub(4) {
+        if bulk[i] == 0x83
+            && bulk[i + 1] == 0x66
+            && bulk[i + 2] == 0xcd
+            && bulk[i + 3] == 0x0a
+        {
+            bulk[i + 3] = 0x04;
+            return;
+        }
+    }
+}
+
+/// Remplace cab1 (avant `1a`) ou cab2 (après `1a`) dans un bulk Cab dual existant.
+pub fn patch_cab_dual_bulk_cab_field(
+    bulk: &mut Vec<u8>,
+    cab_index: u8,
+    new_cab: &[u8],
+) -> Result<(), String> {
+    if new_cab.is_empty() {
+        return Err("champ cab vide".into());
+    }
+    let range = match cab_index {
+        0 => cab_dual_cab1_field_range_in_bulk(bulk),
+        1 => amp_cab_cab_field_range_in_bulk(bulk),
+        _ => None,
+    }
+    .ok_or_else(|| format!("marqueur cab dual (c319/1a) introuvable pour cab {cab_index}"))?;
+    let (start, end) = range;
+    let old_len = end - start;
+    if new_cab.len() == old_len {
+        bulk[start..end].copy_from_slice(new_cab);
+        return Ok(());
+    }
+    bulk.splice(start..end, new_cab.iter().copied());
+    Ok(())
+}
+
+/// Bulk `replace` Cab dual : même entrée `dual`, un seul cab patché (`cab_index` 0 ou 1).
+pub fn build_cab_dual_replace_cab_bulk(
+    dual_model_id: &str,
+    cab_model_id: &str,
+    cab_variant: &str,
+    cab_index: u8,
+) -> Result<Vec<u8>, String> {
+    if cab_index > 1 {
+        return Err(format!("cab_index attendu 0 ou 1, reçu {cab_index}"));
+    }
+    let mut bulk = resolve_usb_assign_bulk(dual_model_id, "dual").ok_or_else(|| {
+        format!(
+            "Pas d'entrée HX_ModelUsbAssign pour cab dual {:?} variant dual",
+            dual_model_id
+        )
+    })?;
+    let cab_v = cab_variant.trim();
+    let cab_bulk = resolve_usb_assign_bulk(cab_model_id, cab_v).ok_or_else(|| {
+        format!(
+            "Pas d'entrée HX_ModelUsbAssign pour cab {:?} variant {:?}",
+            cab_model_id, cab_v
+        )
+    })?;
+    // Replace cab2 : hint dual wire (`c319` cab1 du bulk WithPan / legacy dual), pas `c219` single.
+    let cab_field = if cab_v.eq_ignore_ascii_case("dual") {
+        let (start, end) = cab_dual_cab1_field_range_in_bulk(&cab_bulk).ok_or_else(|| {
+            format!("bulk cab dual sans c319 cab1 exploitable ({cab_model_id})")
+        })?;
+        cab_bulk[start..end].to_vec()
+    } else {
+        module_field_bytes_after_c219(&cab_bulk)
+            .ok_or_else(|| format!("bulk cab sans bloc c219 exploitable ({cab_model_id})"))?
+    };
+
+    let parent_head = bulk.first().copied().unwrap_or(0);
+    let cab_head = cab_bulk.first().copied().unwrap_or(0);
+    let legacy_cab2 = cab_index == 1
+        && (crate::helix::cab_dual::legacy::wire::is_legacy_dual_bulk_head(parent_head)
+            || crate::helix::cab_dual::legacy::wire::is_legacy_dual_bulk_head(cab_head));
+
+    if legacy_cab2 {
+        bulk = crate::helix::cab_dual::legacy::wire::build_legacy_cab2_replace_bulk(
+            &bulk,
+            &cab_bulk,
+            &cab_field,
+        )?;
+    } else {
+        patch_cab_dual_bulk_cab_field(&mut bulk, cab_index, &cab_field)?;
+        reframe_cab_dual_bulk_cd0a_to_cd04_for_replace(&mut bulk);
+    }
+    Ok(bulk)
+}
+
+/// Bulk `replace` Amp+Cab : même ampli (`amp+cab` / `amp+cab-legacy`), cab issu d'une entrée cab.
+pub fn build_amp_cab_replace_cab_bulk(
+    amp_model_id: &str,
+    amp_cab_variant: &str,
+    cab_model_id: &str,
+    cab_variant: &str,
+) -> Result<Vec<u8>, String> {
+    let amp_v = amp_cab_variant.trim().to_ascii_lowercase();
+    if amp_v != "amp+cab" && amp_v != "amp+cab-legacy" {
+        return Err(format!(
+            "variante ampli attendue amp+cab ou amp+cab-legacy, reçu {:?}",
+            amp_cab_variant
+        ));
+    }
+    let mut bulk = resolve_usb_assign_bulk(amp_model_id, &amp_v).ok_or_else(|| {
+        format!(
+            "Pas d'entrée HX_ModelUsbAssign pour ampli {:?} variant {:?}",
+            amp_model_id, amp_v
+        )
+    })?;
+    let cab_bulk = resolve_usb_assign_bulk(cab_model_id, cab_variant.trim()).ok_or_else(|| {
+        format!(
+            "Pas d'entrée HX_ModelUsbAssign pour cab {:?} variant {:?}",
+            cab_model_id, cab_variant
+        )
+    })?;
+    let cab_field = module_field_bytes_after_c219(&cab_bulk)
+        .ok_or_else(|| format!("bulk cab sans bloc c219 exploitable ({cab_model_id})"))?;
+    patch_amp_cab_bulk_cab_field(&mut bulk, &cab_field)?;
+    Ok(bulk)
+}
+
+#[cfg(test)]
+mod amp_cab_replace_cab_tests {
+    use super::*;
+
+    #[test]
+    fn patches_who_watt_default_cab_with_greenback() {
+        let mut bulk = resolve_usb_assign_bulk("HD2_AmpWhoWatt100", "amp+cab").expect("amp+cab bulk");
+        let cab_bulk =
+            resolve_usb_assign_bulk("HD2_CabMicIr_4x12Greenback20", "single").expect("cab bulk");
+        let new_cab = module_field_bytes_after_c219(&cab_bulk).expect("cab field");
+        assert_eq!(new_cab, vec![0xcd, 0x02, 0xf2]);
+        patch_amp_cab_bulk_cab_field(&mut bulk, &new_cab).expect("patch");
+        let (_, end) = amp_cab_cab_field_range_in_bulk(&bulk).expect("range");
+        assert_eq!(&bulk[end - 3..end], &[0xcd, 0x02, 0xf2]);
+    }
+
+    #[test]
+    fn build_replace_cab_bulk_keeps_amp_cab_frame() {
+        let bulk = build_amp_cab_replace_cab_bulk(
+            "HD2_AmpWhoWatt100",
+            "amp+cab",
+            "HD2_CabMicIr_4x12Greenback20",
+            "single",
+        )
+        .expect("build");
+        assert!(bulk.windows(2).any(|w| w == AMP_CAB_BULK_MARKER));
+        let cab = module_field_bytes_after_c219(
+            &resolve_usb_assign_bulk("HD2_CabMicIr_4x12Greenback20", "single").unwrap(),
+        )
+        .unwrap();
+        let (s, e) = amp_cab_cab_field_range_in_bulk(&bulk).unwrap();
+        assert_eq!(&bulk[s..e], cab.as_slice());
+    }
+
+    #[test]
+    fn patches_cab_dual_second_cab_without_touching_first() {
+        let dual_id = "HD2_CabMicIr_SoupProEllipseWithPan";
+        let mut bulk = resolve_usb_assign_bulk(dual_id, "dual").expect("dual bulk");
+        let cab_bulk =
+            resolve_usb_assign_bulk("HD2_CabMicIr_4x12Greenback20", "single").expect("cab bulk");
+        let new_cab = module_field_bytes_after_c219(&cab_bulk).expect("cab field");
+        let (c1s, c1e) = cab_dual_cab1_field_range_in_bulk(&bulk).expect("cab1");
+        let cab1_before = bulk[c1s..c1e].to_vec();
+        patch_cab_dual_bulk_cab_field(&mut bulk, 1, &new_cab).expect("patch cab2");
+        assert_eq!(&bulk[c1s..c1e], cab1_before.as_slice());
+        let (_, end) = amp_cab_cab_field_range_in_bulk(&bulk).expect("cab2 range");
+        assert_eq!(&bulk[end - new_cab.len()..end], new_cab.as_slice());
+    }
+
+    #[test]
+    fn build_cab_dual_replace_deluxe_single_cab2_on_soup_dual() {
+        let bulk = build_cab_dual_replace_cab_bulk(
+            "HD2_CabMicIr_SoupProEllipseWithPan",
+            "HD2_CabMicIr_1x12USDeluxe",
+            "single",
+            1,
+        )
+        .expect("deluxe single cab2");
+        assert!(bulk.windows(4).any(|w| w == [0x83, 0x66, 0xcd, 0x04]));
+    }
+
+    #[test]
+    fn cab_dual_cab2_replace_probe_skips_ef_f0_preamble() {
+        let mut state = super::super::HelixState::new();
+        let bulk = build_cab_dual_replace_cab_bulk(
+            "HD2_CabMicIr_SoupProEllipseWithPan",
+            "HD2_CabMicIr_1x8SmallTweed",
+            "single",
+            1,
+        )
+        .expect("bulk");
+        let packs = build_slot_model_probe_packets(
+            &mut state,
+            SlotModelProbeOp::ReplaceOccupied,
+            0,
+            0x01,
+            None,
+            Some(&bulk),
+            true,
+        );
+        assert_eq!(packs.len(), 1, "cab2 replace = bulk seul après focus");
+        assert_eq!(packs[0].len(), 48);
+        assert_eq!(packs[0][0], 0x27);
+    }
+
+    #[test]
+    fn cab_dual_legacy_cab2_replace_probe_head_23() {
+        let mut state = super::super::HelixState::new();
+        let bulk = build_cab_dual_replace_cab_bulk(
+            "HD2_Cab1x6x9SoupProEllipse",
+            "HD2_Cab1x12Celest12H",
+            "dual",
+            1,
+        )
+        .expect("legacy bulk");
+        let packs = build_slot_model_probe_packets(
+            &mut state,
+            SlotModelProbeOp::ReplaceOccupied,
+            0,
+            0x01,
+            None,
+            Some(&bulk),
+            true,
+        );
+        assert_eq!(packs.len(), 1);
+        assert_eq!(packs[0].len(), 44);
+        assert_eq!(packs[0][0], 0x23);
+    }
+
+    #[test]
+    fn cab_dual_legacy_cab2_cd02xx_probe_head_25() {
+        let mut state = super::super::HelixState::new();
+        let bulk = build_cab_dual_replace_cab_bulk(
+            "HD2_Cab1x12Lead80",
+            "HD2_Cab1x12PrincessBlue",
+            "dual",
+            1,
+        )
+        .expect("legacy princess bulk");
+        let packs = build_slot_model_probe_packets(
+            &mut state,
+            SlotModelProbeOp::ReplaceOccupied,
+            0,
+            0x01,
+            None,
+            Some(&bulk),
+            true,
+        );
+        assert_eq!(packs.len(), 1);
+        assert_eq!(packs[0].len(), 48);
+        assert_eq!(packs[0][0], 0x25);
+    }
+
+    #[test]
+    fn build_cab_dual_replace_cab2_bulk_keeps_dual_frame() {
+        let bulk = build_cab_dual_replace_cab_bulk(
+            "HD2_CabMicIr_SoupProEllipseWithPan",
+            "HD2_CabMicIr_4x12Greenback20",
+            "single",
+            1,
+        )
+        .expect("build");
+        assert!(
+            bulk.windows(4).any(|w| w == [0x83, 0x66, 0xcd, 0x04]),
+            "replace cab dual doit utiliser cd:04 (Stomp), pas cd:0a add"
+        );
+        assert!(bulk.windows(2).any(|w| w == AMP_CAB_BULK_MARKER));
+        let cab = module_field_bytes_after_c219(
+            &resolve_usb_assign_bulk("HD2_CabMicIr_4x12Greenback20", "single").unwrap(),
+        )
+        .unwrap();
+        let (s, e) = amp_cab_cab_field_range_in_bulk(&bulk).unwrap();
+        assert_eq!(&bulk[s..e], cab.as_slice());
+    }
+
+    #[test]
+    fn cab_dual_create_head31_keeps_cab1_and_registers_structure() {
+        let dual = resolve_usb_assign_bulk("HD2_CabMicIr_SoupProEllipseWithPan", "dual")
+            .expect("dual bulk");
+        let create = build_cab_dual_create_bulk(&dual).expect("create");
+        // head=31, 60 o, segment de création présent, cd:03 (pas cd:0a)
+        assert_eq!(create[0], 0x31);
+        assert_eq!(create.len(), 60);
+        assert!(create.windows(6).any(|w| w == [0x82, 0x13, 0x06, 0x14, 0x83, 0x18]));
+        assert!(create.windows(4).any(|w| w == [0x83, 0x66, 0xcd, 0x03]));
+        // cab1 conservé : identique au bulk d'origine.
+        let (s, e) = cab_dual_cab1_field_range_in_bulk(&dual).unwrap();
+        let (cs, ce) = cab_dual_cab1_field_range_in_bulk(&create).unwrap();
+        assert_eq!(&create[cs..ce], &dual[s..e]);
+    }
+
+    #[test]
+    fn add_to_empty_dual_uses_head31_create() {
+        let mut state = super::super::HelixState::new();
+        let dual = resolve_usb_assign_bulk("HD2_CabMicIr_SoupProEllipseWithPan", "dual")
+            .expect("dual bulk");
+        let packs = build_slot_model_probe_packets(
+            &mut state,
+            SlotModelProbeOp::AddToEmpty,
+            0,
+            0x01,
+            None,
+            Some(&dual),
+            false,
+        );
+        // Le bulk de création doit être un head=31 (et non le head=27 d'origine).
+        let bulk = packs.iter().find(|p| p.len() >= 48).expect("bulk");
+        assert_eq!(bulk[0], 0x31, "création dual = head=31");
+    }
 }

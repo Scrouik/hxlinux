@@ -80,7 +80,7 @@ pub fn trace_out(data: &[u8], label: &str) {
         return;
     }
     let head = data[0];
-    let milestone = matches!(head, 0x1d | 0x19 | 0x1a | 0x1b | 0x21 | 0x27);
+    let milestone = matches!(head, 0x1d | 0x19 | 0x1a | 0x1b | 0x21 | 0x27 | 0x31);
     if label == "send" && !milestone {
         return;
     }

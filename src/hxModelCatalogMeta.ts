@@ -66,6 +66,7 @@ type UsbAssignModelEntry = {
   category: string;
   subCategory: string;
   chainHexHint: string;
+  bulkHex?: string;
   basedOn?: string;
   image?: string;
 };
@@ -195,6 +196,106 @@ export function isAmpCabLegacySlotCategory(categoryHint?: string | null): boolea
   return slotCat === "amp+cablegacy" || (raw.includes("amp") && raw.includes("legacy"));
 }
 
+/**
+ * Paire amp/cab encodée dans un bulk assign `amp+cab` / `amp+cab-legacy`
+ * (`…c319` + `<amp>0x1a<cab>[0x09|padding]`).
+ */
+export function parseAmpCabPairFromAssignBulkHex(
+  bulkHex: string | undefined,
+): { ampHex: string; cabHex: string } | null {
+  const hex = (bulkHex ?? "").trim().toLowerCase().replace(/\s+/g, "");
+  if (!hex || hex.length % 2 !== 0) return null;
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i += 1) {
+    const b = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    if (Number.isNaN(b)) return null;
+    bytes[i] = b;
+  }
+  let cursor = -1;
+  for (let i = 0; i + 1 < bytes.length; i += 1) {
+    if (bytes[i] === 0xc3 && bytes[i + 1] === 0x19) {
+      cursor = i + 2;
+      break;
+    }
+  }
+  if (cursor < 0) return null;
+  const toHex = (start: number, end: number): string =>
+    Array.from(bytes.subarray(start, end))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  while (cursor + 2 < bytes.length) {
+    const relSep = bytes.subarray(cursor).findIndex((b) => b === 0x1a);
+    if (relSep < 0) break;
+    const ampEnd = cursor + relSep;
+    const cabStart = ampEnd + 1;
+    if (cabStart >= bytes.length) break;
+    const rel09 = bytes.subarray(cabStart).findIndex((b) => b === 0x09);
+    let cabEnd: number;
+    if (rel09 >= 0) {
+      cabEnd = cabStart + rel09;
+    } else if (bytes[cabStart] === 0xcd && cabStart + 3 <= bytes.length) {
+      // Cab IR (`cd03xx`) : souvent 3 octets puis padding `00` sans `0x09` (bulk assign).
+      cabEnd = cabStart + 3;
+    } else {
+      const rel00 = bytes.subarray(cabStart).findIndex((b) => b === 0x00);
+      cabEnd = rel00 > 0 ? cabStart + rel00 : cabStart + 1;
+    }
+    const ampHex = toHex(cursor, ampEnd);
+    const cabHex = toHex(cabStart, cabEnd);
+    if (ampHex && cabHex && ampHex !== cabHex) {
+      return { ampHex, cabHex };
+    }
+    cursor = cabEnd + 1;
+  }
+  return null;
+}
+
+/** Paire amp/cab par défaut pour une entrée assign (picker / sonde USB). */
+export async function ampCabHexPairFromAssignVariant(
+  modelId: string | null | undefined,
+  assignVariant: string,
+): Promise<{ ampHex: string; cabHex: string } | null> {
+  const id = (modelId ?? "").trim();
+  const v = assignVariant.trim().toLowerCase();
+  if (!id || (v !== "amp+cab" && v !== "amp+cab-legacy")) return null;
+  const idx = await getUsbAssignIndexes();
+  const hit = idx.byIdVariant.get(`${id}\0${v}`);
+  return parseAmpCabPairFromAssignBulkHex(hit?.bulkHex);
+}
+
+/** Paire cab1/cab2 dans un bulk assign `dual` (`…c319` + `<cab1>0x1a<cab2>`). */
+export async function cabDualHexPairFromAssignVariant(
+  modelId: string | null | undefined,
+  assignVariant: string,
+): Promise<{ cab1Hex: string; cab2Hex: string } | null> {
+  const id = (modelId ?? "").trim();
+  const v = assignVariant.trim().toLowerCase();
+  if (!id || v !== "dual") return null;
+  const idx = await getUsbAssignIndexes();
+  const hit = idx.byIdVariant.get(`${id}\0${v}`);
+  const pair = parseAmpCabPairFromAssignBulkHex(hit?.bulkHex);
+  if (!pair) return null;
+  return { cab1Hex: pair.ampHex, cab2Hex: pair.cabHex };
+}
+
+/** Paires `cab1 + 1a + cab2` sur le fil module (preset dump ou scroll). */
+export function cabDualWireParts(
+  moduleHex: string | undefined,
+): { cab1Hex: string; cab2Hex: string } | null {
+  const hex = (moduleHex ?? "").trim().toLowerCase();
+  const sep = "1a";
+  const i = hex.indexOf(sep);
+  if (i <= 0) return null;
+  const cab1 = hex.slice(0, i).trim();
+  const cab2 = hex.slice(i + sep.length).trim();
+  if (!cab1 || !cab2 || !cab1.startsWith("cd") || !cab2.startsWith("cd")) return null;
+  return { cab1Hex: cab1, cab2Hex: cab2 };
+}
+
+export function isCabDualWireHex(moduleHex: string | undefined): boolean {
+  return cabDualWireParts(moduleHex) !== null;
+}
+
 /** Partie cab d’un fil combiné `amp` + `1a` + `cab` (scroll ou preset). */
 export function cabHexFromAmpCabWire(moduleHex: string | undefined): string | null {
   const hex = (moduleHex ?? "").trim().toLowerCase();
@@ -212,21 +313,17 @@ export function cabHexFromAmpCabWire(moduleHex: string | undefined): string | nu
  */
 export async function usbAssignVariantForAmpFamilyScroll(
   modelId: string,
-  moduleHex: string | undefined,
+  _moduleHex: string | undefined,
   categoryHint?: string | null,
-  cabHexHint?: string | null,
+  _cabHexHint?: string | null,
 ): Promise<UsbAssignVariant> {
   const id = modelId.trim();
   if (!id) return "mono";
   const slotCat = normalizeSlotCategoryHint(categoryHint);
   if (slotCat === "preamp") return "preamp";
-  if (isAmpCabLegacySlotCategory(categoryHint)) return "amp+cab-legacy";
-  if (!isAmpCabFamilySlotCategory(categoryHint)) return "amp";
-  const cabFromWire = cabHexFromAmpCabWire(moduleHex);
-  const cabFromHint = (cabHexHint ?? "").trim().toLowerCase();
-  const cabPart = cabFromWire ?? (cabFromHint.length > 0 ? cabFromHint : null);
-  if (cabPart && (await isLegacyCabChainHex(cabPart))) return "amp+cab-legacy";
-  return "amp+cab";
+  // Stomp XL : slot Amp+Cab n'accepte que des cabs IR (`single`) — pas de hybrid legacy.
+  if (isAmpCabFamilySlotCategory(categoryHint)) return "amp+cab";
+  return "amp";
 }
 
 function presetMetaCategoryNameFromAssign(entry: UsbAssignModelEntry): string {
@@ -301,11 +398,11 @@ async function loadUsbAssignIndexes(): Promise<UsbAssignIndexes> {
       subCategory: typeof raw.subCategory === "string" ? raw.subCategory.trim() : "",
       chainHexHint:
         typeof raw.chainHexHint === "string" ? raw.chainHexHint.trim().toLowerCase() : "",
+      bulkHex: typeof raw.bulkHex === "string" ? raw.bulkHex.trim().toLowerCase() : undefined,
       basedOn: typeof raw.basedOn === "string" ? raw.basedOn.trim() : undefined,
       image: typeof raw.image === "string" ? raw.image.trim() : undefined,
     };
-    if (!entry.chainHexHint) continue;
-    if (chainHexHintIndexEligible(entry.variant)) {
+    if (entry.chainHexHint && chainHexHintIndexEligible(entry.variant)) {
       const hintList = byHexHint.get(entry.chainHexHint) ?? [];
       hintList.push(entry);
       byHexHint.set(entry.chainHexHint, hintList);
@@ -601,6 +698,10 @@ export function usbAssignVariantFromPresetMeta(
     }
   }
   const joined = bits.join(" ").toLowerCase();
+  if (catalogCat === "cab") {
+    if (joined.includes("dual")) return "dual";
+    if (joined.includes("single")) return "single";
+  }
   if (joined.includes("legacy")) {
     if (catalogCat === "cab") {
       const sig = pickSignal(meta, moduleHex);
@@ -1084,4 +1185,64 @@ export function findUsbAssignPickerLocation(
     }
   }
   return null;
+}
+
+/** Repère un modèle Cab dans le picker (essai `single` puis `legacy` puis `dual`). */
+export function findCabModelPickerLocation(
+  data: CatalogPickerData,
+  catalogModelId: string,
+  preferCategory?: string | null,
+): { category: string; subKey: string; assignVariant: string } | null {
+  for (const assignVariant of ["single", "legacy", "dual"] as const) {
+    const loc = findUsbAssignPickerLocation(
+      data,
+      catalogModelId,
+      assignVariant,
+      preferCategory ?? "Cab",
+    );
+    if (loc) return { ...loc, assignVariant };
+  }
+  return null;
+}
+
+/** ID catalogue Cab 2 d’un slot dual (`cd02d6` usine → 2x12 Jazz Rivet, pas le dual Cab 1). */
+export async function getCatalogModelIdForCabDualCab2Hex(
+  _dualCatalogModelId: string,
+  cab2Hex: string | undefined,
+  _cab1Hex?: string | null,
+): Promise<string | null> {
+  const h2 = (cab2Hex ?? "").trim().toLowerCase();
+  if (!h2) return null;
+  let resolved = (await getCatalogModelIdForCabSingleHex(h2))?.trim() ?? null;
+  if (!resolved) return null;
+  // Suffixe stéréo usine (`cd02d6`) pointe souvent vers la ligne `dual` *WithPan* :
+  // le picker Cab 2 doit afficher le single IR (ex. 2x12 Jazz Rivet).
+  if (resolved.endsWith("WithPan")) {
+    const bare = resolved.replace(/WithPan$/, "");
+    if (bare) {
+      const idx = await getUsbAssignIndexes();
+      if (idx.byIdVariant.has(`${bare}\0single`)) {
+        return bare;
+      }
+    }
+  }
+  return resolved;
+}
+
+/** ID catalogue d’un cab **single** (ou legacy) pour un `chainHex` — évite le repli `dual` (ex. `cd02d6` pan). */
+export async function getCatalogModelIdForCabSingleHex(
+  moduleHex: string | undefined,
+): Promise<string | null> {
+  const hexNorm = (moduleHex ?? "").trim().toLowerCase();
+  if (!hexNorm) return null;
+  const { byHexHint } = await getUsbAssignIndexes();
+  const entries = byHexHint.get(hexNorm);
+  if (!entries?.length) return null;
+  const cabEntries = entries.filter((e) => e.category.trim().toLowerCase() === "cab");
+  const hit =
+    cabEntries.find((e) => e.variant === "single") ??
+    cabEntries.find((e) => e.variant === "legacy") ??
+    cabEntries[0];
+  const id = hit?.id.trim();
+  return id || null;
 }

@@ -133,6 +133,13 @@ pub fn start_listener(
                                 s.usb_slot_focus_capture.push(data.clone());
                             }
                         }
+                        if let Some(deadline) = s.cab_dual_cab2_handshake_until {
+                            if Instant::now() < deadline && s.cab_dual_cab2_handshake_capture.len() < 48
+                            {
+                                s.cab_dual_cab2_handshake_capture.push(data.clone());
+                            }
+                        }
+                        crate::helix::cab_dual_live_write::ingest_cab_dual_cab2_in36(&mut s, &data);
                         // Échos paramètre HX Edit / firmware : mémorisés pour aligner `write_live_param`.
                         s.ingest_ed03_param_echo(&data);
                         let path1_input_changed = s

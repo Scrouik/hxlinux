@@ -7,6 +7,13 @@
 - [x] **Snapshot preset au branchement** — `Waiting68o` : préambule structurel (plus de `head∈{39,3c}` en dur) + filet 1er chunk 272 ; commit `975b29c`. Ex. validé : **TX WOODY BLUE** (index 27), 125/125 noms.
 - [x] **Fermeture app propre** — `sub=0x02` keepalive, lanes `ed→f0→ef`, sans figer le Stomp en mode éditeur. Doc : [`docs/quitter_sans_figer_hardware.md`](docs/quitter_sans_figer_hardware.md) (commit `cd8dcb0`).
 - [x] **Lane preset couplée par défaut** — graine figée `0x1c7e` remplacée par mode couplé (`HX_PULL_COUPLE_LANE=0` pour témoin historique).
+- [x] **Lecture preset ed:03 — BUG C (compteur chunks 16 bits)** — octet 14 = vrai hi, retenue au wrap de l’octet 13 ; `HX_LANE_B14_CARRY` (défaut ON). Confirmé terrain (`c5:ff:00 → c5:00:01`, dump complet). Commits `6fb497b` et suivants.
+- [x] **Lecture preset ed:03 — BUG A (double éditeur)** — saut `lo=0x00` au wrap HX (`0x64ff → 0x6401`) ; `HX_EDITOR_DOUBLE_SKIP_00` + pin hi `HX_EDITOR_DOUBLE_PIN_HI` (`0x64`).
+- [x] **Scroll multi-cran — freeze ED03** — couplage `double`+`ctr` vivant + throttle settling **500 ms** (`PULL_THROTTLE_SETTLING_MS`) quand coalescing actif ; lié au même couplage lane que ci‑dessus.
+- [x] **§5 PHASE B — handshake commit (première vague)** — `ec` proactif `sub=0c`, état `PbCommit`, `OUT 1b 0c f1` sur `IN 1b 04 ed`, chemin Linux `68o ed → PbCommit` ; `HX_PHASEB_COMMIT` (défaut ON). Commit `6fb497b`.
+- [x] **§5 PHASE B — piège `26 ef` (deuxième vague)** — ne plus clôturer sur l’écho `IN 26 ef` ; `Done` uniquement sur `IN 23 04 ed` ; timeout réarmé sur `PostArm` / `WaitIn1b26` / `PbCommit`. Handshake **validé log terrain** (commit `f09f12c`).
+- [x] **UX chargement preset** — overlay `models-preset-load-busy` + verrou matrice (`isModelsContentBusy`) jusqu’à fin `renderSlots` ; commit `f09f12c`.
+- [x] **Doc campagne ed:03** — compte rendu reverse + fausses pistes fermées : [`docs/Blocage ed3 Lecture presets.md`](docs/Blocage%20ed3%20Lecture%20presets.md) (+ [EN](docs/Blocage%20ed3%20Lecture%20presets.en.md)).
 
 _Infrastructure USB/session stabilisée → travail métier possible (`HX_ModelUsbAssign.json`, models, UI) sans redémarrages en boucle._
 
@@ -53,13 +60,14 @@ _Rust : `write_path1_input_source`, `write_path1_split_type`, `get_path1_*_wire_
 - [x] **Scroll modèle HW** — plus de re-dump preset après molette (`schedulePresetRamRefreshAfterHwModelScroll` supprimé) ; défauts catalogue + cache session.
 - [x] **Fix params `cd0209` (Ampeg Scrambler)** — ancrage délimiteur `1aff` dans parse Rust (`preset_chain_params.rs`, `extract_c219_argument_type_hexes`).
 - [x] **Warnings compilation** — TS et Rust nettoyés (code mort supprimé).
+- [x] **Matrice — fond transparent** — suppression du cadre gris autour de la grille (`.flow.hx-matrix` : `background: transparent`, pas de bordure).
 
 ### Bug a Corriger
 
 _Détail et pistes : [`docs/matrix-edit-handoff.md`](docs/matrix-edit-handoff.md) §6._
 
 - [x] **Drag & drop — purge source HW** — copier → remove (focus USB) → délai → coller ; verrou UI `models-matrix-usb-busy`.
-- [ ] **Lecture preset après D&D** — après plusieurs moves, changement de preset souvent en échec. Correctif juin 2026 : reset `content_only` fantôme côté Rust + attente post-probe avant dump ; **à revalider terrain**.
+- [ ] **Lecture preset après D&D** — après plusieurs moves, changement de preset souvent en échec. Correctifs juin 2026 : reset `content_only` fantôme + attente post-probe ; campagne ed:03 (BUG C/A, §5 handshake). **À revalider terrain** une fois §5 opérationnel confirmé (voir ci‑dessous).
 
 ### À faire — drag & drop inter-path et structurel
 
@@ -73,6 +81,32 @@ _Détail et pistes : [`docs/matrix-edit-handoff.md`](docs/matrix-edit-handoff.md
 
 
 _Fichiers touchés en priorité : `src/models.ts` (`moveMatrixSlotFromTo`, `canMoveMatrixSlotToEmpty`, `bindMatrixSlotDragSource`), `src/styles.css` (feedback visuel `node--matrix-drag-*`)._
+
+---
+
+## Panneau paramètres — modèles doubles (Amp+Cab, Cab Dual)
+
+### Réalisé (juin 2026, session en cours)
+
+- [x] **Onglets Amp / Cab** — deux panneaux params ; libellés onglets **Amp** | **Cab** ; en-tête global (nom du sous-modèle actif + *Based on* + icône) mis à jour au changement d’onglet.
+- [x] **Picker onglet Cab (Amp+Cab)** — verrou **Cab / Single** quand l’onglet Cab est actif ; onglet Amp → liste **Amp+Cab** libre (`applySlotPickerAmpCabCabLock`, `syncPickerForAmpCabDualTab`).
+- [x] **Rust `get_active_preset_slot_dual_parts`** — découpe segment `c319` / deux blocs `c219` (`amp_cab` vs `cab_dual`) ; noms + valeurs par sous-modèle.
+
+### Bugs à corriger (priorité — reprise demain)
+
+- [ ] **Bug 1 — Onglets absents après assign picker Amp+Cab** — assigner un **Amp+Cab** depuis la liste (picker) : pas d’onglets Amp/Cab ; **lecture preset** avec slot Amp+Cab déjà présent → onglets OK. Cause probable : chemin `loadAndShowModelsParamsFromCatalogDefaults` / `probe_slot_model_usb` après clic picker ne passe pas par `get_active_preset_slot_dual_parts` (pas de `preset_data` dual au moment du rendu, ou catégorie slot encore « Amp » seul). Fichiers : `src/models.ts` (`applySlotModelFromPickerListClick`, `renderModelsParamsPane`, `buildDualTabPanesFromParts`).
+
+- [ ] **Bug 2 — Changement cab remplace tout le slot par un Cab seul** — onglet **Cab** + choix d’un autre cab **Single** : le slot matrice devient un **Cab** isolé au lieu de **mettre à jour le cab** du couple Amp+Cab existant. Cause probable : `probe_slot_model_usb` avec `assignVariant: single` + catégorie picker **Cab** traité comme assign slot entier (`replace`), pas comme sous-assign cab sur segment `amp1acab`. À aligner sur HX (bulk / variante `amp+cab` + remplacement partie cab seulement). Fichiers : `src/models.ts` (`applySlotModelFromPickerListClick`, `ampCabDualPickerSync`), Rust `probe_slot_model_usb` / `edit_slot_model.rs`.
+
+- [ ] **Bug 3 — Cab Dual : pas d’onglets + double `chainHex` non géré** — lecture ou assign d’un **Cab Dual** sur un slot : pas d’onglets **Cab 1 / Cab 2**. Un dual = **deux cabs** (deux `chainHex` / deux blocs `c219` sur `c319`), pas un seul modèle catalogue — parsing preset, grille, scroll et assign **pas encore codés** pour ce cas (découverte récente ; captures `cab dual.json`, assign `variant: dual` dans `HX_ModelUsbAssign.json`). À faire : détection fiable `cab_dual` à l’assign (pas seulement après dump), onglets + params par cab, jointure catalogue des **deux** hex. Fichiers : `src-tauri/src/lib.rs` (`dual_slot_parts_from_segment`, `extract_first_module_from_assignable_chunk`), `src/models.ts`, évent. scroll HW.
+
+- [ ] **Bug 4 — Cab Dual : replace Cab 2 envoie l’identité single au lieu du wire dual** *(validé terrain 20 juin 2026)* — le HW **rejette** `cd031b` (hint single / `c219`) en cab2 ; il attend l’hint **dual** du fil `c319`. **Fix en cours (juin 2026)** : picker Single + `resolveCabDualCab2UsbWireFromPicker` → assign `dual` / WithPan.
+  - [x] **Revert hack test** : `CAB_DUAL_CAB2_PICKER_DUAL_TEST` retiré ; picker Cab 2 = Single IR.
+  - [x] **Mapping au clic** : single choisi → `WithPan` + `assignVariant: dual` → bulk cab2 hint `c319`.
+  - [ ] **Revalider HW** : replace Jazz Rivet, Soup Pro, etc.
+  - Fichiers : `src/models.ts`, `src-tauri/src/helix/edit_slot_model.rs`, `cab_dual_cab2_replace.rs`.
+
+_Fichiers transverses : `phase4` / preset dump si catégorie slot mal étiquetée après assign ; tests Rust existants `dual_slot` / `c319` comme base._
 
 ---
 
@@ -162,11 +196,24 @@ _Fichiers touchés en priorité UI : `src/models.ts` (`renderGrid16`), `src/styl
 
 _Raison : éviter que des développeurs optimisant ou modifiant le dépôt comparent avec Kempline et concluent à tort à une erreur d’implémentation._
 
+## Lecture preset ed:03 — validation terrain restante (juin 2026)
+
+Handshake PHASE B validé en log ; le §5 n’est pas déclaré **opérationnellement** clos tant que les critères suivants ne sont pas verts sur hardware :
+
+- [ ] **`23 04 ed` à chaque connexion** — sinon timeout 2 s sur `PbCommit` ; surveiller reconnects / snapshots.
+- [ ] **Heartbeats `IN 19 04` lane `0x67`** — un par lecture (~25 lectures enchaînées).
+- [ ] **Tournant de page device `05 → 06`** — sans décrochage (symptôme historique du §5).
+- [ ] **Session « normale »** — sans `HX_INIT_TRACE` ni autres flags debug ; confirmer que le chargement preset + scroll multi-cran tiennent sur une session longue.
+
+_Doc détaillée : [`docs/Blocage ed3 Lecture presets.md`](docs/Blocage%20ed3%20Lecture%20presets.md) §5.3. Fichiers : `phase4_state.rs`, `usb_listener.rs`, `preset_dump_stream_ack.rs`, `request_preset.rs`._
+
+---
+
 ## Scroll modèle HW — UX et robustesse (plus tard)
 
 - [~] **Architecture scroll : un chemin par type de modèle** (comme loopers) — routeur `extract_module_hex_for_hw_scroll_dump` (standard → **Amp+Cab** → looper) ; chemin Amp+Cab dédié (`c319` + `1a`, dual-slot `19…1a…09`, paires `c219`, token court `2b`+cab) + `categoryHint` UI scroll. Reste : Send/Return, I/O routing, mute amp ~12ᵉ scroll à valider terrain. **Spec** : [`docs/todo-scroll-hw.md`](docs/todo-scroll-hw.md) § *Piste ouverte — extraction par type de modèle*.
 - [ ] **Popup consigne utilisateur** : au premier scroll / commande matérielle détectée pendant une session éditeur active, afficher une popup du type « évitez d’utiliser les commandes du Stomp pendant l’utilisation du programme ; préférez l’éditeur » (aligné handoff §0). **Prévoir un flag dev** (`HX_SKIP_HW_SCROLL_WARNING=1` ou équivalent) pour ne **pas** déclencher la popup pendant les tests terrain — sinon galère à valider le multi-cran.
-- [x] **Chargement preset sans flags debug** — lane couplée ON par défaut ; bootstrap preset + snapshot corrigés (voir **Réalisé**). Reste : validation session « normale » sans env de trace ; gate `editor_ready` sur le pull si un cas limite réapparaît.
+- [x] **Chargement preset sans flags debug** — lane couplée ON par défaut ; bootstrap + snapshot + BUG C/A + handshake §5 derrière flags ON (voir **Réalisé**). Reste : validation session « normale » — listée dans **Lecture preset ed:03 — validation terrain restante**.
 
 _Raison : l’utilisateur final ne lancera pas l’app avec une ligne d’env ; le scroll HW reste expérimental (~92 %) — la popup et le bootstrap preset doivent tenir sans flags._
 

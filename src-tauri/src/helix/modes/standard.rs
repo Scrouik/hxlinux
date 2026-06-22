@@ -52,13 +52,19 @@ impl Mode for Standard {
 
     fn data_in(&mut self, data: &[u8], state: &mut HelixState) -> bool {
 
-        // LED COLOR CHANGE
+        // LED COLOR CHANGE — aussi la réponse IN `19`/36o post-focus `1d` Cab dual.
+        // Pendant le handshake replace Cab 2, `cab_dual_cab2_replace` envoie `ed:08` avec
+        // `live_write_ctr` ; un ACK automatique ici (session_quadruple) provoque un double
+        // `ed:08` et le device ne renvoie jamais le `IN 21` requis avant le bulk.
         if byte_cmp(data, &pattern![
             XX, 0x00, 0x00, 0x18,
             0xed, 0x03, 0x80, 0x10,
             0x00, XX, 0x00, 0x04,
             XX, XX, XX, XX
         ], 16) {
+            if state.cab_dual_cab2_block_standard_auto_ack() {
+                return false;
+            }
             state.increase_session_quadruple_x11();
             let sq = state.session_quadruple;
             let cnt = state.next_x80_cnt();
@@ -159,7 +165,7 @@ impl Mode for Standard {
             return true;
         }
 
-        // PRESET SWITCH — pattern secondaire
+        // PRESET SWITCH — pattern secondaire (focus slot / Cab dual → `IN 21` avant bulk).
         if byte_cmp(data, &pattern![
             0x21, 0x00, 0x00, 0x18,
             0xf0, 0x03, 0x02, 0x10,
@@ -172,6 +178,9 @@ impl Mode for Standard {
             0x03, 0x79, 0x13, 0x6a,
             0x82, 0x62
         ], 38) {
+            if state.cab_dual_cab2_block_standard_auto_ack() {
+                return false;
+            }
             let cnt = state.next_x2_cnt();
             let double = state.next_preset_dump_ack_double();
             state.send(OutPacket::with_delay(vec![
