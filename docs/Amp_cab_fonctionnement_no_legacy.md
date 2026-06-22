@@ -106,7 +106,7 @@ Fichiers : `amp_cab_cab_replace.rs`, `edit_slot_model.rs`, `applyAmpCabCabFromPi
 
 - [ ] Clic onglet **Cab** → focus HW (IR et legacy)
 - [ ] Param cab (Mic, Level, …) → `pSel` = index local, `pp=03` (IR)
-- [ ] Changer cab dans picker → slot reste **Amp+Cab**, seul le cab change
+- [x] Changer cab dans picker → `focus → ed:08 → bulk`, slot reste **Amp+Cab**, HW réagit (juin 2026)
 - [ ] Pas de lecture `preset_data` pour router un slider cab en session
 
 ---

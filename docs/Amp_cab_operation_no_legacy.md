@@ -95,7 +95,7 @@ Fire path: `execute_amp_cab_cab_replace` (`legacy=false`) in `amp_cab_cab_replac
 
 - [ ] Cab tab click → HW focuses on cab (IR and legacy)
 - [ ] Cab params → local `pSel`, `pp=03` (IR)
-- [ ] Picker cab change → slot stays Amp+Cab
+- [x] Picker cab change → `focus → ed:08 → bulk`, slot stays Amp+Cab, HW reacts (Jun 2026)
 - [ ] No per-slider `preset_data` parse in session
 
 ## 8. Pitfalls
