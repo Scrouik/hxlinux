@@ -163,6 +163,7 @@ pub fn start_listener(
                         // défaut = activé). Indépendant de la capture ci-dessus — appelé à
                         // chaque IN (seul endroit qui « bat » hors capture).
                         crate::helix::scroll_model_pull::tick_hw_model_pull(&mut s);
+                        crate::helix::legacy_cab_param_commit::tick_commit_timeouts(&mut s);
                         // ── FSM phase 4 (passive) + PHASE B (réactive : OUT via on_enter_*). ──
                         if s.phase4_step.is_active() {
                             let prev_phase4_step = s.phase4_step;

@@ -246,7 +246,51 @@ fn inferred_discrete_steps_from_bounds(
     Some((span + 1) as u8)
 }
 
-/// Construit les trames de write live (paire `04` / `0c`, pré/post `08` comme les captures HX Edit).
+// ===========================================================================
+// Extrait live_write.rs — `build_live_write_frames_from_state` corrigé.
+//
+// CORRECTIF (juin 2026) — marqueur value-type du bloc modèle (capture
+// add_single_legacy_change_param.json = HD2_Cab1x6x9SoupProEllipse) :
+//
+//   discret (head 23) -> bloc modèle ... 1d **c2** 1a 00 1c <pSel> 77 <raw> 00
+//   float   (head 27) -> bloc modèle ... 1d **c3** 1a 00 1c <pSel> 77 ca <f32be> 00
+//
+// `assemble_23_bool_write` réutilise le gabarit float avec `c3` figé ; le discret
+// sortait donc en `c3 ... 77 <raw>`, que le Stomp lit comme un float malformé et
+// ignore. On force `c2` sur le marqueur (octet juste après `1d`, juste avant `1a`)
+// pour TOUTES les écritures `wire_23`, quel que soit le chemin de bloc modèle
+// (route amp+cab, echo IN, ou replay statique).
+//
+// Témoin `HX_CAB_DISCRETE_C2=0` : conserve l'ancien marqueur (`c3`) -> comportement
+// d'avant correctif.
+// ===========================================================================
+
+/// Témoin `HX_CAB_DISCRETE_C2` (défaut ON) : marquer les écritures discrètes (`wire_23`)
+/// avec `c2` dans le bloc modèle (capture : tous les `23` portent `c2`). `=0|false|no|off`
+/// restaure l'ancien marqueur `c3` figé par le gabarit `assemble_23_bool_write`.
+fn cab_discrete_c2_marker_enabled() -> bool {
+    match std::env::var("HX_CAB_DISCRETE_C2").as_deref() {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// Force le marqueur value-type à `c2` (discret) dans le bloc modèle `83 66 cd <pp> ...`.
+/// Le bloc est `83 66 cd <pp> <tag> 64 1e 65 85 62 <bus> 1d <MARQUEUR> 1a <Y> 1c` :
+/// le marqueur est à l'offset `start+12` et doit être suivi de `1a`. No-op si introuvable.
+fn force_discrete_c2_marker(pkt: &mut [u8]) {
+    if let Some(start) = pkt.windows(3).position(|w| w == [0x83, 0x66, 0xcd]) {
+        let mk = start + 12;
+        // Garde-fou : on ne réécrit que si la forme `... <MARQUEUR> 1a ...` est respectée.
+        if mk + 1 < pkt.len() && pkt[mk + 1] == 0x1a {
+            pkt[mk] = 0xc2;
+        }
+    }
+}
+
 pub fn build_live_write_frames_from_state(
     state: &mut HelixState,
     raw_value: f32,
@@ -443,6 +487,15 @@ pub fn build_live_write_frames_from_state(
     state.live_write_ctr = state.live_write_ctr.wrapping_add(0x1f);
     state.live_write_yy = state.live_write_yy.wrapping_add(1);
 
+    // c2 sur le discret UNIQUEMENT pour un single legacy (drapeau posé en amont). Le single
+    // modern garde le marqueur du replay statique (c3). Témoin HX_CAB_DISCRETE_C2=0 : jamais de c2.
+    let force_c2 = state.force_discrete_c2_for_legacy_single;
+    state.force_discrete_c2_for_legacy_single = false; // consommé : ne pas fuiter sur l'écriture suivante
+    if wire_23 && force_c2 && cab_discrete_c2_marker_enabled() {
+        force_discrete_c2_marker(&mut packet_a);
+        force_discrete_c2_marker(&mut packet_b);
+    }
+
     let seq_post_sel = state.next_x80_cnt();
     let ctr_post = state.live_write_ctr;
     let post_packet_x80_sel = vec![
@@ -493,6 +546,7 @@ pub fn build_live_write_frames_from_state(
         frame27_diff_vs_static,
     }
 }
+
 
 fn diff_packet_hex(reference: &[u8], actual: &[u8]) -> String {
     let max = reference.len().min(actual.len());

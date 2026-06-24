@@ -25,6 +25,7 @@ pub mod slot_focus_in;
 pub mod slot_param_in;
 pub mod slot_watch;
 pub mod firmware_scroll_ack;
+pub mod legacy_cab_param_commit;
 pub mod scroll_model_pull;
 pub mod usb_in_pipeline;
 pub mod preset_dump_stream_ack;
@@ -288,6 +289,18 @@ pub struct HelixState {
     pub last_ed03_echo_model: Option<[u8; 16]>,
     /// Bloc modèle `83:66:cd` mémorisé par `(slot_bus, route_pp, param_selector)` depuis les échos IN.
     pub ed03_echo_model_by_slot_param: HashMap<(u8, u8, u8), [u8; 16]>,
+    /// Octets cab après `c2:19` dans le bulk assign (hint 1 o ou `cd02xx`) — Cab single legacy live write.
+    pub standalone_legacy_cab_module_field_by_slot: HashMap<u32, Vec<u8>>,
+    /// Bloc modèle `83:66:cd:…` du bulk assign (préserve `cd:03:ff` vs `cd:04:00`).
+    pub standalone_legacy_assign_model_block_by_slot: HashMap<u32, [u8; 16]>,
+    /// Handshake param write Cab single legacy `cd:03:ff` en cours (`legacy_cab_param_commit.rs`).
+    pub standalone_legacy_param_commit: Option<legacy_cab_param_commit::StandaloneLegacyParamCommit>,
+    /// Single legacy en cours d'écriture : force c2 sur le discret (capture Soup Pro).
+    /// Le single modern garde c3 (replay statique). Posé par write_live_param, consommé
+    /// par build_live_write_frames_from_state.
+    pub force_discrete_c2_for_legacy_single: bool,
+    /// Hint cab dual legacy (`c3:19` + octets avant/après `1a`) par `(slot, cab_index)`.
+    pub dual_legacy_cab_module_field_by_slot: HashMap<(u32, u8), Vec<u8>>,
     /// Dernier octet de séquence (`… cd 05 XX …`) envoyé en OUT live tant qu’on n’a pas reçu d’écho IN.
     pub ed03_live_write_seq_sent: Option<u8>,
     /// Slot Kempline pour lequel le focus cab `1b` a déjà été envoyé cette session USB.
@@ -602,6 +615,11 @@ impl HelixState {
             session_quadruple: [0xf4, 0x1e, 0x00, 0x00],
             last_ed03_echo_model: None,
             ed03_echo_model_by_slot_param: HashMap::new(),
+            standalone_legacy_cab_module_field_by_slot: HashMap::new(),
+            standalone_legacy_assign_model_block_by_slot: HashMap::new(),
+            standalone_legacy_param_commit: None,
+            force_discrete_c2_for_legacy_single: false,
+            dual_legacy_cab_module_field_by_slot: HashMap::new(),
             ed03_live_write_seq_sent: None,
             amp_cab_cab_focus_sent_for_slot: None,
             cab_dual_cab2_focus_sent_for_slot: None,

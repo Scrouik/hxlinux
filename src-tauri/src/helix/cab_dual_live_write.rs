@@ -16,6 +16,24 @@
 use std::time::{Duration, Instant};
 
 use crate::helix::amp_cab_live_write::build_amp_cab_legacy_param_model_block;
+use crate::helix::amp_cab_live_write::legacy_cab_wire_pair;
+
+/// Premier sélecteur param cab2 d'un slot Cab dual legacy (`cab dual legacy.json`).
+const LEGACY_DUAL_CAB2_PARAM_SELECTOR_BASE: u8 = 0x2b;
+
+fn legacy_cab_dual_param_selector(cab_index: u8, local_param_index: u32) -> Option<u8> {
+    match cab_index {
+        0 => legacy_cab_wire_pair(local_param_index, 0).map(|(sel, _)| sel),
+        1 => {
+            let sel = LEGACY_DUAL_CAB2_PARAM_SELECTOR_BASE as u32 + local_param_index;
+            if sel > 0xff {
+                return None;
+            }
+            Some(sel as u8)
+        }
+        _ => None,
+    }
+}
 use crate::helix::ed03_lane::build_ed08_short;
 use crate::helix::live_write::LiveWriteRouteOverride;
 use crate::helix::packet::OutPacket;
@@ -449,7 +467,11 @@ pub fn resolve_cab_dual_live_write_route(
         return None;
     }
     let slot_bus = kempline_index_to_slot_bus(slot_index as usize)?;
-    let param_selector = param_index.min(0xff) as u8;
+    let param_selector = if legacy_hybrid {
+        legacy_cab_dual_param_selector(cab_index, param_index)?
+    } else {
+        param_index.min(0xff) as u8
+    };
     let pp = if cab_index == 0 { 0x03 } else { 0x04 };
     let cache_key = echo_model_cache_key(slot_bus, pp, param_selector);
     if let Some(block) = state.ed03_echo_model_by_slot_param.get(&cache_key) {
@@ -457,7 +479,13 @@ pub fn resolve_cab_dual_live_write_route(
             pp: block[3],
             pp_source: "cab_dual:echo_cache",
             param_selector,
-            param_selector_source: if cab_index == 0 {
+            param_selector_source: if legacy_hybrid {
+                if cab_index == 0 {
+                    "cab_dual:cab1_legacy_echo_sel"
+                } else {
+                    "cab_dual:cab2_legacy_echo_sel"
+                }
+            } else if cab_index == 0 {
                 "cab_dual:cab1_echo_sel"
             } else {
                 "cab_dual:cab2_echo_sel"
@@ -468,7 +496,8 @@ pub fn resolve_cab_dual_live_write_route(
     }
 
     let model_block = if legacy_hybrid {
-        build_amp_cab_legacy_param_model_block(pp, state.live_write_yy, slot_bus)
+        // Octet `[4]` = sélecteur wire (capture dual legacy cab2 : `0x2b` + index local).
+        build_amp_cab_legacy_param_model_block(pp, param_selector, slot_bus)
     } else if cab_index == 0 {
         build_cab_dual_cab1_ir_param_model_block(slot_bus, state.live_write_yy)
     } else {
@@ -711,7 +740,18 @@ mod tests {
         let state = HelixState::new();
         let route = resolve_cab_dual_live_write_route(&state, 1, 2, 3, true).expect("route");
         assert_eq!(route.pp, 0x04);
+        assert_eq!(route.param_selector, 0x2d);
+        assert_eq!(route.model_block[4], 0x2d);
         assert_eq!(&route.model_block[11..16], &[0x64, 0x83, 0x17, 0xc3, 0x19]);
+    }
+
+    #[test]
+    fn legacy_hybrid_cab1_param0_uses_compact_sel() {
+        let state = HelixState::new();
+        let route = resolve_cab_dual_live_write_route(&state, 0, 0, 3, true).expect("route");
+        assert_eq!(route.pp, 0x03);
+        assert_eq!(route.param_selector, 0x00);
+        assert_eq!(route.model_block[4], 0x00);
     }
 
     #[test]

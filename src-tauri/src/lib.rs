@@ -1163,6 +1163,38 @@ fn probe_slot_model_usb(
         let hx: String = p.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
         lines.push(format!("#{i} len={} delay_ms={} {}", p.len(), delay, hx));
     }
+    if let Some(bulk) = usb_bulk_from_json.as_deref() {
+        if cab_dual_cab_index.is_none() && cab_id_for_log.is_none() {
+            if variant_lc == "legacy"
+                || helix::amp_cab_live_write::bulk_has_wire_marker(
+                    bulk,
+                    helix::amp_cab_live_write::C219_BULK_MARKER,
+                )
+            {
+                helix::amp_cab_live_write::record_standalone_legacy_cab_module_field(
+                    &mut s,
+                    slot_index,
+                    bulk,
+                );
+            } else if variant_lc == "dual"
+                && helix::amp_cab_live_write::bulk_is_dual_legacy_wire(bulk)
+            {
+                helix::amp_cab_live_write::record_dual_legacy_cab_module_fields(
+                    &mut s,
+                    slot_index,
+                    bulk,
+                );
+            }
+        } else if cab_dual_cab_index == Some(1)
+            && helix::amp_cab_live_write::bulk_is_dual_legacy_wire(bulk)
+        {
+            helix::amp_cab_live_write::record_dual_legacy_cab2_module_field(
+                &mut s,
+                slot_index,
+                bulk,
+            );
+        }
+    }
     drop(s);
 
     let summary = lines.join(" | ");
@@ -1316,7 +1348,11 @@ fn resolve_live_write_route_override(
                 state, 1, param_index, slot_index, legacy,
             )
         }
-        _ => None,
+        _ => helix::amp_cab_live_write::resolve_standalone_legacy_cab_live_write_route_from_probe(
+            state,
+            param_index,
+            slot_index,
+        ),
     }
 }
 
@@ -1396,6 +1432,16 @@ fn focus_cab_dual_usb_part(
     Ok(())
 }
 
+/// Témoin `HX_LEGACY_SINGLE_IR_PARAM` (défaut ON) : écrire les params d'un cab single legacy
+/// avec la trame IR standard `23`/`27` (capture add_single_legacy_change_param.json), comme le
+/// single modern, au lieu du burst minimal `57`/`25`. `=0|false|no|off` restaure le burst (témoin).
+fn legacy_single_ir_param_enabled() -> bool {
+    match std::env::var("HX_LEGACY_SINGLE_IR_PARAM").as_deref() {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+        Err(_) => true,
+    }
+}
+
 /// Écriture live USB paramètre : **seul** chemin d’envoi « valeur bloc » depuis le panneau models
 /// (bool → trame `23`, float → `27` ; voir `helix/live_write.rs` + `HelixLiveWrite.json`).
 /// Alternative : `write_live_param_midi_cc` si transport `midi_cc`. **Ne pas** dupliquer d’envoi ED03 ailleurs pour ce cas d’usage.
@@ -1456,7 +1502,7 @@ fn write_live_param(
             s.amp_cab_cab_focus_sent_for_slot = Some(slot_index);
         }
     }
-    let route_override = resolve_live_write_route_override(
+    let mut route_override = resolve_live_write_route_override(
         &s,
         slot_index,
         param_index,
@@ -1474,9 +1520,63 @@ fn write_live_param(
     };
 
     if matches!(dual_part_ref, Some("cab1") | Some("cab2")) {
+        let cab_index: u8 = if dual_part_ref == Some("cab2") { 1 } else { 0 };
+        if let Some(slot_bus) = kempline_index_to_slot_bus(slot_index as usize) {
+            helix::cab_dual_live_write::prepare_cab_dual_param_live_write(
+                &mut s,
+                slot_index,
+                slot_bus,
+                cab_index,
+            );
+        }
         let route = route_override.ok_or_else(|| {
             "route Cab dual introuvable (slot ou param_index invalide)".to_string()
         })?;
+        if helix::amp_cab_live_write::route_is_dual_legacy_cab(&route) {
+            let cab_index: u8 = if route.pp == 0x04 { 1 } else { 0 };
+            let route_pp = route.pp;
+            let minimal =
+                helix::amp_cab_live_write::build_dual_legacy_minimal_param_packets_from_state(
+                    &mut s,
+                    raw,
+                    slot_index,
+                    cab_index,
+                    dt,
+                    vt,
+                    chain_min,
+                    chain_max,
+                    route,
+                )?;
+            for (i, pkt) in minimal.packets.iter().enumerate() {
+                let delay = if i == 0 { 0 } else { 8 };
+                s.send(OutPacket::with_delay(pkt.clone(), delay));
+            }
+            eprintln!(
+                "[LiveWrite][sent] slot={} param={} symbolicId={} displayType={} valueType={:?} opcode={:02x} rawValue={} sentRaw={} legBChain={} chainMin={:?} chainMax={:?} slotBus={:02x} pp={:02x} cab_dual=legacy_minimal cab{} pSel={:02x} packets={} frame_b={}",
+                slot_index,
+                param_index,
+                sid,
+                display_type.unwrap_or_default(),
+                value_type,
+                minimal.primary_opcode,
+                raw_value,
+                raw,
+                leg_b,
+                chain_min,
+                chain_max,
+                minimal.slot_bus,
+                route_pp,
+                cab_index + 1,
+                minimal.param_selector,
+                minimal.packets.len(),
+                minimal
+                    .packets
+                    .last()
+                    .map(|p| p.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" "))
+                    .unwrap_or_default(),
+            );
+            return Ok(());
+        }
         let minimal = build_cab_dual_minimal_param_packets_from_state(
             &mut s,
             raw,
@@ -1523,6 +1623,71 @@ fn write_live_param(
                 .unwrap_or_default(),
         );
         return Ok(());
+    }
+
+    // Cab single legacy : capture add_single_legacy_change_param.json (HD2_Cab1x6x9SoupProEllipse,
+    // hint 0x33, bulk cd:03:ff). HX Edit écrit TOUS les params en trame IR standard 23/27 à
+    // cd:03 <tag> (tags f7,f8,fe,ff,00…) — aucun 1b/19 (pas de handshake async cd03ff), aucun
+    // 57/25 (pas de burst minimal). Le test assign[4]==0xff est un FAUX POSITIF : 0xff = tag figé
+    // du template JSON, pas un marqueur de cab. Le chemin IR standard (route_override = None) est
+    // identique au single modern, déjà prouvé sur le Stomp.
+    // Témoin HX_LEGACY_SINGLE_IR_PARAM=0 : restaure l'ancien (handshake cd03ff / burst minimal).
+    let standalone_legacy = route_override
+        .as_ref()
+        .map(helix::amp_cab_live_write::route_is_standalone_legacy_cab)
+        .unwrap_or(false);
+    if standalone_legacy {
+        if let Some(assign_block) = s
+            .standalone_legacy_assign_model_block_by_slot
+            .get(&slot_index)
+            .copied()
+        {
+            if legacy_single_ir_param_enabled() {
+                // Chemin IR standard pour TOUS les single legacy/modern enregistrés.
+                route_override = None;
+                // c2 sur le discret SEULEMENT pour un legacy compact (hint 1 octet).
+                // Un MicIr modern (c2 19 cd03xx) garde c3 (replay statique).
+                if s.standalone_legacy_cab_module_field_by_slot
+                    .get(&slot_index)
+                    .is_some_and(|field| {
+                        helix::amp_cab_live_write::standalone_legacy_assign_is_one_byte_hint(field)
+                    })
+                {
+                    s.force_discrete_c2_for_legacy_single = true;
+                }
+            } else if helix::amp_cab_live_write::standalone_legacy_assign_uses_cd03ff(assign_block) {
+                // TÉMOIN (=0) : ancien handshake async cd:03:ff.
+                let param_selector =
+                    route_override.as_ref().map(|r| r.param_selector).unwrap_or(0);
+                helix::legacy_cab_param_commit::start_standalone_legacy_cd03ff_write(
+                    &mut s,
+                    slot_index,
+                    assign_block,
+                    param_selector,
+                )?;
+                eprintln!(
+                    "[LiveWrite][sent] slot={} param={} symbolicId={} legacy_cab=cd03ff_handshake(temoin) pSel={:02x}",
+                    slot_index, param_index, sid, param_selector,
+                );
+                return Ok(());
+            } else {
+                // TÉMOIN (=0) : ancien burst minimal 23/25/57.
+                let route = route_override.take().expect("route standalone legacy");
+                let minimal =
+                    helix::amp_cab_live_write::build_standalone_legacy_minimal_param_packets_from_state(
+                        &mut s, raw, slot_index, dt, vt, chain_min, chain_max, route,
+                    )?;
+                for (i, pkt) in minimal.packets.iter().enumerate() {
+                    let delay = if i == 0 { 0 } else { 8 };
+                    s.send(OutPacket::with_delay(pkt.clone(), delay));
+                }
+                eprintln!(
+                    "[LiveWrite][sent] slot={} param={} symbolicId={} legacy_cab=minimal(temoin) opcode={:02x} packets={}",
+                    slot_index, param_index, sid, minimal.primary_opcode, minimal.packets.len(),
+                );
+                return Ok(());
+            }
+        }
     }
 
     let frames = build_live_write_frames_from_state(

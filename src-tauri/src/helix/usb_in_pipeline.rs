@@ -6,6 +6,7 @@
 //! - `Consumed` : traitement complet (lane + ACK ou autre OUT) — **stop** les couches actives suivantes.
 
 use crate::helix::firmware_scroll_ack;
+use crate::helix::legacy_cab_param_commit;
 use crate::helix::preset_dump_stream_ack;
 use crate::helix::scroll_model_pull;
 use crate::helix::HelixState;
@@ -35,6 +36,7 @@ impl LayerResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveLayerId {
     ScrollModelPull,
+    LegacyCabParamCommit,
     FirmwareScroll,
     PresetDumpStream,
 }
@@ -60,8 +62,13 @@ fn scroll_model_pull_handler(state: &mut HelixState, data: &[u8]) -> LayerResult
     scroll_model_pull::handle_in_layer_trigger(data, state)
 }
 
-const ACTIVE_LAYERS: [(ActiveLayerId, ActiveHandler); 3] = [
+fn legacy_cab_param_commit_handler(state: &mut HelixState, data: &[u8]) -> LayerResult {
+    legacy_cab_param_commit::handle_in_layer(state, data)
+}
+
+const ACTIVE_LAYERS: [(ActiveLayerId, ActiveHandler); 4] = [
     (ActiveLayerId::ScrollModelPull, scroll_model_pull_handler),
+    (ActiveLayerId::LegacyCabParamCommit, legacy_cab_param_commit_handler),
     (ActiveLayerId::FirmwareScroll, firmware_scroll_ack::handle_in_layer),
     (
         ActiveLayerId::PresetDumpStream,

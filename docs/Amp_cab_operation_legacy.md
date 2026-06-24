@@ -4,7 +4,8 @@
 *Legacy **hybrid** cab in an amp+cab pair (`assignVariant: amp+cab-legacy`). Complements [Amp_cab_operation_no_legacy.md](Amp_cab_operation_no_legacy.md) (IR).*
 
 > **French:** [Amp_cab_fonctionnement_legacy.md](Amp_cab_fonctionnement_legacy.md)  
-> **Captures:** `captures/usb-wireshark/Save/amp_cab legacy guitar.json`, `amp_cab legacy bass.json`
+> **Captures:** `captures/usb-wireshark/Save/amp_cab legacy guitar.json`, `amp_cab legacy bass.json`  
+> **Cab single legacy** (slot Cab seul, `c2:19`) : voir [Cab_single_operation_legacy.md](Cab_single_operation_legacy.md) — **pas** ce document.
 
 ---
 

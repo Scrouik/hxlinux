@@ -278,6 +278,22 @@ const liveChainParamOverridesByPresetSlot = new Map<string, Map<string, ChainPar
 /** Chaîne params par slot — hydratée **une fois** au chargement preset depuis `preset_data`, puis jamais relue. */
 const slotChainSessionByKey = new Map<string, ChainParamValueJson[]>();
 
+type DualSlotPartJson = {
+  chainHex: string;
+  category: string;
+  name: string;
+  modelId: string;
+  values: ChainParamValueJson[];
+};
+
+type DualSlotPartsJson = {
+  kind: "amp_cab" | "cab_dual";
+  parts: DualSlotPartJson[];
+};
+
+/** Amp+Cab / Cab dual par slot — hydraté au chargement preset, puis session + trame HW (pas de relecture `preset_data`). */
+const slotDualPartsSessionByKey = new Map<string, DualSlotPartsJson>();
+
 function liveChainOverrideStorageKey(preset: number, kemplineSlotIndex: number): string {
   return `${preset}|${kemplineSlotIndex}`;
 }
@@ -308,6 +324,7 @@ function clearLiveChainOverridesForKemplineSlot(preset: number, kemplineSlotInde
 function clearAllLiveChainParamOverrides(): void {
   liveChainParamOverridesByPresetSlot.clear();
   slotChainSessionByKey.clear();
+  slotDualPartsSessionByKey.clear();
 }
 
 function clearSlotChainSessionForPreset(preset: number): void {
@@ -315,6 +332,21 @@ function clearSlotChainSessionForPreset(preset: number): void {
   for (const k of [...slotChainSessionByKey.keys()]) {
     if (k.startsWith(prefix)) slotChainSessionByKey.delete(k);
   }
+}
+
+function clearSlotDualPartsSessionForPreset(preset: number): void {
+  const prefix = `${preset}|`;
+  for (const k of [...slotDualPartsSessionByKey.keys()]) {
+    if (k.startsWith(prefix)) slotDualPartsSessionByKey.delete(k);
+  }
+}
+
+function clearSlotDualPartsSessionForKemplineSlot(
+  preset: number,
+  kemplineSlotIndex: number,
+): void {
+  if (preset < 0 || kemplineSlotIndex < 0 || kemplineSlotIndex > 15) return;
+  slotDualPartsSessionByKey.delete(liveChainOverrideStorageKey(preset, kemplineSlotIndex));
 }
 
 function setSlotChainSessionValues(
@@ -350,6 +382,335 @@ async function hydrateSlotChainSessionFromPresetData(presetIndex: number): Promi
     }
   }
   emitModelsSyncTrace(`hydrateSlotChainSession preset=${presetIndex} slots=${filled}/16`);
+}
+
+/** **Seul** appel autorisé à `get_active_preset_slot_dual_parts` (hydratation initiale preset). */
+async function readDualPartsFromPresetDataOnce(
+  slotIndex: number,
+): Promise<DualSlotPartsJson | null> {
+  try {
+    return await invoke<DualSlotPartsJson | null>("get_active_preset_slot_dual_parts", {
+      slotIndex,
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function hydrateSlotDualPartsSessionFromPresetData(presetIndex: number): Promise<void> {
+  if (presetIndex < 0) return;
+  clearSlotDualPartsSessionForPreset(presetIndex);
+  let filled = 0;
+  for (let ki = 0; ki < 16; ki += 1) {
+    const parts = await readDualPartsFromPresetDataOnce(ki);
+    if (parts && parts.parts.length === 2) {
+      slotDualPartsSessionByKey.set(liveChainOverrideStorageKey(presetIndex, ki), parts);
+      filled += 1;
+    }
+  }
+  emitModelsSyncTrace(`hydrateSlotDualPartsSession preset=${presetIndex} dualSlots=${filled}`);
+}
+
+function linkedCabHexFromSlot(slot: SlotDebug): string {
+  return (slot.cabHexHint ?? "").trim() || cabHexFromAmpCabWire(slot.moduleHex) || "";
+}
+
+async function dualPartFromChainHex(
+  chainHex: string,
+  categoryHint: string,
+  chainValues: ChainParamValueJson[] | null,
+): Promise<DualSlotPartJson> {
+  const hx = chainHex.trim();
+  const modelId = (await getCatalogModelIdForHex(hx, categoryHint))?.trim() ?? "";
+  const meta = modelId ? await getPresetMetaForId(modelId) : null;
+  const name = ((modelId ? await getCatalogModelNameForId(modelId) : null) ?? "")?.trim() ?? "";
+  const category = (meta?.categoryName ?? categoryHint).trim() || categoryHint;
+  return { chainHex: hx, category, name, modelId, values: chainValues ?? [] };
+}
+
+async function buildAmpCabDualPartsFromWireAndSession(
+  kemplineSlotIndex: number,
+  slot: SlotDebug,
+  ampCatalogModelId: string,
+  assignVariant: string | null,
+): Promise<DualSlotPartsJson | null> {
+  const cabHexHint = linkedCabHexFromSlot(slot);
+  const assign =
+    (assignVariant ?? "").trim() ||
+    (await usbAssignVariantForAmpCabSlot(
+      await getPresetMetaForId(ampCatalogModelId),
+      slot.moduleHex,
+      slot.category,
+      ampCatalogModelId,
+      cabHexHint || null,
+    ));
+  if (assign !== "amp+cab" && assign !== "amp+cab-legacy") return null;
+
+  const pair = await ampCabHexPairFromAssignVariant(ampCatalogModelId, assign);
+  const wire = (slot.moduleHex ?? "").trim().toLowerCase();
+  const sep = "1a";
+  const si = wire.indexOf(sep);
+  const ampHex = (si > 0 ? wire.slice(0, si) : pair?.ampHex ?? "").trim();
+  const cabHex = (cabHexHint || (si > 0 ? wire.slice(si + sep.length) : "") || pair?.cabHex || "").trim();
+  if (!ampHex || !cabHex) return null;
+
+  const chainValues = await resolveChainValuesForKemplineSlot(
+    kemplineSlotIndex,
+    slot,
+    ampCatalogModelId,
+    slot.category,
+    null,
+  );
+  const ampPart = await dualPartFromChainHex(ampHex, "Amp", chainValues);
+  const cabModelId = (await getCatalogModelIdForHex(cabHex, "Cab"))?.trim() ?? "";
+  const cabMeta = cabModelId ? await getPresetMetaForId(cabModelId) : null;
+  const cabSignal = pickSignal(cabMeta, cabHex);
+  const cabDef = cabModelId ? await findModelDefinitionBySymbolicId(cabModelId, "Cab") : null;
+  const cabValues = cabDef
+    ? buildDefaultChainValuesForSourceOrder(cabDef.entry.params ?? [], cabSignal)
+    : [];
+  const cabPart = await dualPartFromChainHex(cabHex, "Cab", cabValues);
+  if (cabModelId) cabPart.modelId = cabModelId;
+
+  return { kind: "amp_cab", parts: [ampPart, cabPart] };
+}
+
+async function buildCabDualPartsFromWireAndSession(
+  kemplineSlotIndex: number,
+  slot: SlotDebug,
+  dualCatalogModelId: string,
+): Promise<DualSlotPartsJson | null> {
+  const wire = cabDualWireParts(slot.moduleHex);
+  const pair = await cabDualHexPairFromAssignVariant(dualCatalogModelId, "dual");
+  const cab1Hex = (wire?.cab1Hex ?? pair?.cab1Hex ?? "").trim();
+  const cab2Hex = (
+    await resolveCabDualCab2HexFromTrame(slot, kemplineSlotIndex)
+  ).trim();
+  if (!cab1Hex || !cab2Hex) return null;
+
+  const chainValues = await resolveChainValuesForKemplineSlot(
+    kemplineSlotIndex,
+    slot,
+    dualCatalogModelId,
+    slot.category,
+    null,
+  );
+  const cab1Part = await dualPartFromChainHex(cab1Hex, "Cab", chainValues);
+  const cab2ModelId =
+    (await getCatalogModelIdForCabDualCab2Hex(dualCatalogModelId, cab2Hex, cab1Hex))?.trim() ?? "";
+  const cab2Meta = cab2ModelId ? await getPresetMetaForId(cab2ModelId) : null;
+  const cab2Signal = pickSignal(cab2Meta, cab2Hex);
+  const cab2Def = cab2ModelId
+    ? await findModelDefinitionBySymbolicId(cab2ModelId, "Cab")
+    : null;
+  const cab2Values = cab2Def
+    ? buildDefaultChainValuesForSourceOrder(cab2Def.entry.params ?? [], cab2Signal)
+    : [];
+  const cab2Part = await dualPartFromChainHex(cab2Hex, "Cab", cab2Values);
+  if (cab2ModelId) cab2Part.modelId = cab2ModelId;
+
+  return { kind: "cab_dual", parts: [cab1Part, cab2Part] };
+}
+
+type ResolveSlotDualPartsOpts = {
+  slot?: SlotDebug | null;
+  catalogModelId?: string | null;
+  kind?: "amp_cab" | "cab_dual";
+  assignVariant?: string | null;
+};
+
+async function slotDualPartsCacheStillValid(
+  cached: DualSlotPartsJson,
+  kemplineSlotIndex: number,
+  opts: ResolveSlotDualPartsOpts,
+): Promise<boolean> {
+  const slot = opts.slot ?? lastHwSyncNormalizedSlots?.[kemplineSlotIndex] ?? null;
+  if (!slot) return false;
+  const catalogId =
+    (opts.catalogModelId ?? slot.catalogModelId ?? "").trim() ||
+    (slot.moduleHex
+      ? (await getCatalogModelIdForHex(slot.moduleHex, slot.category))?.trim()
+      : "") ||
+    "";
+  const meta = catalogId ? await getPresetMetaForId(catalogId) : null;
+  if (cached.kind === "cab_dual") {
+    if (!slotWantsCabDualTabs(slot, opts.assignVariant, meta)) return false;
+    const cachedDualId = cached.parts[0]?.modelId?.trim().toLowerCase() ?? "";
+    if (
+      catalogId &&
+      cachedDualId &&
+      catalogId.toLowerCase() !== cachedDualId &&
+      !isCabDualWireHex(slot.moduleHex)
+    ) {
+      return false;
+    }
+    return true;
+  }
+  if (cached.kind === "amp_cab") {
+    if (!slotWantsAmpCabDualTabs(slot, opts.assignVariant)) return false;
+    const cachedAmpId = cached.parts[0]?.modelId?.trim().toLowerCase() ?? "";
+    if (catalogId && cachedAmpId && catalogId.toLowerCase() !== cachedAmpId) return false;
+    return true;
+  }
+  return false;
+}
+
+/** Dual parts en session : cache preset (hydratation) puis trame HW + catalogue — jamais `preset_data` en runtime. */
+async function resolveSlotDualParts(
+  kemplineSlotIndex: number,
+  opts: ResolveSlotDualPartsOpts = {},
+): Promise<DualSlotPartsJson | null> {
+  if (loadedPresetIndex !== currentPresetIndex || currentPresetIndex < 0) return null;
+  if (kemplineSlotIndex < 0 || kemplineSlotIndex > 15) return null;
+
+  const key = liveChainOverrideStorageKey(currentPresetIndex, kemplineSlotIndex);
+  const cached = slotDualPartsSessionByKey.get(key);
+  if (cached) {
+    if (await slotDualPartsCacheStillValid(cached, kemplineSlotIndex, opts)) {
+      return cached;
+    }
+    slotDualPartsSessionByKey.delete(key);
+  }
+
+  const slot = opts.slot ?? lastHwSyncNormalizedSlots?.[kemplineSlotIndex] ?? null;
+  const catalogId =
+    (opts.catalogModelId ?? slot?.catalogModelId ?? "").trim() ||
+    (slot?.moduleHex
+      ? (await getCatalogModelIdForHex(slot.moduleHex, slot.category))?.trim()
+      : "") ||
+    "";
+  if (!slot || !catalogId) return null;
+
+  let kind = opts.kind;
+  if (!kind) {
+    const meta = await getPresetMetaForId(catalogId);
+    if (slotWantsAmpCabDualTabs(slot, opts.assignVariant)) kind = "amp_cab";
+    else if (slotWantsCabDualTabs(slot, opts.assignVariant, meta)) kind = "cab_dual";
+    else return null;
+  }
+
+  const built =
+    kind === "amp_cab"
+      ? await buildAmpCabDualPartsFromWireAndSession(
+          kemplineSlotIndex,
+          slot,
+          catalogId,
+          opts.assignVariant ?? null,
+        )
+      : await buildCabDualPartsFromWireAndSession(kemplineSlotIndex, slot, catalogId);
+
+  if (built) slotDualPartsSessionByKey.set(key, built);
+  return built;
+}
+
+function syncSlotDualPartsSessionFromTabPanes(
+  kemplineSlotIndex: number,
+  kind: "amp_cab" | "cab_dual",
+  panes: DualTabPaneConfig[],
+  slot: SlotDebug,
+  linkedCabHex?: string | null,
+): void {
+  if (currentPresetIndex < 0 || panes.length !== 2) return;
+  const wire = kind === "amp_cab" ? (slot.moduleHex ?? "").trim().toLowerCase() : "";
+  const sep = "1a";
+  const si = wire.indexOf(sep);
+  const ampHex = kind === "amp_cab" && si > 0 ? wire.slice(0, si) : "";
+  const cabFromWire =
+    kind === "amp_cab"
+      ? linkedCabHex?.trim() || (si > 0 ? wire.slice(si + sep.length) : "") || linkedCabHexFromSlot(slot)
+      : "";
+  const cabDualWire = kind === "cab_dual" ? cabDualWireParts(slot.moduleHex) : null;
+  const parts: DualSlotPartJson[] = panes.map((p, i) => {
+    let chainHex = "";
+    if (kind === "amp_cab") {
+      chainHex = i === 0 ? ampHex : cabFromWire;
+    } else if (cabDualWire) {
+      chainHex = i === 0 ? cabDualWire.cab1Hex : cabDualWire.cab2Hex;
+    }
+    return {
+      chainHex,
+      category: kind === "amp_cab" ? (i === 0 ? "Amp" : "Cab") : "Cab",
+      name: p.modelTitle.trim() || "—",
+      modelId: p.catalogModelId?.trim() ?? "",
+      values: p.chainValues ?? [],
+    };
+  });
+  slotDualPartsSessionByKey.set(liveChainOverrideStorageKey(currentPresetIndex, kemplineSlotIndex), {
+    kind,
+    parts,
+  });
+}
+
+async function patchSlotDualPartsSessionAmpCabCab(
+  kemplineSlotIndex: number,
+  cabModelId: string,
+  cabHex: string,
+): Promise<void> {
+  if (currentPresetIndex < 0) return;
+  const key = liveChainOverrideStorageKey(currentPresetIndex, kemplineSlotIndex);
+  const existing = slotDualPartsSessionByKey.get(key);
+  const cabName = ((await getCatalogModelNameForId(cabModelId)) ?? "")?.trim() ?? "";
+  if (existing?.kind === "amp_cab" && existing.parts.length === 2) {
+    const cabPart = { ...existing.parts[1]! };
+    cabPart.modelId = cabModelId.trim();
+    cabPart.chainHex = cabHex.trim() || cabPart.chainHex;
+    cabPart.name = cabName || cabPart.name;
+    slotDualPartsSessionByKey.set(key, {
+      kind: "amp_cab",
+      parts: [existing.parts[0]!, cabPart],
+    });
+    return;
+  }
+  const slot = lastHwSyncNormalizedSlots?.[kemplineSlotIndex];
+  if (!slot) return;
+  const ampId =
+    (slot.catalogModelId ?? "").trim() ||
+    (await getCatalogModelIdForHex(slot.moduleHex, slot.category))?.trim() ||
+    "";
+  if (!ampId) return;
+  const built = await buildAmpCabDualPartsFromWireAndSession(kemplineSlotIndex, slot, ampId, null);
+  if (!built) return;
+  const cabPart = { ...built.parts[1]! };
+  cabPart.modelId = cabModelId.trim();
+  cabPart.chainHex = cabHex.trim() || cabPart.chainHex;
+  cabPart.name = cabName || cabPart.name;
+  slotDualPartsSessionByKey.set(key, { kind: "amp_cab", parts: [built.parts[0]!, cabPart] });
+}
+
+async function patchSlotDualPartsSessionCabDualCab2(
+  kemplineSlotIndex: number,
+  cab2ModelId: string,
+  cab2Hex: string,
+): Promise<void> {
+  if (currentPresetIndex < 0) return;
+  const key = liveChainOverrideStorageKey(currentPresetIndex, kemplineSlotIndex);
+  const existing = slotDualPartsSessionByKey.get(key);
+  const cabName = ((await getCatalogModelNameForId(cab2ModelId)) ?? "")?.trim() ?? "";
+  if (existing?.kind === "cab_dual" && existing.parts.length === 2) {
+    const cab2Part = { ...existing.parts[1]! };
+    cab2Part.modelId = cab2ModelId.trim();
+    cab2Part.chainHex = cab2Hex.trim() || cab2Part.chainHex;
+    cab2Part.name = cabName || cab2Part.name;
+    slotDualPartsSessionByKey.set(key, {
+      kind: "cab_dual",
+      parts: [existing.parts[0]!, cab2Part],
+    });
+    return;
+  }
+  const slot = lastHwSyncNormalizedSlots?.[kemplineSlotIndex];
+  if (!slot) return;
+  const dualId =
+    (slot.catalogModelId ?? "").trim() ||
+    (await getCatalogModelIdForHex(slot.moduleHex, slot.category))?.trim() ||
+    "";
+  if (!dualId) return;
+  const built = await buildCabDualPartsFromWireAndSession(kemplineSlotIndex, slot, dualId);
+  if (!built) return;
+  const cab2Part = { ...built.parts[1]! };
+  cab2Part.modelId = cab2ModelId.trim();
+  cab2Part.chainHex = cab2Hex.trim() || cab2Part.chainHex;
+  cab2Part.name = cabName || cab2Part.name;
+  slotDualPartsSessionByKey.set(key, { kind: "cab_dual", parts: [built.parts[0]!, cab2Part] });
 }
 
 async function resolveChainValuesForKemplineSlot(
@@ -666,7 +1027,7 @@ function applyHardwareSlotModelVisualFast(
       void mountModelsSlotPicker().then(async () => {
         if (
           selectedParamsKemplineSlotIndex === ki &&
-          (isCabDualWireHex(slot.moduleHex) || lastCabDualTabPanesContext?.kemplineSlotIndex === ki)
+          isCabDualWireHex(slot.moduleHex)
         ) {
           await ensureCabDualPickerSynced(cabDualActiveTab);
           return;
@@ -1705,20 +2066,48 @@ function scheduleLiveParamWriteProbe(
   scheduleLiveWriteFlushDebounced();
 }
 
+/** Témoin : sélecteur local par type d'onde (défaut ON). `="0"` -> ancien index global. */
+function wireLocalParamSelectorEnabled(): boolean {
+  return localStorage.getItem("models_wire_local_param_selector") !== "0";
+}
+
+/**
+ * Param écrit en trame `23`/`c2` (discret/bool) vs `27`/`c3` (float) — miroir de `wire_23`
+ * côté Rust (build_live_write_frames_from_state). valueType 0 = entier/discret, 2 = bool,
+ * 1 = float. off_on / polarity = bool même sans valueType 2.
+ */
+function isWire23Param(p: ModelParamDefJson): boolean {
+  const vt = p.valueType;
+  if (vt === 2 || vt === 0) return true;
+  if (isOffOnDisplayType(p.displayType)) return true;
+  if (isPolarityDisplayType(p.displayType)) return true;
+  return false;
+}
+
 function liveWriteParamIndexForRow(
   paramsForDisplay: ModelParamDefJson[],
   rowIndex: number,
   catalogSignal: string | null | undefined,
   paramIndexBase = 0,
+  wireLocal = false,
 ): number {
   const target = paramsForDisplay[rowIndex];
   if (!target) return paramIndexBase + rowIndex;
-  // Le write suit la variante signal (mono/stereo) : en mono, les `stereo-only`
-  // ne doivent pas compter dans l'index envoyé.
   const writeOrder = paramsVisibleForSignal(paramsForDisplay, catalogSignal);
   const idxByRef = writeOrder.indexOf(target);
-  if (idxByRef >= 0) return paramIndexBase + idxByRef;
-  return paramIndexBase + rowIndex;
+  if (idxByRef < 0) return paramIndexBase + rowIndex;
+
+  // Sélecteur LOCAL par type d'onde : UNIQUEMENT pour les cab single legacy.
+  // Les cab modern (single et dual) utilisent l'index global (mic compté) — vérifié sur le Stomp.
+  if (wireLocal && paramIndexBase === 0 && wireLocalParamSelectorEnabled()) {
+    const targetWire23 = isWire23Param(target);
+    let local = 0;
+    for (let i = 0; i < idxByRef; i += 1) {
+      if (isWire23Param(writeOrder[i]!) === targetWire23) local += 1;
+    }
+    return local;
+  }
+  return paramIndexBase + idxByRef;
 }
 
 /**
@@ -2001,10 +2390,11 @@ async function resolveCabDualCab2IdFromPreset(
     }
   }
   try {
-    const dualParts = await invoke<DualSlotPartsJson | null>(
-      "get_active_preset_slot_dual_parts",
-      { slotIndex: kemplineSlotIndex },
-    );
+    const dualParts = await resolveSlotDualParts(kemplineSlotIndex, {
+      slot: hwSlot ?? undefined,
+      catalogModelId: dualId,
+      kind: "cab_dual",
+    });
     const part = dualParts?.kind === "cab_dual" ? dualParts.parts[1] : null;
     if (!part || dualParts?.kind !== "cab_dual") return null;
     const cab1Hex = dualParts.parts[0]?.chainHex?.trim();
@@ -2388,9 +2778,16 @@ function clearAmpCabDualPickerContext(): void {
 }
 
 function clearCabDualPickerContext(): void {
+  const ki =
+    lastCabDualTabPanesContext?.kemplineSlotIndex ??
+    selectedParamsKemplineSlotIndex ??
+    -1;
   cabDualPickerSync = null;
   cabDualActiveTab = 0;
   lastCabDualTabPanesContext = null;
+  if (currentPresetIndex >= 0 && ki >= 0 && ki <= 15) {
+    clearSlotDualPartsSessionForKemplineSlot(currentPresetIndex, ki);
+  }
 }
 
 /** Quitte le mode Cab dual (onglets + verrou picker) avant un assign slot entier. */
@@ -2440,10 +2837,11 @@ async function resolveCabDualCab2CatalogModelId(
       if (fromTrame) return fromTrame;
     }
     try {
-      const dualParts = await invoke<DualSlotPartsJson | null>(
-        "get_active_preset_slot_dual_parts",
-        { slotIndex: kemplineSlotIndex },
-      );
+      const dualParts = await resolveSlotDualParts(kemplineSlotIndex, {
+        slot: hwSlot ?? undefined,
+        catalogModelId: dualCatalogModelId,
+        kind: "cab_dual",
+      });
       const part = dualParts?.kind === "cab_dual" ? dualParts.parts[1] : null;
       const cab1Hex =
         dualParts?.kind === "cab_dual" ? dualParts.parts[0]?.chainHex?.trim() : undefined;
@@ -3102,6 +3500,7 @@ async function applyAmpCabCabFromPickerListClick(
     emitModelsSyncTrace(
       `slot_model_probe amp+cab cab ok slot=${ki} cab=${cabIdTrim}`,
     );
+    await patchSlotDualPartsSessionAmpCabCab(ki, cabIdTrim, cabHex);
     await syncPickerForAmpCabDualTab(1);
   } catch (e) {
     console.warn("[SlotModelProbe] amp+cab cab", e);
@@ -3138,6 +3537,11 @@ function cabDualPickerApplyContextForSlot(ki: number): boolean {
 
 function isCabDualPickerApplyRoute(ki: number): boolean {
   if (!cabDualPickerApplyContextForSlot(ki)) return false;
+  const slot = lastHwSyncNormalizedSlots?.[ki];
+  if (slot && !isCabDualWireHex(slot.moduleHex)) {
+    clearCabDualPickerContext();
+    return false;
+  }
   return Boolean(lastCabDualTabPanesContext || cabDualPickerSync);
 }
 
@@ -3154,6 +3558,14 @@ function isCabDualSubCabPickerPick(
   }
   if (cabDualActiveTab === 1) {
     return true;
+  }
+  const pickerSub = (slotPickerSubEl?.value ?? "").trim().toLowerCase();
+  if (
+    pickerSub === "single" ||
+    pickerSub === "single legacy" ||
+    pickerSub === "legacy"
+  ) {
+    return false;
   }
   const rowVariant = (row.assignVariant ?? "").trim().toLowerCase();
   if (rowVariant === "dual") {
@@ -3300,6 +3712,10 @@ async function applyCabDualCabFromPickerListClick(
     emitModelsSyncTrace(
       `slot_model_probe cab dual cab${tab + 1} ok slot=${ki} cab=${newCabIdTrim}`,
     );
+    if (tab === 1) {
+      const cab2Hex = await resolveCabDualCab2HexFromTrame(optimisticSlot, ki);
+      await patchSlotDualPartsSessionCabDualCab2(ki, cab2PickerCatalogId, cab2Hex);
+    }
     await ensureCabDualPickerSynced(tab);
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
@@ -3397,6 +3813,14 @@ async function applySlotModelFromPickerListClick(row: CatalogPickerModelRow): Pr
       slotPickerCategoryEl?.value ?? "",
     );
   const categoryName = (slotPickerCategoryEl?.value ?? "").trim();
+  if (
+    normalizeCategory(categoryName) === "cab" &&
+    assignVariant !== "dual" &&
+    currentPresetIndex >= 0
+  ) {
+    clearCabDualPickerContext();
+    clearSlotDualPartsSessionForKemplineSlot(currentPresetIndex, ki);
+  }
   if (!categoryName) {
     console.warn("[SlotModelProbe] catégorie picker vide — impossible MAJ optimiste.");
     try {
@@ -3586,7 +4010,7 @@ async function syncModelsSlotPickerFromLoadedModel(
   meta: PresetMetaJson | null,
   moduleHex?: string,
   slotCategory?: string,
-  /** Cab lié lu dans le preset (`get_active_preset_slot_linked_cab` [0]) — legacy hybrid vs IR. */
+  /** Cab lié (trame HW / session) — legacy hybrid vs IR. */
   linkedCabHex?: string | null,
   /** Valeurs chaîne lues (Path 1 Input : surligner la source `@input` courante). */
   chainValues?: readonly (ChainParamValueJson | undefined)[] | null,
@@ -4426,10 +4850,10 @@ async function resolveMatrixClipboardAssignContext(
 
   if (loadedPresetIndex === currentPresetIndex) {
     try {
-      const dualParts = await invoke<DualSlotPartsJson | null>(
-        "get_active_preset_slot_dual_parts",
-        { slotIndex: kemplineSlotIndex },
-      );
+      const dualParts = await resolveSlotDualParts(kemplineSlotIndex, {
+        slot,
+        catalogModelId: idTrim,
+      });
       if (dualParts?.kind === "amp_cab" && dualParts.parts.length === 2) {
         const cabHex = dualParts.parts[1]?.chainHex?.trim() || null;
         const assignVariant = await usbAssignVariantForAmpCabSlot(
@@ -4464,18 +4888,7 @@ async function resolveMatrixClipboardAssignContext(
   }
 
   if (slotWantsAmpCabDualTabs(slot, null) || isAmpCabFamilySlotCategory(slotCat)) {
-    let cabHex: string | null = cabHexFromAmpCabWire(slot.moduleHex);
-    if (!cabHex && loadedPresetIndex === currentPresetIndex) {
-      try {
-        const linked = await invoke<[string, string, string, string] | null>(
-          "get_active_preset_slot_linked_cab",
-          { slotIndex: kemplineSlotIndex },
-        );
-        cabHex = linked?.[0]?.trim() || null;
-      } catch {
-        /* ignore */
-      }
-    }
+    const cabHex: string | null = linkedCabHexFromSlot(slot) || null;
     const assignVariant = await usbAssignVariantForAmpCabSlot(
       meta,
       slot.moduleHex,
@@ -4508,10 +4921,11 @@ async function resolveAmpCabClipboardCab(
   let fromParts: string | null = null;
   if (loadedPresetIndex === currentPresetIndex) {
     try {
-      const dualParts = await invoke<DualSlotPartsJson | null>(
-        "get_active_preset_slot_dual_parts",
-        { slotIndex: kemplineSlotIndex },
-      );
+      const dualParts = await resolveSlotDualParts(kemplineSlotIndex, {
+        catalogModelId: ampCatalogModelId,
+        kind: "amp_cab",
+        assignVariant,
+      });
       if (dualParts?.kind === "amp_cab" && dualParts.parts.length === 2) {
         fromParts = dualParts.parts[1]?.modelId?.trim() || null;
       }
@@ -4593,10 +5007,10 @@ async function resolveCabDualClipboardCab2(
   let fromParts: string | null = null;
   if (loadedPresetIndex === currentPresetIndex) {
     try {
-      const dualParts = await invoke<DualSlotPartsJson | null>(
-        "get_active_preset_slot_dual_parts",
-        { slotIndex: kemplineSlotIndex },
-      );
+      const dualParts = await resolveSlotDualParts(kemplineSlotIndex, {
+        catalogModelId: dualCatalogModelId,
+        kind: "cab_dual",
+      });
       if (dualParts?.kind === "cab_dual" && dualParts.parts.length === 2) {
         fromParts = dualParts.parts[1]?.modelId?.trim() || null;
       }
@@ -5580,6 +5994,10 @@ function cabDualAssignVariantFromMeta(meta: PresetMetaJson | null | undefined): 
   return isCabLegacyFromMeta(meta) ? "dual-legacy" : "dual";
 }
 
+function cabAssignVariantFromMeta(meta: PresetMetaJson | null | undefined): string | null {
+  return isCabLegacyFromMeta(meta) ? "legacy" : null;
+}
+
 /** Sous-catégorie picker pour le cab 2 d'un dual IR (hardware : single IR uniquement). */
 function cabDualCab2PickerSub(legacy: boolean): string {
   return legacy ? "Single Legacy" : "Single";
@@ -6061,19 +6479,6 @@ function chainParamValuesJsonEqual(
   }
   return a === b;
 }
-
-type DualSlotPartJson = {
-  chainHex: string;
-  category: string;
-  name: string;
-  modelId: string;
-  values: ChainParamValueJson[];
-};
-
-type DualSlotPartsJson = {
-  kind: "amp_cab" | "cab_dual";
-  parts: DualSlotPartJson[];
-};
 
 type DualTabPaneConfig = {
   /** Libellé court de l’onglet (ex. « Amp », « Cab »). */
@@ -6917,6 +7322,7 @@ function appendModelsParamRows(
   liveWriteAmpCabAssignVariant: string | null = null,
   liveWriteCabDualAssignVariant: string | null = null,
   liveWriteAmpCabAmpParamCount: number | null = null,
+  liveWriteWireLocalSelector = false,
 ): (nextChainValues: Array<ChainParamValueJson | undefined> | null | undefined) => void {
   const eqIdx = modelsEqMasterIndex(params);
   const eqOn =
@@ -7004,6 +7410,7 @@ function appendModelsParamRows(
             j,
             catalogSignal,
             liveWriteParamIndexBase,
+            liveWriteWireLocalSelector,
           );
           scheduleLiveParamWriteProbe(
             liveWriteSlotIndex,
@@ -7098,6 +7505,7 @@ function appendModelsParamRows(
           j,
           catalogSignal,
           liveWriteParamIndexBase,
+          liveWriteWireLocalSelector,
         );
         scheduleLiveParamWriteProbe(
           liveWriteSlotIndex,
@@ -7181,6 +7589,7 @@ function appendModelsParamRows(
           j,
           catalogSignal,
           liveWriteParamIndexBase,
+          liveWriteWireLocalSelector,
         );
         scheduleLiveParamWriteProbe(
           liveWriteSlotIndex,
@@ -7729,6 +8138,9 @@ async function resolveCabDualTabPanes(
   catalogRoutingSignal: string | null,
   assignVariantHint?: string | null,
 ): Promise<CabDualResolve> {
+  if (!slotWantsCabDualTabs(slot, assignVariantHint, meta)) {
+    return { dualTabPanes: null };
+  }
   const wire = cabDualWireParts(slot.moduleHex);
   const cab2HexTrame = await resolveCabDualCab2HexFromTrame(slot, kemplineSlotIndex);
   const pair = await cabDualHexPairFromAssignVariant(catalogModelIdTrimmed, "dual");
@@ -7781,26 +8193,24 @@ async function resolveCabDualTabPanes(
     kemplineSlotIndex !== undefined &&
     Number.isInteger(kemplineSlotIndex)
   ) {
-    try {
-      const dualParts = await invoke<DualSlotPartsJson | null>(
-        "get_active_preset_slot_dual_parts",
-        { slotIndex: kemplineSlotIndex },
+    const dualParts = await resolveSlotDualParts(kemplineSlotIndex, {
+      slot,
+      catalogModelId: catalogModelIdTrimmed,
+      kind: "cab_dual",
+      assignVariant: assignVariantHint,
+    });
+    if (
+      dualParts &&
+      dualParts.parts.length === 2 &&
+      dualParts.kind === "cab_dual"
+    ) {
+      let panes = await buildDualTabPanesFromParts(
+        dualParts,
+        catalogModelIdTrimmed,
       );
-      if (
-        dualParts &&
-        dualParts.parts.length === 2 &&
-        dualParts.kind === "cab_dual"
-      ) {
-        let panes = await buildDualTabPanesFromParts(
-          dualParts,
-          catalogModelIdTrimmed,
-        );
-        if (panes) {
-          return { dualTabPanes: await applyCab2Overrides(panes) };
-        }
+      if (panes) {
+        return { dualTabPanes: await applyCab2Overrides(panes) };
       }
-    } catch {
-      /* repli catalogue ci-dessous */
     }
   }
   const probeAssign =
@@ -7873,58 +8283,57 @@ async function resolveAmpCabDualTabPanes(
     kemplineSlotIndex !== undefined &&
     Number.isInteger(kemplineSlotIndex)
   ) {
-    try {
-      const dualParts = await invoke<DualSlotPartsJson | null>(
-        "get_active_preset_slot_dual_parts",
-        { slotIndex: kemplineSlotIndex },
-      );
+    const dualParts = await resolveSlotDualParts(kemplineSlotIndex, {
+      slot,
+      catalogModelId: catalogModelIdTrimmed,
+      kind: "amp_cab",
+      assignVariant: assignVariantHint,
+    });
+    if (
+      dualParts &&
+      dualParts.parts.length === 2 &&
+      dualParts.kind === "amp_cab"
+    ) {
+      const presetAmpId = dualParts.parts[0]?.modelId?.trim() ?? "";
       if (
-        dualParts &&
-        dualParts.parts.length === 2 &&
-        dualParts.kind === "amp_cab"
+        !presetAmpId ||
+        presetAmpId.toLowerCase() === catalogModelIdTrimmed.trim().toLowerCase()
       ) {
-        const presetAmpId = dualParts.parts[0]?.modelId?.trim() ?? "";
-        if (
-          !presetAmpId ||
-          presetAmpId.toLowerCase() === catalogModelIdTrimmed.trim().toLowerCase()
-        ) {
-          let panes = await buildDualTabPanesFromParts(dualParts);
-          if (panes) {
-            const cabHint = probePickerAmpCabCabHint(
-              kemplineSlotIndex,
-              catalogModelIdTrimmed,
-            );
-            if (cabHint) {
-              panes = await applyCabDualPane2ModelOverride(panes, cabHint);
-            }
-            const cabCatalogModelId =
-              cabHint ?? dualParts.parts[1]?.modelId?.trim() ?? null;
-            let linkedCabHex = dualParts.parts[1]?.chainHex?.trim() ?? null;
-            if (cabHint) {
-              const cabMeta = await getPresetMetaForId(cabHint);
-              linkedCabHex =
-                (await moduleHexForUsbVariant(cabHint, "single", cabMeta))?.trim() ||
-                linkedCabHex;
-            }
-            const assignVariantForDual =
-              probeAssign ||
-              (await usbAssignVariantForAmpCabSlot(
-                meta,
-                slot.moduleHex,
-                slot.category,
-                catalogModelIdTrimmed,
-              ));
-            return {
-              dualTabPanes: panes,
-              linkedCabHex,
-              cabCatalogModelId,
-              assignVariant: assignVariantForDual,
-            };
+        let panes = await buildDualTabPanesFromParts(dualParts);
+        if (panes) {
+          const cabHint = probePickerAmpCabCabHint(
+            kemplineSlotIndex,
+            catalogModelIdTrimmed,
+          );
+          if (cabHint) {
+            panes = await applyCabDualPane2ModelOverride(panes, cabHint);
           }
+          const cabCatalogModelId =
+            cabHint ?? dualParts.parts[1]?.modelId?.trim() ?? null;
+          let linkedCabHex = dualParts.parts[1]?.chainHex?.trim() ?? null;
+          if (cabHint) {
+            const cabMeta = await getPresetMetaForId(cabHint);
+            linkedCabHex =
+              (await moduleHexForUsbVariant(cabHint, "single", cabMeta))?.trim() ||
+              linkedCabHex;
+          }
+          const assignVariantForDual =
+            probeAssign ||
+            (await usbAssignVariantForAmpCabSlot(
+              meta,
+              slot.moduleHex,
+              slot.category,
+              catalogModelIdTrimmed,
+              linkedCabHex,
+            ));
+          return {
+            dualTabPanes: panes,
+            linkedCabHex,
+            cabCatalogModelId,
+            assignVariant: assignVariantForDual,
+          };
         }
       }
-    } catch {
-      /* repli catalogue ci-dessous */
     }
   }
   const assignVariant =
@@ -8012,6 +8421,7 @@ function renderModelsParamsPane(
   dualSlotKind?: "amp_cab" | "cab_dual" | null,
   ampCabAssignVariant?: string | null,
   cabDualAssignVariant?: string | null,
+  cabAssignVariant?: string | null,
 ) {
   const inner = getModelsParamsInner();
   if (!inner) return;
@@ -8116,6 +8526,12 @@ function renderModelsParamsPane(
     catalogRoutingSignal,
     "",
     kemplineSlotIndex,
+    0,
+    null,
+    ampCabAssignVariant ?? null,
+    cabDualAssignVariant ?? null,
+    null,
+    cabAssignVariant === "legacy",
   );
   applyRawChainValuesInPlace = (rawChainValues: ChainParamValueJson[] | null): void => {
     const aligned = mergeLiveChainOverridesIntoAligned(
@@ -8347,9 +8763,15 @@ async function loadAndShowModelsParamsForSlot(
             probePickerAmpCabCabHint(kemplineSlotIndex, catalogModelIdTrimmed) ??
             "",
         };
+        syncSlotDualPartsSessionFromTabPanes(
+          kemplineSlotIndex!,
+          "amp_cab",
+          ampCabDual.dualTabPanes,
+          slot,
+          ampCabDual.linkedCabHex,
+        );
       }
     } else if (
-      (kemplineSlotIndex !== undefined && Number.isInteger(kemplineSlotIndex)) ||
       slotWantsCabDualTabs(
         slot,
         probePickerAssignVariantHint(kemplineSlotIndex),
@@ -8378,6 +8800,14 @@ async function loadAndShowModelsParamsForSlot(
           slot,
           kemplineSlotIndex,
         };
+        if (kemplineSlotIndex !== undefined && Number.isInteger(kemplineSlotIndex)) {
+          syncSlotDualPartsSessionFromTabPanes(
+            kemplineSlotIndex,
+            "cab_dual",
+            cabDual.dualTabPanes,
+            slot,
+          );
+        }
       } else {
         lastCabDualTabPanesContext = null;
       }
@@ -8395,6 +8825,7 @@ async function loadAndShowModelsParamsForSlot(
       currentPresetIndex >= 0
     ) {
       clearLiveChainOverridesForKemplineSlot(currentPresetIndex, kemplineSlotIndex);
+      clearSlotDualPartsSessionForKemplineSlot(currentPresetIndex, kemplineSlotIndex);
     }
     const kempMatchesNow =
       kemplineSlotIndex === undefined ||
@@ -8505,6 +8936,7 @@ async function loadAndShowModelsParamsForSlot(
       dualSlotKind,
       ampCabDualResolve?.assignVariant ?? null,
       cabDualAssignVariant,
+      dualSlotKind ? null : cabAssignVariantFromMeta(meta),
     );
     void mountModelsSlotPicker().then(async () => {
       if (dualSlotKind === "amp_cab" && ampCabDualResolve) {
@@ -8654,11 +9086,15 @@ async function loadAndShowModelsParamsFromCatalogDefaults(
             probePickerAmpCabCabHint(kemplineSlotIndex, catalogModelIdTrimmed) ??
             "",
         };
+        syncSlotDualPartsSessionFromTabPanes(
+          kemplineSlotIndex!,
+          "amp_cab",
+          ampCabDual.dualTabPanes,
+          slot,
+          ampCabDual.linkedCabHex,
+        );
       }
-    } else if (
-      (Number.isInteger(kemplineSlotIndex)) ||
-      slotWantsCabDualTabs(slot, options?.assignVariant, meta)
-    ) {
+    } else if (slotWantsCabDualTabs(slot, options?.assignVariant, meta)) {
       const cabDual = await resolveCabDualTabPanes(
         kemplineSlotIndex,
         slot,
@@ -8681,6 +9117,14 @@ async function loadAndShowModelsParamsFromCatalogDefaults(
           slot,
           kemplineSlotIndex,
         };
+        if (kemplineSlotIndex !== undefined && Number.isInteger(kemplineSlotIndex)) {
+          syncSlotDualPartsSessionFromTabPanes(
+            kemplineSlotIndex,
+            "cab_dual",
+            cabDual.dualTabPanes,
+            slot,
+          );
+        }
       } else {
         lastCabDualTabPanesContext = null;
       }
@@ -8700,6 +9144,7 @@ async function loadAndShowModelsParamsFromCatalogDefaults(
       dualSlotKind,
       ampCabDualResolve?.assignVariant ?? null,
       cabDualAssignVariant,
+      dualSlotKind ? null : cabAssignVariantFromMeta(meta),
     );
     void mountModelsSlotPicker().then(async () => {
       if (dualSlotKind === "amp_cab" && ampCabDualResolve) {
@@ -10039,6 +10484,7 @@ async function requestLoadForPreset(index: number) {
             await renderSlots(normalizedSlots, routingFlow, stompLayout);
             rememberHwSyncChainLayout(normalizedSlots);
             void hydrateSlotChainSessionFromPresetData(index);
+            void hydrateSlotDualPartsSessionFromPresetData(index);
             const realBlocks = countRealBlocks(normalizedSlots);
             const singleDsp = isSingleDspDevice(connectedDeviceName);
             const dspSuffix = singleDsp ? ` (${realBlocks}/8 max)` : "";

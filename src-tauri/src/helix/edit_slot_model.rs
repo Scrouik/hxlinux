@@ -716,6 +716,11 @@ pub fn patch_amp_cab_bulk_cab_field(bulk: &mut Vec<u8>, new_cab: &[u8]) -> Resul
     Ok(())
 }
 
+/// Bornes `[start, end)` du champ cab2 (`… 1a <cab2> …`) dans un bulk Cab dual / Amp+Cab.
+pub fn cab_dual_cab2_field_range_in_bulk(bulk: &[u8]) -> Option<(usize, usize)> {
+    amp_cab_cab_field_range_in_bulk(bulk)
+}
+
 /// Bornes `[start, end)` du premier cab (`<cab1> 1a <cab2>`) dans un bulk Cab dual.
 pub(crate) fn cab_dual_cab1_field_range_in_bulk(bulk: &[u8]) -> Option<(usize, usize)> {
     let pos = bulk
