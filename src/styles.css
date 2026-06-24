@@ -1308,8 +1308,6 @@ html, body {
   height: 48px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
   padding: 0 14px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
@@ -1317,14 +1315,11 @@ html, body {
 }
 
 .models-title {
+  flex: 1;
+  min-width: 0;
   color: var(--amber);
   font-weight: 600;
   letter-spacing: 0.04em;
-}
-
-.models-preset {
-  font-size: 12px;
-  color: var(--green);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

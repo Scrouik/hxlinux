@@ -109,9 +109,35 @@ impl Mode for RequestPresetName {
 
                 // Annuler le watchdog avant de switcher
                 self.cancel_watchdog();
-                if let Some((idx, decoded)) =
-                    crate::helix::preset_name_wire::decode_from_transfer_buf(&self.preset_name_data)
-                {
+                let wire_name = crate::helix::preset_name_wire::decode_from_transfer_buf(
+                    &self.preset_name_data,
+                );
+                if state.pending_rename_name_verify {
+                    if let Some((idx, decoded)) = wire_name {
+                        state.preset_index = idx;
+                        state.active_preset_name = Some(decoded.clone());
+                        state.resolve_preset_index_from_active_name();
+                        crate::helix::preset_name_wire::log_wire_preset(
+                            "rename-verify",
+                            idx,
+                            Some(&decoded),
+                        );
+                        if idx < state.preset_names.len() {
+                            state.preset_names[idx] = decoded;
+                        }
+                    } else {
+                        eprintln!(
+                            "[Preset] rename verify: impossible de décoder le nom depuis le fil"
+                        );
+                    }
+                    state.pending_rename_name_verify = false;
+                    crate::helix::init_trace::trace(
+                        "RequestPresetName::done rename verify → Standard",
+                    );
+                    state.switch_mode(ModeRequest::Standard);
+                    return false;
+                }
+                if let Some((idx, decoded)) = wire_name {
                     state.preset_index = idx;
                     state.active_preset_name = Some(decoded.clone());
                     state.resolve_preset_index_from_active_name();

@@ -508,11 +508,9 @@ fn rename_preset(
         .collect();
 
     let effective_name = String::from_utf8(text.clone()).unwrap_or_default();
-
-    // Kempline : set_preset_label_be_careful(prog_no, text)
-    let msg_size_byte      = 0x20u8 + text.len() as u8;
-    let length_byte        = 0xa1u8 + text.len() as u8;
-    let second_length_byte = msg_size_byte - 0x10;
+    if effective_name.is_empty() {
+        return Err("nom preset vide".to_string());
+    }
 
     let mut s = helix_arc.lock().unwrap();
     if !s.editor_ready {
@@ -525,38 +523,9 @@ fn rename_preset(
         ));
     }
 
-    let cnt = s.next_x1_cnt(); // "XX" → next_x1x10_packet_no()
-
-    let mut data: Vec<u8> = vec![
-        msg_size_byte, 0x00, 0x00, 0x18,
-        0x01, 0x10, 0xef, 0x03,
-        0x00, cnt,  0x00, 0x04,
-        0x77, 0x1e, 0x00, 0x00,
-        0x01, 0x00, 0x02, 0x00,
-        second_length_byte, 0x00, 0x00, 0x00,
-        0x83, 0x66, 0xcd, 0x03,
-        0xed, 0x64, 0x06, 0x65,
-        0x83, 0x6b, 0x00,
-        0x6c, index as u8,
-        0x6d, length_byte,
-    ];
-
-    // Ajouter les caractères du nom
-    data.extend_from_slice(&text);
-
-    // Padding — kempline : while len(data) < msg_size_byte + 9 + 2
-    while data.len() < (msg_size_byte as usize) + 11 {
-        data.push(0x00);
-    }
-
-    s.send(OutPacket::new(data));
-    drop(s);
-
-    // Mettre à jour AppState pour que le polling retourne le nouveau nom
-    let mut app = state.lock().unwrap();
-    if let Some(entry) = app.preset_names.get_mut(index) {
-        *entry = effective_name;
-    }
+    helix::preset_label::send_preset_rename(&mut s, index, &effective_name)?;
+    s.pending_rename_name_verify = true;
+    s.switch_mode(ModeRequest::RequestPresetName);
 
     Ok(())
 }

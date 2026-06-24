@@ -286,6 +286,10 @@ pub struct HelixState {
     /// effacé par Standard::data_in quand le x2 arrive.
     pub want_content_only_after_x2: bool,
 
+    /// Après rename HW : la prochaine fin de `RequestPresetName` met à jour un slot
+    /// de `preset_names` depuis le fil puis retourne `Standard` (pas de re-dump preset).
+    pub pending_rename_name_verify: bool,
+
     /// Dernier bloc `83 66 cd 05 … 1c` extrait d’un écho IN `27 … ed 03 03 10`
     /// (capture HX Edit). Sert à aligner les écritures live sur la session USB réelle.
     pub last_ed03_echo_model: Option<[u8; 16]>,
@@ -634,6 +638,7 @@ impl HelixState {
             live_write_yy: 0x17,
             slot_model_lane_seq: None,
             want_content_only_after_x2: false,
+            pending_rename_name_verify: false,
             hw_slot_notify_ed_in: None,
             hw_slot_notify_ef_in: None,
             hw_slot_notify_sequence: 0,

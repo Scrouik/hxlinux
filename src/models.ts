@@ -142,6 +142,63 @@ function setStatus(text: string) {
   if (statusEl) statusEl.textContent = text;
 }
 const presetLabelEl = document.getElementById("preset-label") as HTMLElement;
+/** Modifications HW non sauvegardées sur le preset courant (sans lecture preset_data). */
+let presetModified = false;
+let bannerPresetIndex = -1;
+let bannerPresetDisplayName = "";
+
+function refreshPresetBannerLabel(): void {
+  if (!presetLabelEl) return;
+  if (bannerPresetIndex < 0) {
+    presetLabelEl.textContent = "—";
+    return;
+  }
+  const base = `${String(bannerPresetIndex).padStart(3, "0")} ${bannerPresetDisplayName}`;
+  presetLabelEl.textContent = presetModified ? `${base}*` : base;
+}
+
+function setPresetBannerName(index: number, displayName: string): void {
+  bannerPresetIndex = index;
+  bannerPresetDisplayName = displayName;
+  refreshPresetBannerLabel();
+}
+
+function markPresetModified(): void {
+  if (currentPresetIndex < 0) return;
+  if (!presetModified) {
+    presetModified = true;
+    refreshPresetBannerLabel();
+  }
+}
+
+function resetPresetModified(): void {
+  presetModified = false;
+  refreshPresetBannerLabel();
+}
+
+function clearPresetBanner(): void {
+  bannerPresetIndex = -1;
+  bannerPresetDisplayName = "";
+  presetModified = false;
+  refreshPresetBannerLabel();
+}
+
+type ProbeSlotModelUsbArgs = {
+  op: string;
+  slotIndex: number;
+  catalogModelId?: string;
+  assignVariant?: string;
+  cabCatalogModelId?: string;
+  cabAssignVariant?: string;
+  cabDualCabIndex?: number;
+};
+
+async function invokeProbeSlotModelUsb(args: ProbeSlotModelUsbArgs): Promise<string> {
+  const out = await invoke<string>("probe_slot_model_usb", args);
+  markPresetModified();
+  return out;
+}
+
 const contentEl = document.getElementById("content") as HTMLElement;
 const LIVE_WRITE_PROBE_FLAG = "models_live_write_probe";
 const LIVE_WRITE_ENABLED_FLAG = "models_live_write_enabled";
@@ -1850,7 +1907,7 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
       lastPresetNamesSig = nameSig;
       if (deviceActive >= 0 && deviceActive < names.length) {
         const displayName = isEmpty(names[deviceActive]) ? "empty" : names[deviceActive];
-        presetLabelEl.textContent = `${padNum(deviceActive)} ${displayName}`;
+        setPresetBannerName(deviceActive, displayName);
       }
     }
 
@@ -2205,6 +2262,7 @@ function applyHardwareSlotParamChanged(p: SlotParamChangedPayload): void {
   if (Date.now() < liveWriteUiInteractionUntil) return;
   const cv = chainValueFromHwSlotParam(p);
   if (cv === null) return;
+  markPresetModified();
 
   const ctx = selectedParamsHwWireContext;
   const sid =
@@ -2286,6 +2344,7 @@ async function flushPendingLiveWrites(): Promise<boolean> {
   pendingLiveWrites.clear();
   const mode = liveWriteEnabled() ? liveWriteTransport() : "probe";
   lastLiveWriteAt = Date.now();
+  let anyOk = false;
   for (const w of batch) {
     try {
       if (mode === "probe") {
@@ -2322,11 +2381,13 @@ async function flushPendingLiveWrites(): Promise<boolean> {
           ampCabAmpParamCount: w.ampCabAmpParamCount ?? undefined,
         });
       }
+      anyOk = true;
     } catch (e) {
       // Mode expérimental : ne pas casser l'UI ; journaliser refus sécurité (ex. valueType non géré USB).
       console.warn("[LiveWrite]", e);
     }
   }
+  if (anyOk) markPresetModified();
   return true;
 }
 
@@ -3388,6 +3449,7 @@ async function applyPath1InputSourceFromPicker(row: CatalogPickerModelRow): Prom
     if (typeof row.wireValue === "number") path1InputMatrixWire = row.wireValue;
     const out = await invoke<string>("write_path1_input_source", { ioSourceId: row.id });
     console.info("[Path1Input]", row.name, out);
+    markPresetModified();
     void refreshPath1InputMatrixIcon();
     await syncInputPickerHighlightAsync(
       flowIoCatalogIdsForConnectedDevice(connectedDeviceName).input,
@@ -3414,6 +3476,7 @@ async function applyPath1SplitTypeFromPicker(row: CatalogPickerModelRow): Promis
     path1SplitTypeHighlightOverride = row.id;
     const out = await invoke<string>("write_path1_split_type", { splitSourceId: row.id });
     console.info("[Path1Split]", row.name, out);
+    markPresetModified();
     const catId = (row.catalogModelId ?? "").trim();
     const wire = row.wireValue ?? 0;
     await syncSplitPickerHighlightAsync(catId, splitChainHexFromWire(wire));
@@ -3503,7 +3566,7 @@ async function applyAmpCabCabFromPickerListClick(
       assignVariant: ampAssignVariant,
     });
 
-    const out = await invoke<string>("probe_slot_model_usb", {
+    const out = await invokeProbeSlotModelUsb( {
       op: "replace",
       slotIndex: ki,
       catalogModelId: ampIdTrim,
@@ -3716,7 +3779,7 @@ async function applyCabDualCabFromPickerListClick(
     logCabDualTrace(
       `probe cab${tab + 1} replace cab=${cabIdForUsb} variant=${cabAssignVariant} dual=${dualIdTrim} (picker=${newCabIdTrim})`,
     );
-    const out = await invoke<string>("probe_slot_model_usb", {
+    const out = await invokeProbeSlotModelUsb( {
       op: "replace",
       slotIndex: ki,
       catalogModelId: dualIdTrim,
@@ -3876,7 +3939,7 @@ async function applySlotModelFromPickerListClick(row: CatalogPickerModelRow): Pr
   if (!categoryName) {
     console.warn("[SlotModelProbe] catégorie picker vide — impossible MAJ optimiste.");
     try {
-      const out = await invoke<string>("probe_slot_model_usb", {
+      const out = await invokeProbeSlotModelUsb( {
         op,
         slotIndex: ki,
         catalogModelId,
@@ -3946,7 +4009,7 @@ async function applySlotModelFromPickerListClick(row: CatalogPickerModelRow): Pr
       assignVariant,
     });
 
-    const out = await invoke<string>("probe_slot_model_usb", {
+    const out = await invokeProbeSlotModelUsb( {
       op,
       slotIndex: ki,
       catalogModelId: idTrim,
@@ -4418,7 +4481,7 @@ async function removeMatrixSlotFromCell(
     await waitUntilHardwareSyncIdle(15_000);
     await enqueueHardwareSlotSwitch(slotIndex);
     await delayMs(100);
-    const out = await invoke<string>("probe_slot_model_usb", {
+    const out = await invokeProbeSlotModelUsb( {
       op: "remove",
       slotIndex,
     });
@@ -5040,7 +5103,7 @@ async function pasteAmpCabCabIfNeeded(
     const defaultCab = (await getCatalogModelIdForHex(pair.cabHex, "Cab"))?.trim() ?? "";
     if (defaultCab && cabTrim.toLowerCase() === defaultCab.toLowerCase()) return;
   }
-  const out = await invoke<string>("probe_slot_model_usb", {
+  const out = await invokeProbeSlotModelUsb( {
     op: "replace",
     slotIndex: destKi,
     catalogModelId: ampCatalogModelId.trim(),
@@ -5135,7 +5198,7 @@ async function pasteCabDualCab2IfNeeded(
       )?.trim() ?? "";
     if (defaultCab2 && cab2Trim.toLowerCase() === defaultCab2.toLowerCase()) return;
   }
-  const out = await invoke<string>("probe_slot_model_usb", {
+  const out = await invokeProbeSlotModelUsb( {
     op: "replace",
     slotIndex: destKi,
     catalogModelId: dualCatalogModelId.trim(),
@@ -5305,6 +5368,7 @@ async function replayMatrixClipboardParams(
       if (currentPresetIndex >= 0) {
         recordLiveChainParamOverrideForKemplineSlot(currentPresetIndex, destKi, sid, cv);
       }
+      markPresetModified();
     } catch (e) {
       console.warn("[MatrixPaste] param", sid, e);
     }
@@ -5399,7 +5463,7 @@ async function pasteMatrixSlotToCell(
       assignVariant: cb.assignVariant,
     });
 
-    const out = await invoke<string>("probe_slot_model_usb", {
+    const out = await invokeProbeSlotModelUsb( {
       op: "add",
       slotIndex: destKi,
       catalogModelId: idTrim,
@@ -5877,10 +5941,6 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
   });
 }
 
-function padNum(n: number): string {
-  return String(n).padStart(3, "0");
-}
-
 function isEmpty(name: string): boolean {
   return !name || name === "<empty>";
 }
@@ -5903,7 +5963,7 @@ function purgeModelsUi() {
   lastPresetNamesSig = "";
   mainWindowPresetDriftStreak = 0;
   stopLoadingHeartbeat();
-  presetLabelEl.textContent = "--";
+  clearPresetBanner();
   renderEmpty("En attente du HX...");
   setStatus("HX déconnecté.");
 }
@@ -10603,7 +10663,7 @@ async function refresh() {
       } else {
         connectedDeviceName = null;
         setStatus("HX non connecté.");
-        presetLabelEl.textContent = "--";
+        clearPresetBanner();
         renderEmpty("En attente du HX...");
       }
       return;
@@ -10614,14 +10674,14 @@ async function refresh() {
     if (active < 0 || active >= names.length) {
       console.warn("[PresetDebug][models] active preset out of range", active, names.length);
       stopLoadingHeartbeat();
-      presetLabelEl.textContent = "--";
+      clearPresetBanner();
       renderEmpty("Aucun preset actif.");
       setStatus("En attente...");
       return;
     }
 
     const displayName = isEmpty(names[active]) ? "empty" : names[active];
-    presetLabelEl.textContent = `${padNum(active)} ${displayName}`;
+    setPresetBannerName(active, displayName);
     lastPresetNamesSig = `${active}\n${names.join("\n")}`;
 
     if (active !== currentPresetIndex) {
@@ -10640,6 +10700,7 @@ async function refresh() {
       emitModelsSyncTrace(
         `refresh presetDrift CONFIRMED uiWas=${currentPresetIndex} backendActive=${active} -> renderEmpty+scheduleLoad`,
       );
+      resetPresetModified();
       currentPresetIndex = active;
       loadedPresetIndex = -1;
       clearSelectedParamsContext();
@@ -10662,7 +10723,7 @@ async function refresh() {
     console.warn("[PresetDebug][models] refresh failed (HX disconnected?)");
     stopLoadingHeartbeat();
     setStatus("HX non connecte.");
-    presetLabelEl.textContent = "--";
+    clearPresetBanner();
     renderEmpty("En attente du HX...");
   }
 }
@@ -10699,6 +10760,13 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  void listen<{ index: number }>("models:preset-saved", (event) => {
+    const index = event.payload?.index;
+    if (typeof index === "number" && index === currentPresetIndex) {
+      resetPresetModified();
+    }
+  });
+
   void listen<{ index: number }>("models:load-preset", async (event) => {
     const index = event.payload?.index;
     if (typeof index !== "number" || index < 0) return;
@@ -10712,6 +10780,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     currentPresetIndex = index;
     loadedPresetIndex = -1;
+    resetPresetModified();
     mergeProbeSlotModelUntil = null;
     suppressUsbPresetPollUntilMs = 0;
     clearSelectedParamsContext();

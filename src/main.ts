@@ -304,8 +304,23 @@ function hideContextMenu() {
   ctxTargetIndex = -1;
 }
 
+function isKeyboardSaveBlocked(e: KeyboardEvent): boolean {
+  if (renameIndex >= 0) return true;
+  const t = e.target;
+  if (!(t instanceof HTMLElement)) return false;
+  const tag = t.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable;
+}
+
 document.addEventListener("click", hideContextMenu);
 document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+    if (!isKeyboardSaveBlocked(e) && activePreset >= 0 && canSavePreset(activePreset)) {
+      e.preventDefault();
+      void savePreset(activePreset);
+    }
+    return;
+  }
   if (e.key === "Escape") {
     hideContextMenu();
     cancelRename();
@@ -389,13 +404,9 @@ async function confirmRename(newName: string) {
 
   const trimmed = newName.trim();
 
-  // Mise à jour optimiste
-  presetNames[index] = trimmed;
-  render(presetNames, activePreset);
-
   try {
     await invoke("rename_preset", { index, name: trimmed });
-    barHint.textContent = `✓  Preset ${padNum(index)} renommé`;
+    barHint.textContent = `✓  Renommage envoyé — attente confirmation HX…`;
   } catch (e) {
     barHint.textContent = `✗  Erreur : ${e}`;
   }
@@ -425,6 +436,7 @@ async function savePreset(index: number) {
   }
   try {
     await invoke("save_preset_to_hardware", { index });
+    await emit("models:preset-saved", { index });
     barHint.textContent = `✓  Preset ${padNum(index)} enregistré sur le HX`;
   } catch (e) {
     barHint.textContent = `✗  Erreur sauvegarde : ${e}`;
