@@ -56,6 +56,19 @@ function isEmpty(name: string): boolean {
   return !name || name === "<empty>";
 }
 
+/** Opérations HW (rename, save) : uniquement le preset actuellement actif sur le HX. */
+function isActivePreset(index: number): boolean {
+  return index >= 0 && activePreset >= 0 && index === activePreset;
+}
+
+function canRenamePreset(index: number): boolean {
+  return isActivePreset(index);
+}
+
+function canSavePreset(index: number): boolean {
+  return isActivePreset(index) && !isEmpty(presetNames[index]);
+}
+
 function computeLongestPresetWidth(names: string[]): number {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
@@ -222,7 +235,6 @@ async function onItemClick(index: number) {
   selectedIndex = index;
   hideContextMenu();
   try {
-    console.log(`[PresetDebug][main] click preset index=${index}`);
     await invoke("activate_preset", { index });
     activePreset = index;
     await emit("models:load-preset", { index });
@@ -255,6 +267,30 @@ function onContextMenu(e: MouseEvent, index: number) {
   render(presetNames, activePreset);
 
   ctxLoad.classList.add("disabled");
+  if (canSavePreset(index)) {
+    ctxSave.classList.remove("disabled");
+    ctxSave.removeAttribute("title");
+  } else {
+    ctxSave.classList.add("disabled");
+    if (isEmpty(presetNames[index])) {
+      ctxSave.title = "Preset vide — rien à enregistrer";
+    } else if (!isActivePreset(index)) {
+      ctxSave.title =
+        activePreset >= 0
+          ? `Sauvegarde réservée au preset actif (${padNum(activePreset)})`
+          : "Aucun preset actif — activez un preset avant de l'enregistrer";
+    }
+  }
+  if (canRenamePreset(index)) {
+    ctxRename.classList.remove("disabled");
+    ctxRename.removeAttribute("title");
+  } else {
+    ctxRename.classList.add("disabled");
+    ctxRename.title =
+      activePreset >= 0
+        ? `Renommage réservé au preset actif (${padNum(activePreset)})`
+        : "Aucun preset actif — activez un preset avant de le renommer";
+  }
 
   const x = Math.min(e.clientX, window.innerWidth  - 200);
   const y = Math.min(e.clientY, window.innerHeight - 120);
@@ -275,6 +311,16 @@ document.addEventListener("keydown", (e) => {
     cancelRename();
   }
   if (e.key === "F2" && selectedIndex >= 0) {
+    if (!canRenamePreset(selectedIndex)) {
+      barHint.textContent =
+        activePreset >= 0
+          ? `Renommage : preset actif uniquement (${padNum(activePreset)})`
+          : "Renommage indisponible — aucun preset actif";
+      setTimeout(() => {
+        barHint.textContent = "Right-click for options · Drag to reorder";
+      }, 2500);
+      return;
+    }
     startRename(selectedIndex);
   }
 });
@@ -285,6 +331,16 @@ let renameIndex = -1;
 
 function startRename(index: number) {
   hideContextMenu();
+  if (!canRenamePreset(index)) {
+    barHint.textContent =
+      activePreset >= 0
+        ? `Renommage : preset actif uniquement (${padNum(activePreset)})`
+        : "Renommage indisponible — aucun preset actif";
+    setTimeout(() => {
+      barHint.textContent = "Right-click for options · Drag to reorder";
+    }, 2500);
+    return;
+  }
   renameIndex = index;
 
   const items = list.querySelectorAll(".preset-item");
@@ -354,11 +410,26 @@ function cancelRename() {
 
 // ─── Save to disk ─────────────────────────────────────────────────────────────
 
-async function savePreset(_index: number) {
+async function savePreset(index: number) {
   hideContextMenu();
-  barHint.textContent = `Save to disk → à implémenter`;
+  if (!canSavePreset(index)) {
+    barHint.textContent = !isActivePreset(index)
+      ? activePreset >= 0
+        ? `Sauvegarde : preset actif uniquement (${padNum(activePreset)})`
+        : "Sauvegarde indisponible — aucun preset actif"
+      : "Sauvegarde indisponible — preset vide";
+    setTimeout(() => {
+      barHint.textContent = "Right-click for options · Drag to reorder";
+    }, 2500);
+    return;
+  }
+  try {
+    await invoke("save_preset_to_hardware", { index });
+    barHint.textContent = `✓  Preset ${padNum(index)} enregistré sur le HX`;
+  } catch (e) {
+    barHint.textContent = `✗  Erreur sauvegarde : ${e}`;
+  }
   setTimeout(() => { barHint.textContent = "Right-click for options · Drag to reorder"; }, 3000);
-  // TODO: invoke("save_preset_to_disk", { index })
 }
 
 // ─── Load from disk ───────────────────────────────────────────────────────────
@@ -374,12 +445,16 @@ async function loadPreset(_index: number) {
 
 ctxRename.addEventListener("click", (e) => {
   e.stopPropagation();
-  if (ctxTargetIndex >= 0) startRename(ctxTargetIndex);
+  if (ctxTargetIndex >= 0 && !ctxRename.classList.contains("disabled")) {
+    startRename(ctxTargetIndex);
+  }
 });
 
 ctxSave.addEventListener("click", (e) => {
   e.stopPropagation();
-  if (ctxTargetIndex >= 0) savePreset(ctxTargetIndex);
+  if (ctxTargetIndex >= 0 && !ctxSave.classList.contains("disabled")) {
+    savePreset(ctxTargetIndex);
+  }
 });
 
 ctxLoad.addEventListener("click", (e) => {

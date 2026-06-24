@@ -154,6 +154,7 @@ impl Mode for Standard {
             ]));
             if data.len() > 40 {
                 state.preset_index = data[40] as usize;
+                crate::helix::preset_name_wire::log_wire_preset("x2", state.preset_index, None);
             }
             if state.want_content_only_after_x2 {
                 state.want_content_only_after_x2 = false;

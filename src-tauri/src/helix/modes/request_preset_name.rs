@@ -109,33 +109,18 @@ impl Mode for RequestPresetName {
 
                 // Annuler le watchdog avant de switcher
                 self.cancel_watchdog();
-                // Lire le preset actif depuis la réponse
-                if self.preset_name_data.len() > 24 {
-                    state.preset_index = self.preset_name_data[24] as usize;
+                if let Some((idx, decoded)) =
+                    crate::helix::preset_name_wire::decode_from_transfer_buf(&self.preset_name_data)
+                {
+                    state.preset_index = idx;
+                    state.active_preset_name = Some(decoded.clone());
+                    state.resolve_preset_index_from_active_name();
+                    crate::helix::preset_name_wire::log_wire_preset(
+                        "RequestPresetName",
+                        state.preset_index,
+                        Some(&decoded),
+                    );
                 }
-
-                // Extraire le nom du preset actif (traduction de request_preset_name.py)
-                // Kempline : slot_number_idx = 27; lecture jusqu'à 27+24 (ou 0x00).
-                let name_start = 27usize;
-                let name_end = name_start.saturating_add(24);
-                let mut decoded = String::new();
-                if self.preset_name_data.len() > name_start {
-                    let slice = &self.preset_name_data[name_start..self.preset_name_data.len().min(name_end)];
-                    for &b in slice {
-                        if b == 0x00 {
-                            break;
-                        }
-                        decoded.push(if (32..=126).contains(&b) { b as char } else { '?' });
-                    }
-                }
-                let decoded = if decoded.is_empty() { "<empty>".to_string() } else { decoded };
-                state.active_preset_name = Some(decoded);
-                state.resolve_preset_index_from_active_name();
-                eprintln!(
-                    "[PresetDebug][RequestPresetName] active preset={} name='{}'",
-                    state.preset_index,
-                    state.active_preset_name.as_ref().unwrap()
-                );
                 // Noms déjà chargés (init HX Edit) : lire le corps du preset actif si absent.
                 // Sinon retour Standard (changement preset nominal).
                 if state.got_preset_names {

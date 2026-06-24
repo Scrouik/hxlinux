@@ -346,10 +346,17 @@ impl Mode for RequestPreset {
         }
 
         if self.waiting_phase1_response {
-            // Réponse Phase 1 : sub=0x04, au moins 36 octets
+            // Réponse Phase 1 : sub=0x04, au moins 36 octets (souvent 68 o avec nom preset)
             if sub == 0x04 && data.len() >= 36 {
                 if preset_debug_verbose_enabled() {
                     eprintln!("[PresetDebug][RequestPreset::data_in] Phase 1 réponse ({} octets) → envoi Phase 2", data.len());
+                }
+                if let Some((idx, name)) =
+                    crate::helix::preset_name_wire::decode_from_ed03_packet(data)
+                {
+                    state.preset_index = idx;
+                    state.active_preset_name = Some(name.clone());
+                    crate::helix::preset_name_wire::log_wire_preset("phase1", idx, Some(&name));
                 }
                 self.send_phase2(state);
             }

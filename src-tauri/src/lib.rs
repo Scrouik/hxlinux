@@ -476,19 +476,28 @@ fn is_helix_usb_init_settling(state: tauri::State<Arc<Mutex<AppState>>>) -> bool
 }
 
 /// Renomme un preset sur le HX.
-/// Traduction de set_preset_label_be_careful() de kempline.
+/// Uniquement le preset **actif** (même contrainte que la lecture wire du nom).
 #[tauri::command]
 fn rename_preset(
     index: usize,
     name: String,
     state: tauri::State<Arc<Mutex<AppState>>>,
 ) -> Result<(), String> {
-    // Récupérer le HelixState
-    let helix_arc = {
+    let (helix_arc, active_preset) = {
         let app = state.lock().unwrap();
-        app.helix_state.clone()
+        (
+            app.helix_state.clone(),
+            app.active_preset,
+        )
     };
     let helix_arc = helix_arc.ok_or("HX non connecté")?;
+
+    if index != active_preset {
+        return Err(format!(
+            "Renommage refusé : seul le preset actif ({:03}) peut être renommé",
+            active_preset
+        ));
+    }
 
     // Limiter à 16 caractères ASCII — limite produit utilisée par l'application.
     let text: Vec<u8> = name
@@ -506,6 +515,16 @@ fn rename_preset(
     let second_length_byte = msg_size_byte - 0x10;
 
     let mut s = helix_arc.lock().unwrap();
+    if !s.editor_ready {
+        return Err("Amorçage USB en cours — renommage indisponible".to_string());
+    }
+    if s.preset_index != index {
+        return Err(format!(
+            "Renommage refusé : le matériel n'a pas confirmé le preset {:03}",
+            index
+        ));
+    }
+
     let cnt = s.next_x1_cnt(); // "XX" → next_x1x10_packet_no()
 
     let mut data: Vec<u8> = vec![
@@ -540,6 +559,48 @@ fn rename_preset(
     }
 
     Ok(())
+}
+
+/// Enregistre un preset sur le HX (capture HX Edit `save_preset.json`).
+/// Uniquement le preset **actif** (modifications en RAM du preset courant).
+#[tauri::command]
+fn save_preset_to_hardware(
+    index: usize,
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Result<(), String> {
+    let (helix_arc, active_preset) = {
+        let app = state.lock().unwrap();
+        (app.helix_state.clone(), app.active_preset)
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+
+    if index != active_preset {
+        return Err(format!(
+            "Sauvegarde refusée : seul le preset actif ({:03}) peut être enregistré",
+            active_preset
+        ));
+    }
+
+    let name = {
+        let app = state.lock().unwrap();
+        app.preset_names
+            .get(index)
+            .cloned()
+            .filter(|n| !n.is_empty() && n != "<empty>")
+            .ok_or_else(|| format!("nom preset {index} indisponible"))?
+    };
+
+    let mut s = helix_arc.lock().unwrap();
+    if !s.editor_ready {
+        return Err("Amorçage USB en cours — sauvegarde indisponible".to_string());
+    }
+    if s.preset_index != index {
+        return Err(format!(
+            "Sauvegarde refusée : le matériel n'a pas confirmé le preset {:03}",
+            index
+        ));
+    }
+    helix::preset_label::send_preset_save(&mut s, index, &name)
 }
 
 /// Active un preset sur le HX via MIDI Program Change (endpoint 0x02).
@@ -4595,6 +4656,7 @@ pub fn run() {
             get_connection_hint_text,
             request_active_preset_name,
             rename_preset,
+            save_preset_to_hardware,
             activate_preset,
             switch_active_hardware_slot,
             switch_active_hardware_special_slot,

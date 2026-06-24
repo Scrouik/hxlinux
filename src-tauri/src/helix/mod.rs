@@ -32,6 +32,8 @@ pub mod preset_dump_stream_ack;
 pub mod model_catalog;
 pub mod editor_phase4_bootstrap;
 pub mod editor_go_live;
+pub mod preset_label;
+pub mod preset_name_wire;
 pub mod amorcage;
 pub mod phase4_state;
 pub mod init_trace;
