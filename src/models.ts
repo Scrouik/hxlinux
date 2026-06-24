@@ -677,6 +677,20 @@ async function patchSlotDualPartsSessionAmpCabCab(
   slotDualPartsSessionByKey.set(key, { kind: "amp_cab", parts: [built.parts[0]!, cabPart] });
 }
 
+async function cabDefaultChainValuesForCatalogModelId(
+  modelId: string,
+  chainHex?: string | null,
+): Promise<ChainParamValueJson[]> {
+  const id = modelId.trim();
+  if (!id) return [];
+  const def = await findModelDefinitionBySymbolicId(id, "Cab");
+  const meta = await getPresetMetaForId(id);
+  const signal = pickSignal(meta, chainHex ?? undefined);
+  return def
+    ? buildDefaultChainValuesForSourceOrder(def.entry.params ?? [], signal)
+    : [];
+}
+
 async function patchSlotDualPartsSessionCabDualCab2(
   kemplineSlotIndex: number,
   cab2ModelId: string,
@@ -686,11 +700,17 @@ async function patchSlotDualPartsSessionCabDualCab2(
   const key = liveChainOverrideStorageKey(currentPresetIndex, kemplineSlotIndex);
   const existing = slotDualPartsSessionByKey.get(key);
   const cabName = ((await getCatalogModelNameForId(cab2ModelId)) ?? "")?.trim() ?? "";
+  const cab2HexTrim = cab2Hex.trim();
+  const cab2Defaults = await cabDefaultChainValuesForCatalogModelId(
+    cab2ModelId,
+    cab2HexTrim || null,
+  );
   if (existing?.kind === "cab_dual" && existing.parts.length === 2) {
     const cab2Part = { ...existing.parts[1]! };
     cab2Part.modelId = cab2ModelId.trim();
-    cab2Part.chainHex = cab2Hex.trim() || cab2Part.chainHex;
+    cab2Part.chainHex = cab2HexTrim || cab2Part.chainHex;
     cab2Part.name = cabName || cab2Part.name;
+    cab2Part.values = cab2Defaults;
     slotDualPartsSessionByKey.set(key, {
       kind: "cab_dual",
       parts: [existing.parts[0]!, cab2Part],
@@ -708,8 +728,9 @@ async function patchSlotDualPartsSessionCabDualCab2(
   if (!built) return;
   const cab2Part = { ...built.parts[1]! };
   cab2Part.modelId = cab2ModelId.trim();
-  cab2Part.chainHex = cab2Hex.trim() || cab2Part.chainHex;
+  cab2Part.chainHex = cab2HexTrim || cab2Part.chainHex;
   cab2Part.name = cabName || cab2Part.name;
+  cab2Part.values = cab2Defaults;
   slotDualPartsSessionByKey.set(key, { kind: "cab_dual", parts: [built.parts[0]!, cab2Part] });
 }
 
@@ -2433,6 +2454,7 @@ async function refreshCabDualContextAfterProbe(
     const panes = await applyCabDualPane2ModelOverride(
       mount.dualTabPanes,
       cabIdForUsb,
+      { forceDefaults: true },
     );
     lastCabDualTabPanesContext = { ...mount, dualTabPanes: panes };
     if (cabDualActiveTab === 1) {
@@ -6126,24 +6148,22 @@ function probePickerCabDualCab2Hint(
 async function applyCabDualPane2ModelOverride(
   panes: DualTabPaneConfig[],
   cab2ModelId: string,
+  opts?: { forceDefaults?: boolean },
 ): Promise<DualTabPaneConfig[]> {
   if (panes.length < 2) return panes;
   const pane1 = panes[1];
   if (!pane1) return panes;
   const cab2Trim = cab2ModelId.trim();
-  if (
-    !cab2Trim ||
-    (pane1.catalogModelId ?? "").trim().toLowerCase() === cab2Trim.toLowerCase()
-  ) {
+  const idMatches =
+    (pane1.catalogModelId ?? "").trim().toLowerCase() === cab2Trim.toLowerCase();
+  if (!cab2Trim || (idMatches && !opts?.forceDefaults)) {
     return panes;
   }
   const def = await findModelDefinitionBySymbolicId(cab2Trim, "Cab");
   const partMeta = await getPresetMetaForId(cab2Trim);
   const modelImage = await getCatalogModelImageForId(cab2Trim);
   const signal = pickSignal(partMeta, undefined);
-  const defaults = def
-    ? buildDefaultChainValuesForSourceOrder(def.entry.params ?? [], signal)
-    : [];
+  const defaults = await cabDefaultChainValuesForCatalogModelId(cab2Trim);
   const title =
     def?.entry.name.trim() ||
     (await getCatalogModelNameForId(cab2Trim))?.trim() ||
@@ -8203,7 +8223,9 @@ async function resolveCabDualTabPanes(
       }
     }
     if (probeCab2Hint) {
-      next = await applyCabDualPane2ModelOverride(next, probeCab2Hint);
+      next = await applyCabDualPane2ModelOverride(next, probeCab2Hint, {
+        forceDefaults: true,
+      });
     }
     return next;
   };
