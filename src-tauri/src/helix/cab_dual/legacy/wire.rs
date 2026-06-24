@@ -43,6 +43,25 @@ pub fn prepare_cab2_replace_bulk(bulk: &mut [u8]) {
     reframe_cd0a_to_cd04(bulk);
 }
 
+/// Replace cab2 dual legacy (capture add_dual_legacy_change_cab2.json, frame 9305) :
+/// 23 … 83 66 cd 04 <tag> 64 28 65 82 62 <bus> 64 83 17 c3 19 <cab1> 1a <cab2> 00
+/// Les compteurs (seq/ctr), le tag (octet après cd 04) et <bus> sont patchés par
+/// build_slot_model_probe_packets. cab1 (idx 40) et cab2 (idx 42) sont posés ici.
+const CAB_DUAL_LEGACY_CAB2_REPLACE_23_TEMPLATE: [u8; 44] = [
+    0x23, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, 0x7f, 0x00, 0x04, 0x1e, 0xa3, 0x00, 0x00,
+    0x01, 0x00, 0x06, 0x00, 0x13, 0x00, 0x00, 0x00, 0x83, 0x66, 0xcd, 0x04, 0x20, 0x64, 0x28, 0x65,
+    0x82, 0x62, 0x01, 0x64, 0x83, 0x17, 0xc3, 0x19, 0x33, 0x1a, 0x33, 0x00,
+];
+
+/// Témoin `HX_DUAL_LEGACY_CAB2_23_TEMPLATE` (défaut ON) : cab2 dual legacy via le template
+/// capture (`23` 44 o, cd 04). `=0` -> ancien chemin prepare_cab2_replace_bulk.
+fn dual_legacy_cab2_replace_23_template_enabled() -> bool {
+    match std::env::var("HX_DUAL_LEGACY_CAB2_23_TEMPLATE").as_deref() {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+        Err(_) => true,
+    }
+}
+
 /// Replace cab2 legacy : sélecteur **1 o** → template parent `0x23` (44 o) ;
 /// hint **3 o** (`cd02xx`) → template dual pick `0x25` (48 o) avec swap cab1/cab2 (longueur fixe HX).
 pub fn build_legacy_cab2_replace_bulk(
@@ -55,6 +74,20 @@ pub fn build_legacy_cab2_replace_bulk(
     };
 
     if cab_field.len() == 1 {
+        // cab1 (1 octet legacy) repris du parent ; cab2 = nouveau hint.
+        let (c1s, c1e) = cab_dual_cab1_field_range_in_bulk(parent_dual_bulk)
+            .ok_or_else(|| "parent dual sans cab1 exploitable".to_string())?;
+        let parent_cab1 = &parent_dual_bulk[c1s..c1e];
+
+        if dual_legacy_cab2_replace_23_template_enabled() && parent_cab1.len() == 1 {
+            // Trame compacte capture : 23 … cd 04 … c3 19 <cab1> 1a <cab2> 00 (44 o).
+            let mut frame = CAB_DUAL_LEGACY_CAB2_REPLACE_23_TEMPLATE.to_vec();
+            frame[40] = parent_cab1[0]; // cab1 (conservé)
+            frame[42] = cab_field[0];   // cab2 (nouveau)
+            return Ok(frame);
+        }
+
+        // TÉMOIN (=0 ou cab1 non 1 octet) : ancien reframe.
         let mut bulk = parent_dual_bulk.to_vec();
         patch_cab_dual_bulk_cab_field(&mut bulk, 1, cab_field)?;
         prepare_cab2_replace_bulk(&mut bulk);

@@ -279,16 +279,45 @@ export async function cabDualHexPairFromAssignVariant(
 }
 
 /** Paires `cab1 + 1a + cab2` sur le fil module (preset dump ou scroll). */
+function looksLikeCabDualWirePart(part: string): boolean {
+  if (!part || !/^[0-9a-f]+$/.test(part)) return false;
+  // Dual modern / IR : hints `cd…` (≥ 6 hex, ex. cd031b).
+  if (part.startsWith("cd")) return part.length >= 6;
+  // Dual legacy hybrid : hint exactement 1 octet (2 hex, ex. 33 / 30).
+  return part.length === 2;
+}
+
+/** Paires `cab1 + 1a + cab2` sur le fil module (preset dump ou scroll).
+ *  Ancré sur le marqueur dual `c3 19` (modern ET legacy), puis séparateur `1a`. */
 export function cabDualWireParts(
   moduleHex: string | undefined,
 ): { cab1Hex: string; cab2Hex: string } | null {
   const hex = (moduleHex ?? "").trim().toLowerCase();
+  if (!hex) return null;
+
+  // Zone cab dual = après le marqueur `c3 19`. Repli : ancien comportement (fil = hint 1a hint).
+  const marker = "c319";
+  const m = hex.indexOf(marker);
+  const zone = m >= 0 ? hex.slice(m + marker.length) : hex;
+
   const sep = "1a";
-  const i = hex.indexOf(sep);
+  const i = zone.indexOf(sep);
   if (i <= 0) return null;
-  const cab1 = hex.slice(0, i).trim();
-  const cab2 = hex.slice(i + sep.length).trim();
-  if (!cab1 || !cab2 || !cab1.startsWith("cd") || !cab2.startsWith("cd")) return null;
+  const cab1 = zone.slice(0, i).trim();
+  let cab2 = zone.slice(i + sep.length).trim();
+
+  // cab2 court jusqu'au prochain délimiteur de bloc (`09…`) si présent (legacy : `… 1a 30 09 …`).
+  const end = cab2.indexOf("09");
+  if (end > 0) cab2 = cab2.slice(0, end).trim();
+
+  if (
+    !cab1 ||
+    !cab2 ||
+    !looksLikeCabDualWirePart(cab1) ||
+    !looksLikeCabDualWirePart(cab2)
+  ) {
+    return null;
+  }
   return { cab1Hex: cab1, cab2Hex: cab2 };
 }
 

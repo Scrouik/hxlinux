@@ -1442,6 +1442,16 @@ fn legacy_single_ir_param_enabled() -> bool {
     }
 }
 
+/// `HX_DUAL_LEGACY_STD_PARAM` (défaut ON) : params dual legacy via le builder dual modern
+/// (trame cd 04 standard + c2 sur discret), au lieu du burst hybride 23/25/71.
+/// `=0` -> ancien burst.
+fn dual_legacy_standard_param_enabled() -> bool {
+    match std::env::var("HX_DUAL_LEGACY_STD_PARAM").as_deref() {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+        Err(_) => true,
+    }
+}
+
 /// Écriture live USB paramètre : **seul** chemin d’envoi « valeur bloc » depuis le panneau models
 /// (bool → trame `23`, float → `27` ; voir `helix/live_write.rs` + `HelixLiveWrite.json`).
 /// Alternative : `write_live_param_midi_cc` si transport `midi_cc`. **Ne pas** dupliquer d’envoi ED03 ailleurs pour ce cas d’usage.
@@ -1532,7 +1542,9 @@ fn write_live_param(
         let route = route_override.ok_or_else(|| {
             "route Cab dual introuvable (slot ou param_index invalide)".to_string()
         })?;
-        if helix::amp_cab_live_write::route_is_dual_legacy_cab(&route) {
+        if helix::amp_cab_live_write::route_is_dual_legacy_cab(&route)
+            && !dual_legacy_standard_param_enabled()
+        {
             let cab_index: u8 = if route.pp == 0x04 { 1 } else { 0 };
             let route_pp = route.pp;
             let minimal =

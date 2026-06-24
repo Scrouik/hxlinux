@@ -456,6 +456,16 @@ pub fn cab_dual_assign_variant_is_legacy_hybrid(variant: Option<&str>) -> bool {
     })
 }
 
+/// Témoin `HX_DUAL_LEGACY_STD_PARAM` (défaut ON) : params dual legacy via le bloc IR standard
+/// (cd 04 + octet cab dans `1a`, pSel = index param local), comme le dual modern, au lieu du
+/// bloc replace legacy (`64 28 65 … c3 19 <hint>`). `=0` -> ancien bloc legacy.
+fn dual_legacy_standard_param_enabled() -> bool {
+    match std::env::var("HX_DUAL_LEGACY_STD_PARAM").as_deref() {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+        Err(_) => true,
+    }
+}
+
 pub fn resolve_cab_dual_live_write_route(
     state: &HelixState,
     cab_index: u8,
@@ -467,45 +477,58 @@ pub fn resolve_cab_dual_live_write_route(
         return None;
     }
     let slot_bus = kempline_index_to_slot_bus(slot_index as usize)?;
-    let param_selector = if legacy_hybrid {
+
+    // Legacy "standard" : capture add_dual_legacy_change_cab2___param.json -> le param dual legacy
+    // s'écrit avec le MÊME bloc IR que le dual modern (cd 04, index cab dans l'octet après `1a`,
+    // pSel = index param local), pas le bloc replace legacy ni un hint cab en sélecteur.
+    let standard_legacy = legacy_hybrid && dual_legacy_standard_param_enabled();
+
+    let param_selector = if legacy_hybrid && !standard_legacy {
         legacy_cab_dual_param_selector(cab_index, param_index)?
     } else {
         param_index.min(0xff) as u8
     };
     let pp = if cab_index == 0 { 0x03 } else { 0x04 };
-    let cache_key = echo_model_cache_key(slot_bus, pp, param_selector);
-    if let Some(block) = state.ed03_echo_model_by_slot_param.get(&cache_key) {
-        return Some(LiveWriteRouteOverride {
-            pp: block[3],
-            pp_source: "cab_dual:echo_cache",
-            param_selector,
-            param_selector_source: if legacy_hybrid {
-                if cab_index == 0 {
-                    "cab_dual:cab1_legacy_echo_sel"
+
+    // Cache echo : on l'ignore en legacy standard pour partir d'un bloc IR propre (un bloc echo
+    // hérité d'un ancien write replace fausserait la trame).
+    if !standard_legacy {
+        let cache_key = echo_model_cache_key(slot_bus, pp, param_selector);
+        if let Some(block) = state.ed03_echo_model_by_slot_param.get(&cache_key) {
+            return Some(LiveWriteRouteOverride {
+                pp: block[3],
+                pp_source: "cab_dual:echo_cache",
+                param_selector,
+                param_selector_source: if legacy_hybrid {
+                    if cab_index == 0 {
+                        "cab_dual:cab1_legacy_echo_sel"
+                    } else {
+                        "cab_dual:cab2_legacy_echo_sel"
+                    }
+                } else if cab_index == 0 {
+                    "cab_dual:cab1_echo_sel"
                 } else {
-                    "cab_dual:cab2_legacy_echo_sel"
-                }
-            } else if cab_index == 0 {
-                "cab_dual:cab1_echo_sel"
-            } else {
-                "cab_dual:cab2_echo_sel"
-            },
-            model_block: *block,
-            preserve_model_tag: true,
-        });
+                    "cab_dual:cab2_echo_sel"
+                },
+                model_block: *block,
+                preserve_model_tag: true,
+                discrete_wants_c2: false,
+            });
+        }
     }
 
-    let model_block = if legacy_hybrid {
-        // Octet `[4]` = sélecteur wire (capture dual legacy cab2 : `0x2b` + index local).
+    let model_block = if legacy_hybrid && !standard_legacy {
+        // TÉMOIN (=0) : ancien bloc replace legacy (faux pour les params).
         build_amp_cab_legacy_param_model_block(pp, param_selector, slot_bus)
     } else if cab_index == 0 {
         build_cab_dual_cab1_ir_param_model_block(slot_bus, state.live_write_yy)
     } else {
         build_cab_dual_cab2_ir_param_model_block(slot_bus, state.live_write_yy)
     };
+
     Some(LiveWriteRouteOverride {
         pp,
-        pp_source: if legacy_hybrid {
+        pp_source: if legacy_hybrid && !standard_legacy {
             if cab_index == 0 {
                 "cab_dual:cab1_legacy_capture"
             } else {
@@ -524,8 +547,10 @@ pub fn resolve_cab_dual_live_write_route(
         },
         model_block,
         preserve_model_tag: false,
+        discrete_wants_c2: standard_legacy,
     })
 }
+
 
 #[cfg(test)]
 mod tests {

@@ -25,6 +25,8 @@ pub struct LiveWriteRouteOverride {
     pub model_block: [u8; 16],
     /// Si vrai, ne pas écraser l'octet tag (index 4) avec la séquence live write.
     pub preserve_model_tag: bool,
+    /// Cab dual legacy en mode standard : le discret doit sortir en c2 (capture). Le dual modern = c3.
+    pub discrete_wants_c2: bool,
 }
 
 pub struct LiveWriteFrames {
@@ -676,6 +678,12 @@ pub fn build_cab_dual_minimal_param_packets_from_state(
         float_be_a,
         mark_23,
     );
+    // c2 sur le discret pour un dual legacy (porté par la route, pas par un drapeau d'état fragile).
+    let force_c2 = route.discrete_wants_c2 || state.force_discrete_c2_for_legacy_single;
+    state.force_discrete_c2_for_legacy_single = false;
+    if wire_23 && force_c2 && cab_discrete_c2_marker_enabled() {
+        force_discrete_c2_marker(&mut packet_a);
+    }
     packets.push(packet_a);
 
     state.live_write_ctr = state.live_write_ctr.wrapping_add(0x1f);

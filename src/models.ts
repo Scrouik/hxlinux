@@ -1027,7 +1027,7 @@ function applyHardwareSlotModelVisualFast(
       void mountModelsSlotPicker().then(async () => {
         if (
           selectedParamsKemplineSlotIndex === ki &&
-          isCabDualWireHex(slot.moduleHex)
+          (cabDualWireParts(slot.moduleHex) || isCabDualWireHex(slot.moduleHex))
         ) {
           await ensureCabDualPickerSynced(cabDualActiveTab);
           return;
@@ -3538,7 +3538,16 @@ function cabDualPickerApplyContextForSlot(ki: number): boolean {
 function isCabDualPickerApplyRoute(ki: number): boolean {
   if (!cabDualPickerApplyContextForSlot(ki)) return false;
   const slot = lastHwSyncNormalizedSlots?.[ki];
-  if (slot && !isCabDualWireHex(slot.moduleHex)) {
+  // Ne casser le contexte cab dual QUE si le slot est devenu explicitement un fil cab dual modern
+  // d'un AUTRE modèle. Le dual legacy (hints 1 octet) n'est pas reconnu par isCabDualWireHex /
+  // cabDualWireParts ; dans ce cas on fait confiance au contexte d'onglets déjà monté.
+  if (
+    slot &&
+    isCabDualWireHex(slot.moduleHex) === false &&
+    cabDualWireParts(slot.moduleHex) === null &&
+    !lastCabDualTabPanesContext &&
+    !cabDualPickerSync
+  ) {
     clearCabDualPickerContext();
     return false;
   }
@@ -3713,10 +3722,15 @@ async function applyCabDualCabFromPickerListClick(
       `slot_model_probe cab dual cab${tab + 1} ok slot=${ki} cab=${newCabIdTrim}`,
     );
     if (tab === 1) {
-      const cab2Hex = await resolveCabDualCab2HexFromTrame(optimisticSlot, ki);
-      await patchSlotDualPartsSessionCabDualCab2(ki, cab2PickerCatalogId, cab2Hex);
+      // Le fil optimiste (optimisticSlot.moduleHex) porte encore l'ANCIEN cab2 tant qu'il n'y a
+      // pas eu de re-dump preset. Depuis que cabDualWireParts parse le legacy, le lire ici réinjecte
+      // l'ancien cab2 dans la session -> l'UI affiche le cab2 précédent. On dérive le hex du cab
+      // RÉELLEMENT choisi (cab2PickerCatalogId), comme source de vérité optimiste.
+      const pickedMeta = await getPresetMetaForId(cab2PickerCatalogId);
+      const cab2HexPicked =
+        (await moduleHexForUsbVariant(cab2PickerCatalogId, "single", pickedMeta))?.trim() || "";
+      await patchSlotDualPartsSessionCabDualCab2(ki, cab2PickerCatalogId, cab2HexPicked);
     }
-    await ensureCabDualPickerSynced(tab);
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
     logCabDualTrace(`probe cab dual ERREUR: ${errMsg}`);
@@ -3733,6 +3747,22 @@ async function applyCabDualCabFromPickerListClick(
     }
   } finally {
     slotModelUsbProbeInFlight = null;
+  }
+  // Cab 2 changé : refreshCabDualContextAfterProbe ne met à jour que l'en-tête, et le chemin
+  // "patch valeurs seules" de loadAndShowModelsParamsForSlot ne touche que le cab1. On force donc
+  // une reconstruction COMPLÈTE pour afficher les sliders du NOUVEAU cab2.
+  // (probePickerCabDualCab2Hint = lastProbePickerAssignContext.cabDualCab2ModelId route le rebuild
+  //  vers le bon cab2 ; sur erreur ce contexte est null -> pas de rebuild ici.)
+  if (
+    tab === 1 &&
+    selectedParamsKemplineSlotIndex === ki &&
+    lastProbePickerAssignContext?.ki === ki
+  ) {
+    selectedParamsInPlaceUpdater = null;   // invalide le chemin "patch valeurs seules"
+    selectedParamsInPlaceSlotKey = null;
+    selectedParamsValuesSig = null;
+    const slotNow = lastHwSyncNormalizedSlots?.[ki] ?? optimisticSlot;
+    await loadAndShowModelsParamsForSlot(slotNow, ki);
   }
 }
 
@@ -7758,6 +7788,11 @@ function renderModelsParamsDualTabs(
             : "cab2"
           : null;
     const paramIndexBase = 0;
+    // Cab dual LEGACY : sélecteur wire-local (discret/float 0-based séparés), comme le single legacy.
+    // Le dual modern garde l'index global. Aligné sur le routage Rust (HX_DUAL_LEGACY_STD_PARAM).
+    const cabDualLegacyWireLocal =
+      dualSlotKind === "cab_dual" &&
+      (cabDualAssignVariant ?? "").trim().toLowerCase() === "dual-legacy";
     const updater = appendModelsParamRows(
       list,
       pane.params,
@@ -7771,6 +7806,7 @@ function renderModelsParamsDualTabs(
       dualSlotKind === "amp_cab" ? ampCabAssignVariant : null,
       dualSlotKind === "cab_dual" ? cabDualAssignVariant : null,
       dualSlotKind === "amp_cab" && dualPart === "cab" ? ampCabAmpParamCount : null,
+      cabDualLegacyWireLocal,
     );
     updaters.push(updater);
     panel.appendChild(list);

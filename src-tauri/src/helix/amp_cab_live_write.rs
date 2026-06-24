@@ -858,6 +858,7 @@ pub fn resolve_standalone_legacy_cab_live_write_route_from_probe(
             param_selector_source: "legacy_cab:echo_sel",
             model_block: *block,
             preserve_model_tag: true,
+            discrete_wants_c2: false,
         });
     }
     let model_block = standalone_legacy_23_model_block(assign, param_selector, slot_bus);
@@ -868,6 +869,7 @@ pub fn resolve_standalone_legacy_cab_live_write_route_from_probe(
         param_selector_source: "legacy_cab:compact_sel",
         model_block,
         preserve_model_tag: true,
+        discrete_wants_c2: false,
     })
 }
 
@@ -887,6 +889,7 @@ pub fn resolve_standalone_legacy_cab_live_write_route(
             param_selector_source: "legacy_cab:echo_sel",
             model_block: *block,
             preserve_model_tag: true,
+            discrete_wants_c2: false,
         });
     }
     let model_block = build_standalone_legacy_cab_param_model_block(param_selector, slot_bus);
@@ -897,6 +900,7 @@ pub fn resolve_standalone_legacy_cab_live_write_route(
         param_selector_source: "legacy_cab:compact_sel",
         model_block,
         preserve_model_tag: true,
+        discrete_wants_c2: false,
     })
 }
 
@@ -922,6 +926,7 @@ pub fn resolve_cab_live_write_route(
                 param_selector_source: "amp_cab:legacy_echo_sel",
                 model_block: *block,
                 preserve_model_tag: true,
+                discrete_wants_c2: false,
             });
         }
         let model_block = build_amp_cab_legacy_param_model_block(0x08, tag, slot_bus);
@@ -936,6 +941,7 @@ pub fn resolve_cab_live_write_route(
             },
             model_block,
             preserve_model_tag: true,
+            discrete_wants_c2: false,
         });
     }
 
@@ -950,6 +956,7 @@ pub fn resolve_cab_live_write_route(
             param_selector_source: "amp_cab:ir_echo_sel",
             model_block: *block,
             preserve_model_tag: true,
+            discrete_wants_c2: false,
         });
     }
 
@@ -961,6 +968,7 @@ pub fn resolve_cab_live_write_route(
         param_selector_source: "amp_cab:ir_local_index",
         model_block,
         preserve_model_tag: false,
+        discrete_wants_c2: false,
     })
 }
 
