@@ -196,12 +196,26 @@ pub fn is_path1_split_scroll_notify_21(data: &[u8]) -> bool {
 }
 
 fn patch_split_wire_in_packet(pkt: &mut [u8], wire_value: u8) {
+    if pkt.len() <= PATH1_SPLIT_WIRE_OFFSET {
+        return;
+    }
     if wire_value == 0x33 {
         pkt[PATH1_SPLIT_CD_SUB_OFFSET] = 0x02;
         pkt[PATH1_SPLIT_WIRE_OFFSET] = 0x33;
     } else {
         pkt[PATH1_SPLIT_CD_SUB_OFFSET] = 0x01;
         pkt[PATH1_SPLIT_WIRE_OFFSET] = wire_value;
+    }
+}
+
+/// Bloc modèle 16 o embarqué dans la trame `25` (`pkt[24..40]`) — offsets locaux `cd` / wire.
+fn patch_split_wire_in_model_block(block: &mut [u8; 16], wire_value: u8) {
+    if wire_value == 0x33 {
+        block[9] = 0x02;
+        block[10] = 0x33;
+    } else {
+        block[9] = 0x01;
+        block[10] = wire_value;
     }
 }
 
@@ -252,7 +266,7 @@ pub fn build_path1_split_type_packet(
         model.copy_from_slice(&pkt[24..40]);
         model[4] = state.live_write_yy;
     }
-    patch_split_wire_in_packet(&mut model, wire_value);
+    patch_split_wire_in_model_block(&mut model, wire_value);
     pkt[24..40].copy_from_slice(&model);
     patch_split_wire_in_packet(&mut pkt, wire_value);
     pkt[28] = state.live_write_yy;

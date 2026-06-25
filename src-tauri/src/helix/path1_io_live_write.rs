@@ -143,8 +143,8 @@ pub fn build_special_slot_focus_packet(state: &mut HelixState, slot_bus: u8) -> 
     ]
 }
 
-/// Post-ACK `08` ed03 après un write `1d` (captures HX Edit `Input.json`).
-fn build_post_1d_ack08(state: &mut HelixState, ctr_lo: u8, ctr_hi: u8) -> Vec<u8> {
+/// Post-ACK `08` ed03 après un write `1d` (captures HX Edit `Input.json`, matrix move).
+pub fn build_post_1d_ack08(state: &mut HelixState, ctr_lo: u8, ctr_hi: u8) -> Vec<u8> {
     let seq = state.next_x80_cnt();
     vec![
         0x08, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, seq, 0x00, 0x08, ctr_lo, ctr_hi,

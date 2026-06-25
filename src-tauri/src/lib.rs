@@ -44,6 +44,11 @@ use helix::live_write::LiveWriteRouteOverride;
 use helix::live_write_config::validate_usb_live_write_metadata;
 use helix::path1_io_live_write::send_path1_input_source;
 use helix::path1_split_live_write::send_path1_split_type;
+use helix::path1_routing_structural::{
+    ensure_path2_dual_routing as send_ensure_path2_dual_routing,
+    teardown_path2_dual_routing as send_teardown_path2_dual_routing,
+};
+use helix::matrix_slot_move::send_matrix_slot_move;
 use helix::edit_slot_model::{
     build_amp_cab_replace_cab_bulk, build_cab_dual_replace_cab_bulk, build_slot_model_probe_packets, change_model_hxedit_replace_test_bulk,
     resolve_catalog_model_chain_bytes, resolve_usb_assign_bulk, slot_probe_use_change_model_test_bulk,
@@ -1909,6 +1914,83 @@ fn get_path1_split_type_wire_value(
     };
     let s = helix_arc.lock().unwrap();
     s.path1_split_type_wire
+}
+
+#[tauri::command]
+fn move_matrix_slot_usb(
+    source_slot_index: u32,
+    dest_slot_index: u32,
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Result<String, String> {
+    if source_slot_index >= 16 || dest_slot_index >= 16 {
+        return Err("sourceSlotIndex / destSlotIndex hors plage (0..15)".to_string());
+    }
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    if s.init_usb_settle_active() {
+        return Err(format!(
+            "move_matrix_slot_usb ignoré (init USB ~{} ms)",
+            helix::keep_alive::POST_PHASE4_SETTLE_MS
+        ));
+    }
+    if !s.connected || s.preset_content_only {
+        return Err(
+            "move_matrix_slot_usb ignoré (HX non prêt ou lecture preset en cours)".to_string(),
+        );
+    }
+    send_matrix_slot_move(&mut s, source_slot_index as usize, dest_slot_index as usize)
+}
+
+#[tauri::command]
+fn ensure_path2_dual_routing(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Result<String, String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    if s.init_usb_settle_active() {
+        return Err(format!(
+            "ensure_path2_dual_routing ignoré (init USB ~{} ms)",
+            helix::keep_alive::POST_PHASE4_SETTLE_MS
+        ));
+    }
+    if !s.connected || s.preset_content_only {
+        return Err(
+            "ensure_path2_dual_routing ignoré (HX non prêt ou lecture preset en cours)".to_string(),
+        );
+    }
+    send_ensure_path2_dual_routing(&mut s)
+}
+
+#[tauri::command]
+fn teardown_path2_dual_routing(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Result<String, String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    if s.init_usb_settle_active() {
+        return Err(format!(
+            "teardown_path2_dual_routing ignoré (init USB ~{} ms)",
+            helix::keep_alive::POST_PHASE4_SETTLE_MS
+        ));
+    }
+    if !s.connected || s.preset_content_only {
+        return Err(
+            "teardown_path2_dual_routing ignoré (HX non prêt ou lecture preset en cours)".to_string(),
+        );
+    }
+    send_teardown_path2_dual_routing(&mut s)
 }
 
 #[tauri::command]
@@ -4644,6 +4726,9 @@ pub fn run() {
             get_path1_input_source_wire_value,
             write_path1_split_type,
             get_path1_split_type_wire_value,
+            move_matrix_slot_usb,
+            ensure_path2_dual_routing,
+            teardown_path2_dual_routing,
             set_usb_trace_enabled,
             set_usb_trace_delta_only,
             set_preset_debug_verbose,

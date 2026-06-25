@@ -4720,6 +4720,8 @@ type MatrixSlotClipboard = {
 const MATRIX_USB_OP_SETTLE_MS = 150;
 /** Pause avant `request_preset_content` après probe matrice (évite collision avec dump). */
 const MATRIX_USB_BEFORE_PRESET_LOAD_MS = 400;
+const PATH2_DUAL_ROUTING_SPLIT_COL = 0;
+const PATH2_DUAL_ROUTING_MERGE_COL = 8;
 
 async function waitForMatrixUsbIdle(maxWaitMs = 30_000): Promise<void> {
   const deadline = Date.now() + maxWaitMs;
@@ -4802,6 +4804,12 @@ let matrixSlotClipboard: MatrixSlotClipboard | null = null;
 let matrixCtxTargetKemplineIndex: number | null = null;
 /** Index source pendant un drag & drop matrice (move). */
 let matrixDragSourceKi: number | null = null;
+/** Split/merge après drop path 2 (pas d’aperçu avant le lâcher). */
+let matrixRoutingColsOverride: { splitCol: number; mergeCol: number } | null = null;
+
+function clearMatrixRoutingColsOverride(): void {
+  matrixRoutingColsOverride = null;
+}
 
 function clearMatrixSlotClipboard(): void {
   matrixSlotClipboard = null;
@@ -4848,10 +4856,19 @@ function canMoveMatrixSlotToEmpty(
   if (currentPresetIndex < 0 || isModelsContentBusy()) return false;
   const sourceSlot = slots[sourceKi];
   if (!sourceSlot || !canCopyMatrixSlot(sourceSlot)) return false;
-  if (matrixSlotPath(sourceKi) !== matrixSlotPath(destKi)) return false;
   const destSlot = slots[destKi];
   if (!destSlot || !isEmptyGridCell(destSlot)) return false;
-  return !isColumnPairedSlotBlocked(slots, destKi);
+  const samePath = matrixSlotPath(sourceKi) === matrixSlotPath(destKi);
+  if (samePath) return !isColumnPairedSlotBlocked(slots, destKi);
+  if (matrixSlotPath(destKi) === 1 && countPath1FilledFxSlots(slots) <= 1) return false;
+  if (matrixSlotPath(destKi) === 1 && isPath2FxEmpty(slots)) {
+    const col = destKi & 7;
+    return col >= 0 && col < 8;
+  }
+  if (!hasDualPathFxBranch(slots)) return false;
+  const { splitCol, mergeCol } = resolveMatrixRoutingColumns(slots);
+  const col = destKi & 7;
+  return col >= splitCol && col < mergeCol;
 }
 
 function hideMatrixContextMenu(): void {
@@ -5557,7 +5574,7 @@ async function pasteMatrixSlotToCell(
   return withMatrixUsbInteractionLock(`Collage slot ${destKi + 1}…`, run);
 }
 
-/** Déplacer un bloc : copier → vider source → coller destination. */
+/** Déplacer un bloc : paquet USB `1d` (HX Edit) puis relecture du preset actif. */
 async function moveMatrixSlotFromTo(sourceKi: number, destKi: number): Promise<void> {
   if (isMatrixUsbInteractionLocked()) return;
   const slots = lastHwSyncNormalizedSlots;
@@ -5567,56 +5584,44 @@ async function moveMatrixSlotFromTo(sourceKi: number, destKi: number): Promise<v
   }
   if (!canMoveMatrixSlotToEmpty(sourceKi, destKi, slots)) {
     console.warn("[MatrixMove] déplacement invalide", sourceKi, "→", destKi);
+    if (
+      isInterPathMatrixMove(sourceKi, destKi) &&
+      matrixSlotPath(destKi) === 1 &&
+      countPath1FilledFxSlots(slots) <= 1
+    ) {
+      setStatus("Impossible : il doit rester au moins un bloc sur le path 1");
+    }
     return;
   }
   const sourceSlot = slots[sourceKi];
   if (!sourceSlot) return;
 
+  const displayName = sourceSlot.name?.trim() || "bloc";
+  let moveOk = false;
+
   await withMatrixUsbInteractionLock(
     `Déplacement bloc ${sourceKi + 1} → ${destKi + 1}…`,
     async () => {
-    await copyMatrixSlotFromCell(sourceKi, sourceSlot);
-    if (!matrixSlotClipboard) {
-      console.warn("[MatrixMove] copie échouée", sourceKi);
-      return;
-    }
-
-    // Purger la source **avant** le coller : après un add le HX est sur la destination ;
-    // un remove tardif sur la source est souvent ignoré (doublon HW slot source + dest).
-    const removed = await removeMatrixSlotFromCell(sourceKi, {
-      reselect: false,
-      skipInteractionLock: true,
-    });
-    if (!removed) {
-      console.warn("[MatrixMove] purge source échouée — déplacement annulé", sourceKi);
-      setStatus(`Déplacement annulé : impossible de vider le slot ${sourceKi + 1}`);
-      return;
-    }
-
-    await delayMs(MATRIX_USB_OP_SETTLE_MS);
-
-    const pasted = await pasteMatrixSlotToCell(destKi, { skipInteractionLock: true });
-    if (!pasted) {
-      console.warn("[MatrixMove] coller échoué après purge source — restauration", sourceKi);
-      const restored = await pasteMatrixSlotToCell(sourceKi, { skipInteractionLock: true });
-      if (restored) {
-        setStatus(`Déplacement annulé — bloc remis sur le slot ${sourceKi + 1}`);
-      } else {
-        setStatus(
-          `Erreur déplacement (slot ${sourceKi + 1} vidé) — utiliser Coller ou recharger le preset`,
-        );
+      moveOk = await moveMatrixSlotUsb(sourceKi, destKi);
+      if (!moveOk) {
+        setStatus("Déplacement annulé : erreur USB");
+        return;
       }
-      return;
-    }
-
-    armProbeSlotMergeGrace(destKi, sourceKi);
-    suppressUsbPresetPollUntilMs = Date.now() + USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS;
-    lastSoftUsbPresetReadAt = Date.now();
-    console.info("[MatrixMove] ok", sourceKi, "→", destKi, matrixSlotClipboard.displayName);
-    setStatus(`Bloc déplacé (${sourceKi + 1} → ${destKi + 1})`);
-    await focusMatrixSlotParamsPane(destKi);
+      await delayMs(MATRIX_USB_OP_SETTLE_MS);
+      markPresetModified();
+      console.info("[MatrixMove] ok USB", sourceKi, "→", destKi, displayName);
     },
   );
+
+  if (!moveOk || currentPresetIndex < 0) return;
+
+  clearMatrixRoutingColsOverride();
+  pendingHardwareSelectedKemplineSlotIndex = destKi;
+  pendingHardwareSelectedSlotBus = null;
+  setStatus(`Bloc déplacé (${sourceKi + 1} → ${destKi + 1}) — relecture hardware…`);
+  await requestLoadForPreset(currentPresetIndex, {
+    hardwareRefreshAfterEdit: { sourceKi, destKi },
+  });
 }
 
 function matrixDropTargetFromElement(el: Element | null): HTMLElement | null {
@@ -5952,6 +5957,7 @@ function purgeModelsUi() {
   document.body.classList.remove("models-matrix-usb-busy");
   document.body.classList.remove("models-preset-load-busy");
   clearMatrixSlotClipboard();
+  clearMatrixRoutingColsOverride();
   hideMatrixContextMenu();
   lastProbePickerAssignContext = null;
   clearPath1InputSourceHighlightOverride();
@@ -9698,6 +9704,102 @@ function computeRoutingJunctionColumns(slots: SlotDebug[]): { splitCol: number; 
   return { splitCol, mergeCol };
 }
 
+function isPath2FxEmpty(slots: SlotDebug[]): boolean {
+  for (let i = 8; i < 16; i += 1) {
+    const s = slots[i];
+    if (s && !isEmptyGridCell(s)) return false;
+  }
+  return true;
+}
+
+function countPath1FilledFxSlots(slots: SlotDebug[]): number {
+  let n = 0;
+  for (let i = 0; i < 8; i += 1) {
+    if (slots[i] && !isEmptyGridCell(slots[i]!)) n += 1;
+  }
+  return n;
+}
+
+function hasDualPathFxBranch(slots: SlotDebug[]): boolean {
+  return !isPath2FxEmpty(slots);
+}
+
+function resolveMatrixRoutingColumns(slots: SlotDebug[]): { splitCol: number; mergeCol: number } {
+  if (matrixRoutingColsOverride) return { ...matrixRoutingColsOverride };
+  return computeRoutingJunctionColumns(slots);
+}
+
+function isColumnPairedBlockedForEmptySlotUi(
+  slots: SlotDebug[],
+  kemplineSlotIndex: number,
+): boolean {
+  if (kemplineSlotIndex >= 8 && isPath2FxEmpty(slots)) return false;
+  return isColumnPairedSlotBlocked(slots, kemplineSlotIndex);
+}
+
+function isInterPathMatrixMove(sourceKi: number, destKi: number): boolean {
+  return matrixSlotPath(sourceKi) !== matrixSlotPath(destKi);
+}
+
+async function moveMatrixSlotUsb(sourceKi: number, destKi: number): Promise<boolean> {
+  try {
+    await waitUntilHardwareSyncIdle(15_000);
+    const out = await invoke<string>("move_matrix_slot_usb", {
+      sourceSlotIndex: sourceKi,
+      destSlotIndex: destKi,
+    });
+    console.info("[MatrixMove] usb", out);
+    markLiveWriteUiInteraction();
+    return true;
+  } catch (e) {
+    console.warn("[MatrixMove] usb", e);
+    return false;
+  }
+}
+
+async function ensurePath2DualRoutingUsb(): Promise<boolean> {
+  try {
+    await waitUntilHardwareSyncIdle(15_000);
+    const out = await invoke<string>("ensure_path2_dual_routing");
+    console.info("[MatrixRouting] ensure", out);
+    matrixRoutingColsOverride = {
+      splitCol: PATH2_DUAL_ROUTING_SPLIT_COL,
+      mergeCol: PATH2_DUAL_ROUTING_MERGE_COL,
+    };
+    markLiveWriteUiInteraction();
+    suppressUsbPresetPollUntilMs = Date.now() + USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS;
+    lastSoftUsbPresetReadAt = Date.now();
+    return true;
+  } catch (e) {
+    console.warn("[MatrixRouting] ensure", e);
+    return false;
+  }
+}
+
+async function teardownPath2DualRoutingUsb(): Promise<boolean> {
+  try {
+    await waitUntilHardwareSyncIdle(15_000);
+    const out = await invoke<string>("teardown_path2_dual_routing");
+    console.info("[MatrixRouting] teardown", out);
+    clearMatrixRoutingColsOverride();
+    markLiveWriteUiInteraction();
+    suppressUsbPresetPollUntilMs = Date.now() + USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS;
+    lastSoftUsbPresetReadAt = Date.now();
+    return true;
+  } catch (e) {
+    console.warn("[MatrixRouting] teardown", e);
+    return false;
+  }
+}
+
+async function refreshMatrixGridFromSnapshot(): Promise<void> {
+  const slots = lastHwSyncNormalizedSlots;
+  if (!slots || slots.length !== 16) return;
+  await renderSlots(slots, [], lastRenderedStompLayout);
+}
+
+let lastRenderedStompLayout: ActivePresetStompLayout | null = null;
+
 function makeNode(slot: SlotDebug, opts?: { showTypeAbbrev?: boolean }): HTMLElement {
   const showTypeAbbrev = opts?.showTypeAbbrev !== false;
   const item = document.createElement("div");
@@ -10032,7 +10134,7 @@ function gridSlotNode(
     const columnBlocked =
       allSlots !== undefined &&
       allSlots.length === 16 &&
-      isColumnPairedSlotBlocked(allSlots, kemplineSlotIndex);
+      isColumnPairedBlockedForEmptySlotUi(allSlots, kemplineSlotIndex);
     const n = makeEmptySlotNode({ columnBlocked });
     n.dataset.kemplineSlotIndex = String(kemplineSlotIndex);
     if (!columnBlocked) {
@@ -10057,16 +10159,19 @@ function renderGrid16(
 ) {
   const lastB = lastFilledSlotRowIndex(slots, 8, 8);
   const hasBranchB = lastB >= 0;
-  /** Split/merge path1, path2 : seulement si au moins un bloc path2. */
-  const showRoutingUi = hasBranchB;
+  /** Split/merge affichés seulement quand path 2 actif ou après drop (override). */
+  const showRoutingUi = hasBranchB || matrixRoutingColsOverride !== null;
+
+  lastRenderedStompLayout = stompLayout;
 
   const routingCols =
-    stompLayout != null && stompLayout.routing.kemplineGridOk === true
+    matrixRoutingColsOverride ??
+    (stompLayout != null && stompLayout.routing.kemplineGridOk === true
       ? {
           splitCol: stompLayout.routing.splitAfterCol,
           mergeCol: stompLayout.routing.mergeAfterCol,
         }
-      : computeRoutingJunctionColumns(slots);
+      : computeRoutingJunctionColumns(slots));
 
   const splitEntry = routing.find((m) => m.name.toLowerCase().includes("split"));
   const mergeEntry = routing.find((m) => m.name.toLowerCase().includes("merge"));
@@ -10210,7 +10315,7 @@ function renderGrid16(
         if (i >= 0 && i <= 7) {
           if (row === LINE_PATH_1)
             inner = gridSlotNode(slots[i]!, i, slots);
-          else if (row === LINE_PATH_2 && hasBranchB)
+          else if (row === LINE_PATH_2)
             inner = gridSlotNode(slots[8 + i]!, 8 + i, slots);
         }
       } else if (col >= 4 && col <= 18 && (col - 4) % 2 === 0) {
@@ -10413,7 +10518,16 @@ async function renderSlots(
   await refreshAllSlotTooltipsInContent();
 }
 
-async function requestLoadForPreset(index: number) {
+type RequestLoadForPresetOpts = {
+  /**
+   * Relire le preset **actif** sur le device (`request_preset_content`) après D&D.
+   * Grille + session params reconstruites depuis le dump hardware frais (`hydrate*`).
+   */
+  hardwareRefreshAfterEdit?: { sourceKi: number; destKi: number };
+};
+
+async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOpts) {
+  const hardwareRefresh = opts?.hardwareRefreshAfterEdit ?? null;
   if (!ENABLE_PRESET_CONTENT) {
     hardwareSyncPausedForPresetLoad = false;
     loading = false;
@@ -10457,13 +10571,21 @@ async function requestLoadForPreset(index: number) {
   suppressUsbPresetPollUntilMs = 0;
   pendingPresetIndex = -1;
   lastRequestedPresetIndex = index;
-  // Sentinel : le premier soft-sync aligne la séquence HW sans déclencher un dump USB « artificiel »
-  // (voir applyHardwareSlotStateFromBackend). Le chargement peut aussi écraser via hwSnap.
-  lastSeenHardwareSlotSequence = -1;
-  startLoadingHeartbeat("Lecture du preset actif");
-  console.log(`[PresetDebug][models] request_preset_content preset=${index}`);
+  if (!hardwareRefresh) {
+    // Sentinel : le premier soft-sync aligne la séquence HW sans déclencher un dump USB « artificiel »
+    // (voir applyHardwareSlotStateFromBackend). Le chargement peut aussi écraser via hwSnap.
+    lastSeenHardwareSlotSequence = -1;
+  }
+  startLoadingHeartbeat(
+    hardwareRefresh ? "Relecture hardware du preset actif" : "Lecture du preset actif",
+  );
+  console.log(
+    `[PresetDebug][models] request_preset_content preset=${index}${hardwareRefresh ? " (hardware_refresh)" : ""}`,
+  );
   emitModelsSyncTrace(
-    `requestLoadForPreset start index=${index} currentPreset=${currentPresetIndex} loaded=${loadedPresetIndex}`,
+    hardwareRefresh
+      ? `requestLoadForPreset hardware_refresh index=${index} move=${hardwareRefresh.sourceKi}->${hardwareRefresh.destKi}`
+      : `requestLoadForPreset start index=${index} currentPreset=${currentPresetIndex} loaded=${loadedPresetIndex}`,
   );
 
   await waitForMatrixUsbIdle();
@@ -10601,8 +10723,14 @@ async function requestLoadForPreset(index: number) {
             await logCatalogChainHexDiffIfNeeded(normalizedSlots, index);
             await renderSlots(normalizedSlots, routingFlow, stompLayout);
             rememberHwSyncChainLayout(normalizedSlots);
-            void hydrateSlotChainSessionFromPresetData(index);
-            void hydrateSlotDualPartsSessionFromPresetData(index);
+            if (hardwareRefresh) {
+              // Le dump frais est autoritaire : reconstruire la grille comme un chargement normal.
+              await hydrateSlotChainSessionFromPresetData(index);
+              await hydrateSlotDualPartsSessionFromPresetData(index);
+            } else {
+              void hydrateSlotChainSessionFromPresetData(index);
+              void hydrateSlotDualPartsSessionFromPresetData(index);
+            }
             const realBlocks = countRealBlocks(normalizedSlots);
             const singleDsp = isSingleDspDevice(connectedDeviceName);
             const dspSuffix = singleDsp ? ` (${realBlocks}/8 max)` : "";
@@ -10783,6 +10911,7 @@ window.addEventListener("DOMContentLoaded", () => {
     resetPresetModified();
     mergeProbeSlotModelUntil = null;
     suppressUsbPresetPollUntilMs = 0;
+    clearMatrixRoutingColsOverride();
     clearSelectedParamsContext();
     renderEmpty("Chargement des modeles...");
     scheduleLoadForPreset(index, true);

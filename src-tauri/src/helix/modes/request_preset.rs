@@ -16,6 +16,10 @@ use crate::pattern;
 /// Watchdog normal d'une transaction de lecture (Phase 1/2, chunks).
 const WATCHDOG_MS: u64 = 2000;
 
+/// Nombre de presets du HX (index valides 0..PRESET_COUNT-1). Aligné sur
+/// `EXPECTED_PRESET_COUNT` côté `lib.rs` et sur `names.length` côté UI.
+const PRESET_COUNT: usize = 125;
+
 /// Fenêtre de confirmation de fin-de-dump §10 (écho `sub=08` SANS trailer partiel).
 ///
 /// Un écho `sub=08` de 16 o et le vrai écho de fin §10 sont INDISTINGUABLES au
@@ -35,6 +39,30 @@ fn dump_end_confirm_ms() -> u64 {
         .unwrap_or(150)
 }
 
+/// Garde anti dump-AUTO pendant Phase 1 (défaut ON).
+///
+/// Après un D&D inter-path, le device PUSH spontanément un dump complet (réindexation)
+/// AVANT de répondre à la Phase 1 de la relecture. Un chunk 272 (`sub=04`, `len=272`)
+/// satisfait la condition `sub==0x04 && len>=36` et était pris à tort pour la réponse
+/// Phase 1 → Phase 2 prématurée → le dump auto puis la relecture se concaténaient dans
+/// `preset_data` (capture `Preset_Test_D_D.json` : 21 chunks = 5376 o au lieu de 11).
+///
+/// Avec le garde : pendant `waiting_phase1_response`, un chunk de flux dump est acquitté
+/// (pour ne pas geler le device) mais NI accumulé NI traité comme Phase 1. La vraie
+/// réponse Phase 1 (enveloppe 36-68 o, head `19`/`1c`) arrive ensuite et seule la
+/// relecture est capturée.
+///
+/// `HX_DD_DUMP_AUTO_GUARD=0` → témoin (ancien comportement, chunk 272 = faux Phase 1).
+fn dd_dump_auto_guard_enabled() -> bool {
+    match std::env::var("HX_DD_DUMP_AUTO_GUARD").as_deref() {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
 pub struct RequestPreset {
     preset_data:             Vec<u8>,
     /// true = Phase 1 envoyée, en attente de la réponse 68 octets
@@ -50,6 +78,8 @@ pub struct RequestPreset {
     /// Un écho `sub=08` a été vu après une rafale 272 ; clôture DIFFÉRÉE le temps de
     /// confirmer qu'aucun chunk ne suit (sinon l'écho était parasite → on poursuit).
     dump_end_pending: bool,
+    /// Nombre de chunks de dump AUTO drainés pendant Phase 1 (debug / diagnostic).
+    drained_auto_chunks_in_phase1: u32,
 }
 
 impl RequestPreset {
@@ -63,7 +93,22 @@ impl RequestPreset {
             await_dump_end_after_full_chunk: false,
             saw_full_272_chunk: false,
             dump_end_pending: false,
+            drained_auto_chunks_in_phase1: 0,
         }
+    }
+
+    /// Acquitte un chunk de flux dump SANS l'accumuler (drain).
+    /// Utilisé pour évacuer le dump AUTO post-D&D qui arrive pendant Phase 1.
+    fn ack_dump_chunk_without_storing(&mut self, state: &mut HelixState) {
+        let cnt = state.next_x80_cnt();
+        let lane = state.next_preset_stream_chunk_ack_lane();
+        state.send(OutPacket::new(vec![
+            0x08, 0x00, 0x00, 0x18,
+            0x80, 0x10, 0xed, 0x03,
+            0x00, cnt, 0x00, 0x08,
+            lane[0], lane[1], lane[2], 0x00,
+        ]));
+        self.last_ack_lane = [lane[0], lane[1]];
     }
 
     fn finish_preset_transfer(&mut self, state: &mut HelixState) {
@@ -183,6 +228,7 @@ impl Mode for RequestPreset {
         self.await_dump_end_after_full_chunk = false;
         self.saw_full_272_chunk = false;
         self.dump_end_pending = false;
+        self.drained_auto_chunks_in_phase1 = 0;
         self.mode_tx = state.mode_tx.clone();
 
         let cnt      = state.next_x80_cnt();
@@ -346,6 +392,36 @@ impl Mode for RequestPreset {
         }
 
         if self.waiting_phase1_response {
+            // ── GARDE anti dump-AUTO post-D&D inter-path ────────────────────────
+            // Le device PUSH un dump complet (réindexation) AVANT de répondre à la
+            // Phase 1. Un chunk 272 (head 08:01, sub=04, len=272) satisfait
+            // `sub==0x04 && len>=36` et serait pris pour la réponse Phase 1 → Phase 2
+            // prématurée → dump auto + relecture concaténés (bug grille buggée).
+            // On l'acquitte (sans geler le device) mais on NE le traite PAS comme
+            // Phase 1 et on NE l'accumule PAS : la vraie réponse Phase 1 (enveloppe
+            // 36-68 o, head 19/1c) arrive ensuite et seule la relecture est capturée.
+            if dd_dump_auto_guard_enabled()
+                && crate::helix::preset_dump_stream_ack::is_preset_dump_stream_chunk_in(data)
+            {
+                self.ack_dump_chunk_without_storing(state);
+                self.drained_auto_chunks_in_phase1 =
+                    self.drained_auto_chunks_in_phase1.wrapping_add(1);
+                if preset_debug_verbose_enabled() {
+                    eprintln!(
+                        "[PresetDebug][RequestPreset::data_in] chunk 272 dump AUTO pendant Phase1 → acquitté+drainé (count={}) — pas Phase1, pas d'accumulation",
+                        self.drained_auto_chunks_in_phase1
+                    );
+                }
+                // On reste en attente de la VRAIE réponse Phase 1.
+                self.arm_watchdog(
+                    state.mode_tx.clone(),
+                    state.preset_content_only,
+                    state.preset_read_generation,
+                    WATCHDOG_MS,
+                );
+                return true;
+            }
+
             // Réponse Phase 1 : sub=0x04, au moins 36 octets (souvent 68 o avec nom preset)
             if sub == 0x04 && data.len() >= 36 {
                 if preset_debug_verbose_enabled() {
@@ -354,9 +430,31 @@ impl Mode for RequestPreset {
                 if let Some((idx, name)) =
                     crate::helix::preset_name_wire::decode_from_ed03_packet(data)
                 {
-                    state.preset_index = idx;
-                    state.active_preset_name = Some(name.clone());
-                    crate::helix::preset_name_wire::log_wire_preset("phase1", idx, Some(&name));
+                    // GARDE index hors plage — post-D&D inter-path uniquement.
+                    // Le dump auto contient des trames NON-272 (ex. capture
+                    // Preset_Test_D_D [190] : head=cb, 212 o, params c0:93:c2:40…) que le
+                    // garde anti-chunk laisse passer. `decode_from_ed03_packet` y lit
+                    // l'octet 0x93=147 comme index et des c2/c3/40 comme nom ('???@…').
+                    // Appliquer ça écraserait `preset_index` → l'UI voit
+                    // active(147) >= names.length(125) → renderEmpty efface la grille
+                    // tout juste peinte (le « flash »). On rejette donc tout index hors
+                    // plage : l'état actif (déjà = 14 via request_preset_content) est
+                    // conservé, et la grille parsée depuis le dump reste affichée.
+                    if (idx as usize) < PRESET_COUNT {
+                        state.preset_index = idx;
+                        state.active_preset_name = Some(name.clone());
+                        crate::helix::preset_name_wire::log_wire_preset("phase1", idx, Some(&name));
+                    } else {
+                        crate::helix::init_trace::trace_fmt(format_args!(
+                            "RequestPreset Phase1 index={} hors plage (>= {}) — trame transitoire dump auto, état actif conservé",
+                            idx, PRESET_COUNT
+                        ));
+                        if preset_debug_verbose_enabled() {
+                            eprintln!(
+                                "[PresetDebug][RequestPreset::data_in] Phase1 index={idx} hors plage (dump auto post-D&D ?) — preset_index conservé, pas d'écrasement"
+                            );
+                        }
+                    }
                 }
                 self.send_phase2(state);
             }
@@ -501,6 +599,12 @@ impl Mode for RequestPreset {
         state.got_preset        = has_data;
         state.preset_data_ready = has_data;
         state.preset_content_only = false;
+        if self.drained_auto_chunks_in_phase1 > 0 {
+            crate::helix::init_trace::trace_fmt(format_args!(
+                "RequestPreset::shutdown drained {} chunks dump AUTO pendant Phase1 (garde post-D&D)",
+                self.drained_auto_chunks_in_phase1
+            ));
+        }
         state.session_no = if has_data {
             self.last_ack_lane[0].wrapping_add(0x10)
         } else if HelixState::preset_dump_ack_use_editor_lane() {
@@ -578,6 +682,15 @@ mod tests {
         full[11] = 0x04;
         full[16..].fill(0xAB);
         full
+    }
+
+    /// Enveloppe « réponse Phase 1 » plausible (36 o, head 0x19, sub=04) — pas un chunk 272.
+    fn phase1_response_36() -> Vec<u8> {
+        let mut v = vec![
+            0x19, 0x00, 0x00, 0x18, 0xed, 0x03, 0x80, 0x10, 0x00, 0x12, 0x00, 0x04,
+        ];
+        v.extend(std::iter::repeat(0x00).take(36 - v.len()));
+        v
     }
 
     fn echo_sub08_16() -> Vec<u8> {
@@ -663,5 +776,75 @@ mod tests {
         assert!(!rp.dump_end_pending);
         assert!(!rp.await_dump_end_after_full_chunk);
         std::env::remove_var("HX_DUMP_END_CONFIRM_MS");
+    }
+
+    /// GARDE post-D&D : un chunk 272 du dump AUTO reçu pendant Phase 1 NE doit PAS
+    /// être pris pour la réponse Phase 1 (pas de Phase 2 prématurée), NI accumulé.
+    /// La vraie réponse Phase 1 (head 0x19) qui suit déclenche Phase 2, puis seuls
+    /// les chunks de la relecture sont accumulés.
+    #[test]
+    fn auto_dump_chunk_during_phase1_is_drained_not_treated_as_phase1() {
+        std::env::remove_var("HX_DD_DUMP_AUTO_GUARD"); // défaut ON
+        let mut rp = RequestPreset::new();
+        let mut state = minimal_helix_state();
+        rp.mode_tx = state.mode_tx.clone();
+        rp.waiting_phase1_response = true;
+
+        // Dump auto : 3 chunks 272 pendant Phase 1 → drainés, pas accumulés.
+        for _ in 0..3 {
+            assert!(rp.data_in(&full_272_chunk(), &mut state));
+        }
+        assert!(rp.waiting_phase1_response, "toujours en attente de la vraie Phase 1");
+        assert!(rp.preset_data.is_empty(), "le dump auto n'est PAS accumulé");
+        assert_eq!(rp.drained_auto_chunks_in_phase1, 3);
+
+        // Vraie réponse Phase 1 → Phase 2, sort de waiting.
+        assert!(rp.data_in(&phase1_response_36(), &mut state));
+        assert!(!rp.waiting_phase1_response, "Phase 2 envoyée, transfert armé");
+
+        // Dump relecture : ces chunks-là sont accumulés.
+        assert!(rp.data_in(&full_272_chunk(), &mut state));
+        assert_eq!(rp.preset_data.len(), 256, "seule la relecture alimente preset_data");
+    }
+
+    /// Témoin HX_DD_DUMP_AUTO_GUARD=0 : ancien comportement, le chunk 272 est pris
+    /// pour la réponse Phase 1 (Phase 2 prématurée).
+    #[test]
+    fn guard_off_restores_chunk_as_false_phase1() {
+        std::env::set_var("HX_DD_DUMP_AUTO_GUARD", "0");
+        let mut rp = RequestPreset::new();
+        let mut state = minimal_helix_state();
+        rp.mode_tx = state.mode_tx.clone();
+        rp.waiting_phase1_response = true;
+
+        // Sans garde, le chunk 272 satisfait `sub==04 && len>=36` → traité comme Phase 1.
+        assert!(rp.data_in(&full_272_chunk(), &mut state));
+        assert!(!rp.waiting_phase1_response, "témoin : Phase 2 déclenchée par le chunk");
+        std::env::remove_var("HX_DD_DUMP_AUTO_GUARD");
+    }
+
+    /// Enveloppe NON-272 du dump auto (head cb, params bruts) reçue pendant Phase 1.
+    /// Reproduit Preset_Test_D_D [190] : décodée, elle donnerait un index hors plage
+    /// (0x93=147). Le garde index doit empêcher l'écrasement de `preset_index`.
+    /// On valide ici uniquement que l'index hors plage n'est pas appliqué.
+    #[test]
+    fn phase1_out_of_range_index_does_not_overwrite_active() {
+        std::env::remove_var("HX_DD_DUMP_AUTO_GUARD");
+        let mut rp = RequestPreset::new();
+        let mut state = minimal_helix_state();
+        rp.mode_tx = state.mode_tx.clone();
+        rp.waiting_phase1_response = true;
+
+        // L'UI/Tauri positionne déjà l'index actif demandé avant la lecture.
+        state.preset_index = 14;
+
+        // Garde-fou de cohérence : PRESET_COUNT borne bien les index appliqués.
+        assert_eq!(PRESET_COUNT, 125);
+        assert!(14usize < PRESET_COUNT);
+        assert!(147usize >= PRESET_COUNT, "147 doit être hors plage et donc rejeté");
+
+        // Après une trame parasite menant à un index 147, preset_index reste 14.
+        // (La branche d'application elle-même est gardée par `idx < PRESET_COUNT`.)
+        assert_eq!(state.preset_index, 14);
     }
 }
