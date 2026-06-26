@@ -15,6 +15,11 @@
 // `83 66 cd` jusqu’à la fin du bulk (troncature si trop long) puis on ré-applique le
 // `slot_bus` sur `82 62 **`.
 //
+// **CRÉATION Amp+Cab legacy (juin 2026)** : le bulkHex `amp+cab-legacy` (head=23, cd:07, 44 o)
+// est une forme compacte sans segment `82 13 06 14 83 18` ni trailer `09 12 0a c3`.
+// Sur slot VIDE, HX Edit crée avec head=2d (56 o, cd:03). Voir `build_amp_cab_legacy_create_bulk`
+// (flag `HX_AMP_CAB_LEGACY_CREATE_HEAD2D`, défaut ON).
+//
 // **CRÉATION dual (juin 2026)** : le bulkHex `assign48_cd0a` de `HX_ModelUsbAssign.json` est
 // en réalité une forme REMPLACEMENT (head=27, sans le segment de création `82 13 06 14 83 18`).
 // Sur slot VIDE, HX Edit envoie un head=31 complet (capture `add_dual_cab_soup_pro_2x12bluebell`
@@ -141,6 +146,15 @@ fn patch_bulk_header_counters(buf: &mut [u8], seq_x80: u8, ctr: u16) {
     }
 }
 
+/// Bulk `HX_ModelUsbAssign.json` : seul le compteur **x80** (octet 9) est dynamique.
+/// Les octets 12–15 portent l’identité modèle capturée (`d1 a7 02 00` WhoWatt, etc.) — ne pas
+/// y écrire `live_write_ctr` (sinon le device ignore le replace cab).
+fn patch_bulk_header_seq_x80_only(buf: &mut [u8], seq_x80: u8) {
+    if buf.len() > 9 {
+        buf[9] = seq_x80;
+    }
+}
+
 /// Octet du bus slot dans le segment `82 62 **slot** …` (même convention que `live_write`).
 fn patch_slot_bus_in_bulk(buf: &mut [u8], slot_bus: u8) {
     for i in 0..buf.len().saturating_sub(2) {
@@ -177,6 +191,16 @@ fn cd_lane_offset_after_cd03_or_cd04(bulk: &[u8]) -> Option<usize> {
             && bulk[i + 2] == 0xcd
             && (bulk[i + 3] == 0x04 || bulk[i + 3] == 0x03)
         {
+            return Some(i + 4);
+        }
+    }
+    None
+}
+
+/// Octet tag session après `83 66 cd 08` (replace slot occupé — capture `amp_cab legacy bass.json` 1775).
+fn cd_lane_tag_offset_after_cd08(bulk: &[u8]) -> Option<usize> {
+    for i in 0..bulk.len().saturating_sub(5) {
+        if bulk[i] == 0x83 && bulk[i + 1] == 0x66 && bulk[i + 2] == 0xcd && bulk[i + 3] == 0x08 {
             return Some(i + 4);
         }
     }
@@ -228,6 +252,74 @@ pub fn build_cab_dual_create_bulk(dual_assign_bulk: &[u8]) -> Option<Vec<u8>> {
         create.splice(t1s..t1e, cab1.iter().copied());
     }
     Some(create)
+}
+
+/// `HX_AMP_CAB_LEGACY_CREATE_HEAD2D` (défaut ON) : sur slot vide, créer l’Amp+Cab legacy avec
+/// head=2d (56 o, cd:03) au lieu du bulkHex assign (head=23, cd:07, 44 o).
+fn amp_cab_legacy_create_head2d_enabled() -> bool {
+    match std::env::var("HX_AMP_CAB_LEGACY_CREATE_HEAD2D").as_deref() {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// Bulk assign `amp+cab-legacy` compact (head `0x23`, lane `cd:07`, marqueur `c3:19`).
+fn bulk_is_amp_cab_legacy_assign(bulk: &[u8]) -> bool {
+    bulk.first() == Some(&0x23)
+        && bulk.len() == 44
+        && bulk.windows(4).any(|w| w == [0x83, 0x66, 0xcd, 0x07])
+        && bulk.windows(AMP_CAB_BULK_MARKER.len())
+            .any(|w| w == AMP_CAB_BULK_MARKER)
+}
+
+const AMP_CAB_LEGACY_CREATE_SEGMENT: [u8; 6] = [0x82, 0x13, 0x06, 0x14, 0x83, 0x18];
+const AMP_CAB_LEGACY_CREATE_TRAILER: [u8; 7] = [0x09, 0x12, 0x0a, 0xc3, 0x00, 0x00, 0x00];
+
+/// Template création Amp+Cab legacy (56 o, head `2d`, `cd:03`) depuis le bulk assign (44 o, `cd:07`).
+/// Même logique que `build_cab_dual_create_bulk` : segment création + trailer après le cab.
+pub fn build_amp_cab_legacy_create_bulk(assign_bulk: &[u8]) -> Option<Vec<u8>> {
+    if assign_bulk.len() != 44 || assign_bulk.first()? != &0x23 {
+        return None;
+    }
+    if !bulk_is_amp_cab_legacy_assign(assign_bulk) {
+        return None;
+    }
+
+    let mut out = assign_bulk.to_vec();
+    out[0] = 0x2d;
+
+    for i in 0..out.len().saturating_sub(4) {
+        if out[i..i + 4] == [0x83, 0x66, 0xcd, 0x07] {
+            out[i + 3] = 0x03;
+            break;
+        }
+    }
+
+    for i in 0..out.len().saturating_sub(4) {
+        if out[i] == 0x82 && out[i + 1] == 0x62 && out[i + 3] == 0x64 {
+            out[i + 3] = 0x63;
+            break;
+        }
+    }
+
+    let insert_pos = out.windows(2).position(|w| w == [0x83, 0x17])?;
+    out.splice(
+        insert_pos..insert_pos,
+        AMP_CAB_LEGACY_CREATE_SEGMENT.iter().copied(),
+    );
+
+    let (_cab_s, cab_e) = amp_cab_cab_field_range_in_bulk(&out)?;
+    out.truncate(cab_e);
+    out.extend_from_slice(&AMP_CAB_LEGACY_CREATE_TRAILER);
+
+    if out.len() >= 21 {
+        // Octet 20 = longueur payload hors en-tête 24 o, moins les 3 octets `00` finaux du trailer.
+        out[20] = out.len().saturating_sub(24 + 3) as u8;
+    }
+    Some(out)
 }
 
 #[derive(Debug, Clone)]
@@ -514,8 +606,26 @@ pub fn build_slot_model_probe_packets(
     } else {
         None
     };
-    let usb_assign_full_bulk: Option<&[u8]> =
-        cab_dual_create_owned.as_deref().or(usb_assign_full_bulk);
+    let amp_cab_legacy_create_owned: Option<Vec<u8>> = if matches!(op, SlotModelProbeOp::AddToEmpty)
+        && amp_cab_legacy_create_head2d_enabled()
+        && cab_dual_create_owned.is_none()
+        && matches!(usb_assign_full_bulk, Some(b) if bulk_is_amp_cab_legacy_assign(b))
+    {
+        let made = usb_assign_full_bulk.and_then(build_amp_cab_legacy_create_bulk);
+        if let Some(ref c) = made {
+            eprintln!(
+                "[SlotModelProbe] amp+cab legacy CREATE head=2d ({} o) substitué au bulkHex assign (head=23, cd:07)",
+                c.len()
+            );
+        }
+        made
+    } else {
+        None
+    };
+    let usb_assign_full_bulk: Option<&[u8]> = cab_dual_create_owned
+        .as_deref()
+        .or(amp_cab_legacy_create_owned.as_deref())
+        .or(usb_assign_full_bulk);
 
     let (_op_short, bulk_template): ([u8; 4], Cow<'_, [u8]>) = match (op, usb_assign_full_bulk) {
         (_, Some(b)) if b.len() >= 32 => (ed_op_from_assign_bulk_prefix(b), Cow::Borrowed(b)),
@@ -578,16 +688,24 @@ pub fn build_slot_model_probe_packets(
     let mut bulk = bulk_template.to_vec();
     if use_json_bulk {
         // Chemin JSON unifié:
-        // - patch runtime seq/ctr pour éviter les compteurs figés de capture,
+        // - seq x80 (octet 9) seulement — identité modèle octets 12–15 figée capture,
         // - lane séquentiel quand un marqueur `83 66 cd 03|04` est présent.
         let bulk_seq_used = state.next_x80_cnt();
-        let bulk_ctr_used = state.live_write_ctr;
-        patch_bulk_header_counters(&mut bulk, bulk_seq_used, bulk_ctr_used);
+        patch_bulk_header_seq_x80_only(&mut bulk, bulk_seq_used);
 
         if let Some(off) = cd_lane_offset_after_cd03_or_cd04(&bulk) {
             let next_lane = state.slot_model_lane_seq.unwrap_or(bulk[off]);
             bulk[off] = next_lane;
             state.slot_model_lane_seq = Some(next_lane.wrapping_add(1));
+        } else if matches!(op, SlotModelProbeOp::ReplaceOccupied) {
+            if let Some(off) = cd_lane_tag_offset_after_cd08(&bulk) {
+                // Replace Amp+Cab legacy occupé : tag session dynamique (≠ `fb` figé de l’assign cd:07).
+                let tag = state.slot_model_lane_seq.unwrap_or(state.live_write_yy);
+                bulk[off] = tag;
+                let next = tag.wrapping_add(1);
+                state.slot_model_lane_seq = Some(next);
+                state.live_write_yy = next;
+            }
         }
     } else {
         let ctr0 = state.live_write_ctr;
@@ -673,6 +791,38 @@ pub fn module_field_bytes_after_c219(bulk: &[u8]) -> Option<Vec<u8>> {
     Some(tail[..end].to_vec())
 }
 
+/// Bornes `[start, end)` du fil wire entre `c319` et le séparateur `1a` (ex. `2c` ou `23`).
+fn amp_cab_wire_range_before_1a_in_bulk(bulk: &[u8]) -> Option<(usize, usize)> {
+    let pos = bulk
+        .windows(AMP_CAB_BULK_MARKER.len())
+        .position(|w| w == AMP_CAB_BULK_MARKER)?;
+    let cursor = pos + AMP_CAB_BULK_MARKER.len();
+    let sep = bulk.get(cursor..)?.iter().position(|&b| b == 0x1a)?;
+    let start = cursor;
+    let end = cursor + sep;
+    if end <= start {
+        return None;
+    }
+    Some((start, end))
+}
+
+/// Reprend le fil avant `1a` depuis une entrée `amp+cab-legacy` catalogue qui embarque ce cab.
+fn legacy_amp_cab_wire_before_1a_for_cab_field(cab_field: &[u8]) -> Option<Vec<u8>> {
+    let entries = USB_ASSIGN_ENTRIES.get_or_init(load_usb_assign_entries);
+    for e in entries {
+        if e.variant != "amp+cab-legacy" {
+            continue;
+        }
+        let (cs, ce) = amp_cab_cab_field_range_in_bulk(&e.bulk)?;
+        if &e.bulk[cs..ce] != cab_field {
+            continue;
+        }
+        let (ws, we) = amp_cab_wire_range_before_1a_in_bulk(&e.bulk)?;
+        return Some(e.bulk[ws..we].to_vec());
+    }
+    None
+}
+
 /// Bornes `[start, end)` du champ cab dans un bulk assign `amp+cab` / `amp+cab-legacy`.
 fn amp_cab_cab_field_range_in_bulk(bulk: &[u8]) -> Option<(usize, usize)> {
     let pos = bulk
@@ -698,6 +848,25 @@ fn amp_cab_cab_field_range_in_bulk(bulk: &[u8]) -> Option<(usize, usize)> {
         return None;
     }
     Some((cab_start, cab_end))
+}
+
+/// Replace legacy : patch le fil avant `1a` (ex. `2c`→`23`) en plus du cab après `1a`.
+fn patch_amp_cab_bulk_legacy_cab_wire(bulk: &mut Vec<u8>, cab_field: &[u8]) -> Result<(), String> {
+    let wire_before = legacy_amp_cab_wire_before_1a_for_cab_field(cab_field).ok_or_else(|| {
+        format!(
+            "wire legacy avant 1a introuvable pour cab {:?} — aucune entrée amp+cab-legacy catalogue",
+            cab_field
+        )
+    })?;
+    let (ws, we) = amp_cab_wire_range_before_1a_in_bulk(bulk)
+        .ok_or_else(|| "bulk ampli sans marqueur amp+cab (c319/1a)".to_string())?;
+    let old_len = we - ws;
+    if wire_before.len() == old_len {
+        bulk[ws..we].copy_from_slice(&wire_before);
+        return Ok(());
+    }
+    bulk.splice(ws..we, wire_before.iter().copied());
+    Ok(())
 }
 
 /// Remplace la partie cab (`… 1a <cab> …`) dans un bulk Amp+Cab existant.
@@ -809,11 +978,10 @@ pub fn build_cab_dual_replace_cab_bulk(
             .ok_or_else(|| format!("bulk cab sans bloc c219 exploitable ({cab_model_id})"))?
     };
 
-    let parent_head = bulk.first().copied().unwrap_or(0);
-    let cab_head = cab_bulk.first().copied().unwrap_or(0);
     let legacy_cab2 = cab_index == 1
-        && (crate::helix::cab_dual::legacy::wire::is_legacy_dual_bulk_head(parent_head)
-            || crate::helix::cab_dual::legacy::wire::is_legacy_dual_bulk_head(cab_head));
+        && (crate::helix::cab_dual::legacy::wire::bulk_is_legacy_dual_hybrid(&bulk)
+            || (cab_v.eq_ignore_ascii_case("dual")
+                && crate::helix::cab_dual::legacy::wire::bulk_is_legacy_dual_hybrid(&cab_bulk)));
 
     if legacy_cab2 {
         bulk = crate::helix::cab_dual::legacy::wire::build_legacy_cab2_replace_bulk(
@@ -913,7 +1081,37 @@ pub fn build_amp_cab_replace_cab_bulk(
         &cab_bulk,
     )?;
     patch_amp_cab_bulk_cab_field(&mut bulk, &cab_field)?;
+    if amp_v == "amp+cab-legacy" {
+        patch_amp_cab_bulk_legacy_cab_wire(&mut bulk, &cab_field)?;
+    }
+    eprintln!(
+        "[build_amp_cab_replace_cab_bulk] amp={} variant={} cab={} cab_variant={} → {:02x?}",
+        amp_model_id, amp_cab_variant, cab_model_id, cab_variant, &bulk
+    );
     Ok(bulk)
+}
+
+/// Préambule `ef` puis `f0` (16 o chacun) avant replace cab legacy occupé (captures HX Edit).
+pub fn build_ef_f0_slot_preamble_packets(state: &mut super::HelixState) -> Vec<Vec<u8>> {
+    let mut pre_ef = [0u8; 16];
+    let mut pre_f0 = [0u8; 16];
+    let ctr0 = state.live_write_ctr;
+    let ctr1 = ctr0.wrapping_add(0x1f);
+    patch_short_ed03_16(
+        &mut pre_ef,
+        [0xef, 0x03, 0x01, 0x10],
+        0x10,
+        state.next_x2_cnt(),
+        ctr0,
+    );
+    patch_short_ed03_16(
+        &mut pre_f0,
+        [0x02, 0x10, 0xf0, 0x03],
+        0x10,
+        state.next_x2_cnt(),
+        ctr1,
+    );
+    vec![pre_ef.to_vec(), pre_f0.to_vec()]
 }
 
 #[cfg(test)]
@@ -961,9 +1159,94 @@ mod amp_cab_replace_cab_tests {
         .expect("build");
         assert_eq!(bulk.len(), 44);
         assert_eq!(bulk.first().copied(), Some(0x23));
+        let (ws, we) = amp_cab_wire_range_before_1a_in_bulk(&bulk).expect("wire");
+        assert_eq!(&bulk[ws..we], &[0x23]);
         let (s, e) = amp_cab_cab_field_range_in_bulk(&bulk).expect("range");
         assert_eq!(e - s, 1);
         assert_eq!(bulk[s], 0x33);
+    }
+
+    #[test]
+    fn json_usb_assign_replace_cd08_patches_session_lane_tag() {
+        let mut state = super::super::HelixState::new();
+        state.live_write_yy = 0xb8;
+        state.slot_model_lane_seq = Some(0xb8);
+        let mut bulk = build_amp_cab_replace_cab_bulk(
+            "HD2_AmpWhoWatt100",
+            "amp+cab-legacy",
+            "HD2_Cab1x6x9SoupProEllipse",
+            "single",
+        )
+        .expect("build");
+        assert_eq!(bulk[27], 0x07);
+        bulk[27] = 0x08;
+        let packs = build_slot_model_probe_packets(
+            &mut state,
+            SlotModelProbeOp::ReplaceOccupied,
+            0,
+            0x01,
+            None,
+            Some(&bulk),
+            true,
+        );
+        let sent = packs.iter().find(|p| p.len() == 44).expect("bulk");
+        assert_eq!(&sent[24..28], &[0x83, 0x66, 0xcd, 0x08]);
+        assert_eq!(
+            sent[28], 0xb8,
+            "tag session après cd:08 (capture bass 1775 ≈ b9), pas fb de l'assign cd:07"
+        );
+        assert_eq!(state.live_write_yy, 0xb9);
+    }
+
+    #[test]
+    fn json_usb_assign_probe_preserves_amp_model_wire_bytes() {
+        let mut state = super::super::HelixState::new();
+        state.live_write_ctr = 0x6d20;
+        let bulk = build_amp_cab_replace_cab_bulk(
+            "HD2_AmpWhoWatt100",
+            "amp+cab-legacy",
+            "HD2_Cab1x6x9SoupProEllipse",
+            "single",
+        )
+        .expect("build");
+        assert_eq!(&bulk[12..16], &[0xd1, 0xa7, 0x02, 0x00]);
+        let packs = build_slot_model_probe_packets(
+            &mut state,
+            SlotModelProbeOp::ReplaceOccupied,
+            0,
+            0x01,
+            None,
+            Some(&bulk),
+            true,
+        );
+        let sent = packs
+            .iter()
+            .find(|p| p.len() == 44 && p.first() == Some(&0x23))
+            .expect("bulk 44 o");
+        assert_eq!(
+            &sent[12..16],
+            &[0xd1, 0xa7, 0x02, 0x00],
+            "octets 12–15 = identité ampli catalogue, pas live_write_ctr"
+        );
+    }
+
+    #[test]
+    fn build_who_watt_legacy_replace_soup_updates_wire_before_1a() {
+        let bulk = build_amp_cab_replace_cab_bulk(
+            "HD2_AmpWhoWatt100",
+            "amp+cab-legacy",
+            "HD2_Cab1x6x9SoupProEllipse",
+            "single",
+        )
+        .expect("build");
+        let (ws, we) = amp_cab_wire_range_before_1a_in_bulk(&bulk).expect("wire");
+        assert_eq!(
+            &bulk[ws..we],
+            &[0x23],
+            "capture amp_cab legacy guitar frame 1735 : c319 23 1a 33"
+        );
+        let (s, e) = amp_cab_cab_field_range_in_bulk(&bulk).expect("cab");
+        assert_eq!(&bulk[s..e], &[0x33]);
     }
 
     #[test]
@@ -1097,6 +1380,77 @@ mod amp_cab_replace_cab_tests {
         .unwrap();
         let (s, e) = amp_cab_cab_field_range_in_bulk(&bulk).unwrap();
         assert_eq!(&bulk[s..e], cab.as_slice());
+    }
+
+    #[test]
+    fn amp_cab_legacy_create_head2d_keeps_cab_and_registers_structure() {
+        let assign = resolve_usb_assign_bulk("HD2_AmpWhoWatt100", "amp+cab-legacy").expect("assign");
+        let create = build_amp_cab_legacy_create_bulk(&assign).expect("create");
+        assert_eq!(create[0], 0x2d);
+        assert_eq!(create.len(), 56);
+        assert!(create.windows(6).any(|w| w == AMP_CAB_LEGACY_CREATE_SEGMENT));
+        assert!(create.windows(4).any(|w| w == [0x83, 0x66, 0xcd, 0x03]));
+        assert_eq!(create[20], 0x1d);
+        assert_eq!(&create[create.len() - 7..], AMP_CAB_LEGACY_CREATE_TRAILER);
+        let (as_s, as_e) = amp_cab_cab_field_range_in_bulk(&assign).unwrap();
+        let (cs, ce) = amp_cab_cab_field_range_in_bulk(&create).unwrap();
+        assert_eq!(&create[cs..ce], &assign[as_s..as_e]);
+        assert_eq!(create[cs], 0x47);
+    }
+
+    #[test]
+    fn amp_cab_legacy_create_bulk_matches_hxedit_frame() {
+        let replace = resolve_usb_assign_bulk("HD2_AmpWhoWatt100", "amp+cab-legacy")
+            .expect("bulk amp+cab-legacy");
+        let create = build_amp_cab_legacy_create_bulk(&replace).expect("create 2d");
+
+        // Structure attendue d'après capture HX Edit frame #338
+        assert_eq!(create.len(), 56);
+        assert_eq!(create[0], 0x2d, "head");
+        assert_eq!(create[20], 0x1d, "payload len");
+        assert!(
+            create.windows(4).any(|w| w == [0x83, 0x66, 0xcd, 0x03]),
+            "lane cd:03 absente"
+        );
+        assert!(
+            !create.windows(4).any(|w| w == [0x83, 0x66, 0xcd, 0x07]),
+            "cd:07 encore présent"
+        );
+        assert!(
+            create.windows(4).any(|w| w[0] == 0x82 && w[1] == 0x62 && w[3] == 0x63),
+            "slot type 0x63 absent"
+        );
+        assert!(
+            create.windows(6).any(|w| w == [0x82, 0x13, 0x06, 0x14, 0x83, 0x18]),
+            "segment création absent"
+        );
+        assert!(
+            create.windows(4).any(|w| w == [0x09, 0x12, 0x0a, 0xc3]),
+            "trailer absent"
+        );
+        assert!(
+            create.windows(3).any(|w| w == [0x2c, 0x1a, 0x47]),
+            "cab défaut WhoWatt absent"
+        );
+        assert_eq!(&create[53..56], &[0x00, 0x00, 0x00], "padding final");
+    }
+
+    #[test]
+    fn add_to_empty_amp_cab_legacy_uses_head2d_create() {
+        let mut state = super::super::HelixState::new();
+        let assign = resolve_usb_assign_bulk("HD2_AmpWhoWatt100", "amp+cab-legacy").expect("assign");
+        let packs = build_slot_model_probe_packets(
+            &mut state,
+            SlotModelProbeOp::AddToEmpty,
+            0,
+            0x01,
+            None,
+            Some(&assign),
+            false,
+        );
+        let bulk = packs.iter().find(|p| p.len() == 56).expect("create bulk 56o");
+        assert_eq!(bulk[0], 0x2d, "création amp+cab legacy = head=2d");
+        assert!(bulk.windows(4).any(|w| w == [0x83, 0x66, 0xcd, 0x03]));
     }
 
     #[test]

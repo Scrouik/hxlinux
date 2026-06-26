@@ -22,6 +22,7 @@ pub mod path1_io_live_write;
 pub mod path1_split_live_write;
 pub mod path1_routing_structural;
 pub mod matrix_slot_move;
+pub mod matrix_routing_move;
 pub mod edit_slot_model;
 pub mod slot_focus_in;
 pub mod slot_param_in;

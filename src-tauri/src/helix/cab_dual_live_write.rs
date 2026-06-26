@@ -761,22 +761,29 @@ mod tests {
     }
 
     #[test]
-    fn legacy_hybrid_uses_c319_model_suffix() {
+    fn legacy_hybrid_uses_ir_cab2_model_block_when_std_param_on() {
         let state = HelixState::new();
         let route = resolve_cab_dual_live_write_route(&state, 1, 2, 3, true).expect("route");
         assert_eq!(route.pp, 0x04);
-        assert_eq!(route.param_selector, 0x2d);
-        assert_eq!(route.model_block[4], 0x2d);
-        assert_eq!(&route.model_block[11..16], &[0x64, 0x83, 0x17, 0xc3, 0x19]);
+        assert_eq!(
+            route.param_selector, 2,
+            "HX_DUAL_LEGACY_STD_PARAM (défaut) : index param local cab2"
+        );
+        assert_eq!(
+            &route.model_block[13..16],
+            &[0x1a, 0x01, 0x1c],
+            "suffix cab2 IR standard"
+        );
     }
 
     #[test]
-    fn legacy_hybrid_cab1_param0_uses_compact_sel() {
+    fn legacy_hybrid_cab1_param0_uses_ir_model_block_when_std_param_on() {
         let state = HelixState::new();
         let route = resolve_cab_dual_live_write_route(&state, 0, 0, 3, true).expect("route");
         assert_eq!(route.pp, 0x03);
-        assert_eq!(route.param_selector, 0x00);
-        assert_eq!(route.model_block[4], 0x00);
+        assert_eq!(route.param_selector, 0);
+        assert_eq!(route.model_block[4], state.live_write_yy, "tag session lane IR");
+        assert_eq!(&route.model_block[13..16], &[0x1a, 0x00, 0x1c], "suffix cab1 IR");
     }
 
     #[test]

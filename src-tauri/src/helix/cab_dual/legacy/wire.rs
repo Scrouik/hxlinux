@@ -24,6 +24,19 @@ pub fn is_legacy_dual_bulk_head(head: u8) -> bool {
     matches!(head, CAB2_REPLACE_HEAD_LEGACY | DUAL_PARENT_REPLACE_HEAD)
 }
 
+/// Dual legacy hybrid (`c319`, cab1+cab2) — exclut les singles IR head `0x25` avec `c219` seul.
+pub fn bulk_is_legacy_dual_hybrid(bulk: &[u8]) -> bool {
+    use crate::helix::edit_slot_model::cab_dual_cab1_field_range_in_bulk;
+    match bulk.first().copied() {
+        Some(CAB2_REPLACE_HEAD_LEGACY) => bulk.windows(2).any(|w| w == [0xc3, 0x19]),
+        Some(DUAL_PARENT_REPLACE_HEAD) => {
+            bulk.windows(2).any(|w| w == [0xc3, 0x19])
+                && cab_dual_cab1_field_range_in_bulk(bulk).is_some()
+        }
+        _ => false,
+    }
+}
+
 pub fn is_legacy_cab2_replace_bulk(bulk: &[u8]) -> bool {
     bulk.first() == Some(&CAB2_REPLACE_HEAD_LEGACY)
 }
@@ -154,6 +167,16 @@ pub fn chain_hint_to_cab_field_bytes(chain_hex_hint: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::helix::edit_slot_model::build_cab_dual_replace_cab_bulk;
+
+    #[test]
+    fn ir_single_head_25_is_not_legacy_dual_hybrid() {
+        let single = crate::helix::edit_slot_model::resolve_usb_assign_bulk(
+            "HD2_CabMicIr_4x12Greenback20",
+            "single",
+        )
+        .expect("greenback single");
+        assert!(!bulk_is_legacy_dual_hybrid(&single));
+    }
 
     #[test]
     fn chain_hint_one_byte_legacy() {

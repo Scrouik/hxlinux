@@ -1,3 +1,4 @@
+/// Models.ts 26/06/2026
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -890,6 +891,8 @@ let pendingHardwareSelectedKemplineSlotIndex: number | null = null;
 let pendingHardwareSelectedSlotBus: number | null = null;
 /** Évite de renvoyer un ordre hardware lors des clics programmatiques (restore/sync). */
 let suppressNextUiSlotHardwareSwitch = false;
+/** Après replace cab Amp+Cab legacy (probe OK) : pas de `focus_amp_cab_usb_part` au re-render. */
+let suppressNextAmpCabFocusUsb = false;
 let lastUserHwSlotSwitchAt = 0;
 let lastUserHwSlotSwitchIndex: number | null = null;
 let lastCatalogChainHexSnapshotPresetIndex = -1;
@@ -1504,6 +1507,9 @@ function delayMs(ms: number): Promise<void> {
 let hardwareSlotSwitchTail: Promise<void> = Promise.resolve();
 
 function enqueueHardwareSlotSwitch(slotIndex: number): Promise<void> {
+  emitModelsSyncTrace(
+    `enqueueHardwareSlotSwitch slot=${slotIndex} stack=${new Error().stack?.split("\n")[2]?.trim()}`,
+  );
   const p = hardwareSlotSwitchTail.then(async () => {
     try {
       await invoke("switch_active_hardware_slot", { slotIndex });
@@ -2830,6 +2836,47 @@ function applySlotPickerAmpCabCabLock(
   applySlotPickerFromCatalogSelection("Cab", sub, id || null);
 }
 
+/** Sous-catégorie picker Cab sans await (évite race clic liste avant lock). */
+function ampCabCabPickerLockedSubSync(
+  slotCategory: string,
+  cabCatalogModelId: string,
+  ampCabAssignVariant?: string | null,
+): string {
+  const assign = (ampCabAssignVariant ?? "").trim().toLowerCase();
+  if (
+    isAmpCabLegacySlotCategory(slotCategory) ||
+    assign === "amp+cab-legacy"
+  ) {
+    return "Single Legacy";
+  }
+  const id = cabCatalogModelId.trim();
+  if (catalogPickerDataCache && id) {
+    const loc = findCabModelPickerLocation(
+      catalogPickerDataCache,
+      id,
+      slotCategory,
+    );
+    if (loc && (loc.assignVariant === "single" || loc.assignVariant === "legacy")) {
+      return loc.subKey;
+    }
+  }
+  return "Single";
+}
+
+/** Pose `slotPickerIoLock` tout de suite (syncPickerForAmpCabDualTab affine après await). */
+function applyAmpCabCabPickerLockFromContext(
+  cabCatalogModelId: string,
+  slotCategory: string,
+  ampCabAssignVariant?: string | null,
+): void {
+  const id = cabCatalogModelId.trim();
+  if (!id) return;
+  applySlotPickerAmpCabCabLock(
+    id,
+    ampCabCabPickerLockedSubSync(slotCategory, id, ampCabAssignVariant),
+  );
+}
+
 /** Libère le verrou Cab / Single (Amp+Cab onglet Cab, Cab dual) et ré-ouvre le picker. */
 function releaseCabPickerLockFromDualSlots(): void {
   ampCabDualPickerSync = null;
@@ -3037,11 +3084,18 @@ async function resolveCabDualWireCabTarget(
   const id = pickedCatalogModelId.trim();
   const fallbackVariant = legacyFallback ? "legacy" : "single";
   if (catalogPickerDataCache) {
+    if (legacyFallback) {
+      if (findUsbAssignPickerLocation(catalogPickerDataCache, id, "legacy", "Cab")) {
+        return { cabCatalogModelId: id, cabAssignVariant: "legacy" };
+      }
+    }
     if (findUsbAssignPickerLocation(catalogPickerDataCache, id, "single", "Cab")) {
       return { cabCatalogModelId: id, cabAssignVariant: "single" };
     }
-    if (findUsbAssignPickerLocation(catalogPickerDataCache, id, "legacy", "Cab")) {
-      return { cabCatalogModelId: id, cabAssignVariant: "legacy" };
+    if (!legacyFallback) {
+      if (findUsbAssignPickerLocation(catalogPickerDataCache, id, "legacy", "Cab")) {
+        return { cabCatalogModelId: id, cabAssignVariant: "legacy" };
+      }
     }
     if (id.endsWith("WithPan")) {
       const singleId = id.slice(0, -"WithPan".length);
@@ -3190,11 +3244,123 @@ async function isAmpCabSlotLegacy(
   return false;
 }
 
+/** Variante assign ampli : `amp+cab-legacy` dès qu’on a détecté un slot hybrid (doc §4.1). */
+async function resolveAmpCabAssignVariantForUsb(
+  meta: PresetMetaJson | null,
+  moduleHex: string | undefined,
+  slotCategory: string,
+  ampModelId: string,
+  linkedCabHex: string | null | undefined,
+  cabCatalogModelId = "",
+): Promise<string> {
+  const legacy = await isAmpCabSlotLegacy(
+    slotCategory,
+    linkedCabHex,
+    cabCatalogModelId,
+  );
+  const assign = await usbAssignVariantForAmpCabSlot(
+    meta,
+    moduleHex,
+    slotCategory,
+    ampModelId,
+    linkedCabHex,
+  );
+  return legacy ? "amp+cab-legacy" : assign;
+}
+
+/** Variante catalogue cab pour un slot Amp+Cab (hybrid → `legacy`, IR → `single`). */
+async function cabAssignVariantForAmpCabSlot(
+  slotCategory: string,
+  linkedCabHex: string | null | undefined,
+  cabCatalogModelId: string,
+): Promise<"legacy" | "single"> {
+  return (await isAmpCabSlotLegacy(slotCategory, linkedCabHex, cabCatalogModelId))
+    ? "legacy"
+    : "single";
+}
+
+/** `chainHexHint` cab lié — ne pas forcer `single` sur un slot hybrid (régression vs 7c4fbbe). */
+async function moduleHexForAmpCabLinkedCab(
+  cabModelId: string,
+  slotCategory: string,
+  linkedCabHexFallback?: string | null,
+): Promise<string | null> {
+  const id = cabModelId.trim();
+  if (!id) return linkedCabHexFallback?.trim() || null;
+  const variant = await cabAssignVariantForAmpCabSlot(
+    slotCategory,
+    linkedCabHexFallback,
+    id,
+  );
+  const meta = await getPresetMetaForId(id);
+  return (
+    (await moduleHexForUsbVariant(id, variant, meta))?.trim() ||
+    linkedCabHexFallback?.trim() ||
+    null
+  );
+}
+
+function isAmpCabCabPickerApplyRoute(ki: number): boolean {
+  if (ampCabDualActiveTab !== 1) return false;
+  const slot = lastHwSyncNormalizedSlots?.[ki];
+  if (!slot || isEmptyGridCell(slot)) return false;
+  const assignHint =
+    probePickerAssignVariantHint(ki) ?? lastProbePickerAssignContext?.assignVariant;
+  if (slotWantsAmpCabDualTabs(slot, assignHint)) return true;
+  const probeCtx =
+    lastProbePickerAssignContext?.ki === ki ? lastProbePickerAssignContext : null;
+  if (
+    probeCtx &&
+    (probeCtx.assignVariant === "amp+cab" || probeCtx.assignVariant === "amp+cab-legacy")
+  ) {
+    return true;
+  }
+  return slotPickerIoLock?.kind === "amp_cab_cab";
+}
+
+/** Reconstruit `ampCabDualPickerSync` si le mount async n'a pas encore fini (7c4fbbe + race picker). */
+async function ensureAmpCabDualPickerSyncForKi(ki: number): Promise<boolean> {
+  if (ampCabDualPickerSync) return true;
+  const probeCtx =
+    lastProbePickerAssignContext?.ki === ki ? lastProbePickerAssignContext : null;
+  if (
+    !probeCtx ||
+    (probeCtx.assignVariant !== "amp+cab" && probeCtx.assignVariant !== "amp+cab-legacy")
+  ) {
+    return false;
+  }
+  const slot = lastHwSyncNormalizedSlots?.[ki];
+  if (!slot) return false;
+  const meta = await getPresetMetaForId(probeCtx.catalogModelId);
+  const cabHint =
+    probePickerAmpCabCabHint(ki, probeCtx.catalogModelId)?.trim() ||
+    probeCtx.ampCabCabModelId?.trim() ||
+    "";
+  if (!cabHint) return false;
+  const slotCategory = probeCtx.category ?? slot.category ?? "";
+  ampCabDualPickerSync = {
+    ampCatalogModelId: probeCtx.catalogModelId,
+    meta,
+    moduleHex: slot.moduleHex,
+    slotCategory,
+    linkedCabHex: await moduleHexForAmpCabLinkedCab(cabHint, slotCategory, null),
+    cabCatalogModelId: cabHint,
+  };
+  return true;
+}
+
 async function syncPickerForAmpCabDualTab(tabIndex: 0 | 1): Promise<void> {
-  if (!ampCabDualPickerSync || !catalogPickerDataCache) return;
   ampCabDualActiveTab = tabIndex;
   const ctx = ampCabDualPickerSync;
   if (tabIndex === 1) {
+    if (ctx) {
+      // Lock synchrone avant tout await (isAmpCabSlotLegacy / getPresetMetaForId).
+      applyAmpCabCabPickerLockFromContext(
+        ctx.cabCatalogModelId,
+        ctx.slotCategory,
+      );
+    }
+    if (!ctx || !catalogPickerDataCache) return;
     const legacy = await isAmpCabSlotLegacy(
       ctx.slotCategory,
       ctx.linkedCabHex,
@@ -3208,6 +3374,7 @@ async function syncPickerForAmpCabDualTab(tabIndex: 0 | 1): Promise<void> {
     applySlotPickerAmpCabCabLock(ctx.cabCatalogModelId, lockedSub);
     return;
   }
+  if (!ctx || !catalogPickerDataCache) return;
   if (slotPickerIoLock?.kind === "amp_cab_cab") {
     slotPickerIoLock = null;
     if (slotPickerCategoryEl) slotPickerCategoryEl.disabled = false;
@@ -3499,7 +3666,13 @@ async function applyAmpCabCabFromPickerListClick(
   ki: number,
 ): Promise<void> {
   const ctx = ampCabDualPickerSync;
-  if (!ctx) return;
+  if (!ctx) {
+    logCabDualTrace(`applyAmpCabCab abort slot=${ki}: ampCabDualPickerSync absent`);
+    return;
+  }
+  logCabDualTrace(
+    `applyAmpCabCab enter slot=${ki} cab=${row.id.trim()} amp=${ctx.ampCatalogModelId.trim()}`,
+  );
 
   const cabIdTrim = row.id.trim();
   const legacy = await isAmpCabSlotLegacy(
@@ -3511,12 +3684,13 @@ async function applyAmpCabCabFromPickerListClick(
   const cabAssignVariant = cabUsb.cabAssignVariant;
   const cabIdForUsb = cabUsb.cabCatalogModelId;
   const ampIdTrim = ctx.ampCatalogModelId.trim();
-  const ampAssignVariant = await usbAssignVariantForAmpCabSlot(
+  const ampAssignVariant = await resolveAmpCabAssignVariantForUsb(
     ctx.meta,
     ctx.moduleHex,
     ctx.slotCategory,
     ampIdTrim,
     ctx.linkedCabHex,
+    cabIdTrim,
   );
   const cabMeta = await getPresetMetaForId(cabIdForUsb);
   const cabHex =
@@ -3562,10 +3736,9 @@ async function applyAmpCabCabFromPickerListClick(
   ampCabDualActiveTab = 1;
 
   try {
-    await loadAndShowModelsParamsFromCatalogDefaults(optimisticSlot, ampIdTrim, ki, {
-      assignVariant: ampAssignVariant,
-    });
-
+    logCabDualTrace(
+      `applyAmpCabCab probe slot=${ki} ampVar=${ampAssignVariant} cab=${cabIdForUsb} cabVar=${cabAssignVariant}`,
+    );
     const out = await invokeProbeSlotModelUsb( {
       op: "replace",
       slotIndex: ki,
@@ -3587,7 +3760,12 @@ async function applyAmpCabCabFromPickerListClick(
     );
     await patchSlotDualPartsSessionAmpCabCab(ki, cabIdTrim, cabHex);
     await syncPickerForAmpCabDualTab(1);
+    suppressNextAmpCabFocusUsb = true;
+    await loadAndShowModelsParamsFromCatalogDefaults(optimisticSlot, ampIdTrim, ki, {
+      assignVariant: ampAssignVariant,
+    });
   } catch (e) {
+    logCabDualTrace(`applyAmpCabCab erreur slot=${ki}: ${String(e)}`);
     console.warn("[SlotModelProbe] amp+cab cab", e);
     lastProbePickerAssignContext = null;
     if (prevSnapshot) {
@@ -3877,8 +4055,18 @@ async function applySlotModelFromPickerListClick(row: CatalogPickerModelRow): Pr
     return;
   }
   logCabDualTrace(
-    `picker click id=${catalogModelId} tab=${cabDualActiveTab} slot=${ki} ctx=${Boolean(lastCabDualTabPanesContext)} sync=${Boolean(cabDualPickerSync)} lock=${slotPickerIoLock?.kind ?? "none"}`,
+    `picker click id=${catalogModelId} ampTab=${ampCabDualActiveTab} cabDualTab=${cabDualActiveTab} slot=${ki} ctx=${Boolean(lastCabDualTabPanesContext)} sync=${Boolean(cabDualPickerSync)} ampSync=${Boolean(ampCabDualPickerSync)} lock=${slotPickerIoLock?.kind ?? "none"}`,
   );
+  // Garde Amp+Cab cab : onglet Cab actif — ne pas dépendre du lock (posé async après await).
+  if (isAmpCabCabPickerApplyRoute(ki)) {
+    await ensureAmpCabDualPickerSyncForKi(ki);
+    if (ampCabDualPickerSync) {
+      await applyAmpCabCabFromPickerListClick(row, ki);
+      return;
+    }
+    logCabDualTrace(`picker amp+cab cab: sync absent slot=${ki}`);
+    return;
+  }
   if (isCabDualPickerApplyRoute(ki)) {
     const rowVariant = (row.assignVariant ?? "").trim().toLowerCase();
     const rowId = row.id.trim().toLowerCase();
@@ -3904,14 +4092,6 @@ async function applySlotModelFromPickerListClick(row: CatalogPickerModelRow): Pr
       `picker sortie cab dual → assign slot entier id=${catalogModelId} cat=${pickerCat}`,
     );
     exitCabDualPickerModeForFullSlotReplace();
-  }
-  if (
-    slotPickerIoLock?.kind === "amp_cab_cab" &&
-    ampCabDualPickerSync &&
-    ampCabDualActiveTab === 1
-  ) {
-    await applyAmpCabCabFromPickerListClick(row, ki);
-    return;
   }
   const selectedKey = selectedParamsSlotKey ?? "";
   const selectedEmptyKey = `empty|${ki}`;
@@ -4005,10 +4185,6 @@ async function applySlotModelFromPickerListClick(row: CatalogPickerModelRow): Pr
     selectParamsPaneByKemplineIndex(ki);
   }
   try {
-    await loadAndShowModelsParamsFromCatalogDefaults(optimisticSlot, idTrim, ki, {
-      assignVariant,
-    });
-
     const out = await invokeProbeSlotModelUsb( {
       op,
       slotIndex: ki,
@@ -4026,6 +4202,11 @@ async function applySlotModelFromPickerListClick(row: CatalogPickerModelRow): Pr
     emitModelsSyncTrace(
       `slot_model_probe ok slot=${ki} — no pendingForceUsbPresetContent (pas de relecture preset complète)`,
     );
+
+    await loadAndShowModelsParamsFromCatalogDefaults(optimisticSlot, idTrim, ki, {
+      assignVariant,
+    });
+
     const sessionVals = await resolveChainValuesForKemplineSlot(
       ki,
       optimisticSlot,
@@ -4833,6 +5014,10 @@ let matrixSlotClipboard: MatrixSlotClipboard | null = null;
 let matrixCtxTargetKemplineIndex: number | null = null;
 /** Index source pendant un drag & drop matrice (move). */
 let matrixDragSourceKi: number | null = null;
+/** Split / merge en cours de drag (frontière source 0..8). */
+let matrixDragRouting: { kind: "split" | "merge"; sourceBoundary: number } | null = null;
+/** Bloque le clic « focus I/O » après un drop split/merge (évite `cd:03 f9` parasite). */
+let matrixSuppressRoutingMarkerActivate = false;
 /** Split/merge après drop path 2 (pas d’aperçu avant le lâcher). */
 let matrixRoutingColsOverride: { splitCol: number; mergeCol: number } | null = null;
 
@@ -4895,6 +5080,7 @@ function canMoveMatrixSlotToEmpty(
     return col >= 0 && col < 8;
   }
   if (!hasDualPathFxBranch(slots)) return false;
+  if (isColumnPairedSlotBlocked(slots, destKi)) return false;
   const { splitCol, mergeCol } = resolveMatrixRoutingColumns(slots);
   const col = destKi & 7;
   return col >= splitCol && col < mergeCol;
@@ -5616,9 +5802,20 @@ async function moveMatrixSlotFromTo(sourceKi: number, destKi: number): Promise<v
     if (
       isInterPathMatrixMove(sourceKi, destKi) &&
       matrixSlotPath(destKi) === 1 &&
-      countPath1FilledFxSlots(slots) <= 1
+      countPath1FilledFxSlots(slots) <= 1 &&
+      !isPath2FxEmpty(slots)
     ) {
       setStatus("Impossible : il doit rester au moins un bloc sur le path 1");
+    } else if (
+      isInterPathMatrixMove(sourceKi, destKi) &&
+      matrixSlotPath(sourceKi) === 0 &&
+      matrixSlotPath(destKi) === 1 &&
+      !isPath2FxEmpty(slots)
+    ) {
+      const { splitCol, mergeCol } = resolveMatrixRoutingColumns(slots);
+      setStatus(
+        `Drop path 2 refusé : case hors zone split (${splitCol + 1})–merge (${mergeCol}), colonne path 1 occupée, ou destination invalide`,
+      );
     }
     return;
   }
@@ -5690,6 +5887,131 @@ function clearMatrixDragOverHighlights(): void {
   contentEl
     .querySelectorAll(".node--matrix-drag-over")
     .forEach((n) => n.classList.remove("node--matrix-drag-over"));
+}
+
+function clearMatrixRoutingDragHighlights(): void {
+  contentEl
+    .querySelectorAll(".hx-matrix-cell--routing-drag-over")
+    .forEach((n) => n.classList.remove("hx-matrix-cell--routing-drag-over"));
+}
+
+function matrixRoutingDropTargetFromElement(el: Element | null): HTMLElement | null {
+  if (!el) return null;
+  return el.closest?.(
+    ".hx-matrix-cell[data-routing-boundary]",
+  ) as HTMLElement | null;
+}
+
+function matrixRoutingBoundaryFromDropTarget(el: HTMLElement): number | null {
+  const b = Number.parseInt(el.dataset.routingBoundary ?? "", 10);
+  return Number.isFinite(b) && b >= 0 && b <= 8 ? b : null;
+}
+
+function bindMatrixRoutingBoundaryDropTarget(el: HTMLElement, boundary: number): void {
+  el.dataset.routingBoundary = String(boundary);
+}
+
+function bindMatrixRoutingMarkerDrag(
+  el: HTMLElement,
+  kind: "split" | "merge",
+  sourceBoundary: number,
+): void {
+  el.classList.add("hx-matrix-routing-marker--draggable");
+
+  el.addEventListener("pointerdown", (ev) => {
+    if (isMatrixUsbInteractionLocked()) return;
+    if (currentPresetIndex < 0 || isModelsContentBusy()) return;
+    if (ev.button !== 0) return;
+    const slots = lastHwSyncNormalizedSlots;
+    if (!slots || !hasDualPathFxBranch(slots)) return;
+
+    ev.preventDefault();
+    ev.stopPropagation();
+    matrixSuppressRoutingMarkerActivate = false;
+    suppressNextUiSlotHardwareSwitch = true;
+    matrixDragRouting = { kind, sourceBoundary };
+    el.setPointerCapture(ev.pointerId);
+    el.classList.add("hx-matrix-routing-marker--drag-source");
+  });
+
+  el.addEventListener("pointermove", (ev) => {
+    if (!matrixDragRouting || matrixDragRouting.kind !== kind) return;
+    clearMatrixRoutingDragHighlights();
+
+    const target = document.elementFromPoint(ev.clientX, ev.clientY);
+    const dropEl = matrixRoutingDropTargetFromElement(target);
+    if (!dropEl) return;
+
+    const destBoundary = matrixRoutingBoundaryFromDropTarget(dropEl);
+    const slots = lastHwSyncNormalizedSlots;
+    if (
+      destBoundary === null ||
+      !slots ||
+      !canMoveRoutingMarker(kind, destBoundary, slots)
+    ) {
+      return;
+    }
+
+    dropEl.classList.add("hx-matrix-cell--routing-drag-over");
+  });
+
+  el.addEventListener("pointerup", (ev) => {
+    if (!matrixDragRouting || matrixDragRouting.kind !== kind) return;
+    if (isMatrixUsbInteractionLocked()) {
+      matrixDragRouting = null;
+      suppressNextUiSlotHardwareSwitch = false;
+      el.classList.remove("hx-matrix-routing-marker--drag-source");
+      clearMatrixRoutingDragHighlights();
+      return;
+    }
+
+    clearMatrixRoutingDragHighlights();
+    el.classList.remove("hx-matrix-routing-marker--drag-source");
+    if (el.hasPointerCapture(ev.pointerId)) {
+      el.releasePointerCapture(ev.pointerId);
+    }
+
+    const target = document.elementFromPoint(ev.clientX, ev.clientY);
+    const dropEl = matrixRoutingDropTargetFromElement(target);
+    const drag = matrixDragRouting;
+    matrixDragRouting = null;
+
+    if (!dropEl || !drag) {
+      suppressNextUiSlotHardwareSwitch = false;
+      return;
+    }
+    const destBoundary = matrixRoutingBoundaryFromDropTarget(dropEl);
+    if (destBoundary === null) {
+      suppressNextUiSlotHardwareSwitch = false;
+      return;
+    }
+    if (!canMoveRoutingMarker(kind, destBoundary, lastHwSyncNormalizedSlots ?? [])) {
+      suppressNextUiSlotHardwareSwitch = false;
+      return;
+    }
+
+    matrixSuppressRoutingMarkerActivate = true;
+    suppressNextUiSlotHardwareSwitch = true;
+
+    console.info("[MatrixRoutingMove] pointerup", kind, sourceBoundary, "→", destBoundary);
+    setStatus(`Déplacement ${kind} → colonne ${destBoundary}…`);
+    void moveMatrixRoutingMarkerFromTo(kind, destBoundary).finally(() => {
+      window.setTimeout(() => {
+        matrixSuppressRoutingMarkerActivate = false;
+      }, 400);
+    });
+  });
+
+  el.addEventListener("pointercancel", (ev) => {
+    if (!matrixDragRouting || matrixDragRouting.kind !== kind) return;
+    matrixDragRouting = null;
+    suppressNextUiSlotHardwareSwitch = false;
+    el.classList.remove("hx-matrix-routing-marker--drag-source");
+    if (el.hasPointerCapture(ev.pointerId)) {
+      el.releasePointerCapture(ev.pointerId);
+    }
+    clearMatrixRoutingDragHighlights();
+  });
 }
 
 function bindMatrixSlotDragSource(el: HTMLElement, slot: SlotDebug, ki: number): void {
@@ -5860,6 +6182,12 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
     );
   }
   const activate = (userInitiated: boolean) => {
+    if (
+      matrixSuppressRoutingMarkerActivate &&
+      (el.dataset.routingMarker === "split" || el.dataset.routingMarker === "merge")
+    ) {
+      return;
+    }
     if (autoSelectFallbackTimer !== null) {
       window.clearTimeout(autoSelectFallbackTimer);
       autoSelectFallbackTimer = null;
@@ -6368,18 +6696,20 @@ async function mountAmpCabPickerSyncForSlot(
   const cabHint = probePickerAmpCabCabHint(kemplineSlotIndex, catalogModelIdTrimmed);
   const cabId = (cabHint ?? ampCabDual.cabCatalogModelId ?? "").trim();
   if (!cabId) return;
-  let linkedCabHex = ampCabDual.linkedCabHex;
-  if (cabHint) {
-    const cabMeta = await getPresetMetaForId(cabHint);
-    linkedCabHex =
-      (await moduleHexForUsbVariant(cabHint, "single", cabMeta))?.trim() ||
-      linkedCabHex;
-  }
   const probeSlotCategory =
     kemplineSlotIndex !== undefined &&
     lastProbePickerAssignContext?.ki === kemplineSlotIndex
       ? (lastProbePickerAssignContext.category ?? "").trim()
       : "";
+  let linkedCabHex = ampCabDual.linkedCabHex;
+  if (cabHint) {
+    linkedCabHex =
+      (await moduleHexForAmpCabLinkedCab(
+        cabHint,
+        probeSlotCategory || slot.category,
+        linkedCabHex,
+      )) || linkedCabHex;
+  }
   ampCabDualPickerSync = {
     ampCatalogModelId: catalogModelIdTrimmed,
     meta,
@@ -7962,6 +8292,15 @@ function renderModelsParamsDualTabs(
       }
       if (dualSlotKind === "amp_cab") {
         ampCabDualActiveTab = idx as 0 | 1;
+        if (idx === 1) {
+          const cabId =
+            tabPanes[1]?.catalogModelId?.trim() ||
+            ampCabDualPickerSync?.cabCatalogModelId?.trim() ||
+            "";
+          const slotCat =
+            ampCabDualPickerSync?.slotCategory ?? slot.category ?? "";
+          applyAmpCabCabPickerLockFromContext(cabId, slotCat, ampCabAssignVariant);
+        }
         void syncPickerForAmpCabDualTab(idx as 0 | 1);
         if (idx === 1 && kemplineSlotIndex !== undefined) {
           void invoke("focus_amp_cab_usb_part", {
@@ -7993,11 +8332,18 @@ function renderModelsParamsDualTabs(
     initialActiveTab === 1 &&
     kemplineSlotIndex !== undefined
   ) {
-    void invoke("focus_amp_cab_usb_part", {
-      slotIndex: kemplineSlotIndex,
-      part: "cab",
-      ampCabAssignVariant,
-    });
+    const cabId = tabPanes[1]?.catalogModelId?.trim() || "";
+    applyAmpCabCabPickerLockFromContext(cabId, slot.category ?? "", ampCabAssignVariant);
+    void syncPickerForAmpCabDualTab(1);
+    if (!suppressNextAmpCabFocusUsb) {
+      void invoke("focus_amp_cab_usb_part", {
+        slotIndex: kemplineSlotIndex,
+        part: "cab",
+        ampCabAssignVariant,
+      });
+    } else {
+      suppressNextAmpCabFocusUsb = false;
+    }
   }
 
   if (
@@ -8479,19 +8825,22 @@ async function resolveAmpCabDualTabPanes(
             cabHint ?? dualParts.parts[1]?.modelId?.trim() ?? null;
           let linkedCabHex = dualParts.parts[1]?.chainHex?.trim() ?? null;
           if (cabHint) {
-            const cabMeta = await getPresetMetaForId(cabHint);
             linkedCabHex =
-              (await moduleHexForUsbVariant(cabHint, "single", cabMeta))?.trim() ||
-              linkedCabHex;
+              (await moduleHexForAmpCabLinkedCab(
+                cabHint,
+                slot.category,
+                linkedCabHex,
+              )) || linkedCabHex;
           }
           const assignVariantForDual =
             probeAssign ||
-            (await usbAssignVariantForAmpCabSlot(
+            (await resolveAmpCabAssignVariantForUsb(
               meta,
               slot.moduleHex,
               slot.category,
               catalogModelIdTrimmed,
               linkedCabHex,
+              cabCatalogModelId ?? "",
             ));
           return {
             dualTabPanes: panes,
@@ -8505,11 +8854,12 @@ async function resolveAmpCabDualTabPanes(
   }
   const assignVariant =
     probeAssign ||
-    (await usbAssignVariantForAmpCabSlot(
+    (await resolveAmpCabAssignVariantForUsb(
       meta,
       slot.moduleHex,
       slot.category,
       catalogModelIdTrimmed,
+      null,
     ));
   if (assignVariant !== "amp+cab" && assignVariant !== "amp+cab-legacy") {
     return { dualTabPanes: null, linkedCabHex: null, cabCatalogModelId: null, assignVariant: "amp+cab" };
@@ -8542,13 +8892,11 @@ async function resolveAmpCabDualTabPanes(
     null;
   const linkedCabHex =
     (cabOverride
-      ? (
-          await moduleHexForUsbVariant(
-            cabOverride,
-            "single",
-            await getPresetMetaForId(cabOverride),
-          )
-        )?.trim()
+      ? await moduleHexForAmpCabLinkedCab(
+          cabOverride,
+          slot.category ?? "",
+          pair.cabHex,
+        )
       : null) ||
     pair.cabHex;
   return {
@@ -9771,6 +10119,37 @@ function countPath2FilledFxSlots(slots: SlotDebug[]): number {
   return n;
 }
 
+/** Colonne 0..7 du premier slot FX path 2 occupé. */
+function firstPath2FxColumn(slots: SlotDebug[]): number | null {
+  let min: number | null = null;
+  for (let i = 8; i < 16; i += 1) {
+    const slot = slots[i];
+    if (!slot || isEmptyGridCell(slot)) continue;
+    const col = i & 7;
+    min = min === null ? col : Math.min(min, col);
+  }
+  return min;
+}
+
+/** Colonne 0..7 du dernier slot FX path 2 occupé. */
+function lastPath2FxColumn(slots: SlotDebug[]): number | null {
+  let max: number | null = null;
+  for (let i = 8; i < 16; i += 1) {
+    const slot = slots[i];
+    if (!slot || isEmptyGridCell(slot)) continue;
+    const col = i & 7;
+    max = max === null ? col : Math.max(max, col);
+  }
+  return max;
+}
+
+/** Frontière split/merge 0..8 depuis une colonne paire de la grille path 1. */
+function matrixRoutingBoundaryFromGridCol(col: number): number | null {
+  if (col === 2) return 0;
+  if (col >= 4 && col <= 18 && (col - 4) % 2 === 0) return (col - 4) / 2 + 1;
+  return null;
+}
+
 /** Path 1 → path 2 alors que path 2 était vide : création split/merge → relecture hardware. */
 function isPath1ToEmptyPath2Move(sourceKi: number, destKi: number, slots: SlotDebug[]): boolean {
   return (
@@ -9825,6 +10204,12 @@ function hasDualPathFxBranch(slots: SlotDebug[]): boolean {
 
 function resolveMatrixRoutingColumns(slots: SlotDebug[]): { splitCol: number; mergeCol: number } {
   if (matrixRoutingColsOverride) return { ...matrixRoutingColsOverride };
+  if (lastRenderedStompLayout?.routing.kemplineGridOk === true) {
+    return {
+      splitCol: lastRenderedStompLayout.routing.splitAfterCol,
+      mergeCol: lastRenderedStompLayout.routing.mergeAfterCol,
+    };
+  }
   return computeRoutingJunctionColumns(slots);
 }
 
@@ -9854,6 +10239,122 @@ async function moveMatrixSlotUsb(sourceKi: number, destKi: number): Promise<bool
     console.warn("[MatrixMove] usb", e);
     return false;
   }
+}
+
+/** Garde split/merge D&D : path 2 requis + bornes premier/dernier slot path 2. */
+function canMoveRoutingMarker(
+  kind: "split" | "merge",
+  destBoundary: number,
+  slots: SlotDebug[],
+): boolean {
+  if (currentPresetIndex < 0 || isModelsContentBusy()) return false;
+  if (!hasDualPathFxBranch(slots)) return false;
+  if (destBoundary < 0 || destBoundary > 8) return false;
+  const firstP2 = firstPath2FxColumn(slots);
+  const lastP2 = lastPath2FxColumn(slots);
+  if (firstP2 === null || lastP2 === null) return false;
+  const { splitCol, mergeCol } = resolveMatrixRoutingColumns(slots);
+  if (kind === "split") {
+    if (destBoundary === splitCol) return false;
+    if (destBoundary > firstP2) return false;
+    if (destBoundary >= mergeCol) return false;
+    return true;
+  }
+  if (destBoundary === mergeCol) return false;
+  if (destBoundary < lastP2 + 1) return false;
+  if (destBoundary <= splitCol) return false;
+  return true;
+}
+
+/** Colonnes split/merge après D&D routing — confiance USB, pas de relecture preset. */
+function applyOptimisticRoutingMarkerMove(
+  kind: "split" | "merge",
+  destBoundary: number,
+  slots: SlotDebug[],
+): void {
+  const { splitCol, mergeCol } = resolveMatrixRoutingColumns(slots);
+  matrixRoutingColsOverride = {
+    splitCol: kind === "split" ? destBoundary : splitCol,
+    mergeCol: kind === "merge" ? destBoundary : mergeCol,
+  };
+}
+
+async function moveMatrixRoutingMarkerUsb(
+  kind: "split" | "merge",
+  destBoundary: number,
+  slots: SlotDebug[],
+): Promise<boolean> {
+  const firstP2 = firstPath2FxColumn(slots);
+  const lastP2 = lastPath2FxColumn(slots);
+  if (firstP2 === null || lastP2 === null) return false;
+  const { splitCol, mergeCol } = resolveMatrixRoutingColumns(slots);
+  try {
+    await waitUntilHardwareSyncIdle(15_000);
+    const out = await invoke<string>("move_matrix_routing_marker_usb", {
+      marker: kind,
+      destBoundaryCol: destBoundary,
+      firstPath2Col: firstP2,
+      lastPath2Col: lastP2,
+      currentSplitCol: splitCol,
+      currentMergeCol: mergeCol,
+    });
+    console.info("[MatrixRoutingMove] usb", out);
+    markLiveWriteUiInteraction();
+    return true;
+  } catch (e) {
+    console.warn("[MatrixRoutingMove] usb", e);
+    return false;
+  }
+}
+
+async function moveMatrixRoutingMarkerFromTo(
+  kind: "split" | "merge",
+  destBoundary: number,
+): Promise<void> {
+  if (isMatrixUsbInteractionLocked()) return;
+  const slots = lastHwSyncNormalizedSlots;
+  if (!slots || slots.length !== 16) {
+    console.warn("[MatrixRoutingMove] snapshot grille absent");
+    return;
+  }
+  if (!canMoveRoutingMarker(kind, destBoundary, slots)) {
+    console.warn("[MatrixRoutingMove] déplacement invalide", kind, "→", destBoundary);
+    const firstP2 = firstPath2FxColumn(slots);
+    const lastP2 = lastPath2FxColumn(slots);
+    if (kind === "split" && firstP2 !== null && destBoundary > firstP2) {
+      setStatus(
+        `Split refusé : ne peut pas être placé après le premier bloc path 2 (colonne ${firstP2 + 1})`,
+      );
+    } else if (kind === "merge" && lastP2 !== null && destBoundary < lastP2 + 1) {
+      setStatus(
+        `Merge refusé : ne peut pas être placé avant la fin du path 2 (après colonne ${lastP2 + 1})`,
+      );
+    }
+    return;
+  }
+
+  const label = kind === "split" ? "Split" : "Merge";
+  let moveOk = false;
+  await withMatrixUsbInteractionLock(
+    `Déplacement ${label} → colonne ${destBoundary}…`,
+    async () => {
+      moveOk = await moveMatrixRoutingMarkerUsb(kind, destBoundary, slots);
+      if (!moveOk) {
+        setStatus(`Déplacement ${label} annulé : erreur USB`);
+        return;
+      }
+      await delayMs(MATRIX_USB_OP_SETTLE_MS);
+      suppressUsbPresetPollUntilMs = Date.now() + USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS;
+      markPresetModified();
+      console.info("[MatrixRoutingMove] ok USB", kind, "→", destBoundary);
+    },
+  );
+
+  if (!moveOk || currentPresetIndex < 0) return;
+
+  applyOptimisticRoutingMarkerMove(kind, destBoundary, slots);
+  await refreshMatrixGridFromSnapshot();
+  setStatus(`${label} déplacé (colonne ${destBoundary})`);
 }
 
 async function ensurePath2DualRoutingUsb(): Promise<boolean> {
@@ -10327,6 +10828,12 @@ function renderGrid16(
       w.title = tip;
       w.setAttribute("aria-label", tip);
     }
+    if (row === LINE_PATH_1 && showRoutingUi) {
+      const boundary = matrixRoutingBoundaryFromGridCol(col);
+      if (boundary !== null) {
+        bindMatrixRoutingBoundaryDropTarget(w, boundary);
+      }
+    }
     return w;
   }
 
@@ -10397,6 +10904,7 @@ function renderGrid16(
           if (rk === "split") {
             inner = makePathRoutingNode("split");
             inner.dataset.hwSlotBus = "10";
+            bindMatrixRoutingMarkerDrag(inner, "split", 0);
             bindSlotParamsInteraction(
               inner,
               path1SeparatorSlot(0, rk, splitEntry),
@@ -10426,6 +10934,7 @@ function renderGrid16(
           if (inner !== null && rk !== null) {
             if (rk === "split") inner.dataset.hwSlotBus = "10";
             else if (rk === "merge") inner.dataset.hwSlotBus = "19";
+            bindMatrixRoutingMarkerDrag(inner, rk, boundary);
             bindSlotParamsInteraction(
               inner,
               path1SeparatorSlot(

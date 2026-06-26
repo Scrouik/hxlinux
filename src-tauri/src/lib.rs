@@ -48,6 +48,7 @@ use helix::path1_routing_structural::{
     ensure_path2_dual_routing as send_ensure_path2_dual_routing,
     teardown_path2_dual_routing as send_teardown_path2_dual_routing,
 };
+use helix::matrix_routing_move::{send_matrix_routing_marker_move, RoutingMarkerKind};
 use helix::matrix_slot_move::send_matrix_slot_move;
 use helix::edit_slot_model::{
     build_amp_cab_replace_cab_bulk, build_cab_dual_replace_cab_bulk, build_slot_model_probe_packets, change_model_hxedit_replace_test_bulk,
@@ -1037,9 +1038,14 @@ fn probe_slot_model_usb(
                 idx as u8,
             )?)
         } else {
+            let amp_cab_variant = if cab_variant_lc == "legacy" && variant_lc == "amp+cab" {
+                "amp+cab-legacy".to_string()
+            } else {
+                variant_lc.clone()
+            };
             Some(build_amp_cab_replace_cab_bulk(
                 parent_id,
-                &variant_lc,
+                &amp_cab_variant,
                 cab_id,
                 &cab_variant_lc,
             )?)
@@ -1138,7 +1144,11 @@ fn probe_slot_model_usb(
         let bulk = usb_bulk_from_json
             .as_deref()
             .ok_or_else(|| "amp+cab cab replace sans bulk JSON".to_string())?;
-        let legacy = variant_lc == "amp+cab-legacy";
+        // UI peut encore envoyer `amp+cab` si linkedCabHex / catégorie grille sont ambigus ;
+        // le bulk `amp+cab-legacy` catalogue est toujours head `0x23` (44 o compact).
+        let legacy = variant_lc == "amp+cab-legacy"
+            || cab_variant_lc == "legacy"
+            || helix::amp_cab_cab_replace::amp_cab_replace_bulk_implies_legacy(bulk);
         let summary = helix::amp_cab_cab_replace::execute_amp_cab_cab_replace(
             helix_arc.clone(),
             slot_index,
@@ -1943,6 +1953,53 @@ fn move_matrix_slot_usb(
         );
     }
     send_matrix_slot_move(&mut s, source_slot_index as usize, dest_slot_index as usize)
+}
+
+#[tauri::command]
+fn move_matrix_routing_marker_usb(
+    marker: String,
+    dest_boundary_col: u32,
+    first_path2_col: u32,
+    last_path2_col: u32,
+    current_split_col: u32,
+    current_merge_col: u32,
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Result<String, String> {
+    if dest_boundary_col > 8 {
+        return Err("destBoundaryCol hors plage (0..8)".to_string());
+    }
+    let kind = match marker.trim().to_ascii_lowercase().as_str() {
+        "split" => RoutingMarkerKind::Split,
+        "merge" => RoutingMarkerKind::Merge,
+        other => return Err(format!("marker inconnu: {other} (attendu split | merge)")),
+    };
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    if s.init_usb_settle_active() {
+        return Err(format!(
+            "move_matrix_routing_marker_usb ignoré (init USB ~{} ms)",
+            helix::keep_alive::POST_PHASE4_SETTLE_MS
+        ));
+    }
+    if !s.connected || s.preset_content_only {
+        return Err(
+            "move_matrix_routing_marker_usb ignoré (HX non prêt ou lecture preset en cours)"
+                .to_string(),
+        );
+    }
+    send_matrix_routing_marker_move(
+        &mut s,
+        kind,
+        dest_boundary_col as u8,
+        first_path2_col as u8,
+        last_path2_col as u8,
+        current_split_col as u8,
+        current_merge_col as u8,
+    )
 }
 
 #[tauri::command]
@@ -4727,6 +4784,7 @@ pub fn run() {
             write_path1_split_type,
             get_path1_split_type_wire_value,
             move_matrix_slot_usb,
+            move_matrix_routing_marker_usb,
             ensure_path2_dual_routing,
             teardown_path2_dual_routing,
             set_usb_trace_enabled,

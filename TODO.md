@@ -67,13 +67,14 @@ _Rust : `write_path1_input_source`, `write_path1_split_type`, `get_path1_*_wire_
 _Détail et pistes : [`docs/matrix-edit-handoff.md`](docs/matrix-edit-handoff.md) §6._
 
 - [x] **Drag & drop — purge source HW** — copier → remove (focus USB) → délai → coller ; verrou UI `models-matrix-usb-busy`.
-- [ ] **Lecture preset après D&D** — après plusieurs moves, changement de preset souvent en échec. Correctifs juin 2026 : reset `content_only` fantôme + attente post-probe ; campagne ed:03 (BUG C/A, §5 handshake). **À revalider terrain** une fois §5 opérationnel confirmé (voir ci‑dessous).
+- [x] **Lecture preset après D&D** — après plusieurs moves, changement de preset souvent en échec. Correctifs juin 2026 : reset `content_only` fantôme + attente post-probe ; campagne ed:03 (BUG C/A, §5 handshake). **À revalider terrain** une fois §5 opérationnel confirmé (voir ci‑dessous).
 
 ### À faire — drag & drop inter-path et structurel
 
 - [ ] **Move Path 1 → Path 2** (et réciproque ?) — étendre le DnD au-delà du même path (0–7 ↔ 8–15) ; contraintes DSP / budget load ; comportement hardware USB.
 1 - Lorsque l'on fait un drag & drop du path 1 vers le path 2 et que le path 2 est vide, un split se créer automatiquement juste apres le Input et un merge juste avant le Output
 2 - Il n'est pas possible de faire un drag & drop depuis un path vers un autre path sur un slot positionné avant le split ou apres le merge.
+3 - Si apres un drag & drop d'un model depuis le path 2 vers le path 1, le path 2 se retrouve sans model, le split et le merge seront supprimés.
 - [ ] **Drag & drop Split et merge** — déplacement ou réassignation du bloc Split Path 1; trames live write / focus USB.
 1 - L'utilisateur peut drag & drop un split mais jamais apres le premier slot rempli du path 2
 2 - L'utilisateur peut drag & drop un merge mais jamais avant le dernier slot rempli du path 2
@@ -94,16 +95,16 @@ _Fichiers touchés en priorité : `src/models.ts` (`moveMatrixSlotFromTo`, `canM
 
 ### Bugs à corriger (priorité — reprise demain)
 
-- [ ] **Bug 1 — Onglets absents après assign picker Amp+Cab** — assigner un **Amp+Cab** depuis la liste (picker) : pas d’onglets Amp/Cab ; **lecture preset** avec slot Amp+Cab déjà présent → onglets OK. Cause probable : chemin `loadAndShowModelsParamsFromCatalogDefaults` / `probe_slot_model_usb` après clic picker ne passe pas par `get_active_preset_slot_dual_parts` (pas de `preset_data` dual au moment du rendu, ou catégorie slot encore « Amp » seul). Fichiers : `src/models.ts` (`applySlotModelFromPickerListClick`, `renderModelsParamsPane`, `buildDualTabPanesFromParts`).
+- [x] **Bug 1 — Onglets absents après assign picker Amp+Cab** — assigner un **Amp+Cab** depuis la liste (picker) : pas d’onglets Amp/Cab ; **lecture preset** avec slot Amp+Cab déjà présent → onglets OK. Cause probable : chemin `loadAndShowModelsParamsFromCatalogDefaults` / `probe_slot_model_usb` après clic picker ne passe pas par `get_active_preset_slot_dual_parts` (pas de `preset_data` dual au moment du rendu, ou catégorie slot encore « Amp » seul). Fichiers : `src/models.ts` (`applySlotModelFromPickerListClick`, `renderModelsParamsPane`, `buildDualTabPanesFromParts`).
 
-- [ ] **Bug 2 — Changement cab remplace tout le slot par un Cab seul** — onglet **Cab** + choix d’un autre cab **Single** : le slot matrice devient un **Cab** isolé au lieu de **mettre à jour le cab** du couple Amp+Cab existant. Cause probable : `probe_slot_model_usb` avec `assignVariant: single` + catégorie picker **Cab** traité comme assign slot entier (`replace`), pas comme sous-assign cab sur segment `amp1acab`. À aligner sur HX (bulk / variante `amp+cab` + remplacement partie cab seulement). Fichiers : `src/models.ts` (`applySlotModelFromPickerListClick`, `ampCabDualPickerSync`), Rust `probe_slot_model_usb` / `edit_slot_model.rs`.
+- [x] **Bug 2 — Changement cab remplace tout le slot par un Cab seul** — onglet **Cab** + choix d’un autre cab **Single** : le slot matrice devient un **Cab** isolé au lieu de **mettre à jour le cab** du couple Amp+Cab existant. Cause probable : `probe_slot_model_usb` avec `assignVariant: single` + catégorie picker **Cab** traité comme assign slot entier (`replace`), pas comme sous-assign cab sur segment `amp1acab`. À aligner sur HX (bulk / variante `amp+cab` + remplacement partie cab seulement). Fichiers : `src/models.ts` (`applySlotModelFromPickerListClick`, `ampCabDualPickerSync`), Rust `probe_slot_model_usb` / `edit_slot_model.rs`.
 
-- [ ] **Bug 3 — Cab Dual : pas d’onglets + double `chainHex` non géré** — lecture ou assign d’un **Cab Dual** sur un slot : pas d’onglets **Cab 1 / Cab 2**. Un dual = **deux cabs** (deux `chainHex` / deux blocs `c219` sur `c319`), pas un seul modèle catalogue — parsing preset, grille, scroll et assign **pas encore codés** pour ce cas (découverte récente ; captures `cab dual.json`, assign `variant: dual` dans `HX_ModelUsbAssign.json`). À faire : détection fiable `cab_dual` à l’assign (pas seulement après dump), onglets + params par cab, jointure catalogue des **deux** hex. Fichiers : `src-tauri/src/lib.rs` (`dual_slot_parts_from_segment`, `extract_first_module_from_assignable_chunk`), `src/models.ts`, évent. scroll HW.
+- [x] **Bug 3 — Cab Dual : pas d’onglets + double `chainHex` non géré** — lecture ou assign d’un **Cab Dual** sur un slot : pas d’onglets **Cab 1 / Cab 2**. Un dual = **deux cabs** (deux `chainHex` / deux blocs `c219` sur `c319`), pas un seul modèle catalogue — parsing preset, grille, scroll et assign **pas encore codés** pour ce cas (découverte récente ; captures `cab dual.json`, assign `variant: dual` dans `HX_ModelUsbAssign.json`). À faire : détection fiable `cab_dual` à l’assign (pas seulement après dump), onglets + params par cab, jointure catalogue des **deux** hex. Fichiers : `src-tauri/src/lib.rs` (`dual_slot_parts_from_segment`, `extract_first_module_from_assignable_chunk`), `src/models.ts`, évent. scroll HW.
 
-- [ ] **Bug 4 — Cab Dual : replace Cab 2 envoie l’identité single au lieu du wire dual** *(validé terrain 20 juin 2026)* — le HW **rejette** `cd031b` (hint single / `c219`) en cab2 ; il attend l’hint **dual** du fil `c319`. **Fix en cours (juin 2026)** : picker Single + `resolveCabDualCab2UsbWireFromPicker` → assign `dual` / WithPan.
+- [x] **Bug 4 — Cab Dual : replace Cab 2 envoie l’identité single au lieu du wire dual** *(validé terrain 20 juin 2026)* — le HW **rejette** `cd031b` (hint single / `c219`) en cab2 ; il attend l’hint **dual** du fil `c319`. **Fix en cours (juin 2026)** : picker Single + `resolveCabDualCab2UsbWireFromPicker` → assign `dual` / WithPan.
   - [x] **Revert hack test** : `CAB_DUAL_CAB2_PICKER_DUAL_TEST` retiré ; picker Cab 2 = Single IR.
   - [x] **Mapping au clic** : single choisi → `WithPan` + `assignVariant: dual` → bulk cab2 hint `c319`.
-  - [ ] **Revalider HW** : replace Jazz Rivet, Soup Pro, etc.
+  - [x] **Revalider HW** : replace Jazz Rivet, Soup Pro, etc.
   - Fichiers : `src/models.ts`, `src-tauri/src/helix/edit_slot_model.rs`, `cab_dual_cab2_replace.rs`.
 
 _Fichiers transverses : `phase4` / preset dump si catégorie slot mal étiquetée après assign ; tests Rust existants `dual_slot` / `c319` comme base._
@@ -169,20 +170,10 @@ Attention nomenclature **hxlinux actuel** : la matrice `renderGrid16` affiche «
 
 ### Refonte UI grille (responsive) — décisions produit
 
-- [ ] **Supprimer les rangées « Description Path »** (`LINE_DESC_PATH_1` / `_2`, `.hx-matrix-category`) : l’**icône catégorie** suffit à identifier le type de bloc ; garder le **nom du model** en tooltip / infobulle au survol ou dans le panneau params (sélection). Gain : **−50 % hauteur** sur Stomp, base saine pour 4 paths LT.
-- [ ] **Séparateurs entre slots** (icône ligne / rail vertical — `Icons_line.png`, `Icons_vertical_line.png`, etc.) : **largeur minimale** tant que le slot adjacent est vide ; **élargissement dynamique** (`flex-grow`, `minmax()`, ou colonnes `fr` dans la grille) selon la **largeur disponible** du panneau — le séparateur « respire » avec la fenêtre au lieu d’occuper une colonne fixe 56 px partout.
-- [ ] **Cellules slots** : `--hx-matrix-cell: clamp(32px, …, 48px)` (remplacer le 56 px fixe TS + CSS) ; conteneur scroll horizontal ou **scale fit-width** si la matrice dépasse.
-- [ ] **LT — layout 2 colonnes DSP** (Path 1 \| Path 2) plutôt qu’empiler 4 rangées pleine largeur.
-- [ ] **`GridRenderer` abstrait** : `DeviceProfile` → spec lignes/colonnes ; Stomp et LT partagent logique slots, pas le même DOM.
+- [x] **Supprimer les rangées « Description Path »** (`LINE_DESC_PATH_1` / `_2`, `.hx-matrix-category`) : l’**icône catégorie** suffit à identifier le type de bloc ; garder le **nom du model** en tooltip / infobulle au survol ou dans le panneau params (sélection). Gain : **−50 % hauteur** sur Stomp, base saine pour 4 paths LT.
+- [x] **Séparateurs entre slots** (icône ligne / rail vertical — `Icons_line.png`, `Icons_vertical_line.png`, etc.) : **largeur minimale** tant que le slot adjacent est vide ; **élargissement dynamique** (`flex-grow`, `minmax()`, ou colonnes `fr` dans la grille) selon la **largeur disponible** du panneau — le séparateur « respire » avec la fenêtre au lieu d’occuper une colonne fixe 56 px partout.
+- [x] **Cellules slots** : `--hx-matrix-cell: clamp(32px, …, 48px)` (remplacer le 56 px fixe TS + CSS) ; conteneur scroll horizontal ou **scale fit-width** si la matrice dépasse.
 
-### Todo implémentation (device + parseur)
-
-- [ ] **`DeviceProfile`** (Rust + TS) : `stompSingleDsp` \| `helixDualDsp` \| `hxFx`… dérivé du nom/PID connecté.
-- [ ] **Stomp** : formaliser le profil (2 branches, 8 blocs, 1 budget ~100) ; brancher **somme `load`** (section Budget DSP) ; garder warning 8 blocs.
-- [ ] **Grille Stomp** : renommer libellés UI si besoin (A/B ou « branche haute/basse ») pour ne pas confondre avec Path 2 du LT.
-- [ ] **Helix LT** : parser / afficher **32 segments** ; UI dual-DSP (cf. refonte ci‑dessus).
-- [ ] **Routing** : split/merge par paire A/B (réutiliser `stomp_layout` / `computeRoutingJunctionColumns` par DSP path).
-- [ ] **Preset dump** : vérifier taille chaîne Kempline LT (32 vs 16) dans le parseur Rust (`try_parse_preset_kempline_grid`, etc.).
 
 _Fichiers touchés en priorité UI : `src/models.ts` (`renderGrid16`), `src/styles.css`, `models.html`._
 
@@ -211,7 +202,7 @@ _Doc détaillée : [`docs/Blocage ed3 Lecture presets.md`](docs/Blocage%20ed3%20
 
 ## Scroll modèle HW — UX et robustesse (plus tard)
 
-- [~] **Architecture scroll : un chemin par type de modèle** (comme loopers) — routeur `extract_module_hex_for_hw_scroll_dump` (standard → **Amp+Cab** → looper) ; chemin Amp+Cab dédié (`c319` + `1a`, dual-slot `19…1a…09`, paires `c219`, token court `2b`+cab) + `categoryHint` UI scroll. Reste : Send/Return, I/O routing, mute amp ~12ᵉ scroll à valider terrain. **Spec** : [`docs/todo-scroll-hw.md`](docs/todo-scroll-hw.md) § *Piste ouverte — extraction par type de modèle*.
+- [x] **Architecture scroll : un chemin par type de modèle** (comme loopers) — routeur `extract_module_hex_for_hw_scroll_dump` (standard → **Amp+Cab** → looper) ; chemin Amp+Cab dédié (`c319` + `1a`, dual-slot `19…1a…09`, paires `c219`, token court `2b`+cab) + `categoryHint` UI scroll. Reste : Send/Return, I/O routing, mute amp ~12ᵉ scroll à valider terrain. **Spec** : [`docs/todo-scroll-hw.md`](docs/todo-scroll-hw.md) § *Piste ouverte — extraction par type de modèle*.
 - [ ] **Popup consigne utilisateur** : au premier scroll / commande matérielle détectée pendant une session éditeur active, afficher une popup du type « évitez d’utiliser les commandes du Stomp pendant l’utilisation du programme ; préférez l’éditeur » (aligné handoff §0). **Prévoir un flag dev** (`HX_SKIP_HW_SCROLL_WARNING=1` ou équivalent) pour ne **pas** déclencher la popup pendant les tests terrain — sinon galère à valider le multi-cran.
 - [x] **Chargement preset sans flags debug** — lane couplée ON par défaut ; bootstrap + snapshot + BUG C/A + handshake §5 derrière flags ON (voir **Réalisé**). Reste : validation session « normale » — listée dans **Lecture preset ed:03 — validation terrain restante**.
 
@@ -249,29 +240,29 @@ Workflow : filtre + export JSON → `scripts/inject_bulk_from_captures.py` → t
 | Input, Output, Split, Merge (live write / scroll) | **Input + Split OK Stomp XL** | pas `bulkHex` — voir section Path 1 structurel ; **LT à identifier** |
 | Connected Devices | **0** | hors scope assign classique |
 
-- [ ] **Poursuivre la campagne** famille par famille (Distortion/Dynamics → Amp → Cab → Preamp → …) : une capture JSON par **catégorie × variante** (`mono`, `stereo`, `legacy`, `amp`, `single`, `dual`, …), puis injection + test picker sur Stomp.
-- [ ] **Test terrain Reverb** : assign picker mono / stéréo / legacy sur Stomp après injection `reverb *.json`.
-- [ ] **Durcir l’extracteur au fil de l’eau** : chaque nouvelle famille peut introduire un préfixe longueur, un octet `cd:XX` ou un encodage `chainHexHint` non vu (cf. correctifs Delay dans `inject_bulk_from_captures.py`). Documenter chaque cas dans le README captures.
-- [ ] **Ne pas confondre assign et scroll** dans les captures : paquets `1b:00` 36 o = lane pull scroll, **pas** bulk assign — erreur fréquente sur Delay, à garder en tête pour les familles suivantes.
-- [ ] **Vérifier les hints courts après chaque injection** : `rg '"chainHexHint": "[0-9a-f]{2}"'` + entrées avec `bulkHex` non vide ; le scroll résout les noms via `chainHexHint` (`model_catalog`) — trous ou hints mal extraits = modèles « inconnus » à la molette même si la capture est bonne.
+- [x] **Poursuivre la campagne** famille par famille (Distortion/Dynamics → Amp → Cab → Preamp → …) : une capture JSON par **catégorie × variante** (`mono`, `stereo`, `legacy`, `amp`, `single`, `dual`, …), puis injection + test picker sur Stomp.
+- [x] **Test terrain Reverb** : assign picker mono / stéréo / legacy sur Stomp après injection `reverb *.json`.
+- [x] **Durcir l’extracteur au fil de l’eau** : chaque nouvelle famille peut introduire un préfixe longueur, un octet `cd:XX` ou un encodage `chainHexHint` non vu (cf. correctifs Delay dans `inject_bulk_from_captures.py`). Documenter chaque cas dans le README captures.
+- [x] **Ne pas confondre assign et scroll** dans les captures : paquets `1b:00` 36 o = lane pull scroll, **pas** bulk assign — erreur fréquente sur Delay, à garder en tête pour les familles suivantes.
+- [x] **Vérifier les hints courts après chaque injection** : `rg '"chainHexHint": "[0-9a-f]{2}"'` + entrées avec `bulkHex` non vide ; le scroll résout les noms via `chainHexHint` (`model_catalog`) — trous ou hints mal extraits = modèles « inconnus » à la molette même si la capture est bonne.
 
 #### Amp+Cab — risque élevé (à traiter en dernier ou avec soin)
 
 L’assign Amp+Cab n’est **pas** un simple bulk effet : variante picker **`amp+cab`** / **`amp+cab-legacy`**, `chainHexHint` souvent **vide** sur le clone (partage le fil **`amp`**), encodage dual-slot (`c319` + `1a`, paires amp/cab, token court) déjà problématique en **scroll** et **preset** (WhoWatt slot 0, bootstrap, `split_preset_by_8213`). S’attendre à :
 
-- [ ] **Captures dédiées** : `amp+cab` moderne (Guitar/Bass IR) et `amp+cab-legacy` (hybrid) — **séparées** de la capture `amp` seule ; ne pas réutiliser le bulk `amp` pour le picker Amp+Cab.
-- [ ] **Critères d’extraction à définir / étendre** : format bulk probablement différent des effets (`83:66:cd:03` ? autre marqueur ? longueur 48 o vs autre ?) ; le routeur scroll [`extract_module_hex_for_hw_scroll_dump`](docs/todo-scroll-hw.md) a déjà un chemin Amp+Cab — **aligner** extracteur injection et parseur scroll sur les mêmes motifs.
-- [ ] **`chainHexHint` / index scroll** : clones `amp+cab` non indexés seuls (`chain_hex_hint_shared_with_amp`) — vérifier que la campagne bulkHex + `categoryHint` UI couvrent bien l’assign **et** l’affichage scroll sans régression sur le fil `amp`.
-- [ ] **Tests terrain obligatoires** : assign picker Amp+Cab, scroll molette sur slot Amp+Cab, preset avec Amp+Cab en slot 0 (régression bootstrap / grille).
-- [ ] **Script sync** : `sync_usb_assign_from_catalog.py` génère déjà les stubs `amp+cab` / `amp+cab-legacy` — préserver les `bulkHex` capturés au fil des injections.
+- [x] **Captures dédiées** : `amp+cab` moderne (Guitar/Bass IR) et `amp+cab-legacy` (hybrid) — **séparées** de la capture `amp` seule ; ne pas réutiliser le bulk `amp` pour le picker Amp+Cab.
+- [x] **Critères d’extraction à définir / étendre** : format bulk probablement différent des effets (`83:66:cd:03` ? autre marqueur ? longueur 48 o vs autre ?) ; le routeur scroll [`extract_module_hex_for_hw_scroll_dump`](docs/todo-scroll-hw.md) a déjà un chemin Amp+Cab — **aligner** extracteur injection et parseur scroll sur les mêmes motifs.
+- [x] **`chainHexHint` / index scroll** : clones `amp+cab` non indexés seuls (`chain_hex_hint_shared_with_amp`) — vérifier que la campagne bulkHex + `categoryHint` UI couvrent bien l’assign **et** l’affichage scroll sans régression sur le fil `amp`.
+- [x] **Tests terrain obligatoires** : assign picker Amp+Cab, scroll molette sur slot Amp+Cab, preset avec Amp+Cab en slot 0 (régression bootstrap / grille).
+- [x] **Script sync** : `sync_usb_assign_from_catalog.py` génère déjà les stubs `amp+cab` / `amp+cab-legacy` — préserver les `bulkHex` capturés au fil des injections.
 
-- [ ] **Campagne hardware (rappel global)** : compléter **`src-tauri/resources/HX_ModelUsbAssign.json`** jusqu’à une entrée `id` + `variant` + `bulkHex` valide par cas testé ; `--allow-partial` tant que des modèles manquent dans HX Edit.
-- [ ] **Audit final post-campagne** : passer en revue toutes les entrées **sans `bulkHex`** et classer la cause (pas encore capturé, absent du picker HX Edit / `hidden`, doublon id catalogue, `chainHexHint` vide, I/O & routing hors assign classique, vrai trou). Inventaire de départ juin 2026 : **715** vides / 1087 — surtout **Amp / Preamp / Cab / Amp+Cab** (≈610), puis Wah/Filter/Send-Return ; **245** sans `bulkHex` **et** sans `chainHexHint` (dont 222 clones Amp+Cab).
-- [ ] **Audit de structure** : aujourd’hui le Rust (`helix/edit_slot_model.rs`, `load_usb_assign_entries`) ne lit que **`id`**, **`variant`**, **`bulkHex`**. Le picker (`hxModelCatalogMeta.ts`, `loadUsbAssignPickerDataFromJson`) lit en plus **`name`**, **`category`**, **`subCategory`**. Les champs **`edOpcode`**, **`bulkKind`**, **`chainHexHint`** (et **`notes`**) ne sont **pas** consommés par le code — redondants ou purement doc par rapport au bulk. Décider : les retirer, les garder comme doc seulement (mettre à jour la description du fichier + schéma `schemaVersion`), ou les **dériver / valider** par script à partir de `bulkHex` pour éviter la dérive.
-- [ ] **Alignement `HX_ModelCatalog.json`** : pour chaque entrée (ou via script), **importer `presetMeta.basedOn`** (et sa valeur) depuis le catalogue **pour la même `id`**, afin d’afficher / filtrer côté UI de façon cohérente avec HX Edit sans dupliquer à la main. Vérifier les cas mono/stéréo / `chainHex` tableau.
-- [ ] **Même alignement — champ `image`** : récupérer depuis le catalogue la valeur **`image`** (nom de fichier PNG sous `icons_models/`, etc.) pour la même **`id`**, et la **porter dans `HX_ModelUsbAssign.json`** (ou documenter la jointure) ; étendre le picker / l’UI si besoin pour **lire l’icône depuis l’assign** quand on veut se passer du catalogue pour l’affichage liste modèles.
-- [ ] **`chainHexHint` vs catalogue** : intention produit = s’affranchir des **`chainHex` / params erronés** du catalogue pour l’USB. Or **`patch_catalog_chain_into_bulk`** utilise encore **`resolve_catalog_model_chain_bytes`** (`HX_ModelCatalog.json`) quand la chaîne catalogue est assez longue. **`chainHexHint`** dans le JSON d’assign n’est **pas** lu — à exploiter (ou un champ **`chainHexUsb`** dédié) comme **source prioritaire** pour le patch quand présent, avec repli catalogue seulement si absent.
-- [ ] **Ordre d’affichage picker vs ordre hardware** : l’ordre des modèles dans le picker suit aujourd’hui **l’ordre des lignes** dans **`HX_ModelUsbAssign.json`**. Une insertion au milieu **décale** l’ordre d’énumération côté fichier sans que ce soit l’ordre « mémoire hardware ». Réfléchir à un champ explicite (**`hardwareOrder`**, **`programIndex`**, etc.) stable, ou une convention « ne trier que par ce champ », documentée dans le schéma du fichier.
+- [x] **Campagne hardware (rappel global)** : compléter **`src-tauri/resources/HX_ModelUsbAssign.json`** jusqu’à une entrée `id` + `variant` + `bulkHex` valide par cas testé ; `--allow-partial` tant que des modèles manquent dans HX Edit.
+- [x] **Audit final post-campagne** : passer en revue toutes les entrées **sans `bulkHex`** et classer la cause (pas encore capturé, absent du picker HX Edit / `hidden`, doublon id catalogue, `chainHexHint` vide, I/O & routing hors assign classique, vrai trou). Inventaire de départ juin 2026 : **715** vides / 1087 — surtout **Amp / Preamp / Cab / Amp+Cab** (≈610), puis Wah/Filter/Send-Return ; **245** sans `bulkHex` **et** sans `chainHexHint` (dont 222 clones Amp+Cab).
+- [x] **Audit de structure** : aujourd’hui le Rust (`helix/edit_slot_model.rs`, `load_usb_assign_entries`) ne lit que **`id`**, **`variant`**, **`bulkHex`**. Le picker (`hxModelCatalogMeta.ts`, `loadUsbAssignPickerDataFromJson`) lit en plus **`name`**, **`category`**, **`subCategory`**. Les champs **`edOpcode`**, **`bulkKind`**, **`chainHexHint`** (et **`notes`**) ne sont **pas** consommés par le code — redondants ou purement doc par rapport au bulk. Décider : les retirer, les garder comme doc seulement (mettre à jour la description du fichier + schéma `schemaVersion`), ou les **dériver / valider** par script à partir de `bulkHex` pour éviter la dérive.
+- [x] **Alignement `HX_ModelCatalog.json`** : pour chaque entrée (ou via script), **importer `presetMeta.basedOn`** (et sa valeur) depuis le catalogue **pour la même `id`**, afin d’afficher / filtrer côté UI de façon cohérente avec HX Edit sans dupliquer à la main. Vérifier les cas mono/stéréo / `chainHex` tableau.
+- [x] **Même alignement — champ `image`** : récupérer depuis le catalogue la valeur **`image`** (nom de fichier PNG sous `icons_models/`, etc.) pour la même **`id`**, et la **porter dans `HX_ModelUsbAssign.json`** (ou documenter la jointure) ; étendre le picker / l’UI si besoin pour **lire l’icône depuis l’assign** quand on veut se passer du catalogue pour l’affichage liste modèles.
+- [x] **`chainHexHint` vs catalogue** : intention produit = s’affranchir des **`chainHex` / params erronés** du catalogue pour l’USB. Or **`patch_catalog_chain_into_bulk`** utilise encore **`resolve_catalog_model_chain_bytes`** (`HX_ModelCatalog.json`) quand la chaîne catalogue est assez longue. **`chainHexHint`** dans le JSON d’assign n’est **pas** lu — à exploiter (ou un champ **`chainHexUsb`** dédié) comme **source prioritaire** pour le patch quand présent, avec repli catalogue seulement si absent.
+- [x] **Ordre d’affichage picker vs ordre hardware** : l’ordre des modèles dans le picker suit aujourd’hui **l’ordre des lignes** dans **`HX_ModelUsbAssign.json`**. Une insertion au milieu **décale** l’ordre d’énumération côté fichier sans que ce soit l’ordre « mémoire hardware ». Réfléchir à un champ explicite (**`hardwareOrder`**, **`programIndex`**, etc.) stable, ou une convention « ne trier que par ce champ », documentée dans le schéma du fichier.
 
 ---
 

@@ -49,13 +49,13 @@ Bulk is built from **`HX_ModelUsbAssign.json`** (`build_amp_cab_replace_cab_bulk
 
 ### 4.1 Legacy USB sequence (≠ IR, ≠ Cab dual)
 
-| Step | Legacy `amp+cab-legacy` | IR `amp+cab` |
-|------|-------------------------|--------------|
-| Preamble | **`ef` → `f0`** (16 B each) | `1d` cab focus → **`ed:08`** |
-| Bulk | head **`0x23`** (44 B) or **`0x25`** (48 B) | **`0x27`** / `0x25` per catalog |
-| Bulk bytes **14–15** | keep **`02 00`** (heads `0x23` / `0x25` / `0x27`) | same |
+| Step | Legacy `amp+cab-legacy` (slot **occupé**, replace cab) | Legacy assign (slot **vide**) | IR `amp+cab` |
+|------|--------------------------------------------------------|-------------------------------|--------------|
+| Preamble | **`ed:10`** (16 B) → bulk → **`ed:08`** (16 B) | **`ef` → `f0`** (16 B each) | `1d` cab focus → **`ed:08`** |
+| Bulk | head **`0x23`** (44 B), lane **`cd:08`** | head **`0x23`**, lane **`cd:07`** | **`0x27`** / `0x25` |
+| Bulk bytes **14–15** | keep **`02 00`** | same | same |
 
-**Fixed pitfall:** `focus → ed:08 → bulk` or zeroing bytes 14–15 logged “OK” but the device ignored the replace. Legacy must match **initial assign** (`AddToEmpty`: `ef/f0/bulk`). Ref. capture: `amp_cab legacy bass.json` frame **1357**.
+**Fixed pitfall:** envoyer `ef/f0/bulk` (séquence **assign**) sur un slot déjà occupé logue « OK » mais le matériel ignore le cab. Replace validé : `amp_cab legacy bass.json` frames **1357** (bulk) + **1379** (ed:08). L’assign initial reste `ef/f0/bulk` (AddToEmpty).
 
 Code: `execute_amp_cab_cab_replace` in `amp_cab_cab_replace.rs` (`legacy=true`).
 

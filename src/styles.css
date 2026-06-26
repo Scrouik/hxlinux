@@ -2004,6 +2004,20 @@ html, body {
   box-sizing: border-box;
 }
 
+.models-pane .hx-matrix-routing-marker--draggable {
+  cursor: grab;
+}
+
+.models-pane .hx-matrix-routing-marker--drag-source {
+  cursor: grabbing;
+  opacity: 0.85;
+}
+
+.models-pane .hx-matrix-cell--routing-drag-over {
+  outline: 2px dashed var(--amber);
+  outline-offset: -2px;
+}
+
 /* Séparateurs cliquables sur Path 1 (même mécanique de sélection que les slots). */
 .models-pane .hx-matrix-path1-separator.node--params-clickable {
   pointer-events: auto !important;
