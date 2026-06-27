@@ -314,6 +314,8 @@ pub struct HelixState {
     pub ed03_live_write_seq_sent: Option<u8>,
     /// Slot Kempline pour lequel le focus cab `1b` a déjà été envoyé cette session USB.
     pub amp_cab_cab_focus_sent_for_slot: Option<u32>,
+    /// Tag session octet après `83:66:cd:03` pour focus onglet Amp / Cab (assign + replace cab).
+    pub amp_cab_focus_lane_tags_by_slot: HashMap<u32, (u8, u8)>,
     /// Slot Kempline pour lequel le focus Cab 2 dual (`1d` + `cd:04` + `1a:01`) a été envoyé.
     pub cab_dual_cab2_focus_sent_for_slot: Option<u32>,
     /// Dernier focus onglet Cab dual pour write live param (`(slot, cab_index)`).
@@ -631,6 +633,7 @@ impl HelixState {
             dual_legacy_cab_module_field_by_slot: HashMap::new(),
             ed03_live_write_seq_sent: None,
             amp_cab_cab_focus_sent_for_slot: None,
+            amp_cab_focus_lane_tags_by_slot: HashMap::new(),
             cab_dual_cab2_focus_sent_for_slot: None,
             cab_dual_live_write_tab_focus: None,
             last_cab_dual_cab2_focus_packet: None,

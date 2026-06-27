@@ -249,13 +249,13 @@ pub fn ingest_cab_dual_cab2_in36(state: &mut HelixState, data: &[u8]) {
     }
 }
 
-/// OUT `f0:08` après focus Cab 2 — requis sur Stomp XL pour obtenir IN `19`/36o.
-pub fn send_cab_dual_cab2_f008_poke(state: &mut HelixState) {
+/// OUT `f0` court après focus — `byte11` = `0x10` puis `0x08` onglet Amp (capture tab switch).
+pub fn send_cab_dual_f0_poke(state: &mut HelixState, byte11: u8) {
     let d = state.firmware_scroll_lane_double();
     let ctr = u16::from_le_bytes([d[0], d[1]]);
     let seq = state.next_x2_cnt();
     state.send(OutPacket::new(vec![
-        0x08, 0x00, 0x00, 0x18, 0x02, 0x10, 0xf0, 0x03, 0x00, seq, 0x00, 0x08,
+        0x08, 0x00, 0x00, 0x18, 0x02, 0x10, 0xf0, 0x03, 0x00, seq, 0x00, byte11,
         (ctr & 0xff) as u8,
         ((ctr >> 8) & 0xff) as u8,
         0x00,
@@ -263,8 +263,14 @@ pub fn send_cab_dual_cab2_f008_poke(state: &mut HelixState) {
     ]));
 }
 
+/// OUT `f0:08` après focus Cab 2 — requis sur Stomp XL pour obtenir IN `19`/36o.
+pub fn send_cab_dual_cab2_f008_poke(state: &mut HelixState) {
+    send_cab_dual_f0_poke(state, 0x08);
+}
+
 /// Focus onglet **Cab 1** (`cd:03`, `1a:00`) — `cab2_cab1_change.json`.
-fn build_cab_dual_cab1_focus_packet(state: &mut HelixState, slot_bus: u8) -> Vec<u8> {
+/// Réutilisé pour l’onglet **Amp** d’un slot Amp+Cab (capture `ampcab_legacy_switch_tab.json`).
+pub fn build_cab_dual_cab1_focus_packet(state: &mut HelixState, slot_bus: u8) -> Vec<u8> {
     build_cab_dual_focus_packet_with_lane(
         state,
         slot_bus,

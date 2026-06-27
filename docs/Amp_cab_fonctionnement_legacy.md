@@ -4,11 +4,14 @@
 *Cabs **Legacy hybrid** dans un couple ampli+cab (`assignVariant: amp+cab-legacy`). Complète [Amp_cab_fonctionnement_no_legacy.md](Amp_cab_fonctionnement_no_legacy.md) (IR).*
 
 > **English:** [Amp_cab_operation_legacy.md](Amp_cab_operation_legacy.md)  
-> **Captures:** `captures/usb-wireshark/Save/amp_cab legacy guitar.json`, `amp_cab legacy bass.json`
+> **Captures clés :**
+> - `captures/usb-wireshark/Save/amp_cab legacy guitar.json` — assign, scroll, familles de bulks
+> - `captures/usb-wireshark/ampcab_legacy_switch_tab.json` — focus onglets Amp / Cab (`1d`)
+> - `captures/usb-wireshark/ampcab_legacy_change_cab_HXEdit.json` — replace cab WhoWatt → Soup Pro (#4401)
 
 ---
 
-> **Synthèse.** Même slot **`c319`** qu’en IR, mais le cab est un **hybrid legacy** (suffixe modèle `64:83:17:c3:19`, cab court sur le fil). Focus cab = trame **`1b`** (pas `1d`). Params cab : **PP `0x08`**, sélecteurs **`0x25+`** (guitar) ou **`0x00+`** (compact) selon la taille du bloc ampli.
+> **Synthèse (juin 2026, validé HW).** Même marqueur fil **`c3:19`** qu’en IR, cab **hybrid legacy** (hint court ou `cd:02:xx`). Assign et replace modèle passent par le bulk **`HX_ModelUsbAssign.json`** (`variant: amp+cab-legacy`), **pas** par `preset_data`. Lane bloc modèle : **`cd:07`** à l’assign, **`cd:03`** au replace cab et au focus onglet. Focus UI = trame **`1d`** (pas `1b`) + **`ed:08`**. Règle picker : **tout cab legacy** sur **Amp+Cab Legacy** ; **tout cab IR** sur **Amp+Cab** IR.
 
 ---
 
@@ -16,104 +19,197 @@
 
 | | **IR** `amp+cab` | **Legacy** `amp+cab-legacy` |
 |--|------------------|------------------------------|
-| Cab sur wire | `cd:03:xx` (3 octets) | Souvent **2 nibbles** (`47:00`, …) |
-| Bloc param cab | `85:62` … `1d:c3:1a:01:1c` | `82:62` … `64:83:17:c3:19` |
-| Focus onglet Cab | `1d`, `cd:03`, `1a:01` | `1b`, `cd:08` |
-| PP live write | `0x03` | `0x08` |
-| Picker catégorie | Amp+Cab | Amp+Cab **Legacy** / sous-cat legacy |
+| Cab sur wire | `cd:03:xx` (3 o, MicIr) | **1 octet** (`33`, `47`…) ou **`cd:02:xx`** (3 o) selon l’ampli |
+| Bloc param cab (live write) | `85:62` … `1d:c3:1a:01:1c`, PP **`0x03`** | `82:62` … `64:83:17:c3:19`, PP **`0x08`** |
+| Focus / replace modèle cab | `1d`, `cd:03`, `1a:01` → `ed:08` → bulk | **idem** (`1d`, pas `1b`) |
+| Picker | Cab **Single** (IR) | Cab **Single Legacy** |
+| Variante USB | `amp+cab` | `amp+cab-legacy` |
 
-Entrées catalogue : paires **Guitar/Bass** injectées (`sync_usb_assign_from_catalog.py`), bulk unique **`8317c319`** + paire amp/cab.
+Entrées catalogue : paires Guitar/Bass injectées (`sync_usb_assign_from_catalog.py`), bulk avec **`83:17:c3:19`** + paire amp/cab sur le fil.
 
 ---
 
-## 2. Tables de sélecteurs cab (legacy)
+## 2. Lane `cd:07` (assign) vs `cd:03` (replace / focus)
 
-Le routeur ne lit **pas** `preset_data` : il reçoit `ampCabAmpParamCount` = nombre de params **visibles** du panneau Amp (catalogue).
+Le bulk catalogue **`amp+cab-legacy`** embarque un bloc modèle `83:66:cd:**07**:TAG` (ex. tag `fb` sur WhoWatt, frame **#1259**).
 
-| Taille bloc ampli (proxy) | Table | Ex. 1er param cab (Level) |
-|---------------------------|-------|---------------------------|
-| **≥ 10** params (guitar) | `LEGACY_GUITAR_CAB_ROUTES` | `pSel=0x25`, tag `0x05` |
+| Phase | Lane `cd` | Exemple capture |
+|-------|-----------|-----------------|
+| **Assign** slot vide (`AddToEmpty`) | **`07`** | `amp_cab legacy guitar.json` #1259 — head `23`, 44 o |
+| **Replace cab** seul | **`03`** | `ampcab_legacy_change_cab_HXEdit.json` #4401 — reframe `07→03` avant envoi |
+| **Focus onglet** Amp / Cab | **`03`** | `ampcab_legacy_switch_tab.json` — suffixe `1a:00` (Amp) ou `1a:01` (Cab) |
+
+**Piège corrigé :** envoyer le bulk assign tel quel (`cd:07`) lors d’un replace cab → trame acceptée côté app, **ignorée** par le HW.  
+**Implémentation :** `reframe_legacy_replace_cd07_to_cd03` dans `amp_cab_cab_replace.rs` ; même reframe si template création `2d` (optionnel, voir §5).
+
+Le tag session (octet après `cd:XX`) est mémorisé par slot :
+- **Assign** : `(amp_tag, cab_tag)` depuis le bulk (`cd:07` ou `cd:03`), ex. `fb`
+- **Replace cab** : met à jour **`cab_tag`** seulement
+- **Focus onglet Amp** : utilise **`amp_tag`** (ne pas réutiliser `live_write_yy` post-replace — sinon mauvais sous-bloc, ex. Soup Pro affiché à la place de WhoWatt)
+
+---
+
+## 3. Focus onglet Amp / Cab — trame `1d`
+
+HX Edit (et HXLinux depuis juin 2026) bascule les onglets Amp/Cab avec **`1d`**, pas `1b`.
+
+### 3.1 Enveloppe (capture `ampcab_legacy_switch_tab.json`)
+
+```text
+1d … 80:10:ed:03 … sub=04 … 83:66:cd:03:TAG:64:4e:65:82:62:bus:1a:SUFFIX:00:00:00
+                                                      ↑              ↑
+                                                   lane focus    00=Amp, 01=Cab
+```
+
+Puis **`ed:08`** (~93 ms), puis poke **`f0`** :
+- onglet **Cab** : `f0:08`
+- onglet **Amp** : `f0:10` puis `f0:08` (frame **#2659**)
+
+Tags observés après assign / bascules : `fb` → `fc` → `fd` → `fe` (progression session ; le focus Amp doit rester sur le tag **ampli** mémorisé à l’assign).
+
+### 3.2 Replace cab — focus cab **obligatoire** avant le bulk
+
+Séquence validée HW (`execute_amp_cab_cab_replace`) :
+
+```text
+1d focus cab (cd:03, 1a:01)  →  ed:08  →  ~1100 ms  →  bulk replace (head 23/25/27)
+```
+
+**Pourquoi :** sans focus cab préalable, le device n’est pas positionné sur le sous-bloc cab ; le bulk part « OK » côté logs USB mais le HW ne change pas le cab (ou corrompt l’état ampli).
+
+Legacy et IR partagent cette cinématique pour le **replace modèle** ; seul le contenu du bulk diffère.
+
+### 3.3 `1b` / `cd:08` (historique)
+
+D’anciennes captures (`amp_cab legacy guitar.json`) montrent un focus **`1b`** + `cd:08` pour les **params** cab en live write. Le chemin **modèle** (assign / replace / onglets UI) utilise **`1d` + `cd:03`**. Ne pas mélanger les deux.
+
+---
+
+## 4. Assign initial (1er clic slot vide)
+
+### 4.1 Bulk à envoyer
+
+| Tentative | Résultat HW |
+|-----------|-------------|
+| head **`2d`**, 56 o, `cd:03` (template création) | ❌ 1er clic ignoré ; 2ᵉ clic (replace) seul fonctionnait |
+| head **`23`**, 44 o, `cd:07` (bulkHex catalogue assign) | ✅ frame **#1259** |
+
+**Fix :** `HX_AMP_CAB_LEGACY_CREATE_HEAD2D` **OFF** par défaut — le 1er clic envoie le même bulk **`23` / `cd:07`** que le catalogue, pas le template `2d`.
+
+Octets **14–15** du bulk : **`02 00`** sur heads `23` / `25` / `27` — **ne pas écraser** à `00 00`.
+
+### 4.2 UI
+
+- Après probe add : `suppressNextAmpCabFocusUsb` pour éviter un focus `1d` parasite au re-render
+- Variante figée : **`amp+cab-legacy`** (ne pas repasser IR au scroll HW)
+
+---
+
+## 5. Replace cab seul (picker onglet Cab)
+
+### 5.1 Construction du bulk
+
+`build_amp_cab_replace_cab_bulk` :
+1. Copie le bulk **ampli** parent (`amp+cab-legacy`)
+2. Patch **uniquement** le champ cab après `c3:19` / `1a`
+3. **Conserve le fil ampli** avant `1a` (ex. WhoWatt `2c`) — **ne jamais** le recopier depuis une autre entrée catalogue ayant le même hint cab
+
+**Piège corrigé (corrélation « noms proches ») :** une recherche catalogue « amp+cab-legacy avec le même cab » remplaçait le fil `2c` par `23` (Soup Pro) → au retour onglet Amp, le HW affichait le mauvais ampli.  
+Capture HX Edit #4401 : WhoWatt + Soup Pro = **`2c 1a 33`**, pas `23 1a 33`.
+
+### 5.2 Encodage cab — compact vs long
+
+Deux formes sur le fil `… c3:19 <wire> 1a <cab> …` :
+
+| Famille ampli (ex.) | Head | Fil ampli | Cab défaut | Ex. |
+|---------------------|------|-----------|------------|-----|
+| **Compact** | `23` (44 o) | 1 o (`2c`, `2b`…) | 1 o (`47`, `34`…) | WhoWatt, US Small Tweed, Tuck’n Go |
+| **Long** | `27` (48 o) | 3 o `cd:02:xx` | 3 o `cd:02:xx` | Fullerton Jump, US Princess |
+| **Mixte** | `25` (48 o) | 3 o | 1 o | Voltage Queen, US Super |
+
+**Règle picker (produit) :** sur Amp+Cab Legacy, **n’importe quel cab legacy** ; sur Amp+Cab IR, **n’importe quel cab IR**.
+
+**Adaptation fil USB** (`cab_field_bytes_for_amp_cab_replace`) :
+
+| Slot parent | Cab catalogue | Champ envoyé |
+|-------------|---------------|--------------|
+| 1 o | hint `33` | `33` |
+| 3 o | hint `33` | `cd:02:33` |
+| 1 o | hint `cd024e` | `4e` (3ᵉ octet de `cd:02:4e`) |
+| 3 o | hint `cd024e` | `cd:02:4e` |
+
+Ne **pas** rejeter un cab `cd02xx` sur slot compact — HX Edit autorise la combinaison (ex. US Small Tweed + 1x12 US Princess).
+
+### 5.3 Probe / UI
+
+| Élément | Valeur |
+|---------|--------|
+| `dualPart` | `amp` / `cab` |
+| `assignVariant` ampli | `"amp+cab-legacy"` |
+| Probe | `replace` + `catalogModelId` (ampli) + `cabCatalogModelId` + `cabAssignVariant` (`single` / `legacy`) |
+| Optimistic UI | merge grace ; pas de relecture `preset_data` |
+
+---
+
+## 6. Tables live write params cab (legacy)
+
+Le routeur reçoit `ampCabAmpParamCount` = params **visibles** du panneau Amp.
+
+| Taille bloc ampli (proxy) | Table | Ex. Level cab |
+|---------------------------|-------|---------------|
+| **≥ 10** (guitar) | `LEGACY_GUITAR_CAB_ROUTES` | `pSel=0x25`, tag `0x05` |
 | **< 10** (compact / bass) | `LEGACY_COMPACT_CAB_ROUTES` | `pSel=0x00`, tag `0xcb` |
 
 Code : `legacy_cab_wire_pair` dans `amp_cab_live_write.rs`.
 
-Logs : `ppSource=amp_cab:legacy_table`, `pSelSource=amp_cab:legacy_guitar_sel` ou `legacy_compact_sel`.
+---
+
+## 7. Récap des bugs rencontrés et causes
+
+| Symptôme | Cause | Fix |
+|----------|-------|-----|
+| 1er clic assign ignoré HW | bulk `2d` / `cd:03` au lieu de `23` / `cd:07` | head `23` par défaut |
+| Replace cab « OK » logs, HW inchangé | pas de focus cab ; ou `cd:07` au lieu de `cd:03` | `1d` → `ed:08` → bulk ; reframe `07→03` |
+| Cab accepté si nom proche ampli, ampli bascule au retour Amp | fil ampli écrasé via catalogue (ex. `2c→23`) | conserver fil ampli parent |
+| Soup Pro sur onglet Amp après replace | focus Amp avec tag session cab / `live_write_yy` | tag **amp** mémorisé à l’assign |
+| Fullerton + Soup Pro : erreur taille cab | hint `33` non expandu en `cd:02:33` | conversion compact ↔ long |
+| Small Tweed + Princess : refus « hybrid court » | garde-fou HXLinux (pas HX Edit) | hint `cd024e` → octet `4e` |
+| Octets 14–15 à `00 00` | finalize bulk replace trop agressif | laisser `02 00` sur heads connus |
 
 ---
 
-## 3. Focus cab legacy (`1b`)
-
-```text
-1b … 80:10:ed:03 … 83:66:cd:08:04:64:21:65:81:66:bus:08:00:00:00
-```
-
-Capture : `amp_cab legacy guitar.json`. Envoyé au clic onglet Cab et en secours avant le premier `write_live_param` si pas encore focalisé.
-
----
-
-## 4. Remplacement du **cab** seul (picker) — validé HW juin 2026
-
-Changer le cab depuis l’onglet Cab **ne remplace pas** tout le slot. Le bulk est construit depuis **`HX_ModelUsbAssign.json`** (`build_amp_cab_replace_cab_bulk`) : seul le champ cab après `c319` / `1a` est patché. **`preset_data` n’intervient pas** sur ce chemin (il peut rester en retard en RAM ; l’UI utilise merge grace optimiste).
-
-### 4.1 Cinématique USB legacy (≠ IR, ≠ Cab dual)
-
-| Étape | Legacy `amp+cab-legacy` | IR `amp+cab` (référence) |
-|-------|-------------------------|---------------------------|
-| Préambule | **`ef` → `f0`** (16 o chacun) | `1d` focus cab → **`ed:08`** (16 o) |
-| Bulk | head **`0x23`** (44 o) ou **`0x25`** (48 o) | head **`0x27`** / `0x25` selon entrée catalogue |
-| Octets **14–15** du bulk | **`02 00`** — **ne pas écraser** (heads `0x23` / `0x25` / `0x27`) | idem |
-
-**Piège corrigé (juin 2026) :** réutiliser `focus → ed:08 → bulk` (comme Cab dual IR) ou forcer les octets 14–15 à `00 00` envoyait un bulk « OK » côté app mais **ignoré par le device**. Le legacy doit reprendre la **même séquence que l’assign initial** (`AddToEmpty` : `ef/f0/bulk`).
-
-Capture assign de référence : `amp_cab legacy bass.json` frame **1357** (bulk `23…c319061a32`, octets 14–15 = `02 00`).
-
-Implémentation : `execute_amp_cab_cab_replace` dans `amp_cab_cab_replace.rs` (branche `legacy=true`).
-
-### 4.2 Champ cab sur le fil (hybrid compact)
-
-Pour les slots legacy **1 octet** (ex. TucknGo bass), le token cab vient du **`chainHexHint`** de l’entrée cab catalogue (`33`, `37`, …), pas du bulk IR `cd02xx`. Un cab trop long (`cd024d` sur slot compact) est **refusé** avant envoi (`cab_field_bytes_for_amp_cab_replace`).
-
-### 4.3 UI / picker
-
-| Élément | Valeur |
-|---------|--------|
-| `dualPart` onglet Amp / Cab | `amp` / `cab` |
-| `ampCabAssignVariant` | `"amp+cab-legacy"` (ne pas basculer vers `amp+cab` IR au scroll ampli) |
-| `ampCabAmpParamCount` | Params visibles Amp → tables guitar vs compact |
-| Picker onglet Cab | Catégorie **Cab** / sous-cat **Single Legacy** (pas forcer `Single` IR) |
-| Probe | `probe_slot_model_usb` `replace` + `cabCatalogModelId` + variante ampli **legacy** |
-
-Focus **`1b`** (§3) : onglet Cab et **params** live write — **pas** la cinématique du replace modèle cab.
-
----
-
-## 5. Fichiers code
+## 8. Fichiers code
 
 | Fichier | Rôle |
 |---------|------|
-| `amp_cab_cab_replace.rs` | Fire replace cab : `ef/f0/bulk` (legacy) vs `focus/ed:08/bulk` (IR) |
-| `amp_cab_live_write.rs` | `build_amp_cab_legacy_param_model_block`, tables, focus `1b` |
-| `edit_slot_model.rs` | `build_amp_cab_replace_cab_bulk`, `chainHexHint`, champ cab 1 octet |
-| `models.ts` | Variante picker, `applyAmpCabCabFromPicker`, `isAmpCabSlotLegacy` |
-| `hxModelCatalogMeta.ts` | `usbAssignVariantForAmpFamilyScroll` respecte Amp+Cab Legacy |
+| `amp_cab_cab_replace.rs` | Replace cab : focus `1d` → `ed:08` → bulk ; reframe `cd:07→cd:03` |
+| `amp_cab_live_write.rs` | Focus onglets `1d`, tags session, tables PP legacy, record assign/replace |
+| `edit_slot_model.rs` | `build_amp_cab_replace_cab_bulk`, assign head `23`, encodage cab compact/long |
+| `cab_dual/legacy/wire.rs` | `legacy_compact_hint_to_cd02_field`, `legacy_cd02_field_to_compact_hint` |
+| `models.ts` | Picker, `applyAmpCabCabFromPicker`, focus onglets, `suppressNextAmpCabFocusUsb` |
+| `lib.rs` | `probe_slot_model_usb`, `focus_amp_cab_usb_part`, `record_amp_cab_assign_session` |
 
 ---
 
-## 6. Checklist non-régression legacy
+## 9. Checklist non-régression legacy
 
-- [ ] Focus onglet Cab → HW sur cab (`1b`)
-- [ ] Params cab (Level, …) → `pp=08`, sélecteur table guitar/compact cohérent
-- [x] Changement cab picker → `ef/f0/bulk`, cab patché, octets 14–15 = `02 00`, HW réagit
-- [ ] Picker reste **Amp+Cab Legacy** / **Single Legacy** après assign ampli
-- [ ] Pas de fallback IR (`pp=03`, variante `amp+cab`) quand la variante est legacy
+- [x] Assign 1er clic slot vide → HW réagit (bulk `23`, `cd:07`)
+- [x] Replace cab picker → focus cab puis bulk ; HW change le cab
+- [x] Replace cab : fil ampli inchangé (WhoWatt `2c` + Soup Pro `33`)
+- [x] Retour onglet Amp après replace → ampli correct (tag amp, pas tag cab)
+- [x] Compact + cab `cd02xx` (Princess sur Small Tweed)
+- [x] Long + cab compact (Fullerton + Soup Pro → `cd:02:33`)
+- [ ] Params cab live write → `pp=08`, sélecteur guitar/compact cohérent
+- [ ] Picker reste Legacy après scroll HW
+- [ ] Pas de bascule IR (`amp+cab`) sur slot legacy
 
 ---
 
-## 7. Relation Cab dual legacy
+## 10. Relation Cab dual legacy
 
-Les **duals** legacy (deux cabs) partagent le marqueur `c319` et des familles hybrid, mais :
+Les duals legacy partagent `c3:19` et des hints hybrid, mais :
 
-- Cab dual → `dualPart` `cab1`/`cab2`, variante catalogue `dual` / `dual-legacy`
+- Cab dual → `dualPart` `cab1`/`cab2`, variante `dual` / `dual-legacy`
 - Amp+Cab → `dualPart` `amp`/`cab`, variante `amp+cab` / `amp+cab-legacy`
 
-Ne pas réutiliser les builders replace cab2 dual pour le cab Amp+Cab sans passer par `build_amp_cab_replace_cab_bulk`.
+Ne pas réutiliser les builders replace cab2 dual pour le cab Amp+Cab : passer par **`build_amp_cab_replace_cab_bulk`**.

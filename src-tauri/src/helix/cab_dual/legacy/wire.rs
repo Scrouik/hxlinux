@@ -163,6 +163,19 @@ pub fn chain_hint_to_cab_field_bytes(chain_hex_hint: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Hint legacy **1 octet** → champ cab **3 octets** sur slot Amp+Cab long (`cd:02:xx`).
+pub fn legacy_compact_hint_to_cd02_field(hint: u8) -> [u8; 3] {
+    [0xcd, 0x02, hint]
+}
+
+/// Champ cab **`cd:02:xx`** (3 o) → hint **1 octet** sur slot Amp+Cab compact.
+pub fn legacy_cd02_field_to_compact_hint(field: &[u8]) -> Option<u8> {
+    match field {
+        [0xcd, 0x02, hint] => Some(*hint),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +203,23 @@ mod tests {
             chain_hint_to_cab_field_bytes("cd031b"),
             Some(vec![0xcd, 0x03, 0x1b])
         );
+    }
+
+    #[test]
+    fn compact_hint_to_cd02_field() {
+        assert_eq!(
+            legacy_compact_hint_to_cd02_field(0x33),
+            [0xcd, 0x02, 0x33]
+        );
+    }
+
+    #[test]
+    fn cd02_field_to_compact_hint() {
+        assert_eq!(
+            legacy_cd02_field_to_compact_hint(&[0xcd, 0x02, 0x4e]),
+            Some(0x4e)
+        );
+        assert!(legacy_cd02_field_to_compact_hint(&[0xcd, 0x03, 0x1b]).is_none());
     }
 
     #[test]

@@ -148,6 +148,7 @@ pub fn execute_amp_cab_cab_replace(
             .collect::<Vec<_>>()
             .join(" ");
         s.send(OutPacket::new(bulk.clone()));
+        crate::helix::amp_cab_live_write::record_amp_cab_cab_replace_session(&mut s, slot_index, &bulk);
         format!("bulk head={head:#04x} len={} {hx}", bulk.len())
     };
 

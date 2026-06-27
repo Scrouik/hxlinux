@@ -60,42 +60,168 @@ pub fn build_amp_cab_legacy_param_model_block(pp: u8, tag: u8, slot_bus: u8) -> 
     ]
 }
 
-/// Focus sous-bloc cab **IR** (`1d`, `cd:03`, `1a:01`) — même suffixe que le bloc param IR.
-pub fn build_amp_cab_ir_cab_focus_packet(state: &mut HelixState, slot_bus: u8) -> Vec<u8> {
-    crate::helix::cab_dual_live_write::build_cab_dual_cab2_tab_focus_packet(state, slot_bus)
+const AMP_CAB_TAB_FOCUS_SUB: u8 = 0x04;
+
+/// Tag session (octet après `83:66:cd:XX`) dans un bulk assign/replace Amp+Cab.
+pub fn lane_tag_after_cd_lane_in_bulk(bulk: &[u8]) -> Option<u8> {
+    for i in 0..bulk.len().saturating_sub(5) {
+        if bulk[i] == 0x83 && bulk[i + 1] == 0x66 && bulk[i + 2] == 0xcd {
+            return Some(bulk[i + 4]);
+        }
+    }
+    None
 }
 
-/// Focus sous-bloc cab legacy (`1b`, capture legacy guitar) — absent sur IR.
-pub fn build_amp_cab_cab_focus_packet(state: &mut HelixState, slot_bus: u8) -> Vec<u8> {
-    let cnt = state.next_x80_cnt();
-    let ctr = state.live_write_ctr;
-    let model_block = [
-        0x83, 0x66, 0xcd, 0x08, 0x04, 0x64, 0x21, 0x65, 0x81, 0x66, slot_bus, 0x08, 0x00, 0x00,
-        0x00, 0x00,
-    ];
-    vec![
-        0x1b, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, cnt, 0x00, 0x04,
-        (ctr & 0xff) as u8,
-        ((ctr >> 8) & 0xff) as u8,
+/// Alias : lane `cd:03` (replace cab / focus).
+pub fn lane_tag_after_cd03_in_bulk(bulk: &[u8]) -> Option<u8> {
+    for i in 0..bulk.len().saturating_sub(5) {
+        if bulk[i..i + 4] == [0x83, 0x66, 0xcd, 0x03] {
+            return Some(bulk[i + 4]);
+        }
+    }
+    None
+}
+
+fn patch_amp_cab_tab_focus_lane_tag(focus: &mut [u8], tag: u8) {
+    for i in 0..focus.len().saturating_sub(5) {
+        if focus[i..i + 4] == [0x83, 0x66, 0xcd, 0x03] {
+            focus[i + 4] = tag;
+            return;
+        }
+    }
+}
+
+/// Après assign AddToEmpty : mémorise le tag ampli+cab (pas de bump `live_write_ctr` : pas d'ed:08).
+pub fn record_amp_cab_assign_session(state: &mut HelixState, slot_index: u32, bulk: &[u8]) {
+    if let Some(tag) = lane_tag_after_cd_lane_in_bulk(bulk) {
+        state
+            .amp_cab_focus_lane_tags_by_slot
+            .insert(slot_index, (tag, tag));
+    }
+}
+
+/// Après replace cab : met à jour le tag cab (le tag ampli reste celui de l’assign).
+pub fn record_amp_cab_cab_replace_session(state: &mut HelixState, slot_index: u32, bulk: &[u8]) {
+    if let Some(cab_tag) = lane_tag_after_cd03_in_bulk(bulk) {
+        let entry = state
+            .amp_cab_focus_lane_tags_by_slot
+            .entry(slot_index)
+            .or_insert((cab_tag, cab_tag));
+        entry.1 = cab_tag;
+    }
+}
+
+/// Focus onglet **Cab** (`1d`, `cd:03`, `1a:01`) — lane `live_write_ctr` (HX Edit).
+pub fn build_amp_cab_ir_cab_focus_packet(state: &mut HelixState, slot_bus: u8) -> Vec<u8> {
+    use crate::helix::cab_dual_live_write::{build_cab_dual_cab2_tab_focus_packet_with_lane, Cab2FocusLane};
+    build_cab_dual_cab2_tab_focus_packet_with_lane(
+        state,
+        slot_bus,
+        Cab2FocusLane::LiveWrite,
+        AMP_CAB_TAB_FOCUS_SUB,
+    )
+}
+
+/// Focus onglet **Amp** (`1d`, `cd:03`, `1a:00`) — capture `ampcab_legacy_switch_tab.json`.
+pub fn build_amp_cab_amp_focus_packet(state: &mut HelixState, slot_bus: u8) -> Vec<u8> {
+    use crate::helix::cab_dual_live_write::{build_cab_dual_focus_packet_with_lane, Cab2FocusLane};
+    build_cab_dual_focus_packet_with_lane(
+        state,
+        slot_bus,
+        Cab2FocusLane::LiveWrite,
+        AMP_CAB_TAB_FOCUS_SUB,
+        0x03,
         0x00,
-        0x01, 0x00, 0x06, 0x00, 0x0b, 0x00, 0x00, 0x00,
-        model_block[0],
-        model_block[1],
-        model_block[2],
-        model_block[3],
-        model_block[4],
-        model_block[5],
-        model_block[6],
-        model_block[7],
-        model_block[8],
-        model_block[9],
-        model_block[10],
-        model_block[11],
-        model_block[12],
-        model_block[13],
-        model_block[14],
-        model_block[15],
-    ]
+    )
+}
+
+fn env_delay_ms(var: &str, default_ms: u64) -> u64 {
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(default_ms)
+}
+
+/// Focus onglet Amp ou Cab : `1d` → `ed:08` → poke `f0:08` (legacy + IR, HX Edit).
+pub fn spawn_amp_cab_tab_focus_usb(
+    helix_arc: std::sync::Arc<std::sync::Mutex<crate::helix::HelixState>>,
+    slot_index: u32,
+    slot_bus: u8,
+    cab: bool,
+) {
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use crate::helix::cab_dual_live_write::{send_cab_dual_cab2_f008_poke, send_cab_dual_f0_poke};
+    use crate::helix::ed03_lane::{build_ed08_short, force_ed03_ctr};
+    use crate::helix::init_trace;
+    use crate::helix::packet::OutPacket;
+
+    let delay_ed08 = env_delay_ms("HX_CAB2_DELAY_ED08_MS", 93);
+    let l = {
+        let mut s = match helix_arc.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if !s.connected || s.preset_content_only {
+            return;
+        }
+        // Bloque l’ACK `ed:08` auto de `standard` (session_quadruple) post-IN `19` :
+        // il part avant le nôtre (ctr = L+0x11) et peut afficher le mauvais sous-bloc (ex. Soup Pro sur Amp).
+        s.cab_dual_cab2_suppress_standard_ed08_until =
+            Some(Instant::now() + Duration::from_millis(450));
+        let lane_tag = s
+            .amp_cab_focus_lane_tags_by_slot
+            .get(&slot_index)
+            .map(|(amp_tag, cab_tag)| if cab { *cab_tag } else { *amp_tag })
+            .unwrap_or(s.live_write_yy);
+        let l = s.live_write_ctr;
+        let mut focus = if cab {
+            build_amp_cab_ir_cab_focus_packet(&mut s, slot_bus)
+        } else {
+            build_amp_cab_amp_focus_packet(&mut s, slot_bus)
+        };
+        patch_amp_cab_tab_focus_lane_tag(&mut focus, lane_tag);
+        force_ed03_ctr(&mut focus, l);
+        s.live_write_yy = s.live_write_yy.wrapping_add(1);
+        s.slot_model_lane_seq = Some(s.live_write_yy);
+        s.cab_dual_live_write_tab_focus = None;
+        if cab {
+            s.amp_cab_cab_focus_sent_for_slot = Some(slot_index);
+        } else {
+            s.amp_cab_cab_focus_sent_for_slot = None;
+        }
+        init_trace::trace_fmt(format_args!(
+            "amp_cab_tab_focus OUT slot={} bus={:#04x} part={} tag={:#04x} L={:#06x} ed08={:#06x}",
+            slot_index,
+            slot_bus,
+            if cab { "cab" } else { "amp" },
+            lane_tag,
+            l,
+            l.wrapping_add(0x11),
+        ));
+        s.send(OutPacket::new(focus));
+        l
+    };
+
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(delay_ed08));
+        let ctr_model = l.wrapping_add(0x11);
+        let Ok(mut s) = helix_arc.lock() else {
+            return;
+        };
+        let ed08 = build_ed08_short(&mut s, ctr_model);
+        s.send(OutPacket::new(ed08));
+        s.live_write_ctr = ctr_model;
+        if cab {
+            send_cab_dual_cab2_f008_poke(&mut s);
+        } else {
+            // Capture `ampcab_legacy_switch_tab.json` onglet Amp (#2659) : f0:10 puis f0:08.
+            send_cab_dual_f0_poke(&mut s, 0x10);
+            thread::sleep(Duration::from_millis(30));
+            send_cab_dual_f0_poke(&mut s, 0x08);
+        }
+    });
 }
 
 pub fn cache_ed03_model_blocks_from_echo(
@@ -977,6 +1103,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn amp_cab_tab_focus_amp_uses_stored_amp_lane_tag() {
+        use crate::helix::HelixState;
+        let helix = std::sync::Arc::new(std::sync::Mutex::new(HelixState::new()));
+        {
+            let mut s = helix.lock().unwrap();
+            s.live_write_yy = 0xfe;
+            s.amp_cab_focus_lane_tags_by_slot
+                .insert(3, (0xfb, 0xf9));
+        }
+        crate::helix::amp_cab_live_write::spawn_amp_cab_tab_focus_usb(helix.clone(), 3, 0x01, false);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let s = helix.lock().unwrap();
+        // Dernier paquet 1d envoyé : tag ampli = fb (pas fe live_write_yy ni f9 cab).
+        // On vérifie via le builder direct pour éviter la course avec le thread ed:08.
+        drop(s);
+        let mut state = HelixState::new();
+        state.live_write_yy = 0xfe;
+        state
+            .amp_cab_focus_lane_tags_by_slot
+            .insert(3, (0xfb, 0xf9));
+        let mut pkt = build_amp_cab_amp_focus_packet(&mut state, 0x01);
+        patch_amp_cab_tab_focus_lane_tag(&mut pkt, 0xfb);
+        assert_eq!(pkt[28], 0xfb);
+        assert_eq!(pkt[36], 0x00, "onglet Amp");
+    }
+
+    #[test]
+    fn record_assign_session_reads_cd07_lane_tag() {
+        let mut state = HelixState::new();
+        let bulk = [
+            0x23, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, 0x33, 0x00, 0x04, 0xd1, 0xa7,
+            0x02, 0x00, 0x01, 0x00, 0x06, 0x00, 0x13, 0x00, 0x00, 0x00, 0x83, 0x66, 0xcd, 0x07,
+            0xfb, 0x64, 0x28, 0x65, 0x82, 0x62, 0x01, 0x64, 0x83, 0x17, 0xc3, 0x19, 0x2c, 0x1a,
+            0x47, 0x00,
+        ];
+        record_amp_cab_assign_session(&mut state, 0, &bulk);
+        assert_eq!(
+            state.amp_cab_focus_lane_tags_by_slot.get(&0),
+            Some(&(0xfb, 0xfb))
+        );
+    }
+
+    #[test]
     fn ir_cab_level_is_sel_00_pp_03() {
         use crate::helix::HelixState;
         let state = HelixState::new();
@@ -985,6 +1154,28 @@ mod tests {
         assert_eq!(route.param_selector, 0x00);
         assert_eq!(route.model_block[3], 0x03);
         assert_eq!(&route.model_block[11..16], &[0x1d, 0xc3, 0x1a, 0x01, 0x1c]);
+    }
+
+    #[test]
+    fn amp_cab_tab_focus_cab_uses_1d_cd03_1a01() {
+        use crate::helix::HelixState;
+        let mut state = HelixState::new();
+        let pkt = build_amp_cab_ir_cab_focus_packet(&mut state, 0x01);
+        assert_eq!(pkt.first(), Some(&0x1d));
+        assert_eq!(&pkt[24..28], &[0x83, 0x66, 0xcd, 0x03]);
+        assert_eq!(pkt[35], 0x1a);
+        assert_eq!(pkt[36], 0x01);
+    }
+
+    #[test]
+    fn amp_cab_tab_focus_amp_uses_1d_cd03_1a00() {
+        use crate::helix::HelixState;
+        let mut state = HelixState::new();
+        let pkt = build_amp_cab_amp_focus_packet(&mut state, 0x01);
+        assert_eq!(pkt.first(), Some(&0x1d));
+        assert_eq!(&pkt[24..28], &[0x83, 0x66, 0xcd, 0x03]);
+        assert_eq!(pkt[35], 0x1a);
+        assert_eq!(pkt[36], 0x00);
     }
 
     #[test]

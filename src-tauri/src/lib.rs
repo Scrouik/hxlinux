@@ -1208,6 +1208,13 @@ fn probe_slot_model_usb(
         let hx: String = p.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
         lines.push(format!("#{i} len={} delay_ms={} {}", p.len(), delay, hx));
     }
+    if matches!(probe_op, SlotModelProbeOp::AddToEmpty)
+        && matches!(variant_lc.as_str(), "amp+cab" | "amp+cab-legacy")
+    {
+        if let Some(bulk) = packs.iter().filter(|p| p.len() >= 32).max_by_key(|p| p.len()) {
+            helix::amp_cab_live_write::record_amp_cab_assign_session(&mut s, slot_index, bulk);
+        }
+    }
     if let Some(bulk) = usb_bulk_from_json.as_deref() {
         if cab_dual_cab_index.is_none() && cab_id_for_log.is_none() {
             if variant_lc == "legacy"
@@ -1401,7 +1408,7 @@ fn resolve_live_write_route_override(
     }
 }
 
-/// Focus USB sous-bloc cab d'un slot Amp+Cab (trame `1b`, voir captures legacy guitar).
+/// Focus USB sous-bloc Amp ou Cab d'un slot Amp+Cab (`1d`, capture `ampcab_legacy_switch_tab.json`).
 #[tauri::command]
 fn focus_amp_cab_usb_part(
     state: tauri::State<Arc<Mutex<AppState>>>,
@@ -1409,34 +1416,30 @@ fn focus_amp_cab_usb_part(
     part: String,
     amp_cab_assign_variant: Option<String>,
 ) -> Result<(), String> {
+    let _ = amp_cab_assign_variant;
     if slot_index >= 16 {
         return Err("slotIndex hors plage (0..15)".to_string());
     }
-    if part.trim().eq_ignore_ascii_case("cab") {
-        let helix_arc = {
-            let app = state.lock().unwrap();
-            app.helix_state.clone()
-        };
-        let helix_arc = helix_arc.ok_or("HX non connecté")?;
-        let slot_bus = kempline_index_to_slot_bus(slot_index as usize)
-            .ok_or_else(|| "slotIndex invalide".to_string())?;
-        let legacy = amp_cab_assign_variant
-            .as_deref()
-            .map(|v| v.eq_ignore_ascii_case("amp+cab-legacy"))
-            .unwrap_or(false);
-        let mut s = helix_arc.lock().unwrap();
-        if !s.connected || s.preset_content_only {
-            return Err("focus Amp+Cab cab ignoré (HX non prêt ou lecture preset)".to_string());
-        }
-        let focus = if legacy {
-            helix::amp_cab_live_write::build_amp_cab_cab_focus_packet(&mut s, slot_bus)
-        } else {
-            helix::amp_cab_live_write::build_amp_cab_ir_cab_focus_packet(&mut s, slot_bus)
-        };
-        s.send(crate::helix::packet::OutPacket::new(focus));
-        s.amp_cab_cab_focus_sent_for_slot = Some(slot_index);
+    let part_lc = part.trim().to_ascii_lowercase();
+    let cab = part_lc == "cab";
+    let amp = part_lc == "amp";
+    if !cab && !amp {
         return Ok(());
     }
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let slot_bus = kempline_index_to_slot_bus(slot_index as usize)
+        .ok_or_else(|| "slotIndex invalide".to_string())?;
+    {
+        let s = helix_arc.lock().unwrap();
+        if !s.connected || s.preset_content_only {
+            return Err("focus Amp+Cab ignoré (HX non prêt ou lecture preset)".to_string());
+        }
+    }
+    helix::amp_cab_live_write::spawn_amp_cab_tab_focus_usb(helix_arc, slot_index, slot_bus, cab);
     Ok(())
 }
 
@@ -1545,14 +1548,8 @@ fn write_live_param(
     let mut s = helix_arc.lock().unwrap();
     if dual_part_ref == Some("cab") && s.amp_cab_cab_focus_sent_for_slot != Some(slot_index) {
         if let Some(slot_bus) = kempline_index_to_slot_bus(slot_index as usize) {
-            let legacy = variant_ref
-                .map(|v| v.eq_ignore_ascii_case("amp+cab-legacy"))
-                .unwrap_or(false);
-            let focus = if legacy {
-                helix::amp_cab_live_write::build_amp_cab_cab_focus_packet(&mut s, slot_bus)
-            } else {
-                helix::amp_cab_live_write::build_amp_cab_ir_cab_focus_packet(&mut s, slot_bus)
-            };
+            let focus =
+                helix::amp_cab_live_write::build_amp_cab_ir_cab_focus_packet(&mut s, slot_bus);
             s.send(crate::helix::packet::OutPacket::new(focus));
             s.amp_cab_cab_focus_sent_for_slot = Some(slot_index);
         }

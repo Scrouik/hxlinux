@@ -4203,6 +4203,12 @@ async function applySlotModelFromPickerListClick(row: CatalogPickerModelRow): Pr
       `slot_model_probe ok slot=${ki} — no pendingForceUsbPresetContent (pas de relecture preset complète)`,
     );
 
+    if (assignVariant === "amp+cab" || assignVariant === "amp+cab-legacy") {
+      // Pas de focus USB au re-render : le bulk assign vient d’être envoyé ; un 1d/ed:08
+      // immédiat peut faire ignorer l’assign côté HW (UI optimiste déjà à jour).
+      suppressNextAmpCabFocusUsb = true;
+    }
+
     await loadAndShowModelsParamsFromCatalogDefaults(optimisticSlot, idTrim, ki, {
       assignVariant,
     });
@@ -4217,6 +4223,7 @@ async function applySlotModelFromPickerListClick(row: CatalogPickerModelRow): Pr
     if (sessionVals) {
       setSlotChainSessionValues(currentPresetIndex, ki, sessionVals);
       if (assignVariant === "amp+cab" || assignVariant === "amp+cab-legacy") {
+        suppressNextAmpCabFocusUsb = true;
         await loadAndShowModelsParamsFromCatalogDefaults(optimisticSlot, idTrim, ki, {
           assignVariant,
           ampChainValues: sessionVals,
@@ -8302,10 +8309,10 @@ function renderModelsParamsDualTabs(
           applyAmpCabCabPickerLockFromContext(cabId, slotCat, ampCabAssignVariant);
         }
         void syncPickerForAmpCabDualTab(idx as 0 | 1);
-        if (idx === 1 && kemplineSlotIndex !== undefined) {
+        if (kemplineSlotIndex !== undefined) {
           void invoke("focus_amp_cab_usb_part", {
             slotIndex: kemplineSlotIndex,
-            part: "cab",
+            part: idx === 1 ? "cab" : "amp",
             ampCabAssignVariant,
           });
         }
@@ -8329,16 +8336,17 @@ function renderModelsParamsDualTabs(
 
   if (
     dualSlotKind === "amp_cab" &&
-    initialActiveTab === 1 &&
     kemplineSlotIndex !== undefined
   ) {
-    const cabId = tabPanes[1]?.catalogModelId?.trim() || "";
-    applyAmpCabCabPickerLockFromContext(cabId, slot.category ?? "", ampCabAssignVariant);
-    void syncPickerForAmpCabDualTab(1);
+    if (initialActiveTab === 1) {
+      const cabId = tabPanes[1]?.catalogModelId?.trim() || "";
+      applyAmpCabCabPickerLockFromContext(cabId, slot.category ?? "", ampCabAssignVariant);
+      void syncPickerForAmpCabDualTab(1);
+    }
     if (!suppressNextAmpCabFocusUsb) {
       void invoke("focus_amp_cab_usb_part", {
         slotIndex: kemplineSlotIndex,
-        part: "cab",
+        part: initialActiveTab === 1 ? "cab" : "amp",
         ampCabAssignVariant,
       });
     } else {
