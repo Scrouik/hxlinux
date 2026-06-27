@@ -7,6 +7,7 @@
 
 use crate::helix::firmware_scroll_ack;
 use crate::helix::legacy_cab_param_commit;
+use crate::helix::matrix_routing_dd;
 use crate::helix::preset_dump_stream_ack;
 use crate::helix::scroll_model_pull;
 use crate::helix::HelixState;
@@ -35,6 +36,7 @@ impl LayerResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveLayerId {
+    MatrixRoutingDd,
     ScrollModelPull,
     LegacyCabParamCommit,
     FirmwareScroll,
@@ -62,11 +64,26 @@ fn scroll_model_pull_handler(state: &mut HelixState, data: &[u8]) -> LayerResult
     scroll_model_pull::handle_in_layer_trigger(data, state)
 }
 
+fn matrix_routing_dd_handler(state: &mut HelixState, data: &[u8]) -> LayerResult {
+    if state.matrix_routing_dd_wait.is_none() {
+        return LayerResult::Ignored;
+    }
+    if !matrix_routing_dd::is_routing_dd_pipeline_in(data) {
+        return LayerResult::Ignored;
+    }
+    let _ = matrix_routing_dd::try_notify_routing_dd_in(state, data);
+    // Bloque scroll / Standard / dump sur IN dialogue + échos `ed:03` sub=`08` device.
+    LayerResult::Consumed {
+        effect: LayerEffect::None,
+    }
+}
+
 fn legacy_cab_param_commit_handler(state: &mut HelixState, data: &[u8]) -> LayerResult {
     legacy_cab_param_commit::handle_in_layer(state, data)
 }
 
-const ACTIVE_LAYERS: [(ActiveLayerId, ActiveHandler); 4] = [
+const ACTIVE_LAYERS: [(ActiveLayerId, ActiveHandler); 5] = [
+    (ActiveLayerId::MatrixRoutingDd, matrix_routing_dd_handler),
     (ActiveLayerId::ScrollModelPull, scroll_model_pull_handler),
     (ActiveLayerId::LegacyCabParamCommit, legacy_cab_param_commit_handler),
     (ActiveLayerId::FirmwareScroll, firmware_scroll_ack::handle_in_layer),

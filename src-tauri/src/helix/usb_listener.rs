@@ -151,7 +151,7 @@ pub fn start_listener(
                         // Slot actif unique (`hw_active_slot_*`) : `ingest_hw_slot_notify_in` — preset/HW/UI.
                         let ev = s.ingest_hw_slot_notify_in(&data);
                         crate::helix::init_trace::trace_in(&data);
-                        let _active = s.run_usb_in_active_layers(&data);
+                        let active = s.run_usb_in_active_layers(&data);
                         let slot_model_changed =
                             if s.hw_model_pull_capture_deadline.is_some() {
                                 crate::helix::scroll_model_pull::ingest_pull_capture(&mut s, &data)
@@ -258,7 +258,11 @@ pub fn start_listener(
                         let mode_lock_start = Instant::now();
                         let mut m = mode.lock().unwrap();
                         let mode_wait_ms = mode_lock_start.elapsed().as_millis();
-                        m.data_in(&data, &mut s);
+                        if active.consumed_by
+                            != Some(crate::helix::usb_in_pipeline::ActiveLayerId::MatrixRoutingDd)
+                        {
+                            m.data_in(&data, &mut s);
+                        }
                         if mode_wait_ms > STATE_LOCK_WARN_MS {
                             eprintln!(
                                 "[WARN] mode.lock() wait={mode_wait_ms}ms (IN len={}, HelixState déjà tenu)",

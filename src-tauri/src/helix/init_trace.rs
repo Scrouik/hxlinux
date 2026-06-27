@@ -98,7 +98,7 @@ pub fn trace_in(data: &[u8]) {
         return;
     }
     let head = data[0];
-    if head != 0x1d && head != 0x1f && head != 0x21 {
+    if head != 0x1d && head != 0x1f && head != 0x19 && head != 0x21 && head != 0x25 {
         return;
     }
     let kind = classify_packet_1d_lane(data);

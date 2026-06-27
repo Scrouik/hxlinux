@@ -23,6 +23,7 @@ pub mod path1_split_live_write;
 pub mod path1_routing_structural;
 pub mod matrix_slot_move;
 pub mod matrix_routing_move;
+pub mod matrix_routing_dd;
 pub mod edit_slot_model;
 pub mod slot_focus_in;
 pub mod slot_param_in;
@@ -368,6 +369,10 @@ pub struct HelixState {
     /// Après focus Cab 2 (`1d` + `1a:01`) : bloque l’ACK `ed:08` auto du mode standard
     /// (sinon double ACK → pas de `IN 21` avant le bulk replace).
     pub cab_dual_cab2_suppress_standard_ed08_until: Option<Instant>,
+    /// Bloque les polls keepalive pendant un handshake host (D&D routing, focus struct).
+    pub usb_host_transaction_hold: bool,
+    /// Attente IN `19`/`21` pendant un move split/merge (`matrix_routing_dd.rs`).
+    pub matrix_routing_dd_wait: Option<crate::helix::matrix_routing_dd::MatrixRoutingDdWait>,
     /// Dernier paquet IN « focus slot » parsé par index Kempline (rempli par `sync_hardware_slot_focus_usb`).
     pub last_slot_focus_capsule: [Option<slot_focus_in::SlotFocusInCapsule>; 16],
     /// Empreinte précédente pour surveillance contenu slot (modèle / vide / params).
@@ -658,6 +663,8 @@ impl HelixState {
             cab_dual_cab2_handshake_until: None,
             cab_dual_cab2_handshake_capture: Vec::new(),
             cab_dual_cab2_suppress_standard_ed08_until: None,
+            usb_host_transaction_hold: false,
+            matrix_routing_dd_wait: None,
             last_slot_focus_capsule: std::array::from_fn(|_| None),
             slot_watch_prev: std::array::from_fn(|_| slot_watch::SlotWatchSnapshot::default()),
             hw_slot_content_sequence: 0,
@@ -886,7 +893,7 @@ impl HelixState {
     }
 
     pub fn ingest_path1_split_type_wire_in(&mut self, data: &[u8]) -> Option<u8> {
-        if self.preset_content_only {
+        if self.preset_content_only || self.matrix_routing_dd_wait.is_some() {
             return None;
         }
         let wire = crate::helix::path1_split_live_write::scan_path1_split_type_wire(data)?;

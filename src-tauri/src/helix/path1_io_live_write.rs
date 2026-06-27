@@ -135,10 +135,11 @@ pub fn build_special_slot_focus_packet(state: &mut HelixState, slot_bus: u8) -> 
     let cnt = state.next_x80_cnt();
     let session = state.session_no;
     let double = state.preset_data_packet_double();
+    let ed_tag = state.next_editor_ed03_double()[0];
     vec![
         0x1d, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, cnt, 0x00, 0x04, session,
         double[0], double[1], 0x00, 0x01, 0x00, 0x06, 0x00, 0x0d, 0x00, 0x00, 0x00, 0x83,
-        0x66, 0xcd, 0x03, 0xf9, 0x64, 0x4e, 0x65, 0x82, 0x62, slot_bus, 0x1a, 0x00, 0x00,
+        0x66, 0xcd, 0x03, ed_tag, 0x64, 0x4e, 0x65, 0x82, 0x62, slot_bus, 0x1a, 0x00, 0x00,
         0x00, 0x00,
     ]
 }
@@ -150,6 +151,75 @@ pub fn build_post_1d_ack08(state: &mut HelixState, ctr_lo: u8, ctr_hi: u8) -> Ve
         0x08, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, seq, 0x00, 0x08, ctr_lo, ctr_hi,
         0x00, 0x00,
     ]
+}
+
+/// Préambule matrix D&D HX Edit : `ed:08` sub=`10` avant le `1d` (`d&d_split.json` #1363).
+pub fn build_ed03_dd_preamble_sub10(state: &mut HelixState) -> Vec<u8> {
+    let seq = state.next_x80_cnt();
+    let session = state.session_no;
+    let double = state.preset_data_packet_double();
+    vec![
+        0x08, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, seq, 0x00, 0x10, session,
+        double[0], double[1], 0x00,
+    ]
+}
+
+/// Préambule matrix D&D : `f0:03` sub=`10` avant le `1d` (`d&d_split.json` #1373).
+pub fn build_f0_dd_preamble_sub10(state: &mut HelixState) -> Vec<u8> {
+    let seq = state.next_x2_cnt();
+    let double = state.firmware_scroll_lane_double();
+    vec![
+        0x08, 0x00, 0x00, 0x18, 0x02, 0x10, 0xf0, 0x03, 0x00, seq, 0x00, 0x10, double[0],
+        double[1], 0x00, 0x00,
+    ]
+}
+
+/// Post-commit matrix D&D : `f0:03` sub=`08` après ACK `ed:08` (`d&d_split.json` #1545).
+pub fn build_f0_dd_post_commit_sub08(state: &mut HelixState) -> Vec<u8> {
+    let seq = state.next_x2_cnt();
+    let double = state.firmware_scroll_lane_double();
+    vec![
+        0x08, 0x00, 0x00, 0x18, 0x02, 0x10, 0xf0, 0x03, 0x00, seq, 0x00, 0x08, double[0],
+        double[1], 0x00, 0x00,
+    ]
+}
+
+/// Arme le D&D matrix au **pointerdown** (HX Edit envoie pré `ed`+`f0` sub 10 au début du drag).
+pub fn send_matrix_dd_drag_arm(state: &mut HelixState) -> Result<(), String> {
+    let pre_ed = build_ed03_dd_preamble_sub10(state);
+    let pre_f0 = build_f0_dd_preamble_sub10(state);
+    eprintln!("[MatrixDd] arm ed:08 sub=10 + f0 sub=10");
+    state.send(OutPacket::new(pre_ed));
+    state.send(OutPacket::with_delay(pre_f0, 30));
+    Ok(())
+}
+
+/// Commit D&D au **pointerup** : `1d` → ACK lo+`0x11` → `f0` sub 08 (préambule déjà armé).
+pub fn send_matrix_dd_1d_commit_only(state: &mut HelixState, pkt: Vec<u8>) -> Result<(), String> {
+    if pkt.len() != 40 || pkt.first() != Some(&0x1d) {
+        return Err(format!(
+            "send_matrix_dd_1d_commit_only: attendu 1d 40o, reçu {}o",
+            pkt.len()
+        ));
+    }
+    let ack_lo = pkt[12].wrapping_add(0x11);
+    let ack_hi = pkt[13];
+    let post_ed = build_post_1d_ack08(state, ack_lo, ack_hi);
+    let post_f0 = build_f0_dd_post_commit_sub08(state);
+
+    state.send(OutPacket::new(pkt));
+    state.send(OutPacket::with_delay(post_ed, 50));
+    state.send(OutPacket::with_delay(post_f0, 15));
+    Ok(())
+}
+
+/// Séquence HX Edit matrix D&D en un seul envoi (tests / secours) : arm + commit.
+pub fn send_matrix_dd_1d_preamble_commit(
+    state: &mut HelixState,
+    pkt: Vec<u8>,
+) -> Result<(), String> {
+    send_matrix_dd_drag_arm(state)?;
+    send_matrix_dd_1d_commit_only(state, pkt)
 }
 
 /// Construit la trame `1d` : compteurs session + bloc modèle Path 1 + valeur `@input`.
@@ -235,6 +305,27 @@ pub fn send_path1_input_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dd_preamble_sub10_shape() {
+        let mut s = HelixState::new();
+        s.session_no = 0x70;
+        let ed = build_ed03_dd_preamble_sub10(&mut s);
+        assert_eq!(ed[11], 0x10);
+        assert_eq!(ed[12], 0x70);
+        assert_eq!(&ed[4..8], &[0x80, 0x10, 0xed, 0x03]);
+        let f0 = build_f0_dd_preamble_sub10(&mut s);
+        assert_eq!(f0[11], 0x10);
+        assert_eq!(&f0[4..8], &[0x02, 0x10, 0xf0, 0x03]);
+    }
+
+    #[test]
+    fn dd_post_f0_sub08_shape() {
+        let mut s = HelixState::new();
+        let f0 = build_f0_dd_post_commit_sub08(&mut s);
+        assert_eq!(f0[11], 0x08);
+        assert_eq!(&f0[4..8], &[0x02, 0x10, 0xf0, 0x03]);
+    }
 
     #[test]
     fn stomp_io_sources_load_from_json() {

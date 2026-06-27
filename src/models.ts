@@ -1965,22 +1965,9 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
     let routingFlow: RoutingMarker[] = [];
     let stompLayout: ActivePresetStompLayout | null = null;
     if (isKemplineGrid16(normalized)) {
-      try {
-        const r = await invoke<[string, string, string][] | null>("get_active_preset_routing_markers");
-        routingFlow =
-          r?.map(([category, name, moduleHex]) => ({
-            category,
-            name,
-            moduleHex: moduleHex?.trim() || undefined,
-          })) ?? [];
-      } catch {
-        console.warn("[PresetDebug][models] get_active_preset_routing_markers error (hw sync)");
-      }
-      try {
-        stompLayout = await invoke<ActivePresetStompLayout | null>("get_active_preset_stomp_layout");
-      } catch {
-        console.warn("[PresetDebug][models] get_active_preset_stomp_layout error (hw sync)");
-      }
+      const ctx = await fetchActivePresetMatrixRoutingContext();
+      routingFlow = ctx.routingFlow;
+      stompLayout = ctx.stompLayout;
     }
     if (currentPresetIndex !== presetIdx) return;
     await renderSlots(normalized, routingFlow, stompLayout);
@@ -3581,20 +3568,6 @@ function patchMatrixSlotVisualFromSlot(ki: number, slot: SlotDebug): void {
       }
     }
   }
-  if (slotsCtx && slotsCtx.length === 16) {
-    refreshColumnPairedEmptySlotVisual(slotsCtx, ki);
-  }
-}
-
-function refreshColumnPairedEmptySlotVisual(slots: SlotDebug[], kemplineSlotIndex: number): void {
-  const paired = pairedKemplineSlotIndex(kemplineSlotIndex);
-  if (paired === null) return;
-  const pairedSlot = slots[paired];
-  if (!pairedSlot || !isEmptyGridCell(pairedSlot)) return;
-  const nodes = contentEl.querySelectorAll<HTMLElement>(`[data-kempline-slot-index="${paired}"]`);
-  for (const old of nodes) {
-    old.replaceWith(gridSlotNode(pairedSlot, paired, slots));
-  }
 }
 
 /**
@@ -5027,9 +5000,88 @@ let matrixDragRouting: { kind: "split" | "merge"; sourceBoundary: number } | nul
 let matrixSuppressRoutingMarkerActivate = false;
 /** Split/merge après drop path 2 (pas d’aperçu avant le lâcher). */
 let matrixRoutingColsOverride: { splitCol: number; mergeCol: number } | null = null;
+/** Derniers marqueurs Split/Merge lus depuis `preset_data` (moduleHex pour clic après D&D optimiste). */
+let lastRoutingFlowMarkers: RoutingMarker[] = [];
+
+function routingMarkersFromInvoke(
+  raw: [string, string, string][] | null | undefined,
+): RoutingMarker[] {
+  return (
+    raw?.map(([category, name, moduleHex]) => ({
+      category,
+      name,
+      moduleHex: moduleHex?.trim() || undefined,
+    })) ?? []
+  );
+}
+
+function splitRoutingMarkerFromCache(): RoutingMarker | undefined {
+  return lastRoutingFlowMarkers.find((m) => {
+    const c = normalizeCategory(m.category);
+    const n = m.name.toLowerCase();
+    return c === "split" || n.includes("split");
+  });
+}
+
+async function fetchActivePresetMatrixRoutingContext(): Promise<{
+  routingFlow: RoutingMarker[];
+  stompLayout: ActivePresetStompLayout | null;
+}> {
+  let routingFlow = lastRoutingFlowMarkers;
+  let stompLayout: ActivePresetStompLayout | null = lastRenderedStompLayout;
+  try {
+    const r = await invoke<[string, string, string][] | null>("get_active_preset_routing_markers");
+    const parsed = routingMarkersFromInvoke(r);
+    if (parsed.length > 0) {
+      routingFlow = parsed;
+      lastRoutingFlowMarkers = parsed;
+    }
+  } catch {
+    console.warn("[PresetDebug][models] get_active_preset_routing_markers error");
+  }
+  try {
+    stompLayout = await invoke<ActivePresetStompLayout | null>("get_active_preset_stomp_layout");
+  } catch {
+    console.warn("[PresetDebug][models] get_active_preset_stomp_layout error");
+  }
+  return { routingFlow, stompLayout };
+}
 
 function clearMatrixRoutingColsOverride(): void {
   matrixRoutingColsOverride = null;
+}
+
+/** Après D&D split/merge USB réussi : colonnes UI sans `request_preset_content`. */
+function mergeStompLayoutRoutingCols(
+  stompLayout: ActivePresetStompLayout | null,
+  cols: { splitCol: number; mergeCol: number },
+): ActivePresetStompLayout | null {
+  if (stompLayout == null) return null;
+  return {
+    ...stompLayout,
+    routing: {
+      ...stompLayout.routing,
+      splitAfterCol: cols.splitCol,
+      mergeAfterCol: cols.mergeCol,
+      kemplineGridOk: true,
+    },
+  };
+}
+
+function setMatrixRoutingColsOverride(
+  kind: "split" | "merge",
+  destBoundary: number,
+  slots: SlotDebug[],
+): void {
+  const { splitCol, mergeCol } = resolveMatrixRoutingColumns(slots);
+  matrixRoutingColsOverride =
+    kind === "split"
+      ? { splitCol: destBoundary, mergeCol }
+      : { splitCol, mergeCol: destBoundary };
+  lastRenderedStompLayout = mergeStompLayoutRoutingCols(
+    lastRenderedStompLayout,
+    matrixRoutingColsOverride,
+  );
 }
 
 function clearMatrixSlotClipboard(): void {
@@ -5064,33 +5116,22 @@ function canPasteMatrixSlotToEmpty(kemplineSlotIndex: number, slots: SlotDebug[]
   if (!cb || currentPresetIndex < 0) return false;
   const slot = slots[kemplineSlotIndex];
   if (!slot || !isEmptyGridCell(slot)) return false;
-  return !isColumnPairedSlotBlocked(slots, kemplineSlotIndex);
+  return !isMatrixColumnOccupied(slots, kemplineSlotIndex);
 }
 
-/** Même règles que coller, sans clipboard (validation drag & drop move). */
+/** Validation drag & drop move : case vide, colonne libre (sauf le bloc source déplacé). */
 function canMoveMatrixSlotToEmpty(
   sourceKi: number,
   destKi: number,
   slots: SlotDebug[],
 ): boolean {
-  if (sourceKi === destKi) return false;
+  ///if (sourceKi === destKi) return false;
   if (currentPresetIndex < 0 || isModelsContentBusy()) return false;
   const sourceSlot = slots[sourceKi];
   if (!sourceSlot || !canCopyMatrixSlot(sourceSlot)) return false;
   const destSlot = slots[destKi];
   if (!destSlot || !isEmptyGridCell(destSlot)) return false;
-  const samePath = matrixSlotPath(sourceKi) === matrixSlotPath(destKi);
-  if (samePath) return !isColumnPairedSlotBlocked(slots, destKi);
-  if (matrixSlotPath(destKi) === 1 && countPath1FilledFxSlots(slots) <= 1) return false;
-  if (matrixSlotPath(destKi) === 1 && isPath2FxEmpty(slots)) {
-    const col = destKi & 7;
-    return col >= 0 && col < 8;
-  }
-  if (!hasDualPathFxBranch(slots)) return false;
-  if (isColumnPairedSlotBlocked(slots, destKi)) return false;
-  const { splitCol, mergeCol } = resolveMatrixRoutingColumns(slots);
-  const col = destKi & 7;
-  return col >= splitCol && col < mergeCol;
+  return !isMatrixColumnOccupied(slots, destKi, sourceKi);
 }
 
 function hideMatrixContextMenu(): void {
@@ -5806,24 +5847,7 @@ async function moveMatrixSlotFromTo(sourceKi: number, destKi: number): Promise<v
   }
   if (!canMoveMatrixSlotToEmpty(sourceKi, destKi, slots)) {
     console.warn("[MatrixMove] déplacement invalide", sourceKi, "→", destKi);
-    if (
-      isInterPathMatrixMove(sourceKi, destKi) &&
-      matrixSlotPath(destKi) === 1 &&
-      countPath1FilledFxSlots(slots) <= 1 &&
-      !isPath2FxEmpty(slots)
-    ) {
-      setStatus("Impossible : il doit rester au moins un bloc sur le path 1");
-    } else if (
-      isInterPathMatrixMove(sourceKi, destKi) &&
-      matrixSlotPath(sourceKi) === 0 &&
-      matrixSlotPath(destKi) === 1 &&
-      !isPath2FxEmpty(slots)
-    ) {
-      const { splitCol, mergeCol } = resolveMatrixRoutingColumns(slots);
-      setStatus(
-        `Drop path 2 refusé : case hors zone split (${splitCol + 1})–merge (${mergeCol}), colonne path 1 occupée, ou destination invalide`,
-      );
-    }
+    setStatus("Déplacement impossible : slot occupé ou colonne déjà utilisée");
     return;
   }
   const sourceSlot = slots[sourceKi];
@@ -5875,13 +5899,13 @@ function matrixDropTargetFromElement(el: Element | null): HTMLElement | null {
   if (!el) return null;
   const host = el as HTMLElement;
   const direct = host.closest?.(
-    "[data-kempline-slot-index].node-empty.node--hx-slot:not(.node-empty-column-blocked)",
+    "[data-kempline-slot-index].node-empty.node--hx-slot",
   ) as HTMLElement | null;
   if (direct) return direct;
   const cell = host.closest?.(".hx-matrix-cell") as HTMLElement | null;
   if (!cell) return null;
   return cell.querySelector(
-    "[data-kempline-slot-index].node-empty.node--hx-slot:not(.node-empty-column-blocked)",
+    "[data-kempline-slot-index].node-empty.node--hx-slot",
   ) as HTMLElement | null;
 }
 
@@ -5894,6 +5918,15 @@ function clearMatrixDragOverHighlights(): void {
   contentEl
     .querySelectorAll(".node--matrix-drag-over")
     .forEach((n) => n.classList.remove("node--matrix-drag-over"));
+}
+
+function beginMatrixSlotDragVisual(): void {
+  document.body.classList.add("models-matrix-slot-dragging");
+}
+
+function endMatrixSlotDragVisual(): void {
+  document.body.classList.remove("models-matrix-slot-dragging");
+  clearMatrixDragOverHighlights();
 }
 
 function clearMatrixRoutingDragHighlights(): void {
@@ -5918,6 +5951,12 @@ function bindMatrixRoutingBoundaryDropTarget(el: HTMLElement, boundary: number):
   el.dataset.routingBoundary = String(boundary);
 }
 
+function logMatrixRoutingDdTerminal(line: string): void {
+  const msg = `[MatrixRoutingDd] ${line}`;
+  console.info(msg);
+  void invoke("log_frontend_message", { message: msg }).catch(() => {});
+}
+
 function bindMatrixRoutingMarkerDrag(
   el: HTMLElement,
   kind: "split" | "merge",
@@ -5939,6 +5978,10 @@ function bindMatrixRoutingMarkerDrag(
     matrixDragRouting = { kind, sourceBoundary };
     el.setPointerCapture(ev.pointerId);
     el.classList.add("hx-matrix-routing-marker--drag-source");
+    const { splitCol, mergeCol } = resolveMatrixRoutingColumns(slots);
+    logMatrixRoutingDdTerminal(
+      `drag start ${kind} sourceCol=${sourceBoundary} (split=${splitCol} merge=${mergeCol}) preset=${currentPresetIndex}`,
+    );
   });
 
   el.addEventListener("pointermove", (ev) => {
@@ -5985,22 +6028,29 @@ function bindMatrixRoutingMarkerDrag(
 
     if (!dropEl || !drag) {
       suppressNextUiSlotHardwareSwitch = false;
+      logMatrixRoutingDdTerminal(`drop cancel ${kind} (pas de cible)`);
       return;
     }
     const destBoundary = matrixRoutingBoundaryFromDropTarget(dropEl);
     if (destBoundary === null) {
       suppressNextUiSlotHardwareSwitch = false;
+      logMatrixRoutingDdTerminal(`drop cancel ${kind} (frontière invalide)`);
       return;
     }
     if (!canMoveRoutingMarker(kind, destBoundary, lastHwSyncNormalizedSlots ?? [])) {
       suppressNextUiSlotHardwareSwitch = false;
+      logMatrixRoutingDdTerminal(
+        `drop cancel ${kind} sourceCol=${drag.sourceBoundary} → col=${destBoundary} (règle refusée)`,
+      );
       return;
     }
 
     matrixSuppressRoutingMarkerActivate = true;
     suppressNextUiSlotHardwareSwitch = true;
 
-    console.info("[MatrixRoutingMove] pointerup", kind, sourceBoundary, "→", destBoundary);
+    logMatrixRoutingDdTerminal(
+      `drop ${kind} sourceCol=${drag.sourceBoundary} → destCol=${destBoundary} preset=${currentPresetIndex}`,
+    );
     setStatus(`Déplacement ${kind} → colonne ${destBoundary}…`);
     void moveMatrixRoutingMarkerFromTo(kind, destBoundary).finally(() => {
       window.setTimeout(() => {
@@ -6035,6 +6085,8 @@ function bindMatrixSlotDragSource(el: HTMLElement, slot: SlotDebug, ki: number):
     matrixDragSourceKi = ki;
     el.setPointerCapture(ev.pointerId);
     el.classList.add("node--matrix-drag-source");
+    beginMatrixSlotDragVisual();
+    void armMatrixDdDragUsb();
   });
 
   el.addEventListener("pointermove", (ev) => {
@@ -6063,11 +6115,11 @@ function bindMatrixSlotDragSource(el: HTMLElement, slot: SlotDebug, ki: number):
     if (isMatrixUsbInteractionLocked()) {
       matrixDragSourceKi = null;
       el.classList.remove("node--matrix-drag-source");
-      clearMatrixDragOverHighlights();
+      endMatrixSlotDragVisual();
       return;
     }
 
-    clearMatrixDragOverHighlights();
+    endMatrixSlotDragVisual();
     el.classList.remove("node--matrix-drag-source");
     if (el.hasPointerCapture(ev.pointerId)) {
       el.releasePointerCapture(ev.pointerId);
@@ -6094,7 +6146,7 @@ function bindMatrixSlotDragSource(el: HTMLElement, slot: SlotDebug, ki: number):
     if (el.hasPointerCapture(ev.pointerId)) {
       el.releasePointerCapture(ev.pointerId);
     }
-    clearMatrixDragOverHighlights();
+    endMatrixSlotDragVisual();
   });
 }
 
@@ -9191,8 +9243,33 @@ async function loadAndShowModelsParamsForSlot(
     const mergeLike =
       nk === "merge" ||
       (nk === "routing" && slot.name.toLowerCase().includes("merge"));
+    const splitLike = nk === "split";
     if (!catalogModelIdTrimmed && mergeLike) {
       catalogModelIdTrimmed = FLOW_JOIN_CATALOG_ID;
+    }
+    if (!catalogModelIdTrimmed && splitLike) {
+      await mountModelsSlotPicker();
+      let wire: number | null = null;
+      try {
+        const liveWire = await invoke<number | null>("get_path1_split_type_wire_value");
+        if (liveWire != null && Number.isFinite(liveWire)) wire = liveWire;
+      } catch {
+        /* wire live optionnel */
+      }
+      if (wire == null) {
+        const hex =
+          (slot.moduleHex ?? "").trim() ||
+          (splitRoutingMarkerFromCache()?.moduleHex ?? "").trim();
+        if (hex) wire = splitWireFromChainHex(hex);
+      }
+      if (wire != null && catalogPickerDataCache) {
+        catalogModelIdTrimmed =
+          findSplitSourceIdByWireValue(
+            catalogPickerDataCache,
+            wire,
+            connectedDeviceName,
+          ) ?? "";
+      }
     }
     if (!catalogModelIdTrimmed) {
       if (seq !== modelsParamsLoadSeq) return;
@@ -10043,21 +10120,19 @@ function isEmptyGridCell(slot: SlotDebug): boolean {
   return !slot.category && slot.name === "<empty>";
 }
 
-/** Paire Path 1 (0..7) ↔ Path 2 (8..15) : même colonne visuelle. */
-function pairedKemplineSlotIndex(kemplineSlotIndex: number): number | null {
-  if (kemplineSlotIndex >= 0 && kemplineSlotIndex <= 7) return kemplineSlotIndex + 8;
-  if (kemplineSlotIndex >= 8 && kemplineSlotIndex <= 15) return kemplineSlotIndex - 8;
-  return null;
-}
-
-/** Slot vide non assignable : l'autre path de la même colonne porte déjà un bloc (max 1 model / colonne). */
-function isColumnPairedSlotBlocked(slots: SlotDebug[], kemplineSlotIndex: number): boolean {
-  const slot = slots[kemplineSlotIndex];
-  if (!slot || !isEmptyGridCell(slot)) return false;
-  const paired = pairedKemplineSlotIndex(kemplineSlotIndex);
-  if (paired === null) return false;
-  const other = slots[paired];
-  return other !== undefined && !isEmptyGridCell(other);
+/** Colonne visuelle 0..7 : au moins un slot FX rempli (hors `exceptKi` pour un move en cours). */
+function isMatrixColumnOccupied(
+  slots: SlotDebug[],
+  kemplineSlotIndex: number,
+  exceptKi?: number,
+): boolean {
+  const col = kemplineSlotIndex & 7;
+  for (const ki of [col, col + 8]) {
+    if (exceptKi !== undefined && ki === exceptKi) continue;
+    const s = slots[ki];
+    if (s && !isEmptyGridCell(s)) return true;
+  }
+  return false;
 }
 
 function countRealBlocks(slots: SlotDebug[]): number {
@@ -10221,14 +10296,6 @@ function resolveMatrixRoutingColumns(slots: SlotDebug[]): { splitCol: number; me
   return computeRoutingJunctionColumns(slots);
 }
 
-function isColumnPairedBlockedForEmptySlotUi(
-  slots: SlotDebug[],
-  kemplineSlotIndex: number,
-): boolean {
-  if (kemplineSlotIndex >= 8 && isPath2FxEmpty(slots)) return false;
-  return isColumnPairedSlotBlocked(slots, kemplineSlotIndex);
-}
-
 function isInterPathMatrixMove(sourceKi: number, destKi: number): boolean {
   return matrixSlotPath(sourceKi) !== matrixSlotPath(destKi);
 }
@@ -10274,17 +10341,13 @@ function canMoveRoutingMarker(
   return true;
 }
 
-/** Colonnes split/merge après D&D routing — confiance USB, pas de relecture preset. */
-function applyOptimisticRoutingMarkerMove(
-  kind: "split" | "merge",
-  destBoundary: number,
-  slots: SlotDebug[],
-): void {
-  const { splitCol, mergeCol } = resolveMatrixRoutingColumns(slots);
-  matrixRoutingColsOverride = {
-    splitCol: kind === "split" ? destBoundary : splitCol,
-    mergeCol: kind === "merge" ? destBoundary : mergeCol,
-  };
+async function armMatrixDdDragUsb(): Promise<void> {
+  try {
+    const out = await invoke<string>("arm_matrix_dd_drag_usb");
+    console.info("[MatrixDd] arm", out);
+  } catch (e) {
+    console.warn("[MatrixDd] arm", e);
+  }
 }
 
 async function moveMatrixRoutingMarkerUsb(
@@ -10319,7 +10382,7 @@ async function moveMatrixRoutingMarkerFromTo(
   kind: "split" | "merge",
   destBoundary: number,
 ): Promise<void> {
-  if (isMatrixUsbInteractionLocked()) return;
+  if (isMatrixUsbInteractionLocked() || loading) return;
   const slots = lastHwSyncNormalizedSlots;
   if (!slots || slots.length !== 16) {
     console.warn("[MatrixRoutingMove] snapshot grille absent");
@@ -10346,13 +10409,14 @@ async function moveMatrixRoutingMarkerFromTo(
   await withMatrixUsbInteractionLock(
     `Déplacement ${label} → colonne ${destBoundary}…`,
     async () => {
+      suppressUsbPresetPollUntilMs = Date.now() + USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS;
       moveOk = await moveMatrixRoutingMarkerUsb(kind, destBoundary, slots);
       if (!moveOk) {
+        suppressUsbPresetPollUntilMs = 0;
         setStatus(`Déplacement ${label} annulé : erreur USB`);
         return;
       }
       await delayMs(MATRIX_USB_OP_SETTLE_MS);
-      suppressUsbPresetPollUntilMs = Date.now() + USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS;
       markPresetModified();
       console.info("[MatrixRoutingMove] ok USB", kind, "→", destBoundary);
     },
@@ -10360,8 +10424,25 @@ async function moveMatrixRoutingMarkerFromTo(
 
   if (!moveOk || currentPresetIndex < 0) return;
 
-  applyOptimisticRoutingMarkerMove(kind, destBoundary, slots);
-  await refreshMatrixGridFromSnapshot();
+  setMatrixRoutingColsOverride(kind, destBoundary, slots);
+  const stompLayoutForRender =
+    lastRenderedStompLayout ??
+    (matrixRoutingColsOverride
+      ? mergeStompLayoutRoutingCols(
+          {
+            routing: {
+              splitAfterCol: matrixRoutingColsOverride.splitCol,
+              mergeAfterCol: matrixRoutingColsOverride.mergeCol,
+              inferredFrom: "matrix_routing_cols_override",
+              kemplineGridOk: true,
+            },
+            chain: [],
+          },
+          matrixRoutingColsOverride,
+        )
+      : null);
+  // Grille depuis snapshot RAM + override colonnes — pas de lecture preset/USB (cf. HX Edit).
+  await renderSlots(slots, lastRoutingFlowMarkers, stompLayoutForRender);
   setStatus(`${label} déplacé (colonne ${destBoundary})`);
 }
 
@@ -10403,7 +10484,10 @@ async function teardownPath2DualRoutingUsb(): Promise<boolean> {
 async function refreshMatrixGridFromSnapshot(): Promise<void> {
   const slots = lastHwSyncNormalizedSlots;
   if (!slots || slots.length !== 16) return;
-  await renderSlots(slots, [], lastRenderedStompLayout);
+  const { routingFlow, stompLayout } = isKemplineGrid16(slots)
+    ? await fetchActivePresetMatrixRoutingContext()
+    : { routingFlow: lastRoutingFlowMarkers, stompLayout: lastRenderedStompLayout };
+  await renderSlots(slots, routingFlow, stompLayout);
 }
 
 let lastRenderedStompLayout: ActivePresetStompLayout | null = null;
@@ -10478,7 +10562,15 @@ function isKemplineGrid16(slots: SlotDebug[]): boolean {
   });
 }
 
-/** Slot vide matrice : cadre au survol / sélection sauf si colonne bloquée par l'autre path. */
+/** Slot vide : colonne déjà occupée sur l'autre path → pas de drop (sauf exception move, gérée au drag). */
+function isMatrixColumnBlockedForEmptySlotUi(
+  slots: SlotDebug[],
+  kemplineSlotIndex: number,
+): boolean {
+  if (kemplineSlotIndex >= 8 && isPath2FxEmpty(slots)) return false;
+  return isMatrixColumnOccupied(slots, kemplineSlotIndex);
+}
+
 function makeEmptySlotNode(opts?: { columnBlocked?: boolean }): HTMLElement {
   const item = document.createElement("div");
   item.className = "node node-empty node--hx-slot node-empty-flat";
@@ -10640,12 +10732,13 @@ function path1SeparatorSlot(
   marker?: RoutingMarker,
 ): SlotDebug {
   const markerHex = (marker?.moduleHex ?? "").trim();
+  const cachedHex = (splitRoutingMarkerFromCache()?.moduleHex ?? "").trim();
   const markerName = (marker?.name ?? "").trim();
   if (kind === "split") {
     return {
       category: "Split",
       name: markerName || `Split (Path 1 #${boundary})`,
-      moduleHex: markerHex,
+      moduleHex: markerHex || cachedHex,
     };
   }
   if (kind === "merge") {
@@ -10732,17 +10825,13 @@ function makePathRoutingNode(kind: "split" | "merge"): HTMLElement {
   return wrap;
 }
 
-function gridSlotNode(
-  slot: SlotDebug,
-  kemplineSlotIndex: number,
-  allSlots?: SlotDebug[],
-): HTMLElement {
+function gridSlotNode(slot: SlotDebug, kemplineSlotIndex: number, allSlots?: SlotDebug[]): HTMLElement {
   const empty = !slot.category && slot.name === "<empty>";
   if (empty) {
     const columnBlocked =
       allSlots !== undefined &&
       allSlots.length === 16 &&
-      isColumnPairedBlockedForEmptySlotUi(allSlots, kemplineSlotIndex);
+      isMatrixColumnBlockedForEmptySlotUi(allSlots, kemplineSlotIndex);
     const n = makeEmptySlotNode({ columnBlocked });
     n.dataset.kemplineSlotIndex = String(kemplineSlotIndex);
     if (!columnBlocked) {
@@ -10770,8 +10859,6 @@ function renderGrid16(
   /** Split/merge affichés seulement quand path 2 actif ou après drop (override). */
   const showRoutingUi = hasBranchB || matrixRoutingColsOverride !== null;
 
-  lastRenderedStompLayout = stompLayout;
-
   const routingCols =
     matrixRoutingColsOverride ??
     (stompLayout != null && stompLayout.routing.kemplineGridOk === true
@@ -10780,6 +10867,8 @@ function renderGrid16(
           mergeCol: stompLayout.routing.mergeAfterCol,
         }
       : computeRoutingJunctionColumns(slots));
+
+  lastRenderedStompLayout = mergeStompLayoutRoutingCols(stompLayout, routingCols);
 
   const splitEntry = routing.find((m) => m.name.toLowerCase().includes("split"));
   const mergeEntry = routing.find((m) => m.name.toLowerCase().includes("merge"));
@@ -11141,13 +11230,21 @@ type RequestLoadForPresetOpts = {
    */
   hardwareRefreshAfterEdit?: { sourceKi: number; destKi: number };
   /**
+   * Relire après déplacement split/merge (colonnes routing depuis dump hardware).
+   */
+  routingMarkerMoveRefresh?: boolean;
+  /**
    * Relire après suppression du **dernier** bloc FX path 2 (le device retire split/merge).
    */
   path2LastRemoveRefresh?: { slotIndex: number };
 };
 
 function requestLoadUsesHardwarePresetRefresh(opts?: RequestLoadForPresetOpts): boolean {
-  return !!(opts?.hardwareRefreshAfterEdit || opts?.path2LastRemoveRefresh);
+  return !!(
+    opts?.hardwareRefreshAfterEdit ||
+    opts?.routingMarkerMoveRefresh ||
+    opts?.path2LastRemoveRefresh
+  );
 }
 
 async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOpts) {
@@ -11211,9 +11308,11 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
   emitModelsSyncTrace(
     matrixMove
       ? `requestLoadForPreset hardware_refresh index=${index} move=${matrixMove.sourceKi}->${matrixMove.destKi}`
-      : path2Remove
-        ? `requestLoadForPreset hardware_refresh index=${index} path2_last_remove slot=${path2Remove.slotIndex}`
-        : `requestLoadForPreset start index=${index} currentPreset=${currentPresetIndex} loaded=${loadedPresetIndex}`,
+      : opts?.routingMarkerMoveRefresh
+        ? `requestLoadForPreset hardware_refresh index=${index} routing_marker_move`
+        : path2Remove
+          ? `requestLoadForPreset hardware_refresh index=${index} path2_last_remove slot=${path2Remove.slotIndex}`
+          : `requestLoadForPreset start index=${index} currentPreset=${currentPresetIndex} loaded=${loadedPresetIndex}`,
   );
 
   await waitForMatrixUsbIdle();
@@ -11312,22 +11411,9 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
           let routingFlow: RoutingMarker[] = [];
           let stompLayout: ActivePresetStompLayout | null = null;
           if (isKemplineGrid16(normalizedSlots)) {
-            try {
-              const r = await invoke<[string, string, string][] | null>("get_active_preset_routing_markers");
-              routingFlow =
-                r?.map(([category, name, moduleHex]) => ({
-                  category,
-                  name,
-                  moduleHex: moduleHex?.trim() || undefined,
-                })) ?? [];
-            } catch {
-              console.warn("[PresetDebug][models] get_active_preset_routing_markers error");
-            }
-            try {
-              stompLayout = await invoke<ActivePresetStompLayout | null>("get_active_preset_stomp_layout");
-            } catch {
-              console.warn("[PresetDebug][models] get_active_preset_stomp_layout error");
-            }
+            const ctx = await fetchActivePresetMatrixRoutingContext();
+            routingFlow = ctx.routingFlow;
+            stompLayout = ctx.stompLayout;
           }
           // Snapshot du slot HW actif juste avant le rendu :
           // renderSlots appelle consumePendingHardwareSlotSelection() en fin d'exécution.

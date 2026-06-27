@@ -199,7 +199,7 @@ impl KeepAliveManager {
                 // le host n'émet pas de poll proactif : on saute le cycle entier.
                 let skip_cycle = {
                     let s = state.lock().unwrap();
-                    s.preset_content_only
+                    s.preset_content_only || s.usb_host_transaction_hold
                 };
                 if skip_cycle {
                     thread::sleep(Duration::from_millis(KEEP_ALIVE_CYCLE_MS));

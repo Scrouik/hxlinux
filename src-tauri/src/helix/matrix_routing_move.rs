@@ -1,13 +1,9 @@
-//! Déplacement split / merge (drag & drop HX Edit) — opcode `1d` (40 o), captures
-//! `d&d_split.json`, `d&d_merge.json`.
-//!
-//! Même path : `cd:04`, ancre `64:4e:65`, queue `82:62:<bus>:1a` + ACK `08`.
-//! Octet 28 = colonne frontière destination + `0x11` (split col 1 → `0x12`, merge col 8 → `0x19`).
-//! Octets 20–23 : `0d 00 00 00` (captures `d&d_split.json`, `d&d_merge.json`).
-//! ACK `08` : octet 12 = octet 12 du `1d` + `0x11` (split `70`→`81`, merge `e7`→`f8`), octet 13 inchangé.
+//! Déplacement split / merge (drag & drop HX Edit) — opcodes `1d` + `1b`.
+//! Capture `d&d_split.json` : lane **`cd:03`**, un `next_editor_ed03_double()` par bulk `1d` **et** `1b`.
 
-use crate::helix::packet::OutPacket;
-use crate::helix::path1_io_live_write::build_post_1d_ack08;
+use std::sync::{Arc, Mutex};
+
+use crate::helix::matrix_routing_dd::execute_routing_marker_dd;
 use crate::helix::HelixState;
 
 const SPLIT_SLOT_BUS: u8 = 0x0a;
@@ -20,14 +16,14 @@ pub enum RoutingMarkerKind {
 }
 
 impl RoutingMarkerKind {
-    fn slot_bus(self) -> u8 {
+    pub fn slot_bus(self) -> u8 {
         match self {
             Self::Split => SPLIT_SLOT_BUS,
             Self::Merge => MERGE_SLOT_BUS,
         }
     }
 
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::Split => "split",
             Self::Merge => "merge",
@@ -35,7 +31,7 @@ impl RoutingMarkerKind {
     }
 }
 
-/// Octet après `83:66:cd:04` — `boundary_col + 0x11` (0..8 → `0x11`..`0x19`).
+/// Valide la colonne frontière 0..8 (le tag sur le fil est `editor_ed03_double`, pas `col+0x11`).
 pub fn routing_move_tag_byte(dest_boundary_col: u8) -> Result<u8, String> {
     if dest_boundary_col > 8 {
         return Err(format!(
@@ -49,8 +45,9 @@ pub fn build_matrix_routing_marker_move_packet(
     state: &mut HelixState,
     kind: RoutingMarkerKind,
     dest_boundary_col: u8,
-) -> Result<Vec<u8>, String> {
-    let tag = routing_move_tag_byte(dest_boundary_col)?;
+) -> Result<(Vec<u8>, u8), String> {
+    routing_move_tag_byte(dest_boundary_col)?;
+    let tag = state.next_editor_ed03_double()[0];
     let slot_bus = kind.slot_bus();
 
     let cnt = state.next_x80_cnt();
@@ -85,7 +82,7 @@ pub fn build_matrix_routing_marker_move_packet(
         0x83,
         0x66,
         0xcd,
-        0x04,
+        0x03,
         tag,
         0x64,
         0x4e,
@@ -100,19 +97,17 @@ pub fn build_matrix_routing_marker_move_packet(
         0x00,
     ];
 
-    Ok(pkt)
+    Ok((pkt, tag))
 }
 
-/// Déplace split ou merge vers une nouvelle colonne frontière (0..8).
-pub fn send_matrix_routing_marker_move(
-    state: &mut HelixState,
+fn validate_routing_marker_move(
     kind: RoutingMarkerKind,
     dest_boundary_col: u8,
     first_path2_col: u8,
     last_path2_col: u8,
     current_split_col: u8,
     current_merge_col: u8,
-) -> Result<String, String> {
+) -> Result<(), String> {
     routing_move_tag_byte(dest_boundary_col)?;
 
     if first_path2_col > 7 || last_path2_col > 7 {
@@ -146,37 +141,28 @@ pub fn send_matrix_routing_marker_move(
             }
         }
     }
+    Ok(())
+}
 
-    let pkt = build_matrix_routing_marker_move_packet(state, kind, dest_boundary_col)?;
-    // Move matrix `1d` (session @ 12) : captures HX Edit ACK avec lo + 0x11 (`d&d_split` / `d&d_merge`).
-    let ack_lo = pkt[12].wrapping_add(0x11);
-    let ack_hi = pkt[13];
-    let post = build_post_1d_ack08(state, ack_lo, ack_hi);
-    let hex = pkt
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    eprintln!(
-        "[MatrixRoutingMove][sent] {} col={dest_boundary_col} tag={:#04x} bus={:#04x} packet={hex}",
-        kind.label(),
-        pkt[28],
-        kind.slot_bus()
-    );
-
-    state.send(OutPacket::new(pkt));
-    state.send(OutPacket::with_delay(post, 8));
-
-    state.hw_active_slot_index = None;
-    state.hw_active_slot_bus = Some(kind.slot_bus());
-    state.hw_active_slot_sequence = state.hw_active_slot_sequence.wrapping_add(1);
-
-    Ok(format!(
-        "routing_move_{} col->{dest_boundary_col} bus {:#04x}",
-        kind.label(),
-        kind.slot_bus()
-    ))
+/// Déplace split ou merge (séquence complète dans `matrix_routing_dd`).
+pub fn execute_matrix_routing_marker_move(
+    helix_arc: Arc<Mutex<HelixState>>,
+    kind: RoutingMarkerKind,
+    dest_boundary_col: u8,
+    first_path2_col: u8,
+    last_path2_col: u8,
+    current_split_col: u8,
+    current_merge_col: u8,
+) -> Result<String, String> {
+    validate_routing_marker_move(
+        kind,
+        dest_boundary_col,
+        first_path2_col,
+        last_path2_col,
+        current_split_col,
+        current_merge_col,
+    )?;
+    execute_routing_marker_dd(helix_arc, kind, dest_boundary_col)
 }
 
 #[cfg(test)]
@@ -187,17 +173,20 @@ mod tests {
         let mut s = HelixState::new();
         s.session_no = 0xdc;
         s.live_write_yy = 0x13;
+        s.editor_ed03_double = 0x64f1;
         s
     }
 
     #[test]
     fn routing_move_split_capture_shape() {
         let mut s = test_state();
-        let pkt = build_matrix_routing_marker_move_packet(&mut s, RoutingMarkerKind::Split, 1).unwrap();
+        let (pkt, tag) =
+            build_matrix_routing_marker_move_packet(&mut s, RoutingMarkerKind::Split, 1).unwrap();
+        assert_eq!(tag, 0xf2);
         assert_eq!(pkt.len(), 40);
         assert_eq!(pkt[0], 0x1d);
-        assert_eq!(pkt[27], 0x04);
-        assert_eq!(pkt[28], 0x12);
+        assert_eq!(pkt[27], 0x03);
+        assert_eq!(pkt[28], 0xf2);
         assert_eq!(&pkt[20..24], &[0x0d, 0x00, 0x00, 0x00]);
         assert_eq!(&pkt[29..32], &[0x64, 0x4e, 0x65]);
         assert_eq!(&pkt[32..40], &[0x82, 0x62, 0x0a, 0x1a, 0x00, 0x00, 0x00, 0x00]);
@@ -206,8 +195,11 @@ mod tests {
     #[test]
     fn routing_move_merge_capture_shape() {
         let mut s = test_state();
-        let pkt = build_matrix_routing_marker_move_packet(&mut s, RoutingMarkerKind::Merge, 8).unwrap();
-        assert_eq!(pkt[28], 0x19);
+        let (pkt, tag) =
+            build_matrix_routing_marker_move_packet(&mut s, RoutingMarkerKind::Merge, 8).unwrap();
+        assert_eq!(tag, 0xf2);
+        assert_eq!(pkt[27], 0x03);
+        assert_eq!(pkt[28], 0xf2);
         assert_eq!(&pkt[32..40], &[0x82, 0x62, 0x13, 0x1a, 0x00, 0x00, 0x00, 0x00]);
     }
 
@@ -215,12 +207,13 @@ mod tests {
     fn routing_move_ack_lo_is_session_plus_11() {
         let mut s = test_state();
         s.session_no = 0x70;
-        let pkt =
+        let (pkt, _) =
             build_matrix_routing_marker_move_packet(&mut s, RoutingMarkerKind::Split, 1).unwrap();
         assert_eq!(pkt[12], 0x70);
         assert_eq!(pkt[12].wrapping_add(0x11), 0x81);
         s.session_no = 0xe7;
-        let pkt =
+        s.editor_ed03_double = 0x64f1;
+        let (pkt, _) =
             build_matrix_routing_marker_move_packet(&mut s, RoutingMarkerKind::Merge, 8).unwrap();
         assert_eq!(pkt[12], 0xe7);
         assert_eq!(pkt[12].wrapping_add(0x11), 0xf8);
@@ -228,33 +221,32 @@ mod tests {
 
     #[test]
     fn routing_move_split_guard_first_path2() {
-        let mut s = test_state();
-        let err = send_matrix_routing_marker_move(
-            &mut s,
-            RoutingMarkerKind::Split,
-            3,
-            2,
-            5,
-            1,
-            7,
-        )
-        .unwrap_err();
+        let err = validate_routing_marker_move(RoutingMarkerKind::Split, 3, 2, 5, 1, 7).unwrap_err();
         assert!(err.contains("premier slot path 2"));
     }
 
     #[test]
     fn routing_move_merge_guard_last_path2() {
-        let mut s = test_state();
-        let err = send_matrix_routing_marker_move(
-            &mut s,
-            RoutingMarkerKind::Merge,
-            4,
-            2,
-            5,
-            1,
-            7,
-        )
-        .unwrap_err();
+        let err = validate_routing_marker_move(RoutingMarkerKind::Merge, 4, 2, 5, 1, 7).unwrap_err();
         assert!(err.contains("fin path 2"));
+    }
+
+    #[test]
+    fn routing_move_two_cycles_advance_double_twice_per_gesture() {
+        let mut s = test_state();
+        s.editor_ed03_double = 0x64f7;
+        let (_, tag1d) =
+            build_matrix_routing_marker_move_packet(&mut s, RoutingMarkerKind::Split, 0).unwrap();
+        assert_eq!(tag1d, 0xf8);
+        let pkt1b = crate::helix::matrix_routing_dd::build_matrix_routing_path2_commit_packet(
+            &mut s,
+            RoutingMarkerKind::Split,
+            0,
+            [0xdc, 0xf8, 0x64],
+        );
+        assert_eq!(pkt1b[28], 0xf9);
+        let (_, tag2d) =
+            build_matrix_routing_marker_move_packet(&mut s, RoutingMarkerKind::Split, 1).unwrap();
+        assert_eq!(tag2d, 0xfa, "2ᵉ 1d ne doit pas réutiliser le tag du 1b précédent");
     }
 }
