@@ -2,7 +2,9 @@
 //!
 //! - **IR** (hardware Stomp XL) : capture `add_amp_cab_modif_param_cab.json` — PP `0x03`,
 //!   `param_selector` = index local 0..n, bloc `83:66:cd:03:YY:64:1e:65:85:62:bus:1d:c3:1a:01:1c`.
-//! - **Legacy hybrid** (référence seulement) : `amp_cab legacy guitar.json` — PP `0x08`, sel `0x25+`.
+//! - **Legacy hybrid** (params cab Stomp XL) : capture `ampcab_legacy_modif_param_cab.json` —
+//!   même fil IR que `add_amp_cab_modif_param_cab.json` (PP `0x03`, bloc `1d:c3:1a:01:1c`, `23`/`27`).
+//!   Le scroll assign `amp_cab legacy guitar.json` (`1b`/`cd:08`) est un autre contexte.
 
 use std::collections::HashMap;
 
@@ -1035,66 +1037,51 @@ pub fn resolve_cab_live_write_route(
     local_param_index: u32,
     assign_variant: &str,
     slot_index: u32,
-    amp_param_count: Option<u32>,
+    _amp_param_count: Option<u32>,
 ) -> Option<LiveWriteRouteOverride> {
     let slot_bus = kempline_index_to_slot_bus(slot_index as usize)?;
     let legacy = is_legacy_variant(assign_variant);
-    let amp_block_len = amp_param_count.unwrap_or(0) as usize;
 
-    if legacy {
-        let (param_selector, tag) = legacy_cab_wire_pair(local_param_index, amp_block_len)?;
-        let cache_key = echo_model_cache_key(slot_bus, 0x08, param_selector);
-        if let Some(block) = state.ed03_echo_model_by_slot_param.get(&cache_key) {
-            return Some(LiveWriteRouteOverride {
-                pp: block[3],
-                pp_source: "amp_cab:legacy_echo_cache",
-                param_selector,
-                param_selector_source: "amp_cab:legacy_echo_sel",
-                model_block: *block,
-                preserve_model_tag: true,
-                discrete_wants_c2: false,
-            });
-        }
-        let model_block = build_amp_cab_legacy_param_model_block(0x08, tag, slot_bus);
-        return Some(LiveWriteRouteOverride {
-            pp: 0x08,
-            pp_source: "amp_cab:legacy_table",
-            param_selector,
-            param_selector_source: if amp_block_len >= 10 {
-                "amp_cab:legacy_guitar_sel"
-            } else {
-                "amp_cab:legacy_compact_sel"
-            },
-            model_block,
-            preserve_model_tag: true,
-            discrete_wants_c2: false,
-        });
-    }
-
-    // IR Amp+Cab : index catalogue = sélecteur wire (capture add_amp_cab_modif_param_cab.json).
+    // Stomp XL : params cab legacy = fil IR (ampcab_legacy_modif_param_cab.json), pas PP 0x08 / tables 0x25+.
     let param_selector = local_param_index.min(0xff) as u8;
     let cache_key = echo_model_cache_key(slot_bus, 0x03, param_selector);
     if let Some(block) = state.ed03_echo_model_by_slot_param.get(&cache_key) {
         return Some(LiveWriteRouteOverride {
             pp: block[3],
-            pp_source: "amp_cab:ir_echo_cache",
+            pp_source: if legacy {
+                "amp_cab:legacy_ir_echo_cache"
+            } else {
+                "amp_cab:ir_echo_cache"
+            },
             param_selector,
-            param_selector_source: "amp_cab:ir_echo_sel",
+            param_selector_source: if legacy {
+                "amp_cab:legacy_ir_echo_sel"
+            } else {
+                "amp_cab:ir_echo_sel"
+            },
             model_block: *block,
             preserve_model_tag: true,
-            discrete_wants_c2: false,
+            discrete_wants_c2: legacy,
         });
     }
 
     let model_block = build_amp_cab_ir_param_model_block(slot_bus, state.live_write_yy);
     Some(LiveWriteRouteOverride {
         pp: 0x03,
-        pp_source: "amp_cab:ir_capture",
+        pp_source: if legacy {
+            "amp_cab:legacy_ir_capture"
+        } else {
+            "amp_cab:ir_capture"
+        },
         param_selector,
-        param_selector_source: "amp_cab:ir_local_index",
+        param_selector_source: if legacy {
+            "amp_cab:legacy_ir_local_index"
+        } else {
+            "amp_cab:ir_local_index"
+        },
         model_block,
         preserve_model_tag: false,
-        discrete_wants_c2: false,
+        discrete_wants_c2: legacy,
     })
 }
 
@@ -1154,6 +1141,19 @@ mod tests {
         assert_eq!(route.param_selector, 0x00);
         assert_eq!(route.model_block[3], 0x03);
         assert_eq!(&route.model_block[11..16], &[0x1d, 0xc3, 0x1a, 0x01, 0x1c]);
+        assert!(!route.discrete_wants_c2);
+    }
+
+    #[test]
+    fn legacy_amp_cab_cab_param_uses_ir_wire_pp_03() {
+        let state = HelixState::new();
+        let route =
+            resolve_cab_live_write_route(&state, 2, "amp+cab-legacy", 0, Some(12)).expect("route");
+        assert_eq!(route.pp, 0x03);
+        assert_eq!(route.param_selector, 0x02);
+        assert_eq!(route.pp_source, "amp_cab:legacy_ir_capture");
+        assert_eq!(&route.model_block[11..16], &[0x1d, 0xc3, 0x1a, 0x01, 0x1c]);
+        assert!(route.discrete_wants_c2, "capture #969 : discret 23 en c2");
     }
 
     #[test]

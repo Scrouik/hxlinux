@@ -489,9 +489,9 @@ pub fn build_live_write_frames_from_state(
     state.live_write_ctr = state.live_write_ctr.wrapping_add(0x1f);
     state.live_write_yy = state.live_write_yy.wrapping_add(1);
 
-    // c2 sur le discret UNIQUEMENT pour un single legacy (drapeau posé en amont). Le single
-    // modern garde le marqueur du replay statique (c3). Témoin HX_CAB_DISCRETE_C2=0 : jamais de c2.
-    let force_c2 = state.force_discrete_c2_for_legacy_single;
+    // c2 sur le discret : single legacy (drapeau) ou amp+cab legacy (`route.discrete_wants_c2`).
+    let force_c2 = route_ref.map(|r| r.discrete_wants_c2).unwrap_or(false)
+        || state.force_discrete_c2_for_legacy_single;
     state.force_discrete_c2_for_legacy_single = false; // consommé : ne pas fuiter sur l'écriture suivante
     if wire_23 && force_c2 && cab_discrete_c2_marker_enabled() {
         force_discrete_c2_marker(&mut packet_a);
