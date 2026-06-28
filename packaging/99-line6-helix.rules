@@ -1,0 +1,13 @@
+# Line 6 Helix family — allow user-space USB access for HXLinux (no root).
+# Install:
+#   sudo cp packaging/99-line6-helix.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+# Unplug/replug the device. User must be in group plugdev (default on Ubuntu).
+
+# HX Stomp XL (primary target)
+SUBSYSTEM=="usb", ATTR{idVendor}=="0e41", ATTR{idProduct}=="4253", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+
+# Other Helix devices (detected by HXLinux; Stomp XL is the tested platform)
+SUBSYSTEM=="usb", ATTR{idVendor}=="0e41", ATTR{idProduct}=="4246", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0e41", ATTR{idProduct}=="4248", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0e41", ATTR{idProduct}=="424a", MODE="0660", GROUP="plugdev", TAG+="uaccess"

@@ -3,85 +3,122 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>HXLinux</title>
-    <style>
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      
-      body {
-        background: #1a1a1a;
-        color: #e0e0e0;
-        font-family: 'Roboto', sans-serif;
-        height: 100vh;
-        display: flex;
-        flex-direction: column;
-      }
-
-      header {
-        background: #111;
-        padding: 12px 20px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        border-bottom: 1px solid #333;
-      }
-
-      header h1 {
-        font-size: 1.2rem;
-        color: #e8a020;
-        letter-spacing: 2px;
-        text-transform: uppercase;
-      }
-
-      #status {
-        font-size: 0.8rem;
-        color: #888;
-      }
-
-      #btn-refresh {
-        background: #e8a020;
-        color: #111;
-        border: none;
-        padding: 6px 14px;
-        border-radius: 4px;
-        cursor: pointer;
-        font-weight: bold;
-      }
-
-      #btn-refresh:hover { background: #ffb830; }
-
-      #preset-list {
-        list-style: none;
-        overflow-y: auto;
-        flex: 1;
-        padding: 8px;
-      }
-
-      #preset-list li {
-        padding: 8px 12px;
-        border-radius: 4px;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        gap: 12px;
-      }
-
-      #preset-list li:hover { background: #2a2a2a; }
-
-      .preset-num {
-        color: #e8a020;
-        font-size: 0.75rem;
-        font-family: monospace;
-        min-width: 30px;
-      }
-    </style>
+    <title>HX Linux</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Barlow:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <header>
-      <h1>HX Linux</h1>
-      <span id="status">En attente...</span>
-      <button id="btn-refresh">Actualiser</button>
-    </header>
-    <ul id="preset-list"></ul>
+    <div class="app">
+
+      <!-- Header -->
+      <header class="header">
+        <div class="logo">
+          <div class="logo-icon">HX</div>
+          <span>Linux</span>
+        </div>
+
+        <div class="status-pill">
+          <div class="status-dot" id="status-dot"></div>
+          <span id="status-text">En attente...</span>
+          <span id="status-help" class="status-help" title=""></span>
+        </div>
+
+        <div class="header-right">
+          <span class="preset-count" id="preset-count"></span>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <section class="list-pane">
+          <div class="list-container" id="list-container">
+            <ul id="preset-list"></ul>
+          </div>
+        </section>
+        <section class="models-pane" aria-label="Preset models">
+          <header class="models-header">
+            <div class="models-title" id="preset-label">—</div>
+          </header>
+          <div class="models-main-stack">
+            <main class="models-content models-matrix-host" id="content">
+              <div class="empty">Aucun modele charge.</div>
+            </main>
+            <section
+              class="models-params-pane"
+              id="models-params-pane"
+              data-hx-pane="models-params"
+              aria-labelledby="models-params-pane-subhead"
+            >
+              <div class="models-params-pane-body">
+                <aside
+                  class="models-params-slot-picker"
+                  id="models-params-slot-picker"
+                  aria-label="Catalogue"
+                ></aside>
+                <div class="models-params-params-column" id="models-params-params-column">
+                  <header class="models-params-pane-header">
+                    <div id="models-params-pane-subhead" class="models-params-pane-subhead"></div>
+                    <div id="models-params-pane-basedon" class="models-params-pane-basedon"></div>
+                    <div
+                      id="models-params-pane-model-icon-wrap"
+                      class="models-params-pane-model-icon-wrap"
+                      aria-hidden="true"
+                    ></div>
+                  </header>
+                  <div class="models-params-inner" id="models-params-inner">
+                    <p class="models-params-placeholder">
+                      Les paramètres du bloc sélectionné s’afficheront ici.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
+
+      <footer class="statusbar">
+        <div class="statusbar-item active-preset" id="bar-active">
+          — no preset —
+        </div>
+        <div class="statusbar-item hint" id="bar-hint">
+          Right-click for options · Drag to reorder
+        </div>
+      </footer>
+
+    </div>
+
+    <!-- Context menu -->
+    <div class="ctx-menu" id="ctx-menu">
+      <div class="ctx-item" id="ctx-rename">
+        <svg class="ctx-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M11 2l3 3-8 8H3v-3L11 2z"/>
+        </svg>
+        Rename
+      </div>
+      <div class="ctx-separator"></div>
+      <div class="ctx-item" id="ctx-save">
+        <svg class="ctx-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M8 2v8m-3-3l3 3 3-3M3 13h10"/>
+        </svg>
+        Save to HX
+      </div>
+      <div class="ctx-item disabled" id="ctx-load">
+        <svg class="ctx-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M8 11V3m-3 3l3-3 3 3M3 13h10"/>
+        </svg>
+        Load from disk
+      </div>
+    </div>
+
+    <!-- Context menu — matrice Models (copier / coller slot) -->
+    <div class="ctx-menu" id="models-ctx-menu" role="menu" aria-hidden="true">
+      <div class="ctx-item" id="models-ctx-copy" role="menuitem">Copier</div>
+      <div class="ctx-item" id="models-ctx-paste" role="menuitem">Coller</div>
+    </div>
+
     <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="/src/models.ts"></script>
   </body>
 </html>
