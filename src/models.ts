@@ -5000,6 +5000,10 @@ let matrixDragRouting: { kind: "split" | "merge"; sourceBoundary: number } | nul
 let matrixSuppressRoutingMarkerActivate = false;
 /** Split/merge après drop path 2 (pas d’aperçu avant le lâcher). */
 let matrixRoutingColsOverride: { splitCol: number; mergeCol: number } | null = null;
+/** Aperçu split/merge pendant drag FX : cliquet min (split) / max (merge), frontières 0..8. */
+let matrixDragSlotRoutingPreview: { splitCol: number; mergeCol: number } | null = null;
+/** Colonnes split/merge au `pointerdown` (référence merge initial = souvent avant Output). */
+let matrixDragRoutingBaseCols: { splitCol: number; mergeCol: number } | null = null;
 /** Derniers marqueurs Split/Merge lus depuis `preset_data` (moduleHex pour clic après D&D optimiste). */
 let lastRoutingFlowMarkers: RoutingMarker[] = [];
 
@@ -5044,6 +5048,9 @@ async function fetchActivePresetMatrixRoutingContext(): Promise<{
   } catch {
     console.warn("[PresetDebug][models] get_active_preset_stomp_layout error");
   }
+  if (matrixRoutingColsOverride) {
+    stompLayout = mergeStompLayoutRoutingCols(stompLayout, matrixRoutingColsOverride);
+  }
   return { routingFlow, stompLayout };
 }
 
@@ -5055,17 +5062,52 @@ function clearMatrixRoutingColsOverride(): void {
 function mergeStompLayoutRoutingCols(
   stompLayout: ActivePresetStompLayout | null,
   cols: { splitCol: number; mergeCol: number },
-): ActivePresetStompLayout | null {
-  if (stompLayout == null) return null;
+): ActivePresetStompLayout {
+  const base: ActivePresetStompLayout =
+    stompLayout ??
+    ({
+      routing: {
+        splitAfterCol: cols.splitCol,
+        mergeAfterCol: cols.mergeCol,
+        inferredFrom: "matrix_routing_cols_override",
+        kemplineGridOk: true,
+      },
+      chain: [],
+    } satisfies ActivePresetStompLayout);
   return {
-    ...stompLayout,
+    ...base,
     routing: {
-      ...stompLayout.routing,
+      ...base.routing,
       splitAfterCol: cols.splitCol,
       mergeAfterCol: cols.mergeCol,
       kemplineGridOk: true,
     },
   };
+}
+
+/** Re-render grille matrice depuis le snapshot RAM (pas de fetch stomp USB). */
+function syncMatrixGridRoutingVisualFromState(): void {
+  const slots = lastHwSyncNormalizedSlots;
+  if (!slots || slots.length !== 16 || !isKemplineGrid16(slots)) return;
+  const stompLayout = matrixRoutingColsOverride
+    ? mergeStompLayoutRoutingCols(lastRenderedStompLayout, matrixRoutingColsOverride)
+    : lastRenderedStompLayout;
+  renderGrid16(slots, lastRoutingFlowMarkers, stompLayout);
+  void refreshAllSlotTooltipsInContent();
+}
+
+/** Après drop path 2 : figer split/merge de l’aperçu drag FX (le stomp `preset_data` reste périmé). */
+function commitMatrixDragSlotRoutingPreviewIfChanged(): boolean {
+  const preview = matrixDragSlotRoutingPreview;
+  const base = matrixDragRoutingBaseCols;
+  if (!preview || !base) return false;
+  if (preview.splitCol === base.splitCol && preview.mergeCol === base.mergeCol) return false;
+  matrixRoutingColsOverride = { splitCol: preview.splitCol, mergeCol: preview.mergeCol };
+  lastRenderedStompLayout = mergeStompLayoutRoutingCols(
+    lastRenderedStompLayout,
+    matrixRoutingColsOverride,
+  );
+  return true;
 }
 
 function setMatrixRoutingColsOverride(
@@ -5922,11 +5964,24 @@ function clearMatrixDragOverHighlights(): void {
 
 function beginMatrixSlotDragVisual(): void {
   document.body.classList.add("models-matrix-slot-dragging");
+  const slots = lastHwSyncNormalizedSlots;
+  matrixDragRoutingBaseCols =
+    slots && slots.length === 16 ? resolveMatrixRoutingColumns(slots) : null;
+  matrixDragSlotRoutingPreview = null;
+}
+
+function clearMatrixDragSlotRoutingPreview(): void {
+  const hadPreview = matrixDragSlotRoutingPreview !== null;
+  matrixDragSlotRoutingPreview = null;
+  matrixDragRoutingBaseCols = null;
+  if (!hadPreview) return;
+  syncMatrixGridRoutingVisualFromState();
 }
 
 function endMatrixSlotDragVisual(): void {
   document.body.classList.remove("models-matrix-slot-dragging");
   clearMatrixDragOverHighlights();
+  clearMatrixDragSlotRoutingPreview();
 }
 
 function clearMatrixRoutingDragHighlights(): void {
@@ -5973,6 +6028,12 @@ function bindMatrixRoutingMarkerDrag(
 
     ev.preventDefault();
     ev.stopPropagation();
+    const hadFxPreview = matrixDragSlotRoutingPreview !== null;
+    matrixDragSlotRoutingPreview = null;
+    matrixDragRoutingBaseCols = null;
+    if (hadFxPreview) {
+      syncMatrixGridRoutingVisualFromState();
+    }
     matrixSuppressRoutingMarkerActivate = false;
     suppressNextUiSlotHardwareSwitch = true;
     matrixDragRouting = { kind, sourceBoundary };
@@ -6095,23 +6156,41 @@ function bindMatrixSlotDragSource(el: HTMLElement, slot: SlotDebug, ki: number):
 
     const target = document.elementFromPoint(ev.clientX, ev.clientY);
     const dropEl = matrixDropTargetFromElement(target);
-    if (!dropEl) return;
-
-    const destKi = matrixKiFromDropTarget(dropEl);
     const slots = lastHwSyncNormalizedSlots;
-    if (
-      destKi === null ||
-      !slots ||
-      !canMoveMatrixSlotToEmpty(ki, destKi, slots)
-    ) {
-      return;
-    }
 
-    dropEl.classList.add("node--matrix-drag-over");
+    if (dropEl && slots) {
+      const destKi = matrixKiFromDropTarget(dropEl);
+      if (
+        destKi !== null &&
+        canMoveMatrixSlotToEmpty(ki, destKi, slots)
+      ) {
+        dropEl.classList.add("node--matrix-drag-over");
+        updateMatrixDragSlotRoutingPreviewFromDest(destKi, slots);
+      }
+    }
   });
 
   el.addEventListener("pointerup", (ev) => {
     if (matrixDragSourceKi !== ki) return;
+
+    const target = document.elementFromPoint(ev.clientX, ev.clientY);
+    const dropEl = matrixDropTargetFromElement(target);
+    const destKi = dropEl ? matrixKiFromDropTarget(dropEl) : null;
+    const slots = lastHwSyncNormalizedSlots;
+    const willDrop =
+      destKi !== null &&
+      slots !== null &&
+      canMoveMatrixSlotToEmpty(ki, destKi, slots);
+    const path1ToEmptyPath2 =
+      willDrop &&
+      destKi !== null &&
+      slots !== null &&
+      isPath1ToEmptyPath2Move(ki, destKi, slots);
+
+    if (willDrop && destKi !== null && matrixSlotPath(destKi) === 1 && !path1ToEmptyPath2) {
+      commitMatrixDragSlotRoutingPreviewIfChanged();
+    }
+
     if (isMatrixUsbInteractionLocked()) {
       matrixDragSourceKi = null;
       el.classList.remove("node--matrix-drag-source");
@@ -6125,14 +6204,9 @@ function bindMatrixSlotDragSource(el: HTMLElement, slot: SlotDebug, ki: number):
       el.releasePointerCapture(ev.pointerId);
     }
 
-    const target = document.elementFromPoint(ev.clientX, ev.clientY);
-    const dropEl = matrixDropTargetFromElement(target);
-
     matrixDragSourceKi = null;
 
-    if (!dropEl) return;
-    const destKi = matrixKiFromDropTarget(dropEl);
-    if (destKi === null) return;
+    if (!willDrop || destKi === null) return;
 
     console.info("[MatrixMove] pointerup", ki, "→", destKi);
     setStatus(`Déplacement bloc ${ki + 1} → ${destKi + 1}…`);
@@ -10226,6 +10300,129 @@ function lastPath2FxColumn(slots: SlotDebug[]): number | null {
   return max;
 }
 
+/** Colonne impaire grille 3..17 pour un index Kempline 0..15. */
+function matrixModelGridColFromKemplineIndex(kemplineSlotIndex: number): number {
+  return 3 + 2 * (kemplineSlotIndex & 7);
+}
+
+function findMatrixGridCell(row: number, col: number): HTMLElement | null {
+  const cells = contentEl.querySelectorAll<HTMLElement>(".hx-matrix-cell");
+  for (const cell of cells) {
+    if (cell.style.gridRow === String(row) && cell.style.gridColumn === String(col)) {
+      return cell;
+    }
+  }
+  return null;
+}
+
+/**
+ * Survol path 2 pendant drag FX (aperçu HX Edit) :
+ * - split dynamique si frontière calculée (N−1) < position split d’origine ;
+ * - merge dynamique si frontière calculée (N+1) > position merge d’origine.
+ */
+function updateMatrixDragSlotRoutingPreviewFromDest(
+  destKi: number,
+  slots: SlotDebug[],
+): boolean {
+  if (matrixSlotPath(destKi) !== 1) return false;
+
+  const modelCol = matrixModelGridColFromKemplineIndex(destKi);
+  const splitBoundary = matrixRoutingBoundaryFromGridCol(modelCol - 1);
+  const mergeBoundary = matrixRoutingBoundaryFromGridCol(modelCol + 1);
+  if (splitBoundary === null || mergeBoundary === null) return false;
+
+  const base = matrixDragRoutingBaseCols ?? resolveMatrixRoutingColumns(slots);
+  const originSplit = base.splitCol;
+  const originMerge = base.mergeCol;
+
+  const nextSplit = splitBoundary < originSplit ? splitBoundary : originSplit;
+  const nextMerge = mergeBoundary > originMerge ? mergeBoundary : originMerge;
+
+  if (nextSplit >= nextMerge) return false;
+
+  const prev = matrixDragSlotRoutingPreview;
+  if (nextSplit === originSplit && nextMerge === originMerge) {
+    if (prev === null) return false;
+    matrixDragSlotRoutingPreview = null;
+    syncMatrixGridRoutingVisualFromState();
+    return true;
+  }
+
+  if (prev?.splitCol === nextSplit && prev?.mergeCol === nextMerge) return false;
+
+  matrixDragSlotRoutingPreview = { splitCol: nextSplit, mergeCol: nextMerge };
+  repaintMatrixDragSlotRoutingPreview();
+  return true;
+}
+
+function repaintMatrixDragSlotRoutingPreview(): void {
+  const cols = matrixDragSlotRoutingPreview;
+  const grid = contentEl.querySelector<HTMLElement>(".hx-matrix-grid");
+  if (!cols || !grid) return;
+
+  const splitG = matrixEvenColForRoutingBoundary(cols.splitCol);
+  const mergeG = matrixEvenColForRoutingBoundary(cols.mergeCol);
+
+  let path2Rail = grid.querySelector<HTMLElement>(".hx-matrix-path2-rail");
+  const showRail = splitG >= 2 && mergeG >= splitG;
+  if (showRail) {
+    if (!path2Rail) {
+      path2Rail = document.createElement("div");
+      path2Rail.className = "hx-matrix-path2-rail";
+      path2Rail.setAttribute("role", "presentation");
+      path2Rail.setAttribute("aria-hidden", "true");
+      grid.appendChild(path2Rail);
+    }
+    path2Rail.style.gridRow = "2";
+    path2Rail.style.gridColumn = `${splitG} / ${mergeG + 1}`;
+  } else {
+    path2Rail?.remove();
+  }
+
+  grid.querySelectorAll(".hx-matrix-junction-vrail").forEach((n) => n.remove());
+  for (const col of new Set([splitG, mergeG])) {
+    if (col < 2) continue;
+    const junctionVRail = document.createElement("div");
+    junctionVRail.className = "hx-matrix-junction-vrail";
+    junctionVRail.setAttribute("role", "presentation");
+    junctionVRail.setAttribute("aria-hidden", "true");
+    junctionVRail.style.gridColumn = String(col);
+    grid.appendChild(junctionVRail);
+  }
+
+  grid.querySelectorAll("[data-routing-marker]").forEach((n) => n.remove());
+
+  const splitEntry = lastRoutingFlowMarkers.find((m) => {
+    const c = normalizeCategory(m.category);
+    return c === "split" || m.name.toLowerCase().includes("split");
+  });
+  const mergeEntry = lastRoutingFlowMarkers.find((m) => {
+    const c = normalizeCategory(m.category);
+    return c === "merge" || m.name.toLowerCase().includes("merge");
+  });
+  const splitTip = splitEntry ? `${splitEntry.category}: ${splitEntry.name}` : "Split";
+  const mergeTip = mergeEntry ? `${mergeEntry.category}: ${mergeEntry.name}` : "Merge";
+
+  function placePreviewMarker(boundary: number, kind: "split" | "merge"): void {
+    const gridCol = matrixEvenColForRoutingBoundary(boundary);
+    if (gridCol < 2) return;
+    const cell = findMatrixGridCell(1, gridCol);
+    if (!cell) return;
+    const inner = makePathRoutingNode(kind);
+    inner.classList.add("hx-matrix-routing-marker--slot-drag-preview");
+    if (kind === "split") inner.dataset.hwSlotBus = "10";
+    else inner.dataset.hwSlotBus = "19";
+    const tip = routingMatrixTooltip(kind, kind === "split" ? splitTip : mergeTip);
+    cell.title = tip;
+    cell.setAttribute("aria-label", tip);
+    cell.classList.remove("hx-matrix-cell--empty");
+    cell.appendChild(inner);
+  }
+
+  placePreviewMarker(cols.splitCol, "split");
+  placePreviewMarker(cols.mergeCol, "merge");
+}
+
 /** Frontière split/merge 0..8 depuis une colonne paire de la grille path 1. */
 function matrixRoutingBoundaryFromGridCol(col: number): number | null {
   if (col === 2) return 0;
@@ -10354,11 +10551,11 @@ async function moveMatrixRoutingMarkerUsb(
   kind: "split" | "merge",
   destBoundary: number,
   slots: SlotDebug[],
+  currentCols: { splitCol: number; mergeCol: number },
 ): Promise<boolean> {
   const firstP2 = firstPath2FxColumn(slots);
   const lastP2 = lastPath2FxColumn(slots);
   if (firstP2 === null || lastP2 === null) return false;
-  const { splitCol, mergeCol } = resolveMatrixRoutingColumns(slots);
   try {
     await waitUntilHardwareSyncIdle(15_000);
     const out = await invoke<string>("move_matrix_routing_marker_usb", {
@@ -10366,8 +10563,8 @@ async function moveMatrixRoutingMarkerUsb(
       destBoundaryCol: destBoundary,
       firstPath2Col: firstP2,
       lastPath2Col: lastP2,
-      currentSplitCol: splitCol,
-      currentMergeCol: mergeCol,
+      currentSplitCol: currentCols.splitCol,
+      currentMergeCol: currentCols.mergeCol,
     });
     console.info("[MatrixRoutingMove] usb", out);
     markLiveWriteUiInteraction();
@@ -10405,12 +10602,25 @@ async function moveMatrixRoutingMarkerFromTo(
   }
 
   const label = kind === "split" ? "Split" : "Merge";
+  const prevOverride = matrixRoutingColsOverride ? { ...matrixRoutingColsOverride } : null;
+  const hwCols = { ...resolveMatrixRoutingColumns(slots) };
+
+  matrixDragSlotRoutingPreview = null;
+  matrixDragRoutingBaseCols = null;
+  setMatrixRoutingColsOverride(kind, destBoundary, slots);
+  markLiveWriteUiInteraction();
+  const stompLayoutForRender = mergeStompLayoutRoutingCols(
+    lastRenderedStompLayout,
+    matrixRoutingColsOverride!,
+  );
+  await renderSlots(slots, lastRoutingFlowMarkers, stompLayoutForRender);
+
   let moveOk = false;
   await withMatrixUsbInteractionLock(
     `Déplacement ${label} → colonne ${destBoundary}…`,
     async () => {
       suppressUsbPresetPollUntilMs = Date.now() + USB_PRESET_POLL_SUPPRESS_AFTER_PROBE_MS;
-      moveOk = await moveMatrixRoutingMarkerUsb(kind, destBoundary, slots);
+      moveOk = await moveMatrixRoutingMarkerUsb(kind, destBoundary, slots, hwCols);
       if (!moveOk) {
         suppressUsbPresetPollUntilMs = 0;
         setStatus(`Déplacement ${label} annulé : erreur USB`);
@@ -10422,27 +10632,28 @@ async function moveMatrixRoutingMarkerFromTo(
     },
   );
 
-  if (!moveOk || currentPresetIndex < 0) return;
+  if (!moveOk || currentPresetIndex < 0) {
+    if (prevOverride) {
+      matrixRoutingColsOverride = prevOverride;
+      lastRenderedStompLayout = mergeStompLayoutRoutingCols(
+        lastRenderedStompLayout,
+        prevOverride,
+      );
+    } else {
+      clearMatrixRoutingColsOverride();
+      lastRenderedStompLayout = mergeStompLayoutRoutingCols(
+        lastRenderedStompLayout,
+        hwCols,
+      );
+    }
+    await renderSlots(
+      slots,
+      lastRoutingFlowMarkers,
+      lastRenderedStompLayout,
+    );
+    return;
+  }
 
-  setMatrixRoutingColsOverride(kind, destBoundary, slots);
-  const stompLayoutForRender =
-    lastRenderedStompLayout ??
-    (matrixRoutingColsOverride
-      ? mergeStompLayoutRoutingCols(
-          {
-            routing: {
-              splitAfterCol: matrixRoutingColsOverride.splitCol,
-              mergeAfterCol: matrixRoutingColsOverride.mergeCol,
-              inferredFrom: "matrix_routing_cols_override",
-              kemplineGridOk: true,
-            },
-            chain: [],
-          },
-          matrixRoutingColsOverride,
-        )
-      : null);
-  // Grille depuis snapshot RAM + override colonnes — pas de lecture preset/USB (cf. HX Edit).
-  await renderSlots(slots, lastRoutingFlowMarkers, stompLayoutForRender);
   setStatus(`${label} déplacé (colonne ${destBoundary})`);
 }
 
@@ -10484,9 +10695,20 @@ async function teardownPath2DualRoutingUsb(): Promise<boolean> {
 async function refreshMatrixGridFromSnapshot(): Promise<void> {
   const slots = lastHwSyncNormalizedSlots;
   if (!slots || slots.length !== 16) return;
-  const { routingFlow, stompLayout } = isKemplineGrid16(slots)
-    ? await fetchActivePresetMatrixRoutingContext()
-    : { routingFlow: lastRoutingFlowMarkers, stompLayout: lastRenderedStompLayout };
+  let routingFlow = lastRoutingFlowMarkers;
+  let stompLayout: ActivePresetStompLayout | null = lastRenderedStompLayout;
+  if (isKemplineGrid16(slots)) {
+    if (matrixRoutingColsOverride === null) {
+      const ctx = await fetchActivePresetMatrixRoutingContext();
+      routingFlow = ctx.routingFlow;
+      stompLayout = ctx.stompLayout;
+    } else {
+      stompLayout = mergeStompLayoutRoutingCols(
+        lastRenderedStompLayout,
+        matrixRoutingColsOverride,
+      );
+    }
+  }
   await renderSlots(slots, routingFlow, stompLayout);
 }
 
@@ -10856,11 +11078,14 @@ function renderGrid16(
 ) {
   const lastB = lastFilledSlotRowIndex(slots, 8, 8);
   const hasBranchB = lastB >= 0;
-  /** Split/merge affichés seulement quand path 2 actif ou après drop (override). */
-  const showRoutingUi = hasBranchB || matrixRoutingColsOverride !== null;
+  const dragRoutingPreview = matrixDragSlotRoutingPreview;
+  /** Split/merge affichés quand path 2 actif, après drop, ou aperçu drag FX. */
+  const showRoutingUi =
+    hasBranchB || matrixRoutingColsOverride !== null || dragRoutingPreview !== null;
 
   const routingCols =
     matrixRoutingColsOverride ??
+    dragRoutingPreview ??
     (stompLayout != null && stompLayout.routing.kemplineGridOk === true
       ? {
           splitCol: stompLayout.routing.splitAfterCol,
@@ -10902,7 +11127,7 @@ function renderGrid16(
 
   const splitG = showRoutingUi ? matrixEvenColForRoutingBoundary(routingCols.splitCol) : -1;
   const mergeG = showRoutingUi ? matrixEvenColForRoutingBoundary(routingCols.mergeCol) : -1;
-  if (showRoutingUi && hasBranchB && splitG >= 2 && mergeG >= splitG) {
+  if (showRoutingUi && (hasBranchB || dragRoutingPreview !== null) && splitG >= 2 && mergeG >= splitG) {
     const path2Rail = document.createElement("div");
     path2Rail.className = "hx-matrix-path2-rail";
     path2Rail.setAttribute("role", "presentation");

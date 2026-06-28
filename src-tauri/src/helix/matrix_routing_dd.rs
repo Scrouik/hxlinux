@@ -313,10 +313,17 @@ fn commit_1b_with_handshake(
         send_ed_ack(&mut s, &pkt, ack_hi_plus_one);
         RoutingDdScope::arm_in25_on(&mut s);
     }
-    scope.wait_in(DdInEvent::In25, &format!("{label} dump"))?;
+    if scope
+        .wait_in(DdInEvent::In25, &format!("{label} dump"))
+        .is_ok()
     {
         let mut s = helix_arc.lock().unwrap();
         send_f0_ack(&mut s);
+        eprintln!("[MatrixRoutingDd] {label} ok (In25)");
+    } else {
+        eprintln!(
+            "[MatrixRoutingDd] {label} ok sans In25 (timeout {DD_TIMEOUT_MS} ms — commit 1b déjà ACK ed)"
+        );
     }
     Ok(())
 }

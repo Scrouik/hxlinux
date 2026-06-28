@@ -2024,6 +2024,12 @@ body.models-matrix-slot-dragging .models-pane .node-empty.node-empty-column-bloc
   opacity: 0.85;
 }
 
+.models-pane .hx-matrix-routing-marker--slot-drag-preview {
+  opacity: 0.88;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--amber) 45%, transparent);
+}
+
+
 .models-pane .hx-matrix-cell--routing-drag-over {
   outline: 2px dashed var(--amber);
   outline-offset: -2px;
