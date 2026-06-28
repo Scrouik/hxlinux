@@ -51,7 +51,5 @@ npm run tauri build  # release bundles in src-tauri/target/release/bundle/
 
 | Doc | Content |
 |-----|---------|
-| [description.md](description.md) | Session handoff memo |
-| [TODO.md](TODO.md) | Backlog |
 | [matrix-edit-handoff.md](docs/matrix-edit-handoff.md) | Matrix editing architecture |
 | [Référence protocole USB](docs/Référence%20protocole%20USB%20HX%20Stomp%20XL.md) | USB protocol notes (FR) |
