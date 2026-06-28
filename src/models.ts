@@ -2178,6 +2178,10 @@ function liveWriteParamIndexForRow(
     }
     return local;
   }
+  const targetSid = (target.symbolicID ?? "").trim();
+  const wireOrder = modelParamWireOrderIds(paramsForDisplay, catalogSignal);
+  const wireIdx = targetSid ? wireOrder.indexOf(targetSid) : -1;
+  if (wireIdx >= 0) return paramIndexBase + wireIdx;
   return paramIndexBase + idxByRef;
 }
 
@@ -2223,12 +2227,10 @@ function symbolicIdForWireParamIndex(
   catalogSignal: string | null | undefined,
   wireParamIndexBase = 0,
 ): string | null {
-  const writeOrder = paramsVisibleForSignal(paramsForDisplay, catalogSignal);
+  const wireOrder = modelParamWireOrderIds(paramsForDisplay, catalogSignal);
   const local = wireParamIndex - wireParamIndexBase;
-  if (local < 0 || local >= writeOrder.length) return null;
-  const p = writeOrder[local];
-  const sid = (p?.symbolicID ?? "").trim();
-  return sid || null;
+  if (local < 0 || local >= wireOrder.length) return null;
+  return wireOrder[local] ?? null;
 }
 
 function chainValueFromHwSlotParam(p: SlotParamChangedPayload): ChainParamValueJson | null {
@@ -5217,30 +5219,51 @@ async function buildChainParamsMapForCopy(
   return out;
 }
 
+/**
+ * Ordre wire preset / live-write : `assign` croissant, puis champs sans `assign` dans l'ordre JSON.
+ * Même convention que `alignChainValuesToModelParamOrder` (doc DSP Line 6).
+ */
+function modelParamWireOrderIds(
+  allModelParams: ModelParamDefJson[],
+  catalogSignal: string | null | undefined,
+): string[] {
+  const visible = paramsVisibleForSignal(allModelParams, catalogSignal);
+  const visibleSet = new Set(visible);
+  const visibleInJsonOrder: ModelParamDefJson[] = [];
+  for (const p of allModelParams) {
+    if (visibleSet.has(p)) visibleInJsonOrder.push(p);
+  }
+  const withAssign: { assign: number; jsonIdx: number; sid: string }[] = [];
+  const withoutAssign: { jsonIdx: number; sid: string }[] = [];
+  for (let i = 0; i < visibleInJsonOrder.length; i += 1) {
+    const p = visibleInJsonOrder[i]!;
+    const sid = (p.symbolicID ?? "").trim();
+    if (!sid) continue;
+    const a = p.assign;
+    if (typeof a === "number" && Number.isFinite(a)) {
+      withAssign.push({ assign: a, jsonIdx: i, sid });
+    } else {
+      withoutAssign.push({ jsonIdx: i, sid });
+    }
+  }
+  withAssign.sort((a, b) => a.assign - b.assign || a.jsonIdx - b.jsonIdx);
+  return [...withAssign.map((x) => x.sid), ...withoutAssign.map((x) => x.sid)];
+}
+
 function modelParamSourceOrderIds(
   allModelParams: ModelParamDefJson[],
   catalogSignal: string | null | undefined,
   valueCountHint?: number,
 ): string[] {
   const signal = normalizeCatalogSignal(catalogSignal);
-  const buildSourceOrderIdsFromModels = (includeStereoOnly: boolean): string[] => {
-    const out: string[] = [];
-    for (const p of allModelParams) {
-      if (!includeStereoOnly && p["stereo-only"] === true) continue;
-      const sid = (p.symbolicID ?? "").trim();
-      if (!sid) continue;
-      out.push(sid);
-    }
-    return out;
-  };
-  const sourceAll = buildSourceOrderIdsFromModels(true);
+  const sourceAll = modelParamWireOrderIds(allModelParams, "stereo");
   if (signal === "mono" && valueCountHint !== undefined) {
-    const sourceMono = buildSourceOrderIdsFromModels(false);
+    const sourceMono = modelParamWireOrderIds(allModelParams, "mono");
     const diffAll = Math.abs(sourceAll.length - valueCountHint);
     const diffMono = Math.abs(sourceMono.length - valueCountHint);
     if (diffMono < diffAll) return sourceMono;
   }
-  return sourceAll;
+  return modelParamWireOrderIds(allModelParams, catalogSignal);
 }
 
 function chainValuesUsbOrderFromSymbolicMap(
@@ -7334,9 +7357,15 @@ function helixRawIncrementFromStep(rawValue: number, def: HelixControlDefJson): 
   }
   if (Array.isArray(st) && st.length > 0 && typeof st[0] === "object") {
     const segs = st as HelixControlFormatBandJson[];
-    const band = pickFormatBandForValue(rawValue, segs);
+    const dsp = def.dspToDisplayScale;
+    const valueForBandPick =
+      typeof dsp === "number" && Number.isFinite(dsp) && dsp > 0 ? rawValue * dsp : rawValue;
+    const band = pickFormatBandForValue(valueForBandPick, segs);
     const fine = band?.fine;
-    if (typeof fine === "number" && Number.isFinite(fine) && fine > 0) return fine;
+    if (typeof fine === "number" && Number.isFinite(fine) && fine > 0) {
+      if (typeof dsp === "number" && dsp > 0 && Number.isFinite(dsp)) return fine / dsp;
+      return fine;
+    }
   }
   return null;
 }
@@ -7506,6 +7535,15 @@ function paramHiddenForMonoStereoOnly(
 }
 
 /**
+ * Booléens catalogue internes (`valueType` 2 sans `displayType`) : `@enabled`, `@stereo`, etc.
+ * Pas de contrôle utilisateur HX Edit — on masque la ligne UI mais on conserve l’index chaîne.
+ */
+function paramHiddenCatalogInternalBool(p: ModelParamDefJson): boolean {
+  if (p.valueType !== 2) return false;
+  return !(p.displayType ?? "").trim();
+}
+
+/**
  * **Split A/B** (`split_ab_route_to`), **Split Y** (`split_balance`) et **`pan`** avec **min 0 / max 1**
  * (ex. **Mixer** `A Pan` / `B Pan`) : valeur souvent **normalisée 0…1** sur le fil alors que
  * `HelixControls.json` (`pan`) formate en **-100…+100**. Conversion `×200−100` seulement si les bornes
@@ -7651,7 +7689,12 @@ function isPolarityDisplayType(displayType: string | undefined): boolean {
   return (displayType ?? "").trim().toLowerCase() === "polarity";
 }
 
-function canModelsParamsBoolToggle(p: ModelParamDefJson, cv: ChainParamValueJson | undefined): boolean {
+function canModelsParamsBoolToggle(
+  p: ModelParamDefJson,
+  cv: ChainParamValueJson | undefined,
+  helixControlsMap?: Map<string, HelixControlDefJson>,
+): boolean {
+  if (canModelsParamsSegmentedSlider(p, cv, helixControlsMap)) return false;
   if (cv === undefined) return false;
   if (chainValueAsBool(cv) === null) return false;
   if (p.valueType === 2) return true;
@@ -7671,6 +7714,70 @@ function helixStringFormatLabels(def: HelixControlDefJson | undefined): string[]
   if (!Array.isArray(fmt) || fmt.length === 0) return null;
   if (typeof fmt[0] !== "string") return null;
   return fmt as string[];
+}
+
+/** Index 0..steps-1 pour les `displayType` segmentés (`comp_mode`, etc.). */
+function chainValueAsSegmentedIndex(
+  cv: ChainParamValueJson | undefined,
+  p: ModelParamDefJson,
+  steps: number,
+): number | null {
+  if (steps < 2) return null;
+  let v: ChainParamValueJson | undefined = cv;
+  if (v === undefined) v = chainValueFromParamDefault(p);
+  if (v === undefined) return null;
+  if (typeof v === "boolean") return v ? Math.min(1, steps - 1) : 0;
+  if (typeof v === "number" && Number.isFinite(v)) {
+    const minN = p.min;
+    const maxN = p.max;
+    if (typeof minN === "number" && typeof maxN === "number" && Number.isFinite(minN) && Number.isFinite(maxN)) {
+      const lo = Math.round(minN);
+      const hi = Math.round(maxN);
+      if (hi > lo && hi - lo + 1 === steps) {
+        return Math.max(0, Math.min(steps - 1, Math.round(v) - lo));
+      }
+    }
+    if (v === 0 || v === 1) return Math.max(0, Math.min(steps - 1, Math.round(v)));
+    return Math.max(0, Math.min(steps - 1, Math.round(v)));
+  }
+  return null;
+}
+
+function segmentedIndexToChainValue(index: number, p: ModelParamDefJson): ChainParamValueJson {
+  if (p.valueType === 2 && typeof p.min === "boolean") {
+    return index > 0;
+  }
+  const minN = p.min;
+  if (typeof minN === "number" && Number.isFinite(minN)) {
+    return Math.round(minN) + index;
+  }
+  return index;
+}
+
+function canModelsParamsSegmentedSlider(
+  p: ModelParamDefJson,
+  cv: ChainParamValueJson | undefined,
+  helixControlsMap: Map<string, HelixControlDefJson> | undefined,
+): { minI: number; maxI: number; labels: string[] } | null {
+  if (isMicParam(p)) return null;
+  if (isOffOnDisplayType(p.displayType) || isPolarityDisplayType(p.displayType)) return null;
+  if (
+    p.valueType === 0 &&
+    typeof p.min === "number" &&
+    typeof p.max === "number" &&
+    Number.isFinite(p.min) &&
+    Number.isFinite(p.max)
+  ) {
+    const lo = Math.round(p.min);
+    const hi = Math.round(p.max);
+    if (hi > lo && hi - lo + 1 <= 16) return null;
+  }
+  const dt = (p.displayType ?? "").trim();
+  if (!dt || !helixControlsMap?.has(dt)) return null;
+  const labels = helixStringFormatLabels(helixControlsMap.get(dt));
+  if (!labels || labels.length < 2 || labels.length > 16) return null;
+  if (chainValueAsSegmentedIndex(cv, p, labels.length) === null) return null;
+  return { minI: 0, maxI: labels.length - 1, labels };
 }
 
 function chainValueAsMicIndex(cv: ChainParamValueJson | undefined): number | null {
@@ -7703,31 +7810,12 @@ function chainValueFromParamDefault(p: ModelParamDefJson): ChainParamValueJson |
   return undefined;
 }
 
-/** Valeurs chaîne « comme device » dérivées des défauts `.models` (ordre source mono/stéréo aligné sur `alignChainValuesToModelParamOrder`). */
+/** Valeurs chaîne « comme device » dérivées des défauts `.models` (ordre wire DSP). */
 function buildDefaultChainValuesForSourceOrder(
   allModelParams: ModelParamDefJson[],
   catalogSignal: string | null | undefined,
 ): ChainParamValueJson[] {
-  const signal = normalizeCatalogSignal(catalogSignal);
-  const buildSourceOrderIdsFromModels = (includeStereoOnly: boolean): string[] => {
-    const out: string[] = [];
-    for (let i = 0; i < allModelParams.length; i += 1) {
-      const p = allModelParams[i];
-      if (!includeStereoOnly && p["stereo-only"] === true) continue;
-      const sid = (p.symbolicID ?? "").trim();
-      if (!sid) continue;
-      out.push(sid);
-    }
-    return out;
-  };
-  const sourceAll = buildSourceOrderIdsFromModels(true);
-  const sourceMono = buildSourceOrderIdsFromModels(false);
-  let source = sourceAll;
-  if (signal === "mono") {
-    const diffAll = Math.abs(sourceAll.length);
-    const diffMono = Math.abs(sourceMono.length);
-    if (diffMono < diffAll) source = sourceMono;
-  }
+  const source = modelParamWireOrderIds(allModelParams, catalogSignal);
   const byId = new Map(
     allModelParams
       .map((p) => [(p.symbolicID ?? "").trim(), p] as const)
@@ -7764,32 +7852,10 @@ function alignChainValuesToModelParamOrder(
   if (chainValues == null) return chainValues;
   const signal = normalizeCatalogSignal(catalogSignal);
 
-  const stereoOnlyById = new Map<string, boolean>();
-  for (const p of allModelParams) {
-    const sid = (p.symbolicID ?? "").trim();
-    if (!sid || stereoOnlyById.has(sid)) continue;
-    stereoOnlyById.set(sid, p["stereo-only"] === true);
-  }
-
-  const buildSourceOrderIdsFromModels = (includeStereoOnly: boolean): string[] => {
-    const out: string[] = [];
-    for (let i = 0; i < allModelParams.length; i += 1) {
-      const p = allModelParams[i];
-      if (!includeStereoOnly && p["stereo-only"] === true) continue;
-      const sid = (p.symbolicID ?? "").trim();
-      if (!sid) continue;
-      out.push(sid);
-    }
-    return out;
-  };
-
-  const fullAll = buildSourceOrderIdsFromModels(true);
-  const fullMono = buildSourceOrderIdsFromModels(false);
-  const sourceAll = fullAll;
-
+  const sourceAll = modelParamWireOrderIds(allModelParams, "stereo");
   let source = sourceAll;
   if (signal === "mono") {
-    const sourceMono = fullMono;
+    const sourceMono = modelParamWireOrderIds(allModelParams, "mono");
     const diffAll = Math.abs(sourceAll.length - chainValues.length);
     const diffMono = Math.abs(sourceMono.length - chainValues.length);
     if (diffMono < diffAll) source = sourceMono;
@@ -7953,6 +8019,7 @@ function appendModelsParamRows(
   for (let j = 0; j < params.length; j += 1) {
     const pRaw = params[j];
     if (paramHiddenForMonoStereoOnly(pRaw, catalogSignal)) continue;
+    if (paramHiddenCatalogInternalBool(pRaw)) continue;
     const p = paramForSignalVariant(pRaw, catalogSignal);
     const li = document.createElement("li");
     li.className = "models-params-row";
@@ -7986,8 +8053,10 @@ function appendModelsParamRows(
     const minN = p.min;
     const maxN = p.max;
     const micCombo = canModelsParamsMicCombo(p, cv, helixControlsMap, minN, maxN);
-    const canSlider =
+    const segSlider = canModelsParamsSegmentedSlider(p, cv, helixControlsMap);
+    const canNumericSlider =
       !micCombo &&
+      !segSlider &&
       typeof cv === "number" &&
       Number.isFinite(cv) &&
       typeof minN === "number" &&
@@ -8058,47 +8127,66 @@ function appendModelsParamRows(
         micTrigger.title = raw;
         syncMicCombo(String(nextI));
       };
-    } else {
-      if (canSlider) {
+    } else if (segSlider || canNumericSlider) {
+      const sliderMin = segSlider ? segSlider.minI : (minN as number);
+      const sliderMax = segSlider ? segSlider.maxI : (maxN as number);
+      const sliderCv = segSlider
+        ? chainValueAsSegmentedIndex(cv, p, segSlider.labels.length)!
+        : (cv as number);
+      if (segSlider) {
+        minEl.textContent = segSlider.labels[0] ?? "—";
+        maxEl.textContent = segSlider.labels[segSlider.labels.length - 1] ?? "—";
+      }
       sliderCell.append(chainEl);
       const dt = (p.displayType ?? "").trim();
       const helixDef =
         dt && helixControlsMap?.has(dt) ? helixControlsMap.get(dt)! : undefined;
-      let inc = helixDef ? helixRawIncrementFromStep(cv, helixDef) : null;
-      if (inc === null || !Number.isFinite(inc) || inc <= 0) {
-        inc = fallbackRawIncrement(p, minN, maxN);
+      const sliderValueType = segSlider ? 0 : p.valueType;
+      let inc: number;
+      if (segSlider) {
+        inc = 1;
+      } else {
+        let rawInc = helixDef ? helixRawIncrementFromStep(sliderCv, helixDef) : null;
+        if (rawInc === null || !Number.isFinite(rawInc) || rawInc <= 0) {
+          rawInc = fallbackRawIncrement(p, sliderMin, sliderMax);
+        }
+        const span = sliderMax - sliderMin;
+        if (span > 0 && Number.isFinite(span) && rawInc >= span / 2) {
+          rawInc = fallbackRawIncrement(p, sliderMin, sliderMax);
+        }
+        if (p.valueType === 0) {
+          rawInc = Math.max(1, Math.round(rawInc));
+        }
+        if (
+          (dt === "split_ab_route_to" || dt === "split_balance" || dt === "pan") &&
+          sliderMin === 0 &&
+          sliderMax === 1
+        ) {
+          rawInc = 0.01;
+        }
+        inc = rawInc;
       }
-      if (p.valueType === 0) {
-        inc = Math.max(1, Math.round(inc));
-      }
-      if (
-        (dt === "split_ab_route_to" || dt === "split_balance" || dt === "pan") &&
-        minN === 0 &&
-        maxN === 1
-      ) {
-        inc = 0.01;
-      }
-      const init = snapRawToIncrement(cv, minN, maxN, inc, p.valueType);
+      const init = snapRawToIncrement(sliderCv, sliderMin, sliderMax, inc, sliderValueType);
       const input = document.createElement("input");
       input.type = "range";
       input.className = "models-params-slider";
-      if (p.valueType !== 0) {
+      if (sliderValueType !== 0) {
         input.classList.add("models-params-slider--filled");
       }
-      input.min = String(minN);
-      input.max = String(maxN);
-      if (inc >= 1e-9) {
-        const span = maxN - minN;
-        if (inc < span / 2) input.step = String(inc);
+      input.min = String(sliderMin);
+      input.max = String(sliderMax);
+      const sliderSpan = sliderMax - sliderMin;
+      if (inc >= 1e-9 && sliderSpan > 0 && Number.isFinite(sliderSpan)) {
+        input.step = String(inc);
       }
       input.value = String(init);
       {
         let v = Number(input.value);
         if (!Number.isFinite(v)) v = init;
-        v = snapRawToIncrement(v, minN, maxN, inc, p.valueType);
+        v = snapRawToIncrement(v, sliderMin, sliderMax, inc, sliderValueType);
         if (Number(input.value) !== v) input.value = String(v);
-        if (p.valueType !== 0) {
-          setSliderFillVisual(input, v, minN, maxN);
+        if (sliderValueType !== 0) {
+          setSliderFillVisual(input, v, sliderMin, sliderMax);
         }
       }
       input.title = hoverTitleStr;
@@ -8109,13 +8197,14 @@ function appendModelsParamRows(
       input.addEventListener("input", () => {
         let v = Number(input.value);
         if (!Number.isFinite(v)) return;
-        v = snapRawToIncrement(v, minN, maxN, inc, p.valueType);
+        v = snapRawToIncrement(v, sliderMin, sliderMax, inc, sliderValueType);
         if (Number(input.value) !== v) input.value = String(v);
-        if (p.valueType !== 0) {
-          setSliderFillVisual(input, v, minN, maxN);
+        if (sliderValueType !== 0) {
+          setSliderFillVisual(input, v, sliderMin, sliderMax);
         }
-        chainEl.textContent = formatChainParamValueJson(v, p, helixControlsMap);
-        const s = paramSliderHoverTitle(v, p, helixControlsMap);
+        const chainV = segSlider ? segmentedIndexToChainValue(v, p) : v;
+        chainEl.textContent = formatChainParamValueJson(chainV, p, helixControlsMap);
+        const s = paramSliderHoverTitle(chainV, p, helixControlsMap);
         li.title = s;
         sliderCell.title = s;
         input.title = s;
@@ -8141,8 +8230,10 @@ function appendModelsParamRows(
         );
       });
       sliderCell.append(input);
-      const tickCount = discreteSliderTickCount(p.valueType, minN, maxN);
-      if (tickCount !== null) {
+      const tickCount = segSlider
+        ? segSlider.labels.length
+        : discreteSliderTickCount(p.valueType, sliderMin, sliderMax);
+      if (tickCount !== null && tickCount >= 2) {
         const ticks = document.createElement("div");
         ticks.className = "models-params-slider-ticks";
         for (let i = 0; i < tickCount; i += 1) {
@@ -8154,20 +8245,26 @@ function appendModelsParamRows(
         sliderCell.append(ticks);
       }
       rowValueUpdaters[j] = (nextCv) => {
-        if (typeof nextCv !== "number" || !Number.isFinite(nextCv)) return;
-        let v = snapRawToIncrement(nextCv, minN, maxN, inc, p.valueType);
+        const nextIndex = segSlider
+          ? chainValueAsSegmentedIndex(nextCv, p, segSlider.labels.length)
+          : typeof nextCv === "number" && Number.isFinite(nextCv)
+            ? nextCv
+            : null;
+        if (nextIndex === null) return;
+        let v = snapRawToIncrement(nextIndex, sliderMin, sliderMax, inc, sliderValueType);
         if (!Number.isFinite(v)) return;
         if (Number(input.value) !== v) input.value = String(v);
-        if (p.valueType !== 0) {
-          setSliderFillVisual(input, v, minN, maxN);
+        if (sliderValueType !== 0) {
+          setSliderFillVisual(input, v, sliderMin, sliderMax);
         }
-        chainEl.textContent = formatChainParamValueJson(v, p, helixControlsMap);
-        const s = paramSliderHoverTitle(v, p, helixControlsMap);
+        const chainV = segSlider ? segmentedIndexToChainValue(v, p) : v;
+        chainEl.textContent = formatChainParamValueJson(chainV, p, helixControlsMap);
+        const s = paramSliderHoverTitle(chainV, p, helixControlsMap);
         li.title = s;
         sliderCell.title = s;
         input.title = s;
       };
-      } else if (cv !== undefined && canModelsParamsBoolToggle(p, cv)) {
+    } else if (cv !== undefined && canModelsParamsBoolToggle(p, cv, helixControlsMap)) {
       sliderCell.append(chainEl);
       let currentB = chainValueAsBool(cv)!;
       const input = document.createElement("input");
@@ -8231,7 +8328,7 @@ function appendModelsParamRows(
       });
       sliderCell.append(input);
       rowValueUpdaters[j] = (nextCv) => {
-        if (!canModelsParamsBoolToggle(p, nextCv)) return;
+        if (!canModelsParamsBoolToggle(p, nextCv, helixControlsMap)) return;
         applyBool(chainValueAsBool(nextCv)!, true);
         if (isEqMaster) {
           for (const node of list.querySelectorAll("li[data-models-eq-band]")) {
@@ -8239,7 +8336,7 @@ function appendModelsParamRows(
           }
         }
       };
-      } else {
+    } else {
       sliderCell.append(chainEl);
       rowValueUpdaters[j] = (nextCv) => {
         chainEl.textContent =
@@ -8248,7 +8345,6 @@ function appendModelsParamRows(
         li.title = s;
         sliderCell.title = s;
       };
-      }
     }
     list.appendChild(li);
   }

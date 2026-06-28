@@ -359,9 +359,6 @@ fn discover_hx_usb() -> UsbDiscovery {
 fn get_preset_names(state: tauri::State<Arc<Mutex<AppState>>>) -> Vec<String> {
     let helix_arc = {
         let app = state.lock().unwrap();
-        if app.preset_names.len() >= EXPECTED_PRESET_COUNT {
-            return app.preset_names.clone();
-        }
         app.helix_state.clone()
     };
     let mut app = state.lock().unwrap();

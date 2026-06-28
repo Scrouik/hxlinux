@@ -6,6 +6,7 @@
   "boolMarkOn": 195,
   "boolDisplayTypes": ["off_on", "polarity"],
   "discrete23DisplayTypes": {
+    "comp_mode": 2,
     "comp_ratio": 6,
     "comp_ratio_3band": 7,
     "clipping_dist": 3,

@@ -74,7 +74,11 @@ pub fn live_write_cfg() -> &'static HelixLiveWriteCfg {
 }
 
 /// `valueType` Line 6 : 2 = booléen ; sinon on regarde `displayType` (liste `boolDisplayTypes`).
+/// Les `displayType` segmentés (`discrete23DisplayTypes`, ex. `comp_mode`) priment sur `valueType` 2.
 pub fn infer_bool_wire_payload(display_type: Option<&str>, value_type: Option<i32>) -> bool {
+    if discrete_23_step_count(display_type).is_some() {
+        return false;
+    }
     if matches!(value_type, Some(2)) {
         return true;
     }
@@ -144,4 +148,20 @@ pub fn validate_usb_live_write_metadata(
         "Live write USB refusé : valueType={vt} hors liste allowedFloatValueTypes {:?} — le chemin float 0x27 n’est pas validé pour ce type. Capture HX Edit ou étends HelixLiveWrite.json ; sinon risque de comportement erratique sur le hardware.",
         cfg.allowed_float_value_types
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn comp_mode_is_discrete_segmented_not_bool_markers() {
+        assert_eq!(discrete_23_step_count(Some("comp_mode")), Some(2));
+        assert!(!infer_bool_wire_payload(Some("comp_mode"), Some(2)));
+    }
+
+    #[test]
+    fn off_on_stays_bool_even_with_value_type_2() {
+        assert!(infer_bool_wire_payload(Some("off_on"), Some(2)));
+    }
 }

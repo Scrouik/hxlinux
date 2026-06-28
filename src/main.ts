@@ -397,17 +397,24 @@ async function confirmRename(newName: string) {
   const index = renameIndex;
   renameIndex = -1;
 
-  if (!newName.trim()) {
-    cancelRename();
+  if (index < 0) return;
+
+  const trimmed = newName.trim();
+  if (!trimmed) {
+    render(presetNames, activePreset);
     return;
   }
 
-  const trimmed = newName.trim();
+  const previousName = presetNames[index];
+  presetNames[index] = trimmed;
+  render(presetNames, activePreset);
 
   try {
     await invoke("rename_preset", { index, name: trimmed });
-    barHint.textContent = `✓  Renommage envoyé — attente confirmation HX…`;
+    barHint.textContent = `✓  Preset ${padNum(index)} renommé`;
   } catch (e) {
+    presetNames[index] = previousName;
+    render(presetNames, activePreset);
     barHint.textContent = `✗  Erreur : ${e}`;
   }
   setTimeout(() => { barHint.textContent = "Right-click for options · Drag to reorder"; }, 3000);
