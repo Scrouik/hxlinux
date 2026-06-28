@@ -218,7 +218,3 @@ USB reverse engineering inspired by [kempline/helix_usb](https://github.com/kemp
 - Protocol reference: [`docs/Référence protocole USB HX Stomp XL.md`](docs/Référence%20protocole%20USB%20HX%20Stomp%20XL.md)
 
 ---
-
-## Credits · Crédits
-
-USB protocol reverse engineering inspired by [kempline/helix_usb](https://github.com/kempline/helix_usb).
