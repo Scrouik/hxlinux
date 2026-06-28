@@ -9,131 +9,217 @@
 
 ## Status · État du projet
 
-### What works (HX Edit parity) · Ce qui fonctionne (aligné HX Edit)
+# HXLinux — Feature inventory (first usable version)
 
-**English**
+> **Scope:** HX Stomp XL on Linux · post-commit `First_usable_version` (June 2026).  
+> This document is intended as a basis for the GitHub README and communication around the first usable release.
 
-- Native USB connection to HX Stomp XL on Linux (handshake, mode machine, keep-alive)
-- Reading preset names (125 slots), active preset, rename from the UI
-- Preset activation from the UI and hardware-driven sync (slot / model notifications)
-- Signal-chain view: preset content load, blocks displayed from device data
-- Hardware changes reflected when driven by the Stomp (preset, slot, model) — same class of behaviour as listening with HX Edit connected
-- Real-time parameter editing where the USB path is implemented
-- Model metadata and USB assign payloads from **`HX_ModelUsbAssign.json`** (see [Model data](#model-data--données-modèles) below)
+---
 
-**Français**
+## Summary
 
-- Connexion USB native au HX Stomp XL sous Linux (handshake, machine à états, keep-alive)
-- Lecture des noms de presets (125 emplacements), preset actif, renommage depuis l’UI
-- Activation de preset depuis l’UI et synchro pilotée par le matériel (slot / modèle)
-- Vue chaîne : chargement du contenu preset, blocs affichés à partir des données device
-- Changements matériel pris en compte quand le Stomp pilote (preset, slot, modèle) — même famille de comportement qu’avec HX Edit en écoute
-- Édition de paramètres en temps réel là où le chemin USB est implémenté
-- Métadonnées et trames d’assign USB via **`HX_ModelUsbAssign.json`** (voir [Données modèles](#model-data--données-modèles) ci-dessous)
+HXLinux is an open-source editor for Line 6 Helix on Linux (Tauri + Rust + TypeScript). On **HX Stomp XL**, it lets you:
 
-### UI model assignment · Assignation de modèles depuis l’UI
+- browse and rename **125 presets**;
+- view and edit the **signal chain** (stomp matrix + parameter panel);
+- **assign, replace, copy, paste, and move** FX blocks over live USB;
+- manage **Amp+Cab** and **Cab Dual** models (tabs + cab replace);
+- control **Input** and **Split** Path 1 (live write + hardware scroll);
 
-**English**
+… all over **native Linux USB**, without HX Edit.
 
-| Category | From UI |
+---
+
+## 1. Platform & connection
+
+| Capability | Detail |
+|------------|--------|
+| Linux desktop app | Tauri 2 (Rust + TypeScript/Vite), 2 windows: presets + models |
+| Native USB | HX Stomp XL detection, handshake, protocol state machine |
+| Stable session | Clean shutdown without leaving the hardware stuck in editor mode |
+| Window geometry | Save/restore position and size |
+
+---
+
+## 2. Main window — presets (125 slots)
+
+| Capability | Detail |
+|------------|--------|
+| Name list | Reads all 125 presets from the device |
+| Preset activation | Click → sent to the HX |
+| Rename | Right-click → Rename, inline edit, USB send + optimistic UI update |
+| Save to hardware | Right-click → Save (active preset only, non-empty slot) |
+| Visual selection | Active preset highlighted |
+| List drag & drop | Reordering **UI only** — not yet sent to the HX |
+| Load from disk | Menu present, **not implemented** |
+
+---
+
+## 3. Models window — overview
+
+| Capability | Detail |
+|------------|--------|
+| Stomp matrix grid | 16 FX slots + structural blocks (Input, Output, Split, Merge) |
+| Visual routing | Split/merge columns, paths 1 and 2 |
+| Preset loading | One-shot USB dump → grid hydration + session parameter cache |
+| Loading overlay | UI lock while preset loads |
+| Preset banner | Name + “modified” indicator |
+| Active HW slot sync | Stomp wheel / buttons → aligned UI selection |
+
+---
+
+## 4. Matrix — FX slot editing
+
+| Capability | Detail |
+|------------|--------|
+| Slot selection | Click → hardware focus + parameter panel |
+| Copy | Right-click on filled slot → model + parameter snapshot |
+| Paste | Onto any empty FX cell (same path, other path, **other preset**) |
+| Move (DnD) | Pointer Events (not HTML5 DnD): copy → paste → clear source |
+| Move v1 constraint | Same path only (0–7 ↔ 0–7, 8–15 ↔ 8–15), empty destination |
+| Remove slot | Clears the slot on the hardware |
+| Session parameter cache | `preset_data` read **once** on load; then cache + live overrides |
+| Move Split/Merge | Routing marker move (partially implemented) |
+
+**Not yet:** inter-path DnD with auto split/merge, free Split/Merge drag, DSP budget.
+
+---
+
+## 5. Picker — model change
+
+| Capability | Detail |
+|------------|--------|
+| Scrollable list | Assignable FX models (`HX_ModelUsbAssign.json` + catalog) |
+| USB assign | `bulkHex` frames captured from HX Edit |
+| Remove slot | Same mechanism (clear slot) |
+| HW model scroll | Wheel on active slot → USB pull, without systematic re-dump |
+| Locked picker | Input, Output, Split, Merge: category fixed by structural bus |
+| Exclusions | Non-assignable categories (e.g. Split in the FX list) |
+
+---
+
+## 6. Parameter panel — live editing
+
+### Control types
+
+| Type | Examples |
+|------|----------|
+| Numeric slider | Gain, Level, Time, etc. (float and integer) |
+| Stepped discrete slider | Ratio, Clipping, Wave shape, Compress/Limit Type |
+| Boolean toggle | Bright, Fuzz, EQ on/off, polarity |
+| Mic combo | Mic selection (dedicated displayType) |
+| Graphic EQ | Bands hidden when master EQ is off |
+| Value formatting | `HelixControls.json` (units, labels, steps) |
+
+### Display rules (hardware-aligned)
+
+- Hide `stereo-only` parameters in mono
+- Hide internal booleans (`@enabled`, `@stereo` — `valueType: 2` without `displayType`)
+- Special scales: pan 0…1 → −100…+100, split A/B, etc.
+- Wire order: ascending `assign` then JSON order (correct live-write)
+
+### USB writes
+
+- `write_live_param` (float / bool / discrete)
+- `write_live_param_midi_cc` when needed
+
+---
+
+## 7. Dual models — Amp+Cab & Cab Dual
+
+| Capability | Amp+Cab | Cab Dual |
+|------------|---------|----------|
+| Tabs | Amp \| Cab | Cab 1 \| Cab 2 |
+| Params per tab | Yes | Yes |
+| Secondary tab picker | Cab locked to Single IR | Cab 2 locked to Single IR |
+| Cab-only replace | Modern bulk or legacy sequence | Dual bulk hint `c319` |
+| USB part focus | Yes | Yes |
+| HW scroll | Linked amp + cab detection | Cab1 + cab2 detection |
+
+---
+
+## 8. Path 1 — structural blocks
+
+| Block | Picker | Live write | HW scroll |
+|-------|--------|------------|-----------|
+| **Input** | Locked | Yes | Yes |
+| **Split** | Locked | Yes | Yes (Y/A/B encoding inverted: scroll vs select) |
+| **Output** | Locked + focus | No | No |
+| **Merge** | Locked + focus | No | No |
+
+I/O and flow params (Split/Merge): read from `preset_data` + panel display.
+
+---
+
+## 9. Hardware ↔ UI sync
+
+| Event | Trigger |
+|-------|---------|
+| `models:hardware-slot-changed` | Active slot change on the HX |
+| `models:slot-model-changed` | Scroll / model change |
+| `models:slot-param-changed` | Knob twist on hardware |
+| `models:slot-content-changed` | Slot content watch |
+| `models:path1-input-source-changed` | Input scroll / echo |
+| `models:path1-split-type-changed` | Split scroll / echo |
+| `models:preset-saved` | After preset save |
+
+Soft-sync: no full re-parse between dumps when unnecessary.
+
+---
+
+## 10. USB infrastructure (under the hood)
+
+- Preset read ed:03 (16-bit counter bugs, double-editor issues fixed)
+- Phase B handshake (editor commit)
+- Keep-alive and coupled lanes
+- Multi-notch scroll without ED03 freeze
+- Preset reader recovery
+- Chain value parsing (Amp+Cab, Cab Dual, `c319`/`c219`)
+- Stomp layout
+
+---
+
+## 11. Not implemented or partial
+
+| Area | Status |
+|------|--------|
+| Helix LT / Floor | Not supported (4-path topology, 2 DSP) |
+| DSP budget (`load` in `.models`) | Not calculated |
+| Output / Merge live write + scroll | Partial |
+| Inter-path DnD with auto split/merge | Planned |
+| Preset reordering on HX | UI only |
+| Preset file import/export | Not done |
+| Load preset from disk | Stub |
+| `bulkHex` campaign | Partial catalog coverage |
+
+---
+
+## Requirements
+
+- Linux (tested on Ubuntu/Debian family)
+- Line 6 **HX Stomp XL** connected via USB
+- **HX Edit** installed (to provide model metadata files)
+
+## Run the application
+
+```bash
+npm run tauri dev    # development
+npm run tauri build  # production build
+```
+
+## Credits
+
+USB reverse engineering inspired by [kempline/helix_usb](https://github.com/kempline/helix_usb).
+
+## Technical documentation
+
+| Document | Content |
 |----------|---------|
-| **Distortions** | Assignable |
-| **Dynamics** | Assignable |
-| **All other model families** | Under verification — **not available yet** for UI assignment |
+| [`description.md`](../description.md) | Session handoff memo |
+| [`TODO.md`](../TODO.md) | Prioritized backlog |
+| [`matrix-edit-handoff.md`](matrix-edit-handoff.md) | Matrix: copy/paste, DnD, session cache |
+| [`models-hardware-sync.md`](models-hardware-sync.md) | UI ↔ hardware sync |
 
-Other blocks may **appear** in the UI if they were assigned on the **hardware** first; displaying them does not mean UI assignment is supported for that family.
-
-**Français**
-
-| Famille | Depuis l’UI |
-|---------|-------------|
-| **Distortions** | Assignable |
-| **Dynamics** | Assignable |
-| **Toutes les autres familles** | En vérification — **pas encore disponibles** pour assignation UI |
-
-D’autres blocs peuvent **s’afficher** s’ils ont été assignés sur le **matériel** avant ; l’affichage ne signifie pas que l’assignation UI est prête pour cette famille.
-
-### Not available yet · Pas encore disponible
-
-**English**
-
-- Preset **save** to device / disk (HXLinux workflow)
-- **Footswitch / push button** assignment
-- Preset **LED colorization**
-- **Snapshots**
-
-**Français**
-
-- **Sauvegarde** de preset vers le device / disque (workflow HXLinux)
-- Assignation des **boutons poussoirs** (footswitch)
-- **Colorisation** des presets (LED)
-- **Snapshots**
-
-### Roadmap (short) · Suite prévue (bref)
-
-**English:** Broader UI model assignment, preset persistence, footswitches, colors, snapshots, export/import.  
-**Français :** Élargir l’assignation UI par famille, persistance preset, footswitches, couleurs, snapshots, export/import.
-
----
-
-## Model data · Données modèles
-
-**English**
-
-| File | Role |
-|------|------|
-| **`src-tauri/resources/HX_ModelUsbAssign.json`** | **Reference file** — per-model USB assign (`bulkHex`), picker labels, and fields we align with HX Edit over time |
-| **`src-tauri/resources/HX_ModelCatalog.json`** | **Deprecated for HXLinux** — legacy Line 6 export; **do not extend**; new work goes only into `HX_ModelUsbAssign.json` |
-
-Parameter definitions remain in bundled **`models/*.models`** files (`.models` JSON per family).
-
-**Français**
-
-| Fichier | Rôle |
-|---------|------|
-| **`src-tauri/resources/HX_ModelUsbAssign.json`** | **Fichier de référence** — assign USB par modèle (`bulkHex`), libellés picker, champs alignés HX Edit au fil du temps |
-| **`src-tauri/resources/HX_ModelCatalog.json`** | **Déprécié pour HXLinux** — export Line 6 historique ; **ne plus enrichir** ; tout le nouveau travail va dans `HX_ModelUsbAssign.json` |
-
-Les définitions de paramètres restent dans les fichiers **`models/*.models`** bundlés (JSON `.models` par famille).
-
----
-
-## Tech stack · Stack technique
-
-- **Backend:** Rust, Tauri 2, `rusb`
-- **Frontend:** TypeScript, Vite (main UI + models pane)
-- **Protocol:** USB reverse engineering (captures HX Edit / HXLinux — see `docs/`)
-
----
-
-## Requirements · Prérequis
-
-- Linux (Ubuntu/Debian family tested)
-- Line 6 **HX Stomp XL** on USB
-- Line 6 **HX Edit** on the machine is useful for captures and comparison; **model assign data** ships in-repo as **`HX_ModelUsbAssign.json`** (not `HX_ModelCatalog.json`)
-
----
-
-## Run · Lancement
-
-```bash
-# Frontend dev server only
-npm run dev
-
-# Full desktop app (frontend + Tauri backend)
-npm run tauri dev
-```
-
----
-
-## Build · Compilation
-
-```bash
-npm run build
-npm run tauri build
-```
-
----
 
 ## Project notes · Notes projet
 
