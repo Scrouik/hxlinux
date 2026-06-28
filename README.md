@@ -211,41 +211,11 @@ npm run tauri build  # production build
 
 USB reverse engineering inspired by [kempline/helix_usb](https://github.com/kempline/helix_usb).
 
-## Technical documentation
-
-| Document | Content |
-|----------|---------|
-| [`description.md`](../description.md) | Session handoff memo |
-| [`TODO.md`](../TODO.md) | Prioritized backlog |
-| [`matrix-edit-handoff.md`](matrix-edit-handoff.md) | Matrix: copy/paste, DnD, session cache |
-| [`models-hardware-sync.md`](models-hardware-sync.md) | UI ↔ hardware sync |
-
-
 ## Project notes · Notes projet
 
 - Rust mode state machine for USB protocol phases
 - Async USB (listener / writer threads + channels)
 - Protocol reference: [`docs/Référence protocole USB HX Stomp XL.md`](docs/Référence%20protocole%20USB%20HX%20Stomp%20XL.md)
-
----
-
-## Important — after closing the app · Après fermeture
-
-**English**
-
-When you quit HXLinux while the Stomp XL is connected, the device may stay in a **degraded or stuck editor USB state**. HX Edit on Windows likely uses the **Line 6 proprietary driver** to release the session with traffic we have **not yet captured** on Linux.
-
-**Workaround:** after closing HXLinux, **power off the Stomp XL**, then turn it back on before the next session (USB replug alone is less reliable).
-
-Details: protocol doc §12.3. The UI shows an amber banner while connected and a confirmation on window close.
-
-**Français**
-
-En quittant HXLinux alors que le Stomp XL est connecté, le boîtier peut rester en **mode dégradé ou bloqué** (session USB éditeur non libérée). Sous Windows, HX Edit s’appuie sans doute sur le **driver propriétaire Line 6** pour envoyer une libération que nous n’avons **pas encore reproduite** sous Linux.
-
-**Contournement :** après fermeture de HXLinux, **éteindre le Stomp XL** (alimentation), puis le rallumer avant la prochaine session (rebrancher l’USB seul est moins fiable).
-
-Détails : doc protocole §12.3. Bandeau ambre à la connexion + confirmation à la fermeture de fenêtre.
 
 ---
 
