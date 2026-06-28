@@ -1,69 +1,64 @@
 # HXLinux
 
-Open source HX Stomp XL editor for Linux, built with Tauri (Rust + TypeScript).
+Open-source **HX Stomp XL** editor for **Linux**, built with Tauri (Rust + TypeScript).
+
+Connect over native USB, browse and edit presets, assign FX blocks, tweak parameters live, and manage the signal chain — without HX Edit.
 
 ## Status
 
-Work in progress, but already usable for core preset browsing tasks.
+**First usable version** (June 2026) — early testers welcome.
 
-### Working
-- Native USB connection to HX Stomp XL on Linux
-- Device handshake and mode transitions
-- Reading all preset names from the device (125 slots)
-- Main window with preset list and rename support
-- Preset activation from the UI
-- Dedicated models window (`models.html`) that opens at startup
-- Reliable preset-content loading in the models window when switching presets
+| | |
+|---|---|
+| **Full feature list (FR)** | [docs/features-v1.md](docs/features-v1.md) |
+| **Full feature list (EN)** | [docs/features-v1.en.md](docs/features-v1.en.md) |
+| **Install (testers)** | [docs/install.en.md](docs/install.en.md) |
 
-### In progress
-- Deeper preset parameter decoding and mapping
-- Better signal chain visualization
-- Real-time parameter editing
+### Highlights
 
-### Planned
-- Parameter controls generated from Line 6 model metadata
-- Export/import for preset files
-- Additional UX polish and editor ergonomics
+- Native USB to HX Stomp XL (125 presets: browse, activate, rename, save)
+- Stomp matrix: copy / paste / move FX blocks, model picker, live parameter editing
+- Amp+Cab and Cab Dual tabs, Path 1 Input & Split (live write + hardware scroll)
+- Model metadata bundled — **HX Edit not required** to run the release build
+
+### Not yet
+
+- Helix LT / Floor editing, DSP budget, preset file import/export, preset reorder on device
+
+## Download
+
+**[GitHub Releases](https://github.com/Scrouik/hxlinux/releases)** — AppImage or `.deb` (Linux x86_64).
+
+Quick start after download: [docs/install.en.md](docs/install.en.md) (USB udev rule required).
+
+## Requirements
+
+- Linux x86_64 (Ubuntu/Debian family tested)
+- Line 6 **HX Stomp XL** via USB
+- udev rule: [`packaging/99-line6-helix.rules`](packaging/99-line6-helix.rules)
+
+## Development
+
+```bash
+npm ci
+npm run tauri dev    # desktop app
+npm run tauri build  # release bundles in src-tauri/target/release/bundle/
+```
 
 ## Tech stack
 
 - **Backend:** Rust, Tauri 2, `rusb`
-- **Frontend:** TypeScript, Vite (multi-page: main + models window)
-- **Protocol basis:** reverse-engineering work inspired by Kempline
+- **Frontend:** TypeScript, Vite
+- **Protocol:** reverse-engineering inspired by [kempline/helix_usb](https://github.com/kempline/helix_usb)
 
-## Requirements
+## Documentation
 
-- Linux (tested on Ubuntu/Debian family)
-- Line 6 HX Stomp XL connected via USB
-- HX Edit installed (to provide model metadata files)
+| Doc | Content |
+|-----|---------|
+| [description.md](description.md) | Session handoff memo |
+| [TODO.md](TODO.md) | Backlog |
+| [matrix-edit-handoff.md](docs/matrix-edit-handoff.md) | Matrix editing architecture |
 
-## Run
+## License
 
-```bash
-# Frontend dev server only
-npm run dev
-
-# Full desktop app (frontend + Tauri backend)
-npm run tauri dev
-```
-
-## Build
-
-```bash
-# Frontend build
-npm run build
-
-# Desktop app production build
-npm run tauri build
-```
-
-## Project notes
-
-- The app uses a Rust mode state machine to manage USB protocol phases.
-- USB communication is asynchronous (listener/writer threads + channels).
-- The models view is intentionally split into a second window to keep the main UI simple.
-
-## Credits
-
-USB protocol reverse engineering inspired by:
-[kempline/helix_usb](https://github.com/kempline/helix_usb)
+See repository license file if present; otherwise check with the maintainer.

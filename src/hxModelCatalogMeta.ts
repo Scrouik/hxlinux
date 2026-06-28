@@ -101,7 +101,7 @@ function parseModelsFileRef(raw: unknown): string[] {
 }
 
 async function loadUsbAssignModelsFileMaps(): Promise<UsbAssignModelsFileMaps> {
-  const url = "/src-tauri/resources/HX_ModelUsbAssign.json";
+  const url = "/resources/HX_ModelUsbAssign.json";
   const res = await fetch(url);
   const byCategory = new Map<string, string[]>();
   const byId = new Map<string, string[]>();
@@ -409,7 +409,7 @@ function buildPresetMetaFromAssignEntries(entries: UsbAssignModelEntry[]): Prese
 }
 
 async function loadUsbAssignIndexes(): Promise<UsbAssignIndexes> {
-  const url = "/src-tauri/resources/HX_ModelUsbAssign.json";
+  const url = "/resources/HX_ModelUsbAssign.json";
   const res = await fetch(url);
   const byHexHint = new Map<string, UsbAssignModelEntry[]>();
   const byId = new Map<string, UsbAssignModelEntry[]>();
@@ -873,7 +873,7 @@ type UsbAssignSplitSourceEntry = {
 };
 
 async function loadUsbAssignPickerDataFromJson(): Promise<CatalogPickerData> {
-  const url = "/src-tauri/resources/HX_ModelUsbAssign.json";
+  const url = "/resources/HX_ModelUsbAssign.json";
   const res = await fetch(url);
   if (!res.ok) {
     console.warn("HX_ModelUsbAssign.json : chargement picker impossible.", res.status);

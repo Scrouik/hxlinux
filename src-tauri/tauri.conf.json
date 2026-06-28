@@ -28,6 +28,7 @@
     "active": true,
     "targets": "all",
     "resources": {
+      "resources/HelixControls.json": "resources/HelixControls.json",
       "resources/HX_ModelCatalog.json": "resources/HX_ModelCatalog.json",
       "resources/HX_ModelUsbAssign.json": "resources/HX_ModelUsbAssign.json",
       "resources/icons_models/*": "resources/icons_models/",

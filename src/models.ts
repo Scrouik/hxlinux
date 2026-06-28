@@ -6999,7 +6999,7 @@ function stripModelsDefinitionFilePreamble(raw: string): string {
 async function loadModelsDefinitionArray(fileBase: string): Promise<ModelDefinitionJson[]> {
   const hit = modelsDefinitionsCache.get(fileBase);
   if (hit) return hit;
-  const url = `/src-tauri/resources/models/${fileBase}.models`;
+  const url = `/resources/models/${fileBase}.models`;
   const res = await fetch(url);
   let raw: string;
   if (res.ok) {
@@ -7244,7 +7244,7 @@ function parseHelixControlObject(o: Record<string, unknown>): HelixControlDefJso
 }
 
 async function loadHelixControlsMap(): Promise<Map<string, HelixControlDefJson>> {
-  const url = "/src-tauri/resources/HelixControls.json";
+  const url = "/resources/HelixControls.json";
   const res = await fetch(url);
   if (!res.ok) {
     console.warn("HelixControls.json : chargement impossible.", res.status);
@@ -10041,7 +10041,7 @@ async function refreshAllSlotTooltipsInContent(): Promise<void> {
 
 /** URL Vite vers un asset sous `src-tauri/resources/` (encode le nom de fichier : `%` casse decodeURI). */
 function tauriResourceUrl(subdir: string, filename: string): string {
-  return `/src-tauri/resources/${subdir}/${encodeURIComponent(filename)}`;
+  return `/resources/${subdir}/${encodeURIComponent(filename)}`;
 }
 
 function iconForCategory(category: string, name: string): string | null {
@@ -10905,8 +10905,8 @@ function makeEmptySlotNode(opts?: { columnBlocked?: boolean }): HTMLElement {
   return item;
 }
 
-const IO_INPUT_ICON = "/src-tauri/resources/icons_category/icon-input-category.png";
-const IO_OUTPUT_ICON = "/src-tauri/resources/icons_category/icon-output-category.png";
+const IO_INPUT_ICON = "/resources/icons_category/icon-input-category.png";
+const IO_OUTPUT_ICON = "/resources/icons_category/icon-output-category.png";
 
 function path1InputParentModelId(): string {
   return flowIoCatalogIdsForConnectedDevice(connectedDeviceName).input;
@@ -12111,4 +12111,14 @@ window.addEventListener("DOMContentLoaded", () => {
     void refresh();
   }, 300);
   startOptionalUsbPresetPollTimer();
+
+  // WIP matrix inter-path helpers — referenced so `tsc` passes in release CI.
+  void [
+    armProbeSlotMergeGrace,
+    focusMatrixSlotParamsPane,
+    cabDualCab2HexFromSlotTrame,
+    countPath1FilledFxSlots,
+    ensurePath2DualRoutingUsb,
+    teardownPath2DualRoutingUsb,
+  ];
 });
