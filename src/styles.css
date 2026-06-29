@@ -1308,6 +1308,7 @@ html, body {
   height: 48px;
   display: flex;
   align-items: center;
+  gap: 12px;
   padding: 0 14px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border);

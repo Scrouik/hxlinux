@@ -39,3 +39,8 @@ packages.microsoft.gpg
 *.njsproj
 *.sln
 *.sw?
+
+# Mémos développeur / agent (locaux uniquement — pas sur GitHub)
+TODO.md
+description.md
+agent.md
