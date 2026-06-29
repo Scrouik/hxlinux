@@ -57,7 +57,8 @@ npm run tauri build  # release bundles in src-tauri/target/release/bundle/
 | [matrix-edit-handoff.md](docs/matrix-edit-handoff.md) | Matrix editing architecture |
 | [Référence protocole USB](docs/Référence%20protocole%20USB%20HX%20Stomp%20XL.md) | USB protocol notes (FR) |
 
-> ⚠️ **Early release — back up your presets first**  
+> [!WARNING]
+> **Early release — back up your presets first**  
 > Export your presets from HX Edit before using HXLinux.  
 > No data loss has been reported, but this is a first release — better safe than sorry.
 >
