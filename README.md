@@ -62,6 +62,6 @@ npm run tauri build  # release bundles in src-tauri/target/release/bundle/
 > Export your presets from HX Edit before using HXLinux.  
 > No data loss has been reported, but this is a first release — better safe than sorry.
 >
-> ⚠️ **Première version — sauvegardez vos presets avant tout**  
+> **Première version — sauvegardez vos presets avant tout**  
 > Exportez vos presets depuis HX Edit avant d'utiliser HXLinux.  
 > Aucune perte de données n'a été signalée, mais c'est une première version — mieux vaut prévenir que guérir.
