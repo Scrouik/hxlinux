@@ -2,6 +2,7 @@
 
 <img width="1364" height="1009" alt="HXlinux" src="https://github.com/user-attachments/assets/b7e1a6a8-fca6-41cd-a1f6-95204f866c10" />
 
+
 **EN:** Open-source **HX Stomp XL** editor for **Linux** (Tauri — Rust + TypeScript).  
 **FR:** Éditeur open source pour **HX Stomp XL** sous **Linux** (Tauri — Rust + TypeScript).
 
