@@ -48,7 +48,7 @@ npm run tauri build  # release bundles in src-tauri/target/release/bundle/
 
 - **Backend:** Rust, Tauri 2, `rusb`
 - **Frontend:** TypeScript, Vite
-- **Protocol:** reverse-engineering inspired by [kempline/helix_usb](https://github.com/kempline/helix_usb)
+- **Protocol:** reverse-engineering started with [kempline/helix_usb](https://github.com/kempline/helix_usb)
 
 ## Documentation
 
