@@ -17,10 +17,6 @@ Connect over native USB, browse and edit presets, assign FX blocks, tweak parame
 | **Install (FR)** | [docs/install.md](docs/install.md) |
 | **Install (EN)** | [docs/install.en.md](docs/install.en.md) |
 
-> ⚠️ **Early release — back up your presets first**  
-> Export your presets from HX Edit before using HXLinux.  
-> No data loss has been reported, but this is a first release — better safe than sorry.
-
 ## Download · Télécharger
 
 **[GitHub Releases](https://github.com/Scrouik/hxlinux/releases)** — AppImage or `.deb` (Linux x86_64).
@@ -60,3 +56,11 @@ npm run tauri build  # release bundles in src-tauri/target/release/bundle/
 |-----|---------|
 | [matrix-edit-handoff.md](docs/matrix-edit-handoff.md) | Matrix editing architecture |
 | [Référence protocole USB](docs/Référence%20protocole%20USB%20HX%20Stomp%20XL.md) | USB protocol notes (FR) |
+
+> ⚠️ **Early release — back up your presets first**  
+> Export your presets from HX Edit before using HXLinux.  
+> No data loss has been reported, but this is a first release — better safe than sorry.
+>
+> ⚠️ **Première version — sauvegardez vos presets avant tout**  
+> Exportez vos presets depuis HX Edit avant d'utiliser HXLinux.  
+> Aucune perte de données n'a été signalée, mais c'est une première version — mieux vaut prévenir que guérir.
