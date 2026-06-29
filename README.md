@@ -17,6 +17,10 @@ Connect over native USB, browse and edit presets, assign FX blocks, tweak parame
 | **Install (FR)** | [docs/install.md](docs/install.md) |
 | **Install (EN)** | [docs/install.en.md](docs/install.en.md) |
 
+> ⚠️ **Early release — back up your presets first**  
+> Export your presets from HX Edit before using HXLinux.  
+> No data loss has been reported, but this is a first release — better safe than sorry.
+
 ## Download · Télécharger
 
 **[GitHub Releases](https://github.com/Scrouik/hxlinux/releases)** — AppImage or `.deb` (Linux x86_64).
