@@ -1,3 +1,4 @@
+// ! Matrix_routing move.rs
 //! Déplacement split / merge (drag & drop HX Edit) — opcodes `1d` + `1b`.
 //! Capture `d&d_split.json` : lane **`cd:03`**, un `next_editor_ed03_double()` par bulk `1d` **et** `1b`.
 

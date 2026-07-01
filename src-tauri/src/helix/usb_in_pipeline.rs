@@ -5,6 +5,7 @@
 //! - `Observed` : reconnu, **aucun** OUT / lane sur le fil — couche suivante.
 //! - `Consumed` : traitement complet (lane + ACK ou autre OUT) — **stop** les couches actives suivantes.
 
+use crate::helix::clear_all_preset_blocks;
 use crate::helix::firmware_scroll_ack;
 use crate::helix::legacy_cab_param_commit;
 use crate::helix::matrix_routing_dd;
@@ -36,6 +37,7 @@ impl LayerResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveLayerId {
+    ClearAllPreset,
     MatrixRoutingDd,
     ScrollModelPull,
     LegacyCabParamCommit,
@@ -64,6 +66,17 @@ fn scroll_model_pull_handler(state: &mut HelixState, data: &[u8]) -> LayerResult
     scroll_model_pull::handle_in_layer_trigger(data, state)
 }
 
+fn clear_all_handler(state: &mut HelixState, data: &[u8]) -> LayerResult {
+    if state.clear_all_wait.is_none() {
+        return LayerResult::Ignored;
+    }
+    if !clear_all_preset_blocks::is_clear_all_pipeline_in(data) {
+        return LayerResult::Ignored;
+    }
+    let _ = clear_all_preset_blocks::try_notify_clear_all_in(state, data);
+    LayerResult::Consumed { effect: LayerEffect::None }
+}
+
 fn matrix_routing_dd_handler(state: &mut HelixState, data: &[u8]) -> LayerResult {
     if state.matrix_routing_dd_wait.is_none() {
         return LayerResult::Ignored;
@@ -82,7 +95,8 @@ fn legacy_cab_param_commit_handler(state: &mut HelixState, data: &[u8]) -> Layer
     legacy_cab_param_commit::handle_in_layer(state, data)
 }
 
-const ACTIVE_LAYERS: [(ActiveLayerId, ActiveHandler); 5] = [
+const ACTIVE_LAYERS: [(ActiveLayerId, ActiveHandler); 6] = [
+    (ActiveLayerId::ClearAllPreset, clear_all_handler),
     (ActiveLayerId::MatrixRoutingDd, matrix_routing_dd_handler),
     (ActiveLayerId::ScrollModelPull, scroll_model_pull_handler),
     (ActiveLayerId::LegacyCabParamCommit, legacy_cab_param_commit_handler),

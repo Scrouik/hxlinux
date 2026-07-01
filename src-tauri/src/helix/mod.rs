@@ -38,6 +38,8 @@ pub mod editor_phase4_bootstrap;
 pub mod editor_go_live;
 pub mod preset_label;
 pub mod preset_name_wire;
+pub mod clear_all_preset_blocks;
+pub mod clear_all_preset_blocks_wire;
 pub mod amorcage;
 pub mod phase4_state;
 pub mod init_trace;
@@ -373,6 +375,8 @@ pub struct HelixState {
     pub usb_host_transaction_hold: bool,
     /// Attente IN `19`/`21` pendant un move split/merge (`matrix_routing_dd.rs`).
     pub matrix_routing_dd_wait: Option<crate::helix::matrix_routing_dd::MatrixRoutingDdWait>,
+    /// Attente ack device pendant clear-all blocks (`clear_all_preset_blocks.rs`).
+    pub clear_all_wait: Option<crate::helix::clear_all_preset_blocks::ClearAllWait>,
     /// Dernier paquet IN « focus slot » parsé par index Kempline (rempli par `sync_hardware_slot_focus_usb`).
     pub last_slot_focus_capsule: [Option<slot_focus_in::SlotFocusInCapsule>; 16],
     /// Empreinte précédente pour surveillance contenu slot (modèle / vide / params).
@@ -665,6 +669,7 @@ impl HelixState {
             cab_dual_cab2_suppress_standard_ed08_until: None,
             usb_host_transaction_hold: false,
             matrix_routing_dd_wait: None,
+            clear_all_wait: None,
             last_slot_focus_capsule: std::array::from_fn(|_| None),
             slot_watch_prev: std::array::from_fn(|_| slot_watch::SlotWatchSnapshot::default()),
             hw_slot_content_sequence: 0,

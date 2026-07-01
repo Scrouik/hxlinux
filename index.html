@@ -83,7 +83,7 @@
           — no preset —
         </div>
         <div class="statusbar-item hint" id="bar-hint">
-          Right-click for options · Drag to reorder
+          Clic droit sur la grille · Glisser pour réordonner
         </div>
       </footer>
 
@@ -96,6 +96,12 @@
           <path d="M11 2l3 3-8 8H3v-3L11 2z"/>
         </svg>
         Rename
+      </div>
+      <div class="ctx-item" id="ctx-export">
+        <svg class="ctx-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M8 3v7m-2-2l2 2 2-2M3 13h10"/>
+        </svg>
+        Export .hlx
       </div>
       <div class="ctx-separator"></div>
       <div class="ctx-item" id="ctx-save">
@@ -112,10 +118,10 @@
       </div>
     </div>
 
-    <!-- Context menu — matrice Models (copier / coller slot) -->
+    <!-- Context menu — panneau grille matrice uniquement -->
     <div class="ctx-menu" id="models-ctx-menu" role="menu" aria-hidden="true">
-      <div class="ctx-item" id="models-ctx-copy" role="menuitem">Copier</div>
-      <div class="ctx-item" id="models-ctx-paste" role="menuitem">Coller</div>
+      <div class="ctx-item" id="models-ctx-reload" role="menuitem">Reload</div>
+      <div class="ctx-item" id="models-ctx-clean-all" role="menuitem">Clean All block</div>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

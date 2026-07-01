@@ -14,6 +14,7 @@ let dragSrcIndex = -1;
 const list        = document.getElementById("preset-list")!;
 const ctxMenu     = document.getElementById("ctx-menu")!;
 const ctxRename   = document.getElementById("ctx-rename")!;
+const ctxExport   = document.getElementById("ctx-export")!;
 const ctxSave     = document.getElementById("ctx-save")!;
 const ctxLoad     = document.getElementById("ctx-load")!;
 const statusDot   = document.getElementById("status-dot")!;
@@ -63,6 +64,10 @@ function isActivePreset(index: number): boolean {
 
 function canRenamePreset(index: number): boolean {
   return isActivePreset(index);
+}
+
+function canExportPreset(index: number): boolean {
+  return isActivePreset(index) && !isEmpty(presetNames[index]);
 }
 
 function canSavePreset(index: number): boolean {
@@ -138,8 +143,8 @@ function render(names: string[], active: number) {
     li.appendChild(nameEl);
 
     li.addEventListener("click",       ()  => onItemClick(i));
-    li.addEventListener("contextmenu", (e) => onContextMenu(e, i));
     li.addEventListener("dblclick",    ()  => onItemDblClick(i));
+    li.addEventListener("contextmenu", (e) => onPresetItemContextMenu(e, i));
 
     li.draggable = true;
     li.addEventListener("dragstart", (e) => onDragStart(e, i));
@@ -240,7 +245,7 @@ async function onItemClick(index: number) {
     await emit("models:load-preset", { index });
   } catch (e) {
     barHint.textContent = `Erreur activation : ${e}`;
-    setTimeout(() => { barHint.textContent = "Right-click for options · Drag to reorder"; }, 2000);
+    setTimeout(() => { barHint.textContent = "Clic droit sur la grille · Glisser pour réordonner"; }, 2000);
   }
   render(presetNames, activePreset);
 }
@@ -255,10 +260,16 @@ async function onItemDblClick(index: number) {
   } catch (e) {
     barHint.textContent = `Erreur activation : ${e}`;
   }
-  setTimeout(() => { barHint.textContent = "Right-click for options · Drag to reorder"; }, 2000);
+  setTimeout(() => { barHint.textContent = "Clic droit sur la grille · Glisser pour réordonner"; }, 2000);
 }
 
-// ─── Context menu ─────────────────────────────────────────────────────────────
+// ─── Context menu (preset actif uniquement) ───────────────────────────────────
+
+function onPresetItemContextMenu(e: MouseEvent, index: number) {
+  e.preventDefault();
+  if (index !== activePreset || activePreset < 0) return;
+  onContextMenu(e, index);
+}
 
 function onContextMenu(e: MouseEvent, index: number) {
   e.preventDefault();
@@ -267,6 +278,20 @@ function onContextMenu(e: MouseEvent, index: number) {
   render(presetNames, activePreset);
 
   ctxLoad.classList.add("disabled");
+  if (canExportPreset(index)) {
+    ctxExport.classList.remove("disabled");
+    ctxExport.removeAttribute("title");
+  } else {
+    ctxExport.classList.add("disabled");
+    if (isEmpty(presetNames[index])) {
+      ctxExport.title = "Preset vide — rien à exporter";
+    } else if (!isActivePreset(index)) {
+      ctxExport.title =
+        activePreset >= 0
+          ? `Export réservé au preset actif (${padNum(activePreset)})`
+          : "Aucun preset actif";
+    }
+  }
   if (canSavePreset(index)) {
     ctxSave.classList.remove("disabled");
     ctxSave.removeAttribute("title");
@@ -332,7 +357,7 @@ document.addEventListener("keydown", (e) => {
           ? `Renommage : preset actif uniquement (${padNum(activePreset)})`
           : "Renommage indisponible — aucun preset actif";
       setTimeout(() => {
-        barHint.textContent = "Right-click for options · Drag to reorder";
+        barHint.textContent = "Clic droit sur la grille · Glisser pour réordonner";
       }, 2500);
       return;
     }
@@ -352,7 +377,7 @@ function startRename(index: number) {
         ? `Renommage : preset actif uniquement (${padNum(activePreset)})`
         : "Renommage indisponible — aucun preset actif";
     setTimeout(() => {
-      barHint.textContent = "Right-click for options · Drag to reorder";
+      barHint.textContent = "Clic droit sur la grille · Glisser pour réordonner";
     }, 2500);
     return;
   }
@@ -417,13 +442,31 @@ async function confirmRename(newName: string) {
     render(presetNames, activePreset);
     barHint.textContent = `✗  Erreur : ${e}`;
   }
-  setTimeout(() => { barHint.textContent = "Right-click for options · Drag to reorder"; }, 3000);
+  setTimeout(() => { barHint.textContent = "Clic droit sur la grille · Glisser pour réordonner"; }, 3000);
 }
 
 function cancelRename() {
   if (renameIndex < 0) return;
   renameIndex = -1;
   render(presetNames, activePreset);
+}
+
+// ─── Export .hlx ──────────────────────────────────────────────────────────────
+
+async function exportPresetHlx(index: number) {
+  hideContextMenu();
+  if (!canExportPreset(index)) {
+    barHint.textContent = !isActivePreset(index)
+      ? activePreset >= 0
+        ? `Export : preset actif uniquement (${padNum(activePreset)})`
+        : "Export indisponible — aucun preset actif"
+      : "Export indisponible — preset vide";
+    setTimeout(() => {
+      barHint.textContent = "Clic droit sur la grille · Glisser pour réordonner";
+    }, 2500);
+    return;
+  }
+  await emit("preset:export-hlx-request", { index });
 }
 
 // ─── Save to disk ─────────────────────────────────────────────────────────────
@@ -437,7 +480,7 @@ async function savePreset(index: number) {
         : "Sauvegarde indisponible — aucun preset actif"
       : "Sauvegarde indisponible — preset vide";
     setTimeout(() => {
-      barHint.textContent = "Right-click for options · Drag to reorder";
+      barHint.textContent = "Clic droit sur la grille · Glisser pour réordonner";
     }, 2500);
     return;
   }
@@ -448,7 +491,7 @@ async function savePreset(index: number) {
   } catch (e) {
     barHint.textContent = `✗  Erreur sauvegarde : ${e}`;
   }
-  setTimeout(() => { barHint.textContent = "Right-click for options · Drag to reorder"; }, 3000);
+  setTimeout(() => { barHint.textContent = "Clic droit sur la grille · Glisser pour réordonner"; }, 3000);
 }
 
 // ─── Load from disk ───────────────────────────────────────────────────────────
@@ -456,7 +499,7 @@ async function savePreset(index: number) {
 async function loadPreset(_index: number) {
   hideContextMenu();
   barHint.textContent = `Load from disk → à implémenter`;
-  setTimeout(() => { barHint.textContent = "Right-click for options · Drag to reorder"; }, 3000);
+  setTimeout(() => { barHint.textContent = "Clic droit sur la grille · Glisser pour réordonner"; }, 3000);
   // TODO: invoke("load_preset_from_disk", { index })
 }
 
@@ -466,6 +509,13 @@ ctxRename.addEventListener("click", (e) => {
   e.stopPropagation();
   if (ctxTargetIndex >= 0 && !ctxRename.classList.contains("disabled")) {
     startRename(ctxTargetIndex);
+  }
+});
+
+ctxExport.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (ctxTargetIndex >= 0 && !ctxExport.classList.contains("disabled")) {
+    void exportPresetHlx(ctxTargetIndex);
   }
 });
 
@@ -568,7 +618,7 @@ function onDrop(e: DragEvent, targetIndex: number) {
   render(presetNames, activePreset);
 
   barHint.textContent = `Move preset ${padNum(dragSrcIndex)} → ${padNum(actualInsert)} (à envoyer au HX)`;
-  setTimeout(() => { barHint.textContent = "Right-click for options · Drag to reorder"; }, 3000);
+  setTimeout(() => { barHint.textContent = "Clic droit sur la grille · Glisser pour réordonner"; }, 3000);
 
   // TODO: invoke("move_preset", { from: dragSrcIndex, to: actualInsert })
 
@@ -596,8 +646,15 @@ window.addEventListener("DOMContentLoaded", () => {
     barHint.textContent = msg;
     console.warn(`[HxLinux] ${msg}`);
     setTimeout(() => {
-      barHint.textContent = "Right-click for options · Drag to reorder";
+      barHint.textContent = "Clic droit sur la grille · Glisser pour réordonner";
     }, 6000);
+  });
+  void listen<{ ok: boolean; message: string }>("preset:export-hlx-done", (event) => {
+    const { ok, message } = event.payload ?? { ok: false, message: "Export .hlx échoué" };
+    barHint.textContent = message;
+    setTimeout(() => {
+      barHint.textContent = "Clic droit sur la grille · Glisser pour réordonner";
+    }, ok ? 4000 : 3000);
   });
 });
 

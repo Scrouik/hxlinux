@@ -8,6 +8,7 @@
 mod helix;
 mod stomp_layout;
 mod preset_chain_params;
+mod preset_snapshot_states;
 
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -573,6 +574,28 @@ fn save_preset_to_hardware(
         ));
     }
     helix::preset_label::send_preset_save(&mut s, index, &name)
+}
+
+/// Dialogue « Enregistrer sous » pour un export `.hlx` (contenu JSON fourni par le frontend).
+#[tauri::command]
+fn save_hlx_preset_file(json: String, default_name: String) -> Result<Option<String>, String> {
+    let mut name = default_name.trim().to_string();
+    if name.is_empty() {
+        name = "preset.hlx".to_string();
+    } else if !name.to_ascii_lowercase().ends_with(".hlx") {
+        name.push_str(".hlx");
+    }
+    let path = rfd::FileDialog::new()
+        .set_file_name(&name)
+        .add_filter("Helix Preset", &["hlx"])
+        .save_file();
+    match path {
+        Some(p) => {
+            fs::write(&p, json.as_bytes()).map_err(|e| format!("Écriture fichier : {e}"))?;
+            Ok(Some(p.to_string_lossy().into_owned()))
+        }
+        None => Ok(None),
+    }
 }
 
 /// Active un preset sur le HX via MIDI Program Change (endpoint 0x02).
@@ -2145,7 +2168,11 @@ fn get_preset_data_hex(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<Stri
 
 /// Déclenche la lecture du contenu du preset actif sur le HX.
 #[tauri::command]
-fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(), String> {
+fn request_preset_content(
+    force_immediate: Option<bool>,
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Result<(), String> {
+    let force_immediate = force_immediate.unwrap_or(false);
     let (active_preset, helix_arc) = {
         let mut app = state.lock().unwrap();
         let now = Instant::now();
@@ -2183,21 +2210,23 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
         );
     }
     if s.preset_content_only {
-        if s.want_content_only_after_x2 {
+        if s.want_content_only_after_x2 && !force_immediate {
             // activate_preset + attente écho MIDI PC — ne pas réinitialiser ni dupliquer.
             eprintln!(
                 "[PresetDebug][request_preset_content] content_only déjà actif (attente MIDI PC)"
             );
             return Ok(());
         }
-        // Session fantôme fréquente après rafales `probe_slot_model_usb` : content_only
-        // reste posé sans RequestPreset actif → les relances UI étaient ignorées silencieusement.
+        // Session fantôme ou relecture forcée (menu Reload) : reset avant relance.
         eprintln!(
-            "[PresetDebug][request_preset_content] content_only fantôme — reset session avant relance"
+            "[PresetDebug][request_preset_content] content_only reset avant relance (force_immediate={force_immediate})"
         );
         s.preset_content_only = false;
         s.preset_data_ready = false;
         s.preset_data.clear();
+    }
+    if force_immediate {
+        s.want_content_only_after_x2 = false;
     }
     // L'UI met à jour `active_preset` (ex. après `activate_preset` + MIDI PC) avant cette
     // commande, alors que `preset_index` côté Helix ne bouge qu'avec les paquets USB x2 ou
@@ -2213,12 +2242,13 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
     // preset_content_only=true dans les deux cas : bloque les RequestPresetName
     // déclenchés par le MIDI listener pendant qu'on attend le x2 de confirmation.
     s.preset_content_only = true;
-    if s.want_content_only_after_x2 {
+    if s.want_content_only_after_x2 && !force_immediate {
         // activate_preset a envoyé le MIDI PC et posé le flag.
         // On attend le x2 du hardware pour lancer cd:03 — garantit que tous
         // les x2 sont ACKés avant la lecture (même séquence que HXEdit).
     } else {
-        // Appel direct sans activate_preset (ex: force-recover) → déclenchement immédiat.
+        s.want_content_only_after_x2 = false;
+        // Appel direct sans activate_preset (ex: force-recover, Reload grille) → immédiat.
         s.switch_mode(ModeRequest::RequestPreset(true));
     }
     {
@@ -2227,6 +2257,16 @@ fn request_preset_content(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(
         app.last_preset_request_at = Some(Instant::now());
     }
     Ok(())
+}
+
+/// Vide tous les blocs FX du preset actif (séquence `clear_all_block.json`).
+#[tauri::command]
+fn clear_all_preset_blocks(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(), String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone().ok_or("HX non connecté")?
+    };
+    helix::clear_all_preset_blocks::execute_clear_all_preset_blocks(helix_arc)
 }
 
 /// Récupération "hard" quand la lecture preset reste bloquée trop longtemps.
@@ -2279,6 +2319,7 @@ fn force_recover_preset_reader(state: tauri::State<Arc<Mutex<AppState>>>) -> Res
         s.preset_content_only = false;
         s.preset_data_ready = false;
         s.preset_data.clear();
+        s.want_content_only_after_x2 = false;
         s.last_slot_focus_capsule = std::array::from_fn(|_| None);
         s.slot_watch_prev = std::array::from_fn(|_| helix::slot_watch::SlotWatchSnapshot::default());
     s.slot_param_emit.clear();
@@ -2513,6 +2554,32 @@ fn get_active_preset_path1_io_chain_param_values(
     let abs = start.checked_add(seg_idx_in_window)?;
     let seg = segs.get(abs).copied()?;
     preset_chain_params::parse_flow_io_segment_params(seg)
+}
+
+/// États bloc par snapshot (`split`, `block0`, …) pour export `.hlx`.
+#[tauri::command]
+fn get_active_preset_snapshot_dsp0_block_states(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    block_count: u32,
+) -> Option<Vec<Vec<bool>>> {
+    if block_count == 0 || block_count > 16 {
+        return None;
+    }
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        (app.active_preset, app.helix_state.clone()?)
+    };
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() {
+        return None;
+    }
+    if s.preset_index != active_preset {
+        return None;
+    }
+    preset_snapshot_states::try_parse_snapshot_dsp0_block_states(
+        &s.preset_data,
+        block_count as usize,
+    )
 }
 
 /// Valeurs de chaîne des segments **flow** Kempline (Split / Merge) dans la fenêtre 20 segments.
@@ -4787,12 +4854,14 @@ pub fn run() {
             request_active_preset_name,
             rename_preset,
             save_preset_to_hardware,
+            save_hlx_preset_file,
             activate_preset,
             switch_active_hardware_slot,
             switch_active_hardware_special_slot,
             probe_hardware_slot_focus_usb,
             sync_hardware_slot_focus_usb,
             request_preset_content,
+            clear_all_preset_blocks,
             is_helix_usb_init_settling,
             force_recover_preset_reader,
             probe_live_param_write,
@@ -4823,6 +4892,7 @@ pub fn run() {
             get_active_preset_slot_chain_param_values,
             get_active_preset_path1_io_chain_param_values,
             get_active_preset_kempline_flow_chain_param_values,
+            get_active_preset_snapshot_dsp0_block_states,
             get_active_preset_slot_assignable_usb_json,
             get_active_preset_slot_linked_cab,
             get_active_preset_slot_linked_cab_with_params,

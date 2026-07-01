@@ -1,6 +1,6 @@
 /// Models.ts 26/06/2026
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 
 import {
   catalogPickerRowKey,
@@ -42,6 +42,18 @@ import {
   type PresetMetaJson,
 } from "./hxModelCatalogMeta";
 import { hwUi } from "./hwUiRefresh";
+import {
+  buildL6PresetDocument,
+  computeHlxTopology0,
+  hlxPositionForKemplineSlot,
+  hlxPositionFromMatrixColumn,
+  hlxMatrixEvenColForRoutingBoundary,
+  roundHlxExportNumber,
+  sanitizeHlxFilename,
+  type HlxFxBlockExport,
+  type HlxFlowBlockExport,
+  type HlxSnapshotBlockStates,
+} from "./hlxExport";
 import "./styles.css";
 
 type SlotDebug = {
@@ -383,6 +395,8 @@ function clearAllLiveChainParamOverrides(): void {
   liveChainParamOverridesByPresetSlot.clear();
   slotChainSessionByKey.clear();
   slotDualPartsSessionByKey.clear();
+  flowIoChainSessionByKey.clear();
+  flowIoChainOverridesByKey.clear();
 }
 
 function clearSlotChainSessionForPreset(preset: number): void {
@@ -2113,12 +2127,20 @@ function scheduleLiveParamWriteProbe(
   const rawMin = typeof p.min === "number" && Number.isFinite(p.min) ? p.min : null;
   const rawMax = typeof p.max === "number" && Number.isFinite(p.max) ? p.max : null;
   if (currentPresetIndex >= 0) {
-    recordLiveChainParamOverrideForKemplineSlot(
-      currentPresetIndex,
-      slotIndex,
-      symbolicId,
-      rawValue,
-    );
+    const flowKind =
+      slotIndex === undefined || !Number.isInteger(slotIndex)
+        ? flowIoKindFromHwSlotBus(selectedSpecialHwSlotBus ?? -1)
+        : null;
+    if (flowKind) {
+      recordFlowIoChainParamOverride(currentPresetIndex, flowKind, symbolicId, rawValue);
+    } else if (slotIndex !== undefined && Number.isInteger(slotIndex)) {
+      recordLiveChainParamOverrideForKemplineSlot(
+        currentPresetIndex,
+        slotIndex,
+        symbolicId,
+        rawValue,
+      );
+    }
   }
   pendingLiveWrites.set(key, {
     slotIndex,
@@ -2271,7 +2293,40 @@ function applyHardwareSlotParamChanged(p: SlotParamChangedPayload): void {
       : null;
   if (!sid) return;
 
-  recordLiveChainParamOverrideForKemplineSlot(currentPresetIndex, p.slotIndex, sid, cv);
+  const flowKind = flowIoKindFromHwSlotBus(p.slotBus);
+  if (flowKind) {
+    recordFlowIoChainParamOverride(currentPresetIndex, flowKind, sid, cv);
+  } else {
+    recordLiveChainParamOverrideForKemplineSlot(currentPresetIndex, p.slotIndex, sid, cv);
+  }
+
+  if (flowKind) {
+    if (
+      selectedParamsKemplineSlotIndex !== null ||
+      selectedParamsPresetIndex !== currentPresetIndex ||
+      !selectedParamsInPlaceUpdater ||
+      flowIoKindFromHwSlotBus(selectedSpecialHwSlotBus ?? -1) !== flowKind
+    ) {
+      return;
+    }
+    const paramsForDisplay = selectedParamsHwWireContext?.paramsForDisplay ?? [];
+    const aligned = mergeFlowIoChainOverridesIntoAligned(
+      currentPresetIndex,
+      flowKind,
+      paramsForDisplay,
+      alignChainValuesToModelParamOrder(
+        flowIoChainSessionByKey.get(flowIoSessionKey(currentPresetIndex, flowKind)) ?? null,
+        paramsForDisplay,
+        paramsForDisplay,
+        selectedParamsHwWireContext?.catalogSignal ?? null,
+      ),
+    );
+    selectedParamsInPlaceUpdater(
+      aligned?.filter((v): v is ChainParamValueJson => v !== undefined) ?? null,
+    );
+    selectedParamsValuesSig = `${currentPresetIndex}|${flowKind}|hw:${p.sequence}:${p.paramIndex}:${String(cv)}`;
+    return;
+  }
 
   if (
     selectedParamsKemplineSlotIndex !== p.slotIndex ||
@@ -2529,11 +2584,143 @@ let lastCabDualTabPanesContext: {
 /** Bus USB du slot structurel sélectionné (Input 0, Output 9, Split 10, Merge 19). */
 let selectedSpecialHwSlotBus: number | null = null;
 
-/** Bus Path 1 observés USB (`switch_active_hardware_special_slot` / `82:62:SS:1a`). */
 const HW_SLOT_BUS_INPUT = 0;
 const HW_SLOT_BUS_OUTPUT = 9;
 const HW_SLOT_BUS_SPLIT = 0x0a;
 const HW_SLOT_BUS_MERGE = 0x13;
+
+/** Input / Output / Split / Merge — session chaîne (hydratation preset + overrides live). */
+type FlowIoKind = "input" | "output" | "split" | "merge";
+const flowIoChainSessionByKey = new Map<string, ChainParamValueJson[]>();
+const flowIoChainOverridesByKey = new Map<string, Map<string, ChainParamValueJson>>();
+
+function flowIoSessionKey(preset: number, kind: FlowIoKind): string {
+  return `${preset}|${kind}`;
+}
+
+function flowIoKindFromHwSlotBus(bus: number): FlowIoKind | null {
+  if (bus === HW_SLOT_BUS_INPUT) return "input";
+  if (bus === HW_SLOT_BUS_OUTPUT) return "output";
+  if (bus === HW_SLOT_BUS_SPLIT) return "split";
+  if (bus === HW_SLOT_BUS_MERGE) return "merge";
+  return null;
+}
+
+function flowIoKindFromSlotCategory(category: string): FlowIoKind | null {
+  const nk = normalizeCategory(category);
+  if (nk === "input") return "input";
+  if (nk === "output") return "output";
+  if (nk === "split") return "split";
+  if (nk === "merge") return "merge";
+  return null;
+}
+
+async function readFlowIoChainFromPresetDataOnce(kind: FlowIoKind): Promise<ChainParamValueJson[] | null> {
+  try {
+    if (kind === "input" || kind === "output") {
+      return await invoke<ChainParamValueJson[] | null>("get_active_preset_path1_io_chain_param_values", {
+        ioKind: kind,
+      });
+    }
+    return await invoke<ChainParamValueJson[] | null>(
+      "get_active_preset_kempline_flow_chain_param_values",
+      { flowKind: kind },
+    );
+  } catch {
+    return null;
+  }
+}
+
+function recordFlowIoChainParamOverride(
+  preset: number,
+  kind: FlowIoKind,
+  symbolicId: string,
+  value: ChainParamValueJson,
+): void {
+  if (preset < 0) return;
+  const sid = symbolicId.trim();
+  if (!sid) return;
+  const key = flowIoSessionKey(preset, kind);
+  let m = flowIoChainOverridesByKey.get(key);
+  if (!m) {
+    m = new Map();
+    flowIoChainOverridesByKey.set(key, m);
+  }
+  m.set(sid, value);
+}
+
+function clearFlowIoChainSessionForPreset(preset: number): void {
+  const prefix = `${preset}|`;
+  for (const k of [...flowIoChainSessionByKey.keys()]) {
+    if (k.startsWith(prefix)) flowIoChainSessionByKey.delete(k);
+  }
+  for (const k of [...flowIoChainOverridesByKey.keys()]) {
+    if (k.startsWith(prefix)) flowIoChainOverridesByKey.delete(k);
+  }
+}
+
+async function hydrateFlowIoChainSessionFromPresetData(presetIndex: number): Promise<void> {
+  if (presetIndex < 0) return;
+  clearFlowIoChainSessionForPreset(presetIndex);
+  const kinds: FlowIoKind[] = ["input", "output", "split", "merge"];
+  let filled = 0;
+  for (const kind of kinds) {
+    const vals = await readFlowIoChainFromPresetDataOnce(kind);
+    if (vals && vals.length > 0) {
+      flowIoChainSessionByKey.set(flowIoSessionKey(presetIndex, kind), vals.slice());
+      filled += 1;
+    }
+  }
+  emitModelsSyncTrace(`hydrateFlowIoChainSession preset=${presetIndex} kinds=${filled}/4`);
+}
+
+function mergeFlowIoChainOverridesIntoAligned(
+  preset: number,
+  kind: FlowIoKind,
+  paramsForDisplay: ModelParamDefJson[],
+  chainAligned: Array<ChainParamValueJson | undefined> | null | undefined,
+): Array<ChainParamValueJson | undefined> | null {
+  const om = flowIoChainOverridesByKey.get(flowIoSessionKey(preset, kind));
+  if (!om || om.size === 0) return chainAligned ?? null;
+  const base = (chainAligned?.slice() as Array<ChainParamValueJson | undefined>) ?? [];
+  const n = paramsForDisplay.length;
+  while (base.length < n) base.push(undefined);
+  for (let i = 0; i < n; i += 1) {
+    const sid = (paramsForDisplay[i]?.symbolicID ?? "").trim();
+    if (!sid || !om.has(sid)) continue;
+    base[i] = om.get(sid);
+  }
+  return base;
+}
+
+async function resolveFlowIoChainValues(
+  kind: FlowIoKind,
+  _catalogId: string,
+  _category: string,
+  params: ModelParamDefJson[],
+  catalogRoutingSignal: string | null = null,
+): Promise<ChainParamValueJson[] | null> {
+  if (params.length === 0) return null;
+  const sessionKey = flowIoSessionKey(currentPresetIndex, kind);
+  let base = flowIoChainSessionByKey.get(sessionKey) ?? null;
+  if (!base || base.length === 0) {
+    base = buildDefaultChainValuesForSourceOrder(params, catalogRoutingSignal);
+  }
+  if (!base || base.length === 0) return null;
+
+  const om = flowIoChainOverridesByKey.get(sessionKey);
+  if (!om || om.size === 0) return base;
+
+  const bySid = new Map<string, ChainParamValueJson>();
+  const source = modelParamSourceOrderIds(params, catalogRoutingSignal, base.length);
+  const n = Math.min(base.length, source.length);
+  for (let i = 0; i < n; i += 1) {
+    const sid = source[i];
+    if (sid) bySid.set(sid, base[i]!);
+  }
+  for (const [sid, v] of om) bySid.set(sid, v);
+  return chainValuesUsbOrderFromSymbolicMap(bySid, params, catalogRoutingSignal);
+}
 
 function hwSlotBusFromDataset(raw: string | undefined): number | null {
   if (raw === undefined || raw === "") return null;
@@ -4993,7 +5180,6 @@ async function withMatrixUsbInteractionLock<T>(
 }
 
 let matrixSlotClipboard: MatrixSlotClipboard | null = null;
-let matrixCtxTargetKemplineIndex: number | null = null;
 /** Index source pendant un drag & drop matrice (move). */
 let matrixDragSourceKi: number | null = null;
 /** Split / merge en cours de drag (frontière source 0..8). */
@@ -5181,7 +5367,133 @@ function canMoveMatrixSlotToEmpty(
 function hideMatrixContextMenu(): void {
   const menu = document.getElementById("models-ctx-menu");
   menu?.classList.remove("visible");
-  matrixCtxTargetKemplineIndex = null;
+}
+
+function onMatrixGridPanelContextMenu(ev: MouseEvent): void {
+  if (currentPresetIndex < 0 || isModelsContentBusy()) return;
+  const menu = document.getElementById("models-ctx-menu");
+  const reloadItem = document.getElementById("models-ctx-reload");
+  const cleanItem = document.getElementById("models-ctx-clean-all");
+  if (!menu || !reloadItem || !cleanItem) return;
+
+  const busy = isModelsContentBusy();
+  reloadItem.classList.toggle("disabled", busy);
+  cleanItem.classList.toggle("disabled", busy);
+
+  const x = Math.min(ev.clientX, window.innerWidth - 220);
+  const y = Math.min(ev.clientY, window.innerHeight - 100);
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.classList.add("visible");
+}
+
+async function reloadMatrixFromHardware(): Promise<void> {
+  if (currentPresetIndex < 0 || isModelsContentBusy()) return;
+  hideMatrixContextMenu();
+  const index = currentPresetIndex;
+
+  resetPresetModified();
+  loadedPresetIndex = -1;
+  lastRequestedPresetIndex = -1;
+  mergeProbeSlotModelUntil = null;
+  suppressUsbPresetPollUntilMs = 0;
+  slotModelUsbProbeInFlight = null;
+  lastProbePickerAssignContext = null;
+  clearMatrixSlotClipboard();
+  clearMatrixRoutingColsOverride();
+  clearPath1InputSourceHighlightOverride();
+  clearPath1InputMatrixWire();
+  clearPath1SplitTypeHighlightOverride();
+  renderEmpty("Relecture du preset depuis le Helix…");
+  setStatus("Relecture du preset depuis le Helix…");
+
+  await requestLoadForPreset(index, { fullPresetReload: true });
+}
+
+async function cleanAllMatrixBlocks(): Promise<void> {
+  if (currentPresetIndex < 0 || isModelsContentBusy()) return;
+  hideMatrixContextMenu();
+  const index = currentPresetIndex;
+
+  pushPresetLoadUiLock();
+  renderEmpty("Nettoyage de tous les blocs FX…");
+  setStatus("Nettoyage de tous les blocs FX…");
+  startLoadingHeartbeat("Nettoyage de tous les blocs FX");
+
+  let presetLoadStarted = false;
+  try {
+    await waitForMatrixUsbIdle();
+    await settleUsbAfterMatrixProbe();
+    await invoke("clear_all_preset_blocks");
+    await delayMs(MATRIX_USB_OP_SETTLE_MS);
+
+    resetPresetModified();
+    loadedPresetIndex = -1;
+    lastRequestedPresetIndex = -1;
+    mergeProbeSlotModelUntil = null;
+    suppressUsbPresetPollUntilMs = 0;
+    slotModelUsbProbeInFlight = null;
+    clearMatrixSlotClipboard();
+    clearMatrixRoutingColsOverride();
+
+    renderEmpty("Relecture du preset depuis le Helix…");
+    setStatus("Relecture du preset depuis le Helix…");
+
+    presetLoadStarted = true;
+    await requestLoadForPreset(index, { fullPresetReload: true });
+  } catch (e) {
+    setStatus(`Erreur nettoyage blocs : ${e}`);
+  } finally {
+    // requestLoadForPreset pop le lock à la fin du poll ; si retour anticipé ou échec clear, libérer ici.
+    if (!presetLoadStarted || (!loading && presetLoadUiLockDepth > 0)) {
+      stopLoadingHeartbeat();
+      popPresetLoadUiLock();
+    }
+  }
+}
+
+function initAppContextMenuPolicy(): void {
+  const presetList = document.getElementById("preset-list");
+  document.addEventListener(
+    "contextmenu",
+    (ev) => {
+      const t = ev.target;
+      if (t instanceof Node && contentEl.contains(t)) return;
+      if (presetList && t instanceof Node && presetList.contains(t)) return;
+      ev.preventDefault();
+    },
+    { capture: true },
+  );
+
+  contentEl.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    onMatrixGridPanelContextMenu(ev);
+  });
+}
+
+function initMatrixGridPanelContextMenu(): void {
+  const menu = document.getElementById("models-ctx-menu");
+  const reloadItem = document.getElementById("models-ctx-reload");
+  const cleanItem = document.getElementById("models-ctx-clean-all");
+  if (!menu || !reloadItem || !cleanItem) return;
+
+  document.addEventListener("click", hideMatrixContextMenu);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") hideMatrixContextMenu();
+  });
+
+  reloadItem.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (reloadItem.classList.contains("disabled")) return;
+    void reloadMatrixFromHardware();
+  });
+
+  cleanItem.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (cleanItem.classList.contains("disabled")) return;
+    void cleanAllMatrixBlocks();
+  });
 }
 
 async function buildChainParamsMapForCopy(
@@ -5902,6 +6214,9 @@ async function pasteMatrixSlotToCell(
   return withMatrixUsbInteractionLock(`Collage slot ${destKi + 1}…`, run);
 }
 
+/** Réservé pour un futur raccourci clavier copier/coller matrice. */
+export { copyMatrixSlotFromCell, pasteMatrixSlotToCell };
+
 /** Déplacer un bloc : paquet USB `1d` (HX Edit) puis relecture du preset actif. */
 async function moveMatrixSlotFromTo(sourceKi: number, destKi: number): Promise<void> {
   if (isMatrixUsbInteractionLocked()) return;
@@ -6255,71 +6570,6 @@ function initMatrixDragDrop(): void {
   // Géré par Pointer Events dans bindMatrixSlotDragSource
 }
 
-function onMatrixSlotContextMenu(ev: MouseEvent, el: HTMLElement, slot: SlotDebug | null): void {
-  const kRaw = el.dataset.kemplineSlotIndex;
-  const ki = kRaw !== undefined && kRaw !== "" ? Number.parseInt(kRaw, 10) : Number.NaN;
-  if (!Number.isFinite(ki) || ki < 0 || ki > 15) return;
-  if (currentPresetIndex < 0 || isModelsContentBusy()) return;
-
-  const slots = lastHwSyncNormalizedSlots;
-  const slotNow =
-    slots && ki >= 0 && ki < slots.length ? slots[ki] : slot;
-  const isEmptyCell = slotNow === null || slotNow === undefined || isEmptyGridCell(slotNow);
-  const canCopy = slotNow != null && canCopyMatrixSlot(slotNow);
-  const canPaste =
-    isEmptyCell && slots !== null && slots.length === 16 && canPasteMatrixSlotToEmpty(ki, slots);
-  if (!canCopy && !canPaste) return;
-
-  matrixCtxTargetKemplineIndex = ki;
-  const menu = document.getElementById("models-ctx-menu");
-  const copyItem = document.getElementById("models-ctx-copy");
-  const pasteItem = document.getElementById("models-ctx-paste");
-  if (!menu || !copyItem || !pasteItem) return;
-
-  copyItem.classList.toggle("disabled", !canCopy);
-  pasteItem.classList.toggle("disabled", !canPaste);
-
-  const x = Math.min(ev.clientX, window.innerWidth - 200);
-  const y = Math.min(ev.clientY, window.innerHeight - 80);
-  menu.style.left = `${x}px`;
-  menu.style.top = `${y}px`;
-  menu.classList.add("visible");
-}
-
-function initMatrixContextMenu(): void {
-  const menu = document.getElementById("models-ctx-menu");
-  const copyItem = document.getElementById("models-ctx-copy");
-  const pasteItem = document.getElementById("models-ctx-paste");
-  if (!menu || !copyItem || !pasteItem) return;
-
-  document.addEventListener("click", hideMatrixContextMenu);
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") hideMatrixContextMenu();
-  });
-
-  copyItem.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (copyItem.classList.contains("disabled")) return;
-    const ki = matrixCtxTargetKemplineIndex;
-    const slots = lastHwSyncNormalizedSlots;
-    if (ki === null || !slots || ki < 0 || ki >= slots.length) return;
-    const slot = slots[ki];
-    if (!slot || !canCopyMatrixSlot(slot)) return;
-    hideMatrixContextMenu();
-    void copyMatrixSlotFromCell(ki, slot);
-  });
-
-  pasteItem.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (pasteItem.classList.contains("disabled")) return;
-    const ki = matrixCtxTargetKemplineIndex;
-    const slots = lastHwSyncNormalizedSlots;
-    if (ki === null || !slots || !canPasteMatrixSlotToEmpty(ki, slots)) return;
-    hideMatrixContextMenu();
-    void pasteMatrixSlotToCell(ki);
-  });
-}
-
 /**
  * `slot === null` : slot vide (clic → rien dans le panneau).
  * Sinon : bloc avec modèle (définitions `.models` + liste paramètre / valeur).
@@ -6465,11 +6715,6 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
       ev.preventDefault();
       activate(ev.isTrusted);
     }
-  });
-  el.addEventListener("contextmenu", (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    onMatrixSlotContextMenu(ev, el, slot);
   });
 }
 
@@ -9252,17 +9497,31 @@ function renderModelsParamsPane(
     }
     if (synth.length > 0) chainForAlign = synth;
   }
-  const chainAligned = mergeLiveChainOverridesIntoAligned(
-    currentPresetIndex,
-    kemplineSlotIndex,
-    paramsForDisplay,
-    alignChainValuesToModelParamOrder(
-      chainForAlign,
-      paramsForDisplay,
-      params,
-      catalogRoutingSignal,
-    ),
-  );
+  const flowKind = flowIoKindFromSlotCategory(slot.category);
+  const chainAligned =
+    flowKind !== null
+      ? mergeFlowIoChainOverridesIntoAligned(
+          currentPresetIndex,
+          flowKind,
+          paramsForDisplay,
+          alignChainValuesToModelParamOrder(
+            chainForAlign,
+            paramsForDisplay,
+            params,
+            catalogRoutingSignal,
+          ),
+        )
+      : mergeLiveChainOverridesIntoAligned(
+          currentPresetIndex,
+          kemplineSlotIndex,
+          paramsForDisplay,
+          alignChainValuesToModelParamOrder(
+            chainForAlign,
+            paramsForDisplay,
+            params,
+            catalogRoutingSignal,
+          ),
+        );
   const updateAlignedValues = appendModelsParamRows(
     list,
     paramsForDisplay,
@@ -9499,6 +9758,17 @@ async function loadAndShowModelsParamsForSlot(
         catalogPresetCategoryName,
         catalogRoutingSignal,
       );
+    } else {
+      const flowKind = flowIoKindFromSlotCategory(slot.category);
+      if (flowKind) {
+        chainValues = await resolveFlowIoChainValues(
+          flowKind,
+          catalogModelIdTrimmed,
+          catalogPresetCategoryName ?? slot.category,
+          found.entry.params ?? [],
+          catalogRoutingSignal,
+        );
+      }
     }
     if (
       kemplineSlotIndex !== undefined &&
@@ -11558,13 +11828,19 @@ type RequestLoadForPresetOpts = {
    * Relire après suppression du **dernier** bloc FX path 2 (le device retire split/merge).
    */
   path2LastRemoveRefresh?: { slotIndex: number };
+  /**
+   * Relecture complète du preset courant (menu grille Reload) : dump USB autoritaire,
+   * session params réinitialisée — écrase les modifications locales non enregistrées.
+   */
+  fullPresetReload?: boolean;
 };
 
 function requestLoadUsesHardwarePresetRefresh(opts?: RequestLoadForPresetOpts): boolean {
   return !!(
     opts?.hardwareRefreshAfterEdit ||
     opts?.routingMarkerMoveRefresh ||
-    opts?.path2LastRemoveRefresh
+    opts?.path2LastRemoveRefresh ||
+    opts?.fullPresetReload
   );
 }
 
@@ -11629,11 +11905,13 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
   emitModelsSyncTrace(
     matrixMove
       ? `requestLoadForPreset hardware_refresh index=${index} move=${matrixMove.sourceKi}->${matrixMove.destKi}`
-      : opts?.routingMarkerMoveRefresh
-        ? `requestLoadForPreset hardware_refresh index=${index} routing_marker_move`
-        : path2Remove
-          ? `requestLoadForPreset hardware_refresh index=${index} path2_last_remove slot=${path2Remove.slotIndex}`
-          : `requestLoadForPreset start index=${index} currentPreset=${currentPresetIndex} loaded=${loadedPresetIndex}`,
+      : opts?.fullPresetReload
+        ? `requestLoadForPreset hardware_refresh index=${index} full_preset_reload`
+        : opts?.routingMarkerMoveRefresh
+          ? `requestLoadForPreset hardware_refresh index=${index} routing_marker_move`
+          : path2Remove
+            ? `requestLoadForPreset hardware_refresh index=${index} path2_last_remove slot=${path2Remove.slotIndex}`
+            : `requestLoadForPreset start index=${index} currentPreset=${currentPresetIndex} loaded=${loadedPresetIndex}`,
   );
 
   await waitForMatrixUsbIdle();
@@ -11641,7 +11919,9 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
 
   try {
     lastRequestPresetInvokeAt = Date.now();
-    await invoke("request_preset_content");
+    await invoke("request_preset_content", {
+      forceImmediate: opts?.fullPresetReload === true,
+    });
   } catch (e) {
     const msg = String(e);
     if (msg.includes("throttled")) {
@@ -11762,9 +12042,11 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
               // Le dump frais est autoritaire : reconstruire la grille comme un chargement normal.
               await hydrateSlotChainSessionFromPresetData(index);
               await hydrateSlotDualPartsSessionFromPresetData(index);
+              await hydrateFlowIoChainSessionFromPresetData(index);
             } else {
               void hydrateSlotChainSessionFromPresetData(index);
               void hydrateSlotDualPartsSessionFromPresetData(index);
+              void hydrateFlowIoChainSessionFromPresetData(index);
             }
             const realBlocks = countRealBlocks(normalizedSlots);
             const singleDsp = isSingleDspDevice(connectedDeviceName);
@@ -11891,6 +12173,534 @@ async function refresh() {
   }
 }
 
+const FLOW_IO_OUTPUT_SEND_STOMP = "HelixStomp_AppDSPFlowOutputSend";
+
+function hlxBlockTypeForCategory(category: string): 0 | 1 {
+  const k = normalizeCategory(category);
+  return k === "amp" || k === "preamp" || k === "amp+cab" ? 1 : 0;
+}
+
+function chainValueToHlxPrimitive(
+  cv: ChainParamValueJson,
+  param: ModelParamDefJson,
+): boolean | number | string | undefined {
+  if (typeof cv === "boolean") return cv;
+  if (typeof cv === "number" && Number.isFinite(cv)) {
+    const vt = param.valueType;
+    if (vt === 2) return cv !== 0;
+    if (vt === 0 && cv >= 128 && cv <= 255) {
+      const min = typeof param.min === "number" ? param.min : -128;
+      const signed = cv - 256;
+      if (signed >= min) return roundHlxExportNumber(signed);
+    }
+    return roundHlxExportNumber(cv);
+  }
+  if (typeof cv === "string") {
+    const t = cv.trim();
+    return t.length > 0 ? t : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Export `.hlx` : zip catalogue ↔ chaîne session.
+ * FX : `params[i]` ↔ `chain[i]`.
+ * Input : `@input` est hors chaîne (`path1InputMatrixWire`) → `chain[j]` ↔ `params[j+1]`.
+ * Output : `@output` en fin de catalogue, hors chaîne → `chain[j]` ↔ `params[j]` pour pan/gain.
+ */
+function hlxExportChainIndexForCatalogParam(
+  paramIndex: number,
+  allParams: ModelParamDefJson[],
+  chainLength: number,
+): number | null {
+  if (paramIndex < 0 || paramIndex >= allParams.length) return null;
+  const sid = (allParams[paramIndex]?.symbolicID ?? "").trim();
+  const inputIdx = allParams.findIndex((p) => (p.symbolicID ?? "").trim() === "@input");
+  if (
+    inputIdx === 0 &&
+    chainLength === allParams.length - 1 &&
+    paramIndex === 0 &&
+    sid === "@input"
+  ) {
+    return null;
+  }
+  if (inputIdx === 0 && chainLength === allParams.length - 1 && paramIndex > 0) {
+    return paramIndex - 1;
+  }
+  const outputIdx = allParams.findIndex((p) => (p.symbolicID ?? "").trim() === "@output");
+  if (
+    outputIdx === allParams.length - 1 &&
+    chainLength === allParams.length - 1 &&
+    paramIndex === outputIdx &&
+    sid === "@output"
+  ) {
+    return null;
+  }
+  if (paramIndex < chainLength) return paramIndex;
+  return null;
+}
+
+function chainCatalogIndexValuesForHlxExport(
+  chain: ChainParamValueJson[] | null | undefined,
+  allParams: ModelParamDefJson[],
+  catalogRoutingSignal: string | null | undefined,
+  mergeContext?:
+    | { kind: "slot"; kemplineSlotIndex: number }
+    | { kind: "flow"; flowKind: FlowIoKind },
+): Map<string, ChainParamValueJson> {
+  const map = new Map<string, ChainParamValueJson>();
+  if (allParams.length === 0) return map;
+
+  const base =
+    chain && chain.length > 0
+      ? chain.slice()
+      : buildDefaultChainValuesForSourceOrder(allParams, catalogRoutingSignal);
+  if (!base || base.length === 0) return map;
+
+  let om: Map<string, ChainParamValueJson> | undefined;
+  if (mergeContext?.kind === "slot") {
+    om = liveChainParamOverridesByPresetSlot.get(
+      liveChainOverrideStorageKey(currentPresetIndex, mergeContext.kemplineSlotIndex),
+    );
+  } else if (mergeContext?.kind === "flow") {
+    om = flowIoChainOverridesByKey.get(flowIoSessionKey(currentPresetIndex, mergeContext.flowKind));
+  }
+
+  for (let i = 0; i < allParams.length; i += 1) {
+    const sid = (allParams[i]?.symbolicID ?? "").trim();
+    if (!sid) continue;
+    const ci = hlxExportChainIndexForCatalogParam(i, allParams, base.length);
+    let v: ChainParamValueJson | undefined = ci === null ? undefined : base[ci];
+    if (om?.has(sid)) v = om.get(sid);
+    if (v !== undefined) map.set(sid, v);
+  }
+  return map;
+}
+
+function slotChainSessionForHlxExport(
+  kemplineSlotIndex: number,
+  params: ModelParamDefJson[],
+  catalogRoutingSignal: string | null | undefined,
+): ChainParamValueJson[] | null {
+  const key = liveChainOverrideStorageKey(currentPresetIndex, kemplineSlotIndex);
+  let base = slotChainSessionByKey.get(key) ?? null;
+  if (!base || base.length === 0) {
+    base = buildDefaultChainValuesForSourceOrder(params, catalogRoutingSignal);
+  }
+  return base && base.length > 0 ? base : null;
+}
+
+function flowIoChainSessionForHlxExport(
+  kind: FlowIoKind,
+  params: ModelParamDefJson[],
+  catalogRoutingSignal: string | null | undefined,
+): ChainParamValueJson[] | null {
+  const key = flowIoSessionKey(currentPresetIndex, kind);
+  let base = flowIoChainSessionByKey.get(key) ?? null;
+  if (!base || base.length === 0) {
+    base = buildDefaultChainValuesForSourceOrder(params, catalogRoutingSignal);
+  }
+  return base && base.length > 0 ? base : null;
+}
+
+function readChainMetaBoolFromExportMap(
+  bySid: Map<string, ChainParamValueJson>,
+  params: ModelParamDefJson[],
+  symbolicId: string,
+  fallback: boolean,
+): boolean {
+  const sid = symbolicId.trim();
+  if (bySid.has(sid)) return chainValueAsBool(bySid.get(sid)) ?? fallback;
+  const p = params.find((x) => (x.symbolicID ?? "").trim() === sid);
+  if (!p) return fallback;
+  const d = chainValueFromParamDefault(p);
+  return chainValueAsBool(d) ?? fallback;
+}
+
+function readChainBoolAtWireIndex(
+  chain: ChainParamValueJson[] | null | undefined,
+  params: ModelParamDefJson[],
+  catalogSignal: string | null | undefined,
+  symbolicId: string,
+): boolean | null {
+  if (!chain || chain.length === 0) return null;
+  const wire = modelParamWireOrderIds(params, catalogSignal);
+  const wi = wire.indexOf(symbolicId.trim());
+  if (wi < 0 || wi >= chain.length) return null;
+  return chainValueAsBool(chain[wi]);
+}
+
+async function readDumpChainBoolAtWireIndex(
+  kemplineSlotIndex: number,
+  params: ModelParamDefJson[],
+  catalogSignal: string | null | undefined,
+  symbolicId: string,
+): Promise<boolean | null> {
+  try {
+    const dump = await invoke<ChainParamValueJson[] | null>(
+      "get_active_preset_slot_chain_param_values",
+      { slotIndex: kemplineSlotIndex },
+    );
+    return readChainBoolAtWireIndex(dump, params, catalogSignal, symbolicId);
+  } catch {
+    return null;
+  }
+}
+
+function hlxExportStereoFromSignal(
+  meta: PresetMetaJson | null,
+  moduleHex: string | undefined,
+  hasStereoParam: boolean,
+  bySid: Map<string, ChainParamValueJson>,
+): boolean | null {
+  if (!hasStereoParam) return null;
+  if (bySid.has("@stereo")) {
+    const fromChain = chainValueAsBool(bySid.get("@stereo"));
+    if (fromChain !== null) return fromChain;
+  }
+  return normalizeCatalogSignal(pickSignal(meta, moduleHex)) === "stereo";
+}
+
+function hlxExportBypassVolume(
+  bySid: Map<string, ChainParamValueJson>,
+  params: ModelParamDefJson[],
+): number | null {
+  if (bySid.has("@bypassvolume")) {
+    const n = readChainMetaNumberFromExportMap(bySid, params, "@bypassvolume");
+    if (n !== null) return n;
+  }
+  const p = params.find((x) => (x.symbolicID ?? "").trim() === "@bypassvolume");
+  if (!p) return null;
+  const d = chainValueFromParamDefault(p);
+  return typeof d === "number" && Number.isFinite(d) ? roundHlxExportNumber(d) : null;
+}
+
+function snapshotBlockStatesFromRustRuns(
+  runs: boolean[][] | null | undefined,
+  blockKeys: string[],
+  hasSplit: boolean,
+  fallback: HlxSnapshotBlockStates,
+): HlxSnapshotBlockStates[] | null {
+  if (!runs || runs.length === 0) return null;
+  const out: HlxSnapshotBlockStates[] = [];
+  for (const run of runs) {
+    const states: HlxSnapshotBlockStates = {};
+    if (hasSplit && run.length > 0) {
+      states.split = run[0] ?? fallback.split ?? true;
+    }
+    for (let bi = 0; bi < blockKeys.length; bi += 1) {
+      const key = blockKeys[bi]!;
+      const ri = hasSplit ? bi + 1 : bi;
+      states[key] = run[ri] ?? fallback[key] ?? true;
+    }
+    out.push(states);
+  }
+  return out.length > 0 ? out : null;
+}
+
+function readChainMetaNumberFromExportMap(
+  bySid: Map<string, ChainParamValueJson>,
+  params: ModelParamDefJson[],
+  symbolicId: string,
+): number | null {
+  const sid = symbolicId.trim();
+  const p = params.find((x) => (x.symbolicID ?? "").trim() === sid);
+  if (!p || !bySid.has(sid)) return null;
+  const prim = chainValueToHlxPrimitive(bySid.get(sid)!, p);
+  return typeof prim === "number" ? prim : null;
+}
+
+async function buildHlxModelParams(
+  catalogId: string,
+  categoryHint: string,
+  chain: ChainParamValueJson[] | null,
+  catalogRoutingSignal: string | null | undefined,
+  mergeContext?:
+    | { kind: "slot"; kemplineSlotIndex: number }
+    | { kind: "flow"; flowKind: FlowIoKind },
+): Promise<Record<string, boolean | number | string>> {
+  const found = await findModelDefinitionBySymbolicId(catalogId, categoryHint);
+  if (!found) return {};
+  const params = found.entry.params ?? [];
+  const bySid = chainCatalogIndexValuesForHlxExport(
+    chain,
+    params,
+    catalogRoutingSignal,
+    mergeContext,
+  );
+  const out: Record<string, boolean | number | string> = {};
+  for (const p of params) {
+    const sid = (p.symbolicID ?? "").trim();
+    if (!sid || sid.startsWith("@")) continue;
+    const cv = bySid.get(sid);
+    if (cv === undefined) continue;
+    const prim = chainValueToHlxPrimitive(cv, p);
+    if (prim !== undefined) out[sid] = prim;
+  }
+  return out;
+}
+
+async function buildHlxFlowBlockExport(
+  catalogId: string,
+  category: string,
+  position: number,
+  chain: ChainParamValueJson[] | null,
+  extra: Record<string, boolean | number | string> = {},
+  catalogRoutingSignal: string | null = null,
+  flowKind?: FlowIoKind,
+): Promise<HlxFlowBlockExport> {
+  const params = await buildHlxModelParams(
+    catalogId,
+    category,
+    chain,
+    catalogRoutingSignal,
+    flowKind ? { kind: "flow", flowKind } : undefined,
+  );
+  return {
+    catalogModelId: catalogId,
+    position,
+    enabled: true,
+    params: { ...params, ...extra },
+  };
+}
+
+async function buildHlxDocumentFromActiveSession(): Promise<Record<string, unknown>> {
+  const slots = lastHwSyncNormalizedSlots;
+  if (!slots || slots.length < 16) {
+    throw new Error("Grille preset indisponible");
+  }
+  const layout = lastRenderedStompLayout;
+  const routing = lastRoutingFlowMarkers;
+  const flowIds = flowIoCatalogIdsForConnectedDevice(connectedDeviceName);
+
+  const routingCols =
+    layout?.routing.kemplineGridOk === true
+      ? {
+          splitCol: layout.routing.splitAfterCol,
+          mergeCol: layout.routing.mergeAfterCol,
+        }
+      : computeRoutingJunctionColumns(slots);
+
+  const hasPathB = lastFilledSlotRowIndex(slots, 8, 8) >= 0;
+  const hasPathA = lastFilledSlotRowIndex(slots, 0, 8) >= 0;
+  const topology0 = computeHlxTopology0(hasPathA, hasPathB, hasPathB);
+
+  const inputDef = await findModelDefinitionBySymbolicId(flowIds.input, "Input");
+  const outputDef = await findModelDefinitionBySymbolicId(flowIds.output, "Output");
+  const inputParams = inputDef?.entry.params ?? [];
+  const outputParams = outputDef?.entry.params ?? [];
+
+  const splitMarker = routing.find((m) => m.name.toLowerCase().includes("split"));
+  let splitCatalogId = "HD2_AppDSPFlowSplitAB";
+  if (!hasPathB && splitMarker?.moduleHex?.trim()) {
+    splitCatalogId =
+      (await getCatalogModelIdForHex(splitMarker.moduleHex.trim(), "Split"))?.trim() ??
+      splitCatalogId;
+  }
+  const splitDef = await findModelDefinitionBySymbolicId(splitCatalogId, "Split");
+  const splitParams = splitDef?.entry.params ?? [];
+  const mergeDef = await findModelDefinitionBySymbolicId(FLOW_JOIN_CATALOG_ID, "Merge");
+  const mergeParams = mergeDef?.entry.params ?? [];
+
+  const inputChain = flowIoChainSessionForHlxExport("input", inputParams, null);
+  const outputChain = flowIoChainSessionForHlxExport("output", outputParams, null);
+  const splitChain = flowIoChainSessionForHlxExport("split", splitParams, null);
+  const mergeChain = flowIoChainSessionForHlxExport("merge", mergeParams, null);
+
+  let inputWire = path1InputMatrixWire;
+  if (inputWire == null) {
+    inputWire = await invoke<number | null>("get_path1_input_source_wire_value").catch(() => null);
+  }
+
+  const inputA = await buildHlxFlowBlockExport(
+    flowIds.input,
+    "Input",
+    0,
+    inputChain,
+    typeof inputWire === "number" ? { "@input": inputWire } : {},
+    null,
+    "input",
+  );
+  const inputB = await buildHlxFlowBlockExport(flowIds.input, "Input", 0, null, { "@input": 0 });
+  const split = await buildHlxFlowBlockExport(
+    splitCatalogId,
+    "Split",
+    hlxPositionFromMatrixColumn(hlxMatrixEvenColForRoutingBoundary(routingCols.splitCol)),
+    splitChain,
+    {},
+    null,
+    "split",
+  );
+  const join = await buildHlxFlowBlockExport(
+    FLOW_JOIN_CATALOG_ID,
+    "Merge",
+    hlxPositionFromMatrixColumn(hlxMatrixEvenColForRoutingBoundary(routingCols.mergeCol)),
+    mergeChain,
+    {},
+    null,
+    "merge",
+  );
+  const outputA = await buildHlxFlowBlockExport(
+    flowIds.output,
+    "Output",
+    0,
+    outputChain,
+    { "@output": 1 },
+    null,
+    "output",
+  );
+  const outputB = await buildHlxFlowBlockExport(
+    FLOW_IO_OUTPUT_SEND_STOMP,
+    "Output",
+    0,
+    null,
+    { "@output": 0, Type: true },
+  );
+
+  const fxBlocks: HlxFxBlockExport[] = [];
+  const snapshotBlockStates: HlxSnapshotBlockStates = { split: hasPathB };
+  const snapshotBlockKeys: string[] = [];
+
+  for (let ki = 0; ki < 16; ki += 1) {
+    const slot = slots[ki]!;
+    if (isEmptyGridCell(slot) || isStructuralMatrixCategory(slot.category)) continue;
+
+    let catalogId = (slot.catalogModelId ?? "").trim();
+    if (!catalogId && (slot.moduleHex ?? "").trim()) {
+      catalogId = (await getCatalogModelIdForHex(slot.moduleHex!, slot.category))?.trim() ?? "";
+    }
+    if (!catalogId) continue;
+
+    const meta = await getPresetMetaForId(catalogId);
+    const categoryName = meta?.categoryName ?? slot.category;
+    const found = await findModelDefinitionForSlot(slot, catalogId, categoryName);
+    const params = found?.entry.params ?? [];
+    const catalogSignal = pickSignal(meta, slot.moduleHex);
+    const chain = slotChainSessionForHlxExport(ki, params, catalogSignal);
+    const bySid = chainCatalogIndexValuesForHlxExport(chain, params, catalogSignal, {
+      kind: "slot",
+      kemplineSlotIndex: ki,
+    });
+    const modelParams = await buildHlxModelParams(catalogId, categoryName, chain, catalogSignal, {
+      kind: "slot",
+      kemplineSlotIndex: ki,
+    });
+    const blockKey = `block${fxBlocks.length}`;
+    snapshotBlockKeys.push(blockKey);
+
+    let enabled =
+      (await readDumpChainBoolAtWireIndex(ki, params, catalogSignal, "@enabled")) ??
+      readChainBoolAtWireIndex(chain, params, catalogSignal, "@enabled") ??
+      readChainMetaBoolFromExportMap(bySid, params, "@enabled", true);
+    const stereoRaw = hlxExportStereoFromSignal(
+      meta,
+      slot.moduleHex,
+      params.some((p) => (p.symbolicID ?? "").trim() === "@stereo"),
+      bySid,
+    );
+    const hasStereoParam = stereoRaw !== null;
+    const bypassVolume = hlxExportBypassVolume(bySid, params);
+
+    snapshotBlockStates[blockKey] = enabled;
+
+    fxBlocks.push({
+      catalogModelId: catalogId,
+      path: matrixSlotPath(ki),
+      position: hlxPositionForKemplineSlot(ki, slot.gridX),
+      blockType: hlxBlockTypeForCategory(categoryName),
+      enabled,
+      stereo: hasStereoParam ? stereoRaw : null,
+      bypassVolume,
+      params: modelParams,
+    });
+  }
+
+  let snapshotBlockStatesByIndex: HlxSnapshotBlockStates[] | null = null;
+  try {
+    const rustRuns = await invoke<boolean[][] | null>(
+      "get_active_preset_snapshot_dsp0_block_states",
+      { blockCount: fxBlocks.length },
+    );
+    snapshotBlockStatesByIndex = snapshotBlockStatesFromRustRuns(
+      rustRuns,
+      snapshotBlockKeys,
+      hasPathB,
+      snapshotBlockStates,
+    );
+  } catch {
+    snapshotBlockStatesByIndex = null;
+  }
+
+  if (snapshotBlockStatesByIndex && snapshotBlockStatesByIndex[0]) {
+    const snap0 = snapshotBlockStatesByIndex[0];
+    for (let i = 0; i < fxBlocks.length; i += 1) {
+      const key = snapshotBlockKeys[i]!;
+      if (typeof snap0[key] === "boolean") {
+        fxBlocks[i]!.enabled = snap0[key]!;
+      }
+    }
+  }
+
+  return buildL6PresetDocument({
+    presetName: bannerPresetDisplayName || "Preset",
+    topology0,
+    fxBlocks,
+    inputA,
+    inputB,
+    split,
+    join,
+    outputA,
+    outputB,
+    snapshotBlockStates,
+    snapshotBlockStatesByIndex: snapshotBlockStatesByIndex ?? undefined,
+  });
+}
+
+async function runExportActivePresetHlx(requestedIndex: number): Promise<void> {
+  const fail = (message: string) => {
+    void emit("preset:export-hlx-done", { ok: false, message });
+  };
+  if (requestedIndex !== currentPresetIndex || currentPresetIndex < 0) {
+    fail("Export réservé au preset actif");
+    return;
+  }
+  if (!lastHwSyncNormalizedSlots || lastHwSyncNormalizedSlots.length < 16) {
+    fail("Grille preset indisponible — attendez la fin du chargement");
+    return;
+  }
+  if (presetModified) {
+    const proceed = window.confirm(
+      "Ce preset n'a pas été enregistré sur le Stomp.\n\n" +
+        "Le fichier .hlx reflétera l'état actuel affiché dans HXLinux (y compris vos modifications).\n\n" +
+        "Continuer l'export ?",
+    );
+    if (!proceed) {
+      fail("Export annulé");
+      return;
+    }
+  }
+  try {
+    const doc = await buildHlxDocumentFromActiveSession();
+    const json = JSON.stringify(doc, null, 1);
+    const defaultName = `${sanitizeHlxFilename(bannerPresetDisplayName || "preset")}.hlx`;
+    const savedPath = await invoke<string | null>("save_hlx_preset_file", {
+      json,
+      defaultName,
+    });
+    if (!savedPath) {
+      fail("Export annulé");
+      return;
+    }
+    void emit("preset:export-hlx-done", {
+      ok: true,
+      message: `✓  Exporté : ${savedPath}`,
+      path: savedPath,
+    });
+  } catch (e) {
+    fail(`✗  Export .hlx : ${e}`);
+  }
+}
+
 /** Console : rejeu HX Edit replace Cab 2 (octets figés). */
 async function change_cab2(slotIndex = 0): Promise<string> {
   return invoke<string>("hx_console_change_cab2", { slotIndex });
@@ -11907,7 +12717,8 @@ window.change_cab2 = change_cab2;
 window.addEventListener("DOMContentLoaded", () => {
   hwUi.configure({ setParamsBrowsingMode: setModelsParamsBrowsingMode });
   void mountModelsSlotPicker();
-  initMatrixContextMenu();
+  initAppContextMenuPolicy();
+  initMatrixGridPanelContextMenu();
   initMatrixDragDrop();
 
   window.addEventListener("keydown", (e) => {
@@ -11921,6 +12732,12 @@ window.addEventListener("DOMContentLoaded", () => {
         scheduleLoadForPreset(currentPresetIndex, true);
       }
     }
+  });
+
+  void listen<{ index: number }>("preset:export-hlx-request", async (event) => {
+    const index = event.payload?.index;
+    if (typeof index !== "number" || index < 0) return;
+    await runExportActivePresetHlx(index);
   });
 
   void listen<{ index: number }>("models:preset-saved", (event) => {

@@ -258,12 +258,14 @@ pub fn start_listener(
                         let mode_lock_start = Instant::now();
                         let mut m = mode.lock().unwrap();
                         let mode_wait_ms = mode_lock_start.elapsed().as_millis();
-                        if active.consumed_by
-                            != Some(crate::helix::usb_in_pipeline::ActiveLayerId::MatrixRoutingDd)
+                        if !matches!(
+                            active.consumed_by,
+                            Some(crate::helix::usb_in_pipeline::ActiveLayerId::MatrixRoutingDd)
+                                | Some(crate::helix::usb_in_pipeline::ActiveLayerId::ClearAllPreset)
+                        )
                         {
                             m.data_in(&data, &mut s);
-                        }
-                        if mode_wait_ms > STATE_LOCK_WARN_MS {
+                        }                        if mode_wait_ms > STATE_LOCK_WARN_MS {
                             eprintln!(
                                 "[WARN] mode.lock() wait={mode_wait_ms}ms (IN len={}, HelixState déjà tenu)",
                                 data.len()

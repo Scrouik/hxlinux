@@ -1,3 +1,4 @@
+// ! matrix_routing_dd.rs
 //! Handshake USB split/merge D&D (captures `d&d_split.json`, `d&d_merge.json`).
 //!
 //! Séquence HX Edit par geste (Path 1, colonne frontière 0..8) — pas de focus `cd:03` :
