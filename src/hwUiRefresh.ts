@@ -40,7 +40,7 @@ class HwUiRefreshCoordinator {
   }
 
   get gestureInProgress(): boolean {
-    return this._blockSyntheticParamsLoad || this.settleTimer !== null || this.heavyInFlight;
+    return this._blockSyntheticParamsLoad || this.settleTimer !== null;
   }
 
   bumpFromBus(): void {
@@ -116,7 +116,7 @@ class HwUiRefreshCoordinator {
   }
 
   runParamsSyncWhenIdle(channel: HwUiChannel, job: HwUiHeavyJob): void {
-    if (this.gestureInProgress) {
+    if (this._blockSyntheticParamsLoad || this.settleTimer !== null) {
       return;
     }
     void this.runHeavySerial({ channel, job });

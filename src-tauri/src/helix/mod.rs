@@ -464,6 +464,8 @@ static USB_PACKET_TRACE_DEFER_UNTIL_READY: AtomicBool = AtomicBool::new(true);
 /// 0 = pas de limite ; sinon ne loggue pas les paquets plus longs (évite le flood 272o en delta_only=0).
 static USB_PACKET_TRACE_MAX_LEN: AtomicU32 = AtomicU32::new(0);
 static PRESET_DEBUG_VERBOSE_ENABLED: AtomicBool = AtomicBool::new(false);
+static MODELS_DEBUG_SYNC_TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
+static SLOT_PARAM_DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
 static USB_IO_DIAG_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn set_usb_packet_trace_enabled(enabled: bool) {
@@ -529,6 +531,22 @@ pub fn set_preset_debug_verbose_enabled(enabled: bool) {
 
 pub fn preset_debug_verbose_enabled() -> bool {
     PRESET_DEBUG_VERBOSE_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn set_models_debug_sync_trace_enabled(enabled: bool) {
+    MODELS_DEBUG_SYNC_TRACE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn models_debug_sync_trace_enabled() -> bool {
+    MODELS_DEBUG_SYNC_TRACE_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn set_slot_param_debug_enabled(enabled: bool) {
+    SLOT_PARAM_DEBUG_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn slot_param_debug_enabled() -> bool {
+    SLOT_PARAM_DEBUG_ENABLED.load(Ordering::Relaxed)
 }
 
 pub fn set_usb_io_diag_enabled(enabled: bool) {

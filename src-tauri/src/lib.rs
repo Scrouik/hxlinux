@@ -32,11 +32,12 @@ use helix::ModeRequest;
 use helix::KeepAliveCommand;
 use helix::{
     kempline_index_to_slot_bus,
-    preset_debug_verbose_enabled, set_preset_debug_verbose_enabled,
-    set_usb_packet_trace_delta_only, set_usb_io_diag_enabled, set_usb_packet_trace_enabled,
-    set_usb_packet_trace_defer_until_ready, set_usb_packet_trace_max_len,
-    usb_packet_trace_active, usb_packet_trace_delta_only,
-    usb_packet_trace_max_len, usb_packet_trace_should_log,
+    models_debug_sync_trace_enabled, preset_debug_verbose_enabled,
+    set_models_debug_sync_trace_enabled, set_preset_debug_verbose_enabled,
+    set_slot_param_debug_enabled, set_usb_packet_trace_delta_only, set_usb_io_diag_enabled,
+    set_usb_packet_trace_enabled, set_usb_packet_trace_defer_until_ready,
+    set_usb_packet_trace_max_len, slot_param_debug_enabled, usb_packet_trace_active,
+    usb_packet_trace_delta_only, usb_packet_trace_max_len, usb_packet_trace_should_log,
 };
 use helix::packet::OutPacket;
 use helix::live_write::build_cab_dual_minimal_param_packets_from_state;
@@ -846,6 +847,7 @@ fn sync_hardware_slot_focus_usb(
     state: tauri::State<Arc<Mutex<AppState>>>,
     slot_index: u32,
 ) -> Result<Value, String> {
+    eprintln!("[FocusUSB] invoke reçu slot_index={slot_index}");
     if slot_index >= 16 {
         return Err("slotIndex hors plage (0..15)".to_string());
     }
@@ -865,11 +867,14 @@ fn sync_hardware_slot_focus_usb(
     let out_hex: String = {
         let mut s = helix_arc.lock().unwrap();
         if !s.connected {
+            eprintln!("[FocusUSB] SKIP slot={slot_index} : non connecté");
             return Err("HX non connecté".to_string());
         }
         if s.preset_content_only {
+            eprintln!("[FocusUSB] SKIP slot={slot_index} : preset_content_only=true");
             return Err("sync slot ignorée pendant lecture preset (preset_content_only)".to_string());
         }
+        eprintln!("[FocusUSB] → envoi focus slot={slot_index} bus={slot_bus:#04x}");
         let cnt = s.next_x80_cnt();
         let session = s.session_no;
         let double = s.preset_data_packet_double();
@@ -2146,6 +2151,15 @@ fn log_frontend_message(message: String) -> Result<(), String> {
     eprintln!("{m}");
     let _ = io::stderr().flush();
     Ok(())
+}
+
+/// Flags debug lus au démarrage depuis l'environnement (`MODELS_DEBUG_SYNC_TRACE=1`, etc.).
+#[tauri::command]
+fn get_models_debug_env_flags() -> Value {
+    serde_json::json!({
+        "syncTrace": models_debug_sync_trace_enabled(),
+        "slotParamDebug": slot_param_debug_enabled(),
+    })
 }
 
 /// Retourne les données brutes du dernier preset lu en hex (debug).
@@ -4790,6 +4804,20 @@ pub fn run() {
     if std::env::var("PRESET_DEBUG_VERBOSE").map(|v| v == "1").unwrap_or(false) {
         set_preset_debug_verbose_enabled(true);
     }
+    if std::env::var("MODELS_DEBUG_SYNC_TRACE")
+        .or_else(|_| std::env::var("models_debug_sync_trace"))
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        set_models_debug_sync_trace_enabled(true);
+        eprintln!(
+            "[ModelsSync] trace armé — MODELS_DEBUG_SYNC_TRACE=1 (terminal + fenêtre Models)"
+        );
+    }
+    if std::env::var("SLOT_PARAM_DEBUG").map(|v| v == "1").unwrap_or(false) {
+        set_slot_param_debug_enabled(true);
+        eprintln!("[SlotParamIn] debug armé — SLOT_PARAM_DEBUG=1 (scan/emit IN 85:62)");
+    }
     if std::env::var("USB_PACKET_TRACE").map(|v| v == "1").unwrap_or(false) {
         set_usb_packet_trace_enabled(true);
         if std::env::var("USB_PACKET_TRACE_DELTA_ONLY")
@@ -4884,6 +4912,7 @@ pub fn run() {
             set_preset_debug_verbose,
             set_usb_io_diag,
             log_frontend_message,
+            get_models_debug_env_flags,
             get_preset_slots,
             get_active_preset_slots,
             get_active_preset_slots_debug,

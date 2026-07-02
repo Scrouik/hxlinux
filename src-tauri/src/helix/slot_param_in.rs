@@ -1,13 +1,26 @@
-//! Parse passif des trames IN bulk : bloc paramètre live `85:62:SS:1d:c3:1a:00:1c:PP:77:XX`.
+//! Parse passif des trames IN bulk : bloc paramètre live `85:62:SS:1d:MM:1a:YY:1c:PP:77:XX`.
 //!
-//! Captures de référence : `src/Paquets Json/Slot0_Change_param_#0.json` (et #1, #2).
+//! `MM` = `c2` (discret) ou `c3` (float) — capture `add_single_legacy_change_param.json`.
+//! `YY` = `0x00` (général) ou `0x01` (cab IR).
 
 use serde::Serialize;
 use std::collections::HashMap;
 
 use crate::helix::slot_bus_to_kempline_index;
 
-const ANCHOR: [u8; 5] = [0x1d, 0xc3, 0x1a, 0x00, 0x1c];
+/// `85:62:bus:1d:<c2|c3>:1a:<Y>:1c` — ne pas figer `c3` seul (discrets HW en `c2`).
+fn model_param_block_anchor_matches(buf: &[u8], i: usize) -> bool {
+    if buf.get(i + 3) != Some(&0x1d) {
+        return false;
+    }
+    if buf.get(i + 5) != Some(&0x1a) {
+        return false;
+    }
+    if buf.get(i + 7) != Some(&0x1c) {
+        return false;
+    }
+    matches!(buf.get(i + 4), Some(0xc2) | Some(0xc3))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SlotParamWireKind {
@@ -21,6 +34,8 @@ pub enum SlotParamWireKind {
 pub struct SlotParamWireSample {
     pub slot_bus: u8,
     pub param_selector: u8,
+    /// `0x00` = params ampli / effet, `0x01` = params cab (amp+cab, `1a:01` dans le fil).
+    pub sub_block: u8,
     pub kind: SlotParamWireKind,
     /// Float normalisé (souvent 0…1) ou index discret selon `kind`.
     pub numeric_value: f32,
@@ -58,6 +73,35 @@ impl SlotParamWireSample {
     }
 }
 
+/// Filtre les dumps preset / catalogue : seuls les petits paquets live (knob) sont parsés.
+pub fn should_ingest_slot_param_in_buffer(buf: &[u8]) -> bool {
+    if buf.len() < 11 {
+        return false;
+    }
+    // Réponses liste noms preset (`81:cd`) — contiennent des snapshots chaîne, pas des knobs live.
+    if buf.windows(2).any(|w| w == [0x81, 0xcd]) {
+        return false;
+    }
+    if buf.len() > 512 {
+        return false;
+    }
+    if !buf.windows(2).any(|w| w == [0x85, 0x62]) {
+        return false;
+    }
+    if buf.len() <= 80 {
+        return true;
+    }
+    const LIVE_HEADS: &[[u8; 4]] = &[
+        [0x80, 0x10, 0xed, 0x03],
+        [0xed, 0x03, 0x80, 0x10],
+        [0xf0, 0x03, 0x02, 0x10],
+        [0x02, 0x10, 0xf0, 0x03],
+    ];
+    LIVE_HEADS
+        .iter()
+        .any(|h| buf.windows(4).any(|w| w == *h))
+}
+
 /// Cherche toutes les occurrences du motif paramètre dans un buffer IN.
 pub fn scan_slot_param_samples(buf: &[u8]) -> Vec<SlotParamWireSample> {
     let mut out = Vec::new();
@@ -71,10 +115,11 @@ pub fn scan_slot_param_samples(buf: &[u8]) -> Vec<SlotParamWireSample> {
             continue;
         }
         let slot_bus = buf[i + 2];
-        if buf.get(i + 3..i + 8) != Some(&ANCHOR) {
+        if !model_param_block_anchor_matches(buf, i) {
             i += 1;
             continue;
         }
+        let sub_block = buf[i + 6]; // 0x00 = ampli/effet, 0x01 = cab (amp+cab)
         let pp = buf[i + 8];
         if buf.get(i + 9) != Some(&0x77) {
             i += 1;
@@ -89,7 +134,7 @@ pub fn scan_slot_param_samples(buf: &[u8]) -> Vec<SlotParamWireSample> {
             i += 1;
             continue;
         }
-        if let Some(sample) = decode_tag(slot_bus, pp, tag, buf, i) {
+        if let Some(sample) = decode_tag(slot_bus, sub_block, pp, tag, buf, i) {
             out.push(sample);
             i += if tag == 0xca { 15 } else { 11 };
             continue;
@@ -101,6 +146,7 @@ pub fn scan_slot_param_samples(buf: &[u8]) -> Vec<SlotParamWireSample> {
 
 fn decode_tag(
     slot_bus: u8,
+    sub_block: u8,
     pp: u8,
     tag: u8,
     buf: &[u8],
@@ -116,6 +162,7 @@ fn decode_tag(
             }
             Some(SlotParamWireSample {
                 slot_bus,
+                sub_block,
                 param_selector: pp,
                 kind: SlotParamWireKind::Float,
                 numeric_value: v,
@@ -123,23 +170,26 @@ fn decode_tag(
         }
         0xc2 => Some(SlotParamWireSample {
             slot_bus,
+            sub_block,
             param_selector: pp,
             kind: SlotParamWireKind::BoolOff,
             numeric_value: 0.0,
         }),
         0xc3 => Some(SlotParamWireSample {
             slot_bus,
+            sub_block,
             param_selector: pp,
             kind: SlotParamWireKind::BoolOn,
             numeric_value: 1.0,
         }),
-        0x00..=0x0f => Some(SlotParamWireSample {
+        // Index discret wire `23` : 0..n-1 (Pitch Wham heel/toe → jusqu'à 0x30).
+        tag => Some(SlotParamWireSample {
             slot_bus,
+            sub_block,
             param_selector: pp,
             kind: SlotParamWireKind::Discrete,
-            numeric_value: tag as f32,
+            numeric_value: f32::from(tag),
         }),
-        _ => None,
     }
 }
 
@@ -149,8 +199,10 @@ pub struct SlotParamChangedPayload {
     pub sequence: u32,
     pub slot_index: u32,
     pub slot_bus: u8,
-    /// Index paramètre wire (`PP` après `00:1c`), aligné `param_selector` / live write.
+    /// Index paramètre wire (`PP` après `1c`), aligné `param_selector` / live write.
     pub param_index: u32,
+    /// `0x00` = params ampli / effet, `0x01` = params cab (amp+cab, YY=`1a:01`).
+    pub sub_block: u8,
     pub value_type: String,
     pub value: serde_json::Value,
 }
@@ -172,6 +224,28 @@ impl Default for SlotParamEmitState {
 
 impl SlotParamEmitState {
     pub fn ingest_buffer(&mut self, buf: &[u8]) -> Vec<SlotParamChangedPayload> {
+        let has_8562 = buf.windows(2).any(|w| w == [0x85, 0x62]);
+        if has_8562 {
+            let head = buf.iter().take(8).map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":");
+            eprintln!("[SlotParamIn] 85:62 détecté len={} head={}", buf.len(), head);
+        }
+        let ingest_ok = should_ingest_slot_param_in_buffer(buf);
+        if crate::helix::slot_param_debug_enabled() && has_8562 {
+            let sample_count = if ingest_ok {
+                scan_slot_param_samples(buf).len()
+            } else {
+                0
+            };
+            eprintln!(
+                "[SlotParamIn] scan len={} ingest={} samples={}",
+                buf.len(),
+                ingest_ok,
+                sample_count
+            );
+        }
+        if !ingest_ok {
+            return Vec::new();
+        }
         let mut payloads = Vec::new();
         for sample in scan_slot_param_samples(buf) {
             if let Some(p) = self.try_emit_sample(sample) {
@@ -192,6 +266,7 @@ impl SlotParamEmitState {
         self.sequence = self.sequence.wrapping_add(1);
 
         let slot_bus = sample.slot_bus;
+        let sub_block = sample.sub_block;
         let param_selector = sample.param_selector;
         let value = match sample.kind {
             SlotParamWireKind::Float => serde_json::json!(sample.numeric_value),
@@ -207,6 +282,7 @@ impl SlotParamEmitState {
             slot_index: slot_index as u32,
             slot_bus,
             param_index: param_selector as u32,
+            sub_block,
             value_type: sample.value_type_str().to_string(),
             value,
         })
@@ -261,5 +337,28 @@ mod tests {
         assert_eq!(scan_slot_param_samples(&on)[0].kind, SlotParamWireKind::BoolOn);
         assert_eq!(scan_slot_param_samples(&disc)[0].kind, SlotParamWireKind::Discrete);
         assert_eq!(scan_slot_param_samples(&disc)[0].numeric_value, 5.0);
+    }
+
+    #[test]
+    fn parses_discrete_c2_anchor_from_legacy_param_capture() {
+        let hex = "85:62:01:1d:c2:1a:00:1c:00:77:09";
+        let s = &scan_slot_param_samples(&hex_to_bytes(hex))[0];
+        assert_eq!(s.kind, SlotParamWireKind::Discrete);
+        assert_eq!(s.numeric_value, 9.0);
+    }
+
+    #[test]
+    fn parses_discrete_indices_above_0x0f() {
+        let plus15 = hex_to_bytes("85:62:01:1d:c2:1a:00:1c:01:77:27");
+        assert_eq!(scan_slot_param_samples(&plus15)[0].numeric_value, 39.0);
+    }
+
+    #[test]
+    fn skips_preset_name_catalog_buffers() {
+        let mut st = SlotParamEmitState::default();
+        let mut buf = vec![0u8; 64];
+        buf[0] = 0x81;
+        buf[1] = 0xcd;
+        assert!(st.ingest_buffer(&buf).is_empty());
     }
 }

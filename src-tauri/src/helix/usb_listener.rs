@@ -16,15 +16,17 @@ use rusb::GlobalContext;
 use tauri::Emitter;
 
 use crate::helix::{
-    HelixState, Mode, preset_debug_verbose_enabled, usb_io_diag_enabled,
-    usb_packet_trace_active, usb_packet_trace_delta_only, usb_packet_trace_should_log,
-    usb_trace_fingerprint,
+    HelixState, Mode, models_debug_sync_trace_enabled, preset_debug_verbose_enabled,
+    slot_param_debug_enabled, usb_io_diag_enabled, usb_packet_trace_active,
+    usb_packet_trace_delta_only, usb_packet_trace_should_log, usb_trace_fingerprint,
 };
-use crate::helix::packet::{classify_in_packet, packet_counter};
+use crate::helix::packet::{classify_in_packet, packet_counter, OutPacket};
 
 const ENDPOINT_IN: u8 = 0x81;
-const READ_TIMEOUT_MS: u64 = 500;
+const READ_TIMEOUT_MS: u64 = 50;
 const BUFFER_SIZE: usize = 512;
+/// Intervalle de poll f0:03 pour recevoir les changements de paramètre knob HW (85:62).
+const LIVE_PARAM_POLL_INTERVAL_MS: u64 = 40;
 /// Log si acquisition ou section critique HelixState dépasse ce seuil (contention / travail long).
 const STATE_LOCK_WARN_MS: u128 = 10;
 
@@ -48,8 +50,67 @@ pub fn start_listener(
         let mut buf = vec![0u8; BUFFER_SIZE];
         let mut seen_fingerprints: HashSet<Vec<u8>> = HashSet::new();
         let mut suppressed_repeats: u64 = 0;
+        let mut last_f0_poll = Instant::now();
+        // Diagnostic transitoire (gel du poll live-param) : log uniquement au CHANGEMENT
+        // d'état pour identifier laquelle des 3 conditions bloque, sans spammer.
+        let mut last_poll_gate_ok: Option<bool> = None;
+        // Référence pour le compteur roulant des octets 12-15 du poll actif (voir plus bas) —
+        // capture HX Edit longue durée (`long_long_capture.pcapng`, 6 min) : ce champ progresse
+        // à ~1,14 unité/ms de façon continue, jamais figé. Notre valeur figée précédente
+        // (`09 10 01 00` constant) est la cause probable du gel après un moment (requête perçue
+        // comme périmée par le device).
+        let mut poll_epoch = Instant::now();
+        // Récupération après gel : sur 4 captures, un silence device de ~650-800ms précède
+        // systématiquement une dégradation PERMANENTE des réponses au poll actif (48/52 octets
+        // → 16 octets, sans 85:62). HX Edit tolère des silences plus courts (≤243ms observé sur
+        // 6 min) sans jamais dégrader. Faute de capture de référence pour une reprise, on tente
+        // une récupération empirique : après N réponses dégradées consécutives, on marque une
+        // pause (laisse le device souffler) puis on repart avec un tick à zéro (nouvelle
+        // "session" pour le compteur roulant du poll actif).
+        let mut degraded_in_a_row: u32 = 0;
+        let mut poll_backoff_until: Option<Instant> = None;
+        const DEGRADED_THRESHOLD: u32 = 8;
+        const RECOVER_BACKOFF_MS: u64 = 500;
 
         loop {
+            // Poll actif f0:03/sub=08 toutes les 40ms : le device n'envoie 85:62 (param knob)
+            // qu'en réponse à ce poll avec byte14=0x01. Le keep-alive (sub=10/1047ms) ne suffit pas.
+            if last_f0_poll.elapsed().as_millis() >= LIVE_PARAM_POLL_INTERVAL_MS as u128 {
+                last_f0_poll = Instant::now();
+                if let Ok(mut s) = state.try_lock() {
+                    let connected = s.connected;
+                    let editor_ready = s.editor_ready;
+                    let preset_read_in_progress = s.preset_usb_read_in_progress();
+                    let gate_ok = connected && editor_ready && !preset_read_in_progress;
+                    if last_poll_gate_ok != Some(gate_ok) {
+                        eprintln!(
+                            "[LiveParamPoll][gate] {} connected={} editor_ready={} preset_usb_read_in_progress={}",
+                            if gate_ok { "OUVERT" } else { "FERMÉ" },
+                            connected, editor_ready, preset_read_in_progress
+                        );
+                        last_poll_gate_ok = Some(gate_ok);
+                    }
+                    let backing_off = poll_backoff_until
+                        .map(|t| Instant::now() < t)
+                        .unwrap_or(false);
+                    if gate_ok && !backing_off {
+                        let seq = s.next_x2_cnt();
+                        // En-tête `05:10` (pas `02:10`) : confirmé sur 10950/10950 polls actifs
+                        // de la capture HX Edit longue durée — `02:10` n'apparaît jamais pendant
+                        // une session d'édition live. Tail = compteur roulant (LE u32), pas figé.
+                        let tick = poll_epoch.elapsed().as_millis() as u32;
+                        let tick_bytes = tick.to_le_bytes();
+                        let mut pkt = vec![
+                            0x08, 0x00, 0x00, 0x18,
+                            0x05, 0x10, 0xf0, 0x03,
+                            0x00, seq, 0x00, 0x08,
+                        ];
+                        pkt.extend_from_slice(&tick_bytes);
+                        s.send(OutPacket::new(pkt));
+                    }
+                }
+            }
+
             // Vérifier si on doit s'arrêter
             if stop.load(Ordering::SeqCst) {
                 break;
@@ -63,6 +124,29 @@ pub fn start_listener(
             ) {
                 Ok(n) if n > 0 => {
                     let data = buf[..n].to_vec();
+                    if last_poll_gate_ok == Some(true)
+                        && classify_in_packet(&data) == "in_x2_stream"
+                    {
+                        if data.len() <= 16 {
+                            degraded_in_a_row += 1;
+                            if degraded_in_a_row == DEGRADED_THRESHOLD {
+                                eprintln!(
+                                    "[LiveParamPoll][recover] {DEGRADED_THRESHOLD} réponses dégradées (len<=16) d'affilée — pause {RECOVER_BACKOFF_MS}ms puis reset du tick"
+                                );
+                                poll_backoff_until =
+                                    Some(Instant::now() + Duration::from_millis(RECOVER_BACKOFF_MS));
+                                poll_epoch = Instant::now();
+                            }
+                        } else if data.len() >= 40 {
+                            if degraded_in_a_row >= DEGRADED_THRESHOLD {
+                                eprintln!(
+                                    "[LiveParamPoll][recover] réponse complète retrouvée (len={}) — abonnement rétabli",
+                                    data.len()
+                                );
+                            }
+                            degraded_in_a_row = 0;
+                        }
+                    }
                     if usb_io_diag_enabled() {
                         eprintln!(
                             "[UsbIODiag][IN][recv] kind={} len={} cnt={}",
@@ -276,6 +360,12 @@ pub fn start_listener(
                         ((ev, param_events), fond_bootstrap_alert, slot_model_changed, path1_input_changed, path1_split_changed)
                     };
                     if let (Some(app), Some(payload)) = (app_handle.as_ref(), hw_slot_changed.0) {
+                        eprintln!(
+                            "[HwSlot] emit hardware-slot-changed seq={} slot={} bus={}",
+                            payload.sequence,
+                            payload.slot_index.map(|v| v.to_string()).unwrap_or("?".into()),
+                            payload.slot_bus.map(|v| format!("{v:#04x}")).unwrap_or("?".into()),
+                        );
                         if let Err(e) = app.emit("models:hardware-slot-changed", payload) {
                             eprintln!("[UsbListener] emit models:hardware-slot-changed: {e}");
                         }
@@ -302,7 +392,10 @@ pub fn start_listener(
                             }
                         }
                         for payload in hw_slot_changed.1.iter() {
-                            if preset_debug_verbose_enabled() {
+                            if preset_debug_verbose_enabled()
+                                || models_debug_sync_trace_enabled()
+                                || slot_param_debug_enabled()
+                            {
                                 eprintln!(
                                     "[SlotParamIn] emit slot={} pp={} type={} val={}",
                                     payload.slot_index,

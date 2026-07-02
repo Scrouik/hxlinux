@@ -209,14 +209,25 @@ impl KeepAliveManager {
                 // ── Lane f0 (origine du cycle, +0 ms) ─────────────────────────
                 {
                     let mut s = state.lock().unwrap();
-                    let cnt = s.next_x2_cnt();
-                    let pkt = OutPacket::new(vec![
-                        0x08, 0x00, 0x00, 0x18,
-                        0x02, 0x10, 0xf0, 0x03,
-                        0x00, cnt, 0x00, POLL_SUB,
-                        TAIL_F0[0], TAIL_F0[1], TAIL_F0[2], TAIL_F0[3],
-                    ]);
-                    s.send(pkt);
+                    // Le poll actif live-param (usb_listener.rs, 40ms, byte11=0x08 +
+                    // byte14=0x01 "active session param notifications") tourne déjà sur ce
+                    // même canal f0:03. Envoyer ici la lane idle (byte11=0x10, byte14=0x00)
+                    // annule silencieusement cet abonnement côté device — plus aucune 85:62
+                    // dans les réponses au poll actif ensuite (gel de la lecture des trames
+                    // HW→SW). Le poll actif rafraîchit de toute façon bien plus souvent
+                    // (40ms vs ~1047ms) : la lane idle f0 est redondante quand il tourne.
+                    let live_param_poll_active =
+                        s.connected && s.editor_ready && !s.preset_usb_read_in_progress();
+                    if !live_param_poll_active {
+                        let cnt = s.next_x2_cnt();
+                        let pkt = OutPacket::new(vec![
+                            0x08, 0x00, 0x00, 0x18,
+                            0x02, 0x10, 0xf0, 0x03,
+                            0x00, cnt, 0x00, POLL_SUB,
+                            TAIL_F0[0], TAIL_F0[1], TAIL_F0[2], TAIL_F0[3],
+                        ]);
+                        s.send(pkt);
+                    }
                 }
                 if Self::sleep_or_stop(&stop, DELAY_F0_TO_ED_MS) {
                     break;
@@ -225,15 +236,23 @@ impl KeepAliveManager {
                 // ── Lane ed (+~453 ms) ────────────────────────────────────────
                 {
                     let mut s = state.lock().unwrap();
-                    let cnt = s.next_x80_cnt();
-                    trace_ed_poll(cnt);
-                    let pkt = OutPacket::new(vec![
-                        0x08, 0x00, 0x00, 0x18,
-                        0x80, 0x10, 0xed, 0x03,
-                        0x00, cnt, 0x00, POLL_SUB,
-                        TAIL_ED[0], TAIL_ED[1], TAIL_ED[2], TAIL_ED[3],
-                    ]);
-                    s.send(pkt);
+                    // Même raison que la lane f0 ci-dessus : un poll idle (sub=0x10) sur
+                    // n'importe laquelle des 3 lanes semble annuler l'abonnement "notifications
+                    // actives" côté device pendant que le poll live-param tourne (confirmé sur
+                    // plusieurs captures — la lane ed/ef précède systématiquement le gel).
+                    let live_param_poll_active =
+                        s.connected && s.editor_ready && !s.preset_usb_read_in_progress();
+                    if !live_param_poll_active {
+                        let cnt = s.next_x80_cnt();
+                        trace_ed_poll(cnt);
+                        let pkt = OutPacket::new(vec![
+                            0x08, 0x00, 0x00, 0x18,
+                            0x80, 0x10, 0xed, 0x03,
+                            0x00, cnt, 0x00, POLL_SUB,
+                            TAIL_ED[0], TAIL_ED[1], TAIL_ED[2], TAIL_ED[3],
+                        ]);
+                        s.send(pkt);
+                    }
                 }
                 if Self::sleep_or_stop(&stop, DELAY_ED_TO_EF_MS) {
                     break;
@@ -242,14 +261,18 @@ impl KeepAliveManager {
                 // ── Lane ef (+~266 ms) ────────────────────────────────────────
                 {
                     let mut s = state.lock().unwrap();
-                    let cnt = s.next_x1_cnt();
-                    let pkt = OutPacket::new(vec![
-                        0x08, 0x00, 0x00, 0x18,
-                        0x01, 0x10, 0xef, 0x03,
-                        0x00, cnt, 0x00, POLL_SUB,
-                        TAIL_EF[0], TAIL_EF[1], TAIL_EF[2], TAIL_EF[3],
-                    ]);
-                    s.send(pkt);
+                    let live_param_poll_active =
+                        s.connected && s.editor_ready && !s.preset_usb_read_in_progress();
+                    if !live_param_poll_active {
+                        let cnt = s.next_x1_cnt();
+                        let pkt = OutPacket::new(vec![
+                            0x08, 0x00, 0x00, 0x18,
+                            0x01, 0x10, 0xef, 0x03,
+                            0x00, cnt, 0x00, POLL_SUB,
+                            TAIL_EF[0], TAIL_EF[1], TAIL_EF[2], TAIL_EF[3],
+                        ]);
+                        s.send(pkt);
+                    }
                 }
                 if Self::sleep_or_stop(&stop, DELAY_EF_TO_NEXT_F0_MS) {
                     break;

@@ -104,6 +104,8 @@ type SlotParamChangedPayload = {
   slotIndex: number;
   slotBus: number;
   paramIndex: number;
+  /** 0x00 = params ampli/effet, 0x01 = params cab (amp+cab, YY=`1a:01`). */
+  subBlock: number;
   valueType: "float" | "bool" | "discrete" | string;
   value: ChainParamValueJson;
 };
@@ -252,8 +254,10 @@ const HW_SLOT_CONTENT_WATCH_MIN_MS = 400;
 const HW_SLOT_CONTENT_WATCH_MAX_MS = 30000;
 /** Log console lorsque le `moduleHex` d’un slot change après sync USB (jointure catalogue). */
 const DEBUG_CATALOG_CHAINHEX_FLAG = "models_debug_catalog_chainhex";
-/** `localStorage.setItem("models_debug_sync_trace", "1")` → logs `[ModelsSync]…` ; lignes répétitives throttlées (`emitModelsSyncTraceThrottled`). */
+/** `localStorage.setItem("models_debug_sync_trace", "1")` ou `MODELS_DEBUG_SYNC_TRACE=1` au lancement → logs `[ModelsSync]…` ; lignes répétitives throttlées (`emitModelsSyncTraceThrottled`). */
 const MODELS_SYNC_TRACE_FLAG = "models_debug_sync_trace";
+/** Armé au boot si `MODELS_DEBUG_SYNC_TRACE=1` (voir `get_models_debug_env_flags`). */
+let modelsSyncTraceFromEnv = false;
 const HW_SYNC_MIN_MS = 100;
 const HW_SYNC_MAX_MS = 5000;
 const REQUEST_PRESET_MIN_GAP_MS = 320;
@@ -428,6 +432,37 @@ function setSlotChainSessionValues(
 ): void {
   if (preset < 0 || kemplineSlotIndex < 0 || kemplineSlotIndex > 15 || values.length === 0) return;
   slotChainSessionByKey.set(liveChainOverrideStorageKey(preset, kemplineSlotIndex), values.slice());
+}
+
+/** Met à jour la session chaîne sur param HW live (évite relecture preset_data). */
+function patchSlotChainSessionSymbolicValue(
+  preset: number,
+  kemplineSlotIndex: number,
+  symbolicId: string,
+  value: ChainParamValueJson,
+  paramsForDisplay: ModelParamDefJson[],
+  catalogSignal: string | null | undefined,
+  wireLocal = false,
+): void {
+  if (preset < 0 || kemplineSlotIndex < 0 || kemplineSlotIndex > 15) return;
+  const sid = symbolicId.trim();
+  if (!sid) return;
+  const key = liveChainOverrideStorageKey(preset, kemplineSlotIndex);
+  let base = slotChainSessionByKey.get(key);
+  if (!base || base.length === 0) {
+    const seeded = buildDefaultChainValuesForSourceOrder(paramsForDisplay, catalogSignal, wireLocal);
+    if (!seeded || seeded.length === 0) return;
+    base = seeded.slice();
+  } else {
+    base = base.slice();
+  }
+  const wireOrder = wireLocal
+    ? modelParamWireLocalOrderIds(paramsForDisplay, catalogSignal)
+    : modelParamWireOrderIds(paramsForDisplay, catalogSignal);
+  const wi = wireOrder.indexOf(sid);
+  if (wi < 0 || wi >= base.length) return;
+  base[wi] = value;
+  slotChainSessionByKey.set(key, base);
 }
 
 /** **Seul** appel autorisé à `get_active_preset_slot_chain_param_values` hors chargement preset. */
@@ -909,6 +944,9 @@ let suppressNextUiSlotHardwareSwitch = false;
 let suppressNextAmpCabFocusUsb = false;
 let lastUserHwSlotSwitchAt = 0;
 let lastUserHwSlotSwitchIndex: number | null = null;
+/** Dernier event paramètre live HW — évite soft-sync lourd en rafale après les knobs. */
+let lastHwParamLiveEventAt = 0;
+const HW_PARAM_LIVE_SOFT_SYNC_SUPPRESS_MS = 4_000;
 let lastCatalogChainHexSnapshotPresetIndex = -1;
 let lastCatalogChainHexBySlot: string[] | null = null;
 
@@ -947,7 +985,43 @@ function setModelsParamsBrowsingMode(browsing: boolean): void {
 }
 
 /** Soft-sync périodique : sync params si idle (pas de debounce qui repousse sans fin). */
+function refreshOpenParamsPaneFromLiveOverrides(): boolean {
+  if (
+    selectedParamsKemplineSlotIndex === null ||
+    selectedParamsPresetIndex !== currentPresetIndex ||
+    !selectedParamsActivePaneUpdater ||
+    !selectedParamsHwWireContext
+  ) {
+    return false;
+  }
+  const ki = selectedParamsKemplineSlotIndex;
+  const { paramsForDisplay, catalogSignal, wireLocal } = selectedParamsHwWireContext;
+  const base = slotChainSessionByKey.get(liveChainOverrideStorageKey(currentPresetIndex, ki));
+  if (!base || base.length === 0 || paramsForDisplay.length === 0) return false;
+  const aligned = mergeLiveChainOverridesIntoAligned(
+    currentPresetIndex,
+    ki,
+    paramsForDisplay,
+    alignChainValuesToModelParamOrder(
+      base,
+      paramsForDisplay,
+      paramsForDisplay,
+      catalogSignal,
+      wireLocal === true,
+    ),
+  );
+  selectedParamsActivePaneUpdater(aligned ?? null);
+  return true;
+}
+
+function hwParamLiveSoftSyncSuppressed(): boolean {
+  return Date.now() - lastHwParamLiveEventAt < HW_PARAM_LIVE_SOFT_SYNC_SUPPRESS_MS;
+}
+
 function scheduleSoftRefreshParamsPaneFromSlots(slots: SlotDebug[]): void {
+  if (hwParamLiveSoftSyncSuppressed() && refreshOpenParamsPaneFromLiveOverrides()) {
+    return;
+  }
   hwUi.runParamsSyncWhenIdle("params", () => softRefreshParamsPaneFromSlots(slots));
 }
 
@@ -1196,6 +1270,7 @@ async function applyHardwareSlotModelParamsHeavy(
   ) {
     selectedParamsValuesSig = null;
     selectedParamsInPlaceUpdater = null;
+    selectedParamsActivePaneUpdater = null;
     selectedParamsInPlaceSlotKey = null;
     showModelsParamsLoading();
   }
@@ -1327,6 +1402,7 @@ async function applySlotContentWatchFromSync(
     3_000,
   );
   if (selectedParamsKemplineSlotIndex === ki && lastHwSyncNormalizedSlots) {
+    if (hwParamLiveSoftSyncSuppressed()) return;
     scheduleSoftRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
   }
 }
@@ -1348,16 +1424,27 @@ async function invokeSlotFocusWatch(ki: number): Promise<void> {
   }
 }
 
+/** Focus USB HX Edit sur le slot dont le panneau params est ouvert (arme notifs param HW). */
+function scheduleHwFocusForOpenParamsPane(ki: number | undefined): void {
+  void invoke("log_frontend_message", { message: `[DBG] scheduleHwFocusForOpenParamsPane ki=${String(ki)} enabled=${String(slotFocusUsbSyncEnabled())}` }).catch(() => {});
+  if (ki === undefined || !Number.isInteger(ki) || ki < 0 || ki >= 16) return;
+  if (!slotFocusUsbSyncEnabled()) return;
+  void invokeSlotFocusWatch(ki);
+}
+
 /** Focus USB périodique sur le slot actif (sans dump preset complet). */
 async function maybeWatchActiveSlotContent(
   hw: HardwareActiveSlotState | null,
 ): Promise<void> {
   const interval = getSlotContentWatchIntervalMs();
+  const now = Date.now();
+  void invoke("log_frontend_message", {
+    message: `[DBG] maybeWatchActiveSlotContent interval=${interval} hw=${JSON.stringify(hw)} probe=${String(slotModelUsbProbeInFlight)} sinceLast=${now - lastSlotContentWatchAt}`,
+  }).catch(() => {});
   if (interval <= 0) return;
   if (!hw || !Number.isInteger(hw.slotIndex) || (hw.slotIndex as number) < 0) return;
   const ki = hw.slotIndex as number;
   if (ki >= 16) return;
-  const now = Date.now();
   if (now - lastSlotContentWatchAt < interval) return;
   if (slotModelUsbProbeInFlight !== null) return;
   lastSlotContentWatchAt = now;
@@ -1416,12 +1503,25 @@ function catalogChainHexLogEnabled(): boolean {
 }
 
 function modelsSyncTraceEnabled(): boolean {
-  return localStorage.getItem(MODELS_SYNC_TRACE_FLAG) === "1";
+  return modelsSyncTraceFromEnv || localStorage.getItem(MODELS_SYNC_TRACE_FLAG) === "1";
+}
+
+async function bootstrapModelsDebugFlags(): Promise<void> {
+  try {
+    const flags = await invoke<{ syncTrace?: boolean }>("get_models_debug_env_flags");
+    modelsSyncTraceFromEnv = flags?.syncTrace === true;
+    if (modelsSyncTraceFromEnv) {
+      emitModelsSyncTrace("trace armé via MODELS_DEBUG_SYNC_TRACE=1 (env au lancement)");
+    }
+  } catch {
+    /* invoke optionnel avant backend prêt */
+  }
 }
 
 /**
  * Trace sync UI : `console.info` (DevTools fenêtre Models) + `eprintln!` côté Rust (terminal `cargo tauri dev`).
- * Active avec `localStorage.setItem("models_debug_sync_trace", "1")` dans la **fenêtre Models**.
+ * Active avec `MODELS_DEBUG_SYNC_TRACE=1` au lancement **ou**
+ * `localStorage.setItem("models_debug_sync_trace", "1")` dans la **fenêtre Models**.
  * Pour les messages très répétitifs (soft-sync ~200 ms), utiliser **`emitModelsSyncTraceThrottled`**.
  */
 function emitModelsSyncTrace(line: string): void {
@@ -1601,6 +1701,9 @@ function rememberHwSyncChainLayout(slots: SlotDebug[]): void {
 
 /** Soft-sync déclenché par événement USB (`models:hardware-slot-changed`), pas par un tick fixe. */
 function scheduleHardwareSyncFromEvent(): void {
+  void invoke("log_frontend_message", {
+    message: `[DBG] scheduleHardwareSyncFromEvent paused=${hardwareSyncPausedForPresetLoad} gesture=${hwUi.gestureInProgress}`,
+  }).catch(() => {});
   if (hardwareSyncPausedForPresetLoad) return;
   if (hwUi.gestureInProgress) return;
   void runHardwareSyncSoftRefresh();
@@ -1719,18 +1822,39 @@ function applyProbeSlotMergeToNormalized(normalized: SlotDebug[]): SlotDebug[] {
  */
 async function runHardwareSyncSoftRefresh(): Promise<void> {
   const syncMs = getHardwareSyncIntervalMs();
-  if (currentPresetIndex < 0) return;
-  if (hwUi.gestureInProgress) return;
-  if (loading || hardwareSyncBusy) return;
-  if (slotModelUsbProbeInFlight !== null) return;
-  if (loadedPresetIndex !== currentPresetIndex) return;
+  if (currentPresetIndex < 0) {
+    void invoke("log_frontend_message", { message: `[DBG] runHardwareSyncSoftRefresh EXIT currentPresetIndex=${currentPresetIndex}` }).catch(() => {});
+    return;
+  }
+  if (hwUi.gestureInProgress) {
+    void invoke("log_frontend_message", { message: `[DBG] runHardwareSyncSoftRefresh EXIT gestureInProgress` }).catch(() => {});
+    return;
+  }
+  if (loading || hardwareSyncBusy) {
+    void invoke("log_frontend_message", { message: `[DBG] runHardwareSyncSoftRefresh EXIT loading=${String(loading)} hardwareSyncBusy=${String(hardwareSyncBusy)}` }).catch(() => {});
+    return;
+  }
+  if (slotModelUsbProbeInFlight !== null) {
+    void invoke("log_frontend_message", { message: `[DBG] runHardwareSyncSoftRefresh EXIT slotModelUsbProbeInFlight` }).catch(() => {});
+    return;
+  }
+  if (loadedPresetIndex !== currentPresetIndex) {
+    void invoke("log_frontend_message", { message: `[DBG] runHardwareSyncSoftRefresh EXIT loadedPreset=${loadedPresetIndex} != current=${currentPresetIndex}` }).catch(() => {});
+    return;
+  }
 
   const now = Date.now();
   const wroteThisCycle = await flushPendingLiveWrites();
-  if (now < liveWriteUiInteractionUntil) return;
+  if (now < liveWriteUiInteractionUntil) {
+    void invoke("log_frontend_message", { message: `[DBG] runHardwareSyncSoftRefresh EXIT liveWriteUiInteraction still active` }).catch(() => {});
+    return;
+  }
   // Pendant une écriture live (ou juste après), éviter de forcer RequestPreset,
   // sinon la machine d'état repasse en lecture et l'écriture peut être ignorée.
-  if (!wroteThisCycle && now - lastLiveWriteAt < LIVE_WRITE_SYNC_PAUSE_MS) return;
+  if (!wroteThisCycle && now - lastLiveWriteAt < LIVE_WRITE_SYNC_PAUSE_MS) {
+    void invoke("log_frontend_message", { message: `[DBG] runHardwareSyncSoftRefresh EXIT liveWritePause age=${now - lastLiveWriteAt}ms` }).catch(() => {});
+    return;
+  }
 
   let hwSlotState: HardwareActiveSlotState | null = null;
   try {
@@ -1757,7 +1881,11 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
     }
   }
 
-  if (!hardwareSlotSequenceAdvanced && now - lastHardwareSyncAt < syncMs) return;
+  if (!hardwareSlotSequenceAdvanced && now - lastHardwareSyncAt < syncMs) {
+    void invoke("log_frontend_message", { message: `[DBG] runHardwareSyncSoftRefresh EXIT syncInterval seqAdv=${String(hardwareSlotSequenceAdvanced)} age=${now - lastHardwareSyncAt}ms syncMs=${syncMs}` }).catch(() => {});
+    return;
+  }
+  void invoke("log_frontend_message", { message: `[DBG] runHardwareSyncSoftRefresh PAST_GATE seqAdv=${String(hardwareSlotSequenceAdvanced)}` }).catch(() => {});
 
   const usbPresetPollMs = getHardwareUsbPresetPollMs();
   const forceUsbPending = pendingForceUsbPresetContent;
@@ -2004,6 +2132,9 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
 
 async function softRefreshParamsPaneFromSlots(slots: SlotDebug[]): Promise<void> {
   if (!hasSelectedParamsContextForCurrentPreset()) return;
+  if (hwParamLiveSoftSyncSuppressed() && refreshOpenParamsPaneFromLiveOverrides()) {
+    return;
+  }
   const idx = selectedParamsKemplineSlotIndex;
   if (idx === null || idx < 0 || idx >= slots.length) return;
   const slot = slots[idx];
@@ -2229,29 +2360,54 @@ function dualPaneHwWireContext(
   dualSlotKind: "amp_cab" | "cab_dual",
   paneIndex: number,
   tabPanes: DualTabPaneConfig[],
+  cabDualAssignVariant?: string | null,
 ): {
   paramsForDisplay: ModelParamDefJson[];
   catalogSignal: string | null | undefined;
   wireParamIndexBase: number;
+  wireLocal: boolean;
 } {
   const pane = tabPanes[paneIndex] ?? tabPanes[0]!;
   return {
     paramsForDisplay: pane.params,
     catalogSignal: pane.catalogRoutingSignal,
     wireParamIndexBase: dualPaneLiveWriteParamIndexBase(dualSlotKind, paneIndex, tabPanes),
+    wireLocal:
+      dualSlotKind === "cab_dual" &&
+      (cabDualAssignVariant ?? "").trim().toLowerCase() === "dual-legacy",
   };
 }
 
-/** Inverse de `liveWriteParamIndexForRow` : index wire `PP` → `symbolicID` catalogue. */
+/**
+ * Inverse de `liveWriteParamIndexForRow` : index wire `PP` → `symbolicID` catalogue.
+ * `wireLocal` + `wireLocalGroup` : pour les cabs single/dual legacy, le device numérote `PP`
+ * séparément par groupe de type d'onde (discret/bool `c2` vs float `c3`, chacun 0-based) —
+ * voir `docs/cab_family_live_write.md` §3-4. `wireLocalGroup` = `isWire23Param` du groupe
+ * attendu (dérivé de `p.valueType` du payload IN : `discrete`/`bool` → true, `float` → false).
+ */
 function symbolicIdForWireParamIndex(
   paramsForDisplay: ModelParamDefJson[],
   wireParamIndex: number,
   catalogSignal: string | null | undefined,
   wireParamIndexBase = 0,
+  wireLocal = false,
+  wireLocalGroup?: boolean,
 ): string | null {
-  const wireOrder = modelParamWireOrderIds(paramsForDisplay, catalogSignal);
   const local = wireParamIndex - wireParamIndexBase;
-  if (local < 0 || local >= wireOrder.length) return null;
+  if (local < 0) return null;
+  if (wireLocal && wireLocalGroup !== undefined && wireLocalParamSelectorEnabled()) {
+    const order = paramsVisibleForSignal(paramsForDisplay, catalogSignal);
+    let count = 0;
+    for (const p of order) {
+      if (isWire23Param(p) === wireLocalGroup) {
+        if (count === local) return (p.symbolicID ?? "").trim() || null;
+        count += 1;
+      }
+    }
+    return null;
+  }
+  const wireOrder = modelParamWireOrderIds(paramsForDisplay, catalogSignal);
+  if (local >= wireOrder.length) return null;
   return wireOrder[local] ?? null;
 }
 
@@ -2274,24 +2430,97 @@ function chainValueFromHwSlotParam(p: SlotParamChangedPayload): ChainParamValueJ
   return null;
 }
 
+/** Index wire discret / float IN → valeur chaîne catalogue (ex. heel/toe : min + index). */
+function chainValueFromHwSlotParamForDef(
+  p: SlotParamChangedPayload,
+  paramDef: ModelParamDefJson | null,
+): ChainParamValueJson | null {
+  const raw = chainValueFromHwSlotParam(p);
+  if (raw === null) return null;
+  if (!paramDef || paramDef.valueType !== 0) return raw;
+  const minN = paramDef.min;
+  const maxN = paramDef.max;
+  if (
+    typeof minN !== "number" ||
+    typeof maxN !== "number" ||
+    !Number.isFinite(minN) ||
+    !Number.isFinite(maxN) ||
+    maxN <= minN
+  ) {
+    return raw;
+  }
+  const lo = Math.round(minN);
+  const hi = Math.round(maxN);
+  const steps = hi - lo + 1;
+  if (p.valueType === "discrete" && typeof raw === "number") {
+    const idx = Math.round(raw);
+    if (idx >= 0 && idx < steps) return lo + idx;
+    if (lo >= 0 && idx >= lo && idx <= hi) return idx;
+    return lo + idx;
+  }
+  if (p.valueType === "float" && typeof raw === "number") {
+    if (raw >= 0 && raw <= 1) return Math.round(lo + raw * (hi - lo));
+    if (raw >= lo && raw <= hi) return Math.round(raw);
+  }
+  return raw;
+}
+
+function paramDefForSymbolicId(
+  paramsForDisplay: ModelParamDefJson[],
+  symbolicId: string,
+  catalogSignal: string | null | undefined,
+): ModelParamDefJson | null {
+  const sid = symbolicId.trim();
+  if (!sid) return null;
+  const raw = paramsForDisplay.find((row) => (row.symbolicID ?? "").trim() === sid);
+  if (!raw) return null;
+  return paramForSignalVariant(raw, catalogSignal);
+}
+
 function applyHardwareSlotParamChanged(p: SlotParamChangedPayload): void {
   if (currentPresetIndex < 0) return;
   if (Date.now() < liveWriteUiInteractionUntil) return;
-  const cv = chainValueFromHwSlotParam(p);
-  if (cv === null) return;
-  markPresetModified();
+
+  lastHwParamLiveEventAt = Date.now();
+
+  emitModelsSyncTraceThrottled(
+    "evt_slot_param_in",
+    `hw param IN slot=${p.slotIndex} bus=${p.slotBus} pp=${p.paramIndex} ${p.valueType}=${String(p.value)}`,
+    300,
+  );
 
   const ctx = selectedParamsHwWireContext;
+  // Pour les params cab d'un slot amp+cab (subBlock=1, YY=0x01), le device envoie
+  // des indices locaux (PP=0 = premier param cab). wireParamIndexBase (= ampParamCount)
+  // est utilisé pour les ÉCRITURES SW→HW mais doit être 0 pour la lecture HW→SW.
+  const hwWireBase =
+    ctx !== null ? (p.subBlock === 1 ? 0 : (ctx.wireParamIndexBase ?? 0)) : 0;
   const sid =
     ctx !== null
       ? symbolicIdForWireParamIndex(
           ctx.paramsForDisplay,
           p.paramIndex,
           ctx.catalogSignal,
-          ctx.wireParamIndexBase ?? 0,
+          hwWireBase,
+          ctx.wireLocal === true && p.subBlock !== 1,
+          p.valueType !== "float",
         )
       : null;
-  if (!sid) return;
+
+  const paramDef =
+    ctx && sid ? paramDefForSymbolicId(ctx.paramsForDisplay, sid, ctx.catalogSignal) : null;
+  const cv = chainValueFromHwSlotParamForDef(p, paramDef);
+  if (cv === null) return;
+  markPresetModified();
+
+  if (!sid) {
+    emitModelsSyncTraceThrottled(
+      "evt_slot_param_no_sid",
+      `hw param slot=${p.slotIndex} pp=${p.paramIndex} sans symbolicID (ouvrir panneau params sur ce slot)`,
+      2_000,
+    );
+    return;
+  }
 
   const flowKind = flowIoKindFromHwSlotBus(p.slotBus);
   if (flowKind) {
@@ -2304,7 +2533,7 @@ function applyHardwareSlotParamChanged(p: SlotParamChangedPayload): void {
     if (
       selectedParamsKemplineSlotIndex !== null ||
       selectedParamsPresetIndex !== currentPresetIndex ||
-      !selectedParamsInPlaceUpdater ||
+      !selectedParamsActivePaneUpdater ||
       flowIoKindFromHwSlotBus(selectedSpecialHwSlotBus ?? -1) !== flowKind
     ) {
       return;
@@ -2321,9 +2550,7 @@ function applyHardwareSlotParamChanged(p: SlotParamChangedPayload): void {
         selectedParamsHwWireContext?.catalogSignal ?? null,
       ),
     );
-    selectedParamsInPlaceUpdater(
-      aligned?.filter((v): v is ChainParamValueJson => v !== undefined) ?? null,
-    );
+    selectedParamsActivePaneUpdater(aligned ?? null);
     selectedParamsValuesSig = `${currentPresetIndex}|${flowKind}|hw:${p.sequence}:${p.paramIndex}:${String(cv)}`;
     return;
   }
@@ -2331,31 +2558,59 @@ function applyHardwareSlotParamChanged(p: SlotParamChangedPayload): void {
   if (
     selectedParamsKemplineSlotIndex !== p.slotIndex ||
     selectedParamsPresetIndex !== currentPresetIndex ||
-    !selectedParamsInPlaceUpdater
+    !selectedParamsActivePaneUpdater ||
+    !selectedParamsHwWireContext
   ) {
     return;
   }
 
-  const slotIndex = p.slotIndex;
-  const paramIndex = p.paramIndex;
-  const sequence = p.sequence;
-  hwUi.scheduleAfterHwGesture("params", () => {
-    if (
-      selectedParamsKemplineSlotIndex !== slotIndex ||
-      selectedParamsPresetIndex !== currentPresetIndex
-    ) {
-      return;
+  const { paramsForDisplay, catalogSignal, wireLocal: wireLocalPane } = selectedParamsHwWireContext;
+  const isWireLocalPane = wireLocalPane === true;
+  patchSlotChainSessionSymbolicValue(
+    currentPresetIndex,
+    p.slotIndex,
+    sid,
+    cv,
+    paramsForDisplay,
+    catalogSignal,
+    isWireLocalPane,
+  );
+  const sessionKey = liveChainOverrideStorageKey(currentPresetIndex, p.slotIndex);
+  let base = slotChainSessionByKey.get(sessionKey);
+  if (!base || base.length === 0) {
+    const seeded = buildDefaultChainValuesForSourceOrder(paramsForDisplay, catalogSignal, isWireLocalPane);
+    if (seeded && seeded.length > 0) {
+      setSlotChainSessionValues(currentPresetIndex, p.slotIndex, seeded);
+      base = seeded;
     }
-    selectedParamsValuesSig = `${currentPresetIndex}|${slotIndex}|hw:${sequence}:${paramIndex}:${String(cv)}`;
+  }
+  if (base && base.length > 0 && paramsForDisplay.length > 0) {
+    const aligned = mergeLiveChainOverridesIntoAligned(
+      currentPresetIndex,
+      p.slotIndex,
+      paramsForDisplay,
+      alignChainValuesToModelParamOrder(
+        base,
+        paramsForDisplay,
+        paramsForDisplay,
+        catalogSignal,
+        isWireLocalPane,
+      ),
+    );
+    selectedParamsActivePaneUpdater(aligned ?? null);
+    selectedParamsValuesSig = `${currentPresetIndex}|${p.slotIndex}|hw:${p.sequence}:${p.paramIndex}:${String(cv)}`;
     emitModelsSyncTraceThrottled(
       "evt_slot_param_changed",
-      `hw param slot=${slotIndex} pp=${paramIndex} ${sid}=${String(cv)}`,
+      `hw param slot=${p.slotIndex} pp=${p.paramIndex} ${sid}=${String(cv)}`,
       400,
     );
-    if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16) {
-      scheduleSoftRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
-    }
-  });
+    return;
+  }
+
+  // Fallback rare (session vide) : soft-sync différé, pas à chaque tick knob.
+  if (lastHwSyncNormalizedSlots && lastHwSyncNormalizedSlots.length === 16) {
+    scheduleSoftRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
+  }
 }
 
 function discreteSliderTickCount(
@@ -4184,6 +4439,7 @@ async function applyCabDualCabFromPickerListClick(
     lastProbePickerAssignContext?.ki === ki
   ) {
     selectedParamsInPlaceUpdater = null;   // invalide le chemin "patch valeurs seules"
+    selectedParamsActivePaneUpdater = null;
     selectedParamsInPlaceSlotKey = null;
     selectedParamsValuesSig = null;
     const slotNow = lastHwSyncNormalizedSlots?.[ki] ?? optimisticSlot;
@@ -4718,12 +4974,20 @@ let selectedParamsValuesSig: string | null = null;
 // Callback de patch in-place pour le panneau courant (même modèle, valeurs différentes).
 let selectedParamsInPlaceUpdater: ((rawChainValues: ChainParamValueJson[] | null) => void) | null = null;
 let selectedParamsInPlaceSlotKey: string | null = null;
+// Callback de mise à jour directe (valeurs en ordre d'affichage) pour l'onglet actif.
+// Pour les doubles onglets (amp+cab, cab_dual) : correspond à l'onglet visible.
+// Pour les panneaux simples : équivalent à selectedParamsInPlaceUpdater (sans ré-alignement).
+let selectedParamsActivePaneUpdater:
+  | ((v: Array<ChainParamValueJson | undefined> | null) => void)
+  | null = null;
 /** Contexte pour mapper l’index wire `PP` → `symbolicID` (panneau params ouvert). */
 let selectedParamsHwWireContext: {
   paramsForDisplay: ModelParamDefJson[];
   catalogSignal: string | null | undefined;
   /** Décalage wire Amp+Cab / Cab dual (onglet Cab 2) : index catalogue + base → PP USB. */
   wireParamIndexBase?: number;
+  /** Cab single/dual legacy : `PP` wire-local séparé par groupe de type d'onde (voir symbolicIdForWireParamIndex). */
+  wireLocal?: boolean;
 } | null = null;
 /** Id catalogue du dernier rendu par clé slot — détecte un changement de modèle au même index sans tout reconstruire inutilement. */
 const paramsPaneCatalogBySlotKey = new Map<string, string>();
@@ -4764,6 +5028,7 @@ function clearSelectedParamsContext(): void {
   selectedParamsKemplineSlotIndex = null;
   selectedParamsValuesSig = null;
   selectedParamsInPlaceUpdater = null;
+  selectedParamsActivePaneUpdater = null;
   selectedParamsInPlaceSlotKey = null;
   selectedParamsHwWireContext = null;
   paramsPaneCatalogBySlotKey.clear();
@@ -4954,6 +5219,7 @@ async function focusMatrixSlotParamsPane(kemplineSlotIndex: number): Promise<voi
   if (!slot || slot.name === "<empty>") return;
 
   selectedParamsInPlaceUpdater = null;
+  selectedParamsActivePaneUpdater = null;
   selectedParamsInPlaceSlotKey = null;
   selectedParamsValuesSig = null;
 
@@ -4999,7 +5265,7 @@ function selectParamsPaneByHwSlotBus(slotBus: number): boolean {
 function consumePendingHardwareSlotSelection(): void {
   if (pendingHardwareSelectedKemplineSlotIndex !== null) {
     const idx = pendingHardwareSelectedKemplineSlotIndex;
-    if (selectedParamsKemplineSlotIndex === idx) {
+    if (selectedParamsKemplineSlotIndex === idx && selectedParamsPresetIndex === currentPresetIndex) {
       hwSlotDebugLog(`selection déjà active idx=${idx}`);
       pendingHardwareSelectedKemplineSlotIndex = null;
       pendingHardwareSelectedSlotBus = null;
@@ -5503,6 +5769,7 @@ async function buildChainParamsMapForCopy(
   categoryName: string,
   catalogSignal: string | null,
   rawChain: ChainParamValueJson[] | null,
+  wireLocal = false,
 ): Promise<Map<string, ChainParamValueJson>> {
   const out = new Map<string, ChainParamValueJson>();
   if (!rawChain || rawChain.length === 0) return out;
@@ -5514,6 +5781,7 @@ async function buildChainParamsMapForCopy(
     params,
     params,
     catalogSignal,
+    wireLocal,
   );
   const merged =
     mergeLiveChainOverridesIntoAligned(
@@ -5529,6 +5797,29 @@ async function buildChainParamsMapForCopy(
     if (sid && v !== undefined) out.set(sid, v);
   }
   return out;
+}
+
+/**
+ * Ordre wire-local (cab single/dual legacy) : groupe float (`c3`, dans l'ordre JSON) PUIS groupe
+ * discret/bool (`c2`, dans l'ordre JSON) — pas l'ordre `assign` global de `modelParamWireOrderIds`.
+ * Confirmé sur dump preset réel (single legacy) : `base=[Distance,LowCut,HighCut,
+ * EarlyReflections,Level,@mic]` — exactement ce regroupement, jamais l'ordre `assign`
+ * (LowCut,HighCut,EarlyReflections,@mic,Distance,Level,@enabled). Voir aussi le regroupement
+ * miroir côté lecture live wire-local dans `symbolicIdForWireParamIndex`.
+ */
+function modelParamWireLocalOrderIds(
+  allModelParams: ModelParamDefJson[],
+  catalogSignal: string | null | undefined,
+): string[] {
+  const visible = paramsVisibleForSignal(allModelParams, catalogSignal);
+  const floatGroup: string[] = [];
+  const wire23Group: string[] = [];
+  for (const p of visible) {
+    const sid = (p.symbolicID ?? "").trim();
+    if (!sid) continue;
+    (isWire23Param(p) ? wire23Group : floatGroup).push(sid);
+  }
+  return [...floatGroup, ...wire23Group];
 }
 
 /**
@@ -5904,6 +6195,7 @@ async function copyMatrixSlotFromCell(kemplineSlotIndex: number, slot: SlotDebug
     categoryName,
     catalogSignal,
     rawChain,
+    assignVariant === "legacy",
   );
 
   let cabDualCab2ModelId: string | null = null;
@@ -6618,6 +6910,7 @@ function bindSlotParamsInteraction(el: HTMLElement, slot: SlotDebug | null) {
     }
     if (selectedParamsSlotKey !== nextSlotKey) {
       selectedParamsInPlaceUpdater = null;
+      selectedParamsActivePaneUpdater = null;
       selectedParamsInPlaceSlotKey = null;
       selectedParamsHwWireContext = null;
     }
@@ -8059,8 +8352,11 @@ function chainValueFromParamDefault(p: ModelParamDefJson): ChainParamValueJson |
 function buildDefaultChainValuesForSourceOrder(
   allModelParams: ModelParamDefJson[],
   catalogSignal: string | null | undefined,
+  wireLocal = false,
 ): ChainParamValueJson[] {
-  const source = modelParamWireOrderIds(allModelParams, catalogSignal);
+  const source = wireLocal
+    ? modelParamWireLocalOrderIds(allModelParams, catalogSignal)
+    : modelParamWireOrderIds(allModelParams, catalogSignal);
   const byId = new Map(
     allModelParams
       .map((p) => [(p.symbolicID ?? "").trim(), p] as const)
@@ -8093,14 +8389,16 @@ function alignChainValuesToModelParamOrder(
   paramsForDisplay: ModelParamDefJson[],
   allModelParams: ModelParamDefJson[],
   catalogSignal?: string | null,
+  wireLocal = false,
 ): Array<ChainParamValueJson | undefined> | null | undefined {
   if (chainValues == null) return chainValues;
   const signal = normalizeCatalogSignal(catalogSignal);
 
-  const sourceAll = modelParamWireOrderIds(allModelParams, "stereo");
+  const orderFn = wireLocal ? modelParamWireLocalOrderIds : modelParamWireOrderIds;
+  const sourceAll = orderFn(allModelParams, "stereo");
   let source = sourceAll;
   if (signal === "mono") {
-    const sourceMono = modelParamWireOrderIds(allModelParams, "mono");
+    const sourceMono = orderFn(allModelParams, "mono");
     const diffAll = Math.abs(sourceAll.length - chainValues.length);
     const diffMono = Math.abs(sourceMono.length - chainValues.length);
     if (diffMono < diffAll) source = sourceMono;
@@ -8664,7 +8962,9 @@ function renderModelsParamsDualTabs(
 
   const tabs: HTMLButtonElement[] = [];
   const panels: HTMLElement[] = [];
-  const updaters: Array<((v: ChainParamValueJson[] | null) => void) | null> = [];
+  const updaters: Array<
+    ((v: Array<ChainParamValueJson | undefined> | null) => void) | null
+  > = [];
 
   const initialActiveTab =
     dualSlotKind === "amp_cab"
@@ -8699,6 +8999,11 @@ function renderModelsParamsDualTabs(
 
     const list = document.createElement("ul");
     list.className = "models-params-list";
+    // Cab dual LEGACY : sélecteur wire-local (discret/float 0-based séparés), comme le single legacy.
+    // Le dual modern garde l'index global. Aligné sur le routage Rust (HX_DUAL_LEGACY_STD_PARAM).
+    const cabDualLegacyWireLocal =
+      dualSlotKind === "cab_dual" &&
+      (cabDualAssignVariant ?? "").trim().toLowerCase() === "dual-legacy";
     const chainAligned = mergeLiveChainOverridesIntoAligned(
       currentPresetIndex,
       kemplineSlotIndex,
@@ -8708,6 +9013,7 @@ function renderModelsParamsDualTabs(
         pane.params,
         pane.params,
         pane.catalogRoutingSignal,
+        cabDualLegacyWireLocal,
       ),
     );
     const dualPart: "amp" | "cab" | "cab1" | "cab2" | null =
@@ -8721,11 +9027,6 @@ function renderModelsParamsDualTabs(
             : "cab2"
           : null;
     const paramIndexBase = 0;
-    // Cab dual LEGACY : sélecteur wire-local (discret/float 0-based séparés), comme le single legacy.
-    // Le dual modern garde l'index global. Aligné sur le routage Rust (HX_DUAL_LEGACY_STD_PARAM).
-    const cabDualLegacyWireLocal =
-      dualSlotKind === "cab_dual" &&
-      (cabDualAssignVariant ?? "").trim().toLowerCase() === "dual-legacy";
     const updater = appendModelsParamRows(
       list,
       pane.params,
@@ -8761,8 +9062,10 @@ function renderModelsParamsDualTabs(
         selectedParamsKemplineSlotIndex !== null &&
         selectedParamsKemplineSlotIndex === kemplineSlotIndex
       ) {
-        const hwCtx = dualPaneHwWireContext(dualSlotKind, idx, tabPanes);
+        const hwCtx = dualPaneHwWireContext(dualSlotKind, idx, tabPanes, cabDualAssignVariant);
         selectedParamsHwWireContext = hwCtx;
+        // Bascule l'updater direct vers l'onglet maintenant visible.
+        selectedParamsActivePaneUpdater = updaters[idx] ?? null;
       }
       if (dualSlotKind === "amp_cab") {
         ampCabDualActiveTab = idx as 0 | 1;
@@ -8801,6 +9104,9 @@ function renderModelsParamsDualTabs(
   wrap.append(bar, panelsWrap);
   inner.appendChild(wrap);
 
+  // Initialise l'updater direct de l'onglet actif (valeurs en ordre d'affichage).
+  selectedParamsActivePaneUpdater = updaters[initialActiveTab] ?? null;
+
   if (
     dualSlotKind === "amp_cab" &&
     kemplineSlotIndex !== undefined
@@ -8831,6 +9137,9 @@ function renderModelsParamsDualTabs(
     });
   }
 
+  const primaryPaneWireLocal =
+    dualSlotKind === "cab_dual" &&
+    (cabDualAssignVariant ?? "").trim().toLowerCase() === "dual-legacy";
   return (rawPrimaryChainValues) => {
     const primaryUpdater = updaters[0];
     const primaryPane = tabPanes[0];
@@ -8844,6 +9153,7 @@ function renderModelsParamsDualTabs(
         primaryPane.params,
         primaryPane.params,
         primaryPane.catalogRoutingSignal,
+        primaryPaneWireLocal,
       ),
     );
     primaryUpdater((aligned ?? null) as ChainParamValueJson[] | null);
@@ -9385,6 +9695,7 @@ async function resolveAmpCabDualTabPanes(
 function showModelsParamsLoading() {
   clearModelsParamsSubheadAndIcon();
   selectedParamsInPlaceUpdater = null;
+  selectedParamsActivePaneUpdater = null;
   selectedParamsInPlaceSlotKey = null;
   selectedParamsHwWireContext = null;
   const inner = getModelsParamsInner();
@@ -9520,6 +9831,7 @@ function renderModelsParamsPane(
             paramsForDisplay,
             params,
             catalogRoutingSignal,
+            cabAssignVariant === "legacy",
           ),
         );
   const updateAlignedValues = appendModelsParamRows(
@@ -9537,6 +9849,7 @@ function renderModelsParamsPane(
     null,
     cabAssignVariant === "legacy",
   );
+  selectedParamsActivePaneUpdater = updateAlignedValues;
   applyRawChainValuesInPlace = (rawChainValues: ChainParamValueJson[] | null): void => {
     const aligned = mergeLiveChainOverridesIntoAligned(
       currentPresetIndex,
@@ -9547,6 +9860,7 @@ function renderModelsParamsPane(
         paramsForDisplay,
         params,
         catalogRoutingSignal,
+        cabAssignVariant === "legacy",
       ),
     );
     updateAlignedValues(aligned ?? null);
@@ -9587,12 +9901,14 @@ function renderModelsParamsPane(
         dualSlotKind,
         activeTab,
         dualTabPanes,
+        cabDualAssignVariant,
       );
     } else {
       selectedParamsHwWireContext = {
         paramsForDisplay,
         catalogSignal: catalogRoutingSignal,
         wireParamIndexBase: 0,
+        wireLocal: cabAssignVariant === "legacy",
       };
     }
   }
@@ -9958,6 +10274,7 @@ async function loadAndShowModelsParamsForSlot(
       ) {
         selectedParamsValuesSig = `${currentPresetIndex}|${kemplineSlotIndex}|${chainValuesSignature(chainValues)}`;
       }
+      scheduleHwFocusForOpenParamsPane(kemplineSlotIndex);
       return;
     }
 
@@ -10005,6 +10322,7 @@ async function loadAndShowModelsParamsForSlot(
         modelParams,
         modelParams,
         catalogRoutingSignal,
+        !dualSlotKind && cabAssignVariantFromMeta(meta) === "legacy",
       );
       const inputParamChainIndex = modelParams.findIndex(
         (p) => (p.symbolicID ?? "").trim() === "@input",
@@ -10032,6 +10350,7 @@ async function loadAndShowModelsParamsForSlot(
     ) {
       selectedParamsValuesSig = `${currentPresetIndex}|${kemplineSlotIndex}|${chainValuesSignature(chainValues)}`;
     }
+    scheduleHwFocusForOpenParamsPane(kemplineSlotIndex);
   } catch (e) {
     if (seq !== modelsParamsLoadSeq) return;
     showModelsParamsError(e instanceof Error ? e.message : String(e));
@@ -12044,7 +12363,13 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
               await hydrateSlotDualPartsSessionFromPresetData(index);
               await hydrateFlowIoChainSessionFromPresetData(index);
             } else {
-              void hydrateSlotChainSessionFromPresetData(index);
+              // Après hydratation, rafraîchir le panneau params si le preset est toujours actif.
+              // Le panneau s'est ouvert avant l'hydratation (cache vide → valeurs par défaut).
+              void hydrateSlotChainSessionFromPresetData(index).then(() => {
+                if (currentPresetIndex === index && selectedParamsKemplineSlotIndex !== null && lastHwSyncNormalizedSlots) {
+                  scheduleSoftRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
+                }
+              });
               void hydrateSlotDualPartsSessionFromPresetData(index);
               void hydrateFlowIoChainSessionFromPresetData(index);
             }
@@ -12074,6 +12399,20 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
         hardwareSyncPausedForPresetLoad = chainNext;
         if (!chainNext) {
           popPresetLoadUiLock();
+          // Le hardware-slot-changed seq=1 peut avoir tiré avant que currentPresetIndex soit set.
+          // On rétablit le focus sur le slot physique actif maintenant que le preset est chargé.
+          void invoke<HardwareActiveSlotState>("get_active_hardware_slot_state")
+            .then((hw) => {
+              if (
+                hw &&
+                Number.isInteger(hw.slotIndex) &&
+                (hw.slotIndex as number) >= 0 &&
+                (hw.slotIndex as number) < 16
+              ) {
+                scheduleHwFocusForOpenParamsPane(hw.slotIndex as number);
+              }
+            })
+            .catch(() => {});
         }
         if (chainNext) {
           const next = pendingPresetIndex;
@@ -12715,6 +13054,7 @@ declare global {
 window.change_cab2 = change_cab2;
 
 window.addEventListener("DOMContentLoaded", () => {
+  void bootstrapModelsDebugFlags();
   hwUi.configure({ setParamsBrowsingMode: setModelsParamsBrowsingMode });
   void mountModelsSlotPicker();
   initAppContextMenuPolicy();
@@ -12809,7 +13149,8 @@ window.addEventListener("DOMContentLoaded", () => {
     if (
       lastHwSyncNormalizedSlots &&
       lastHwSyncNormalizedSlots.length === 16 &&
-      selectedParamsKemplineSlotIndex === p.slotIndex
+      selectedParamsKemplineSlotIndex === p.slotIndex &&
+      !hwParamLiveSoftSyncSuppressed()
     ) {
       scheduleSoftRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
     }
