@@ -218,6 +218,14 @@ impl KeepAliveManager {
                     // (40ms vs ~1047ms) : la lane idle f0 est redondante quand il tourne.
                     let live_param_poll_active =
                         s.connected && s.editor_ready && !s.preset_usb_read_in_progress();
+                    // [DIAG gel] trace inconditionnelle : voir l'état réel à chaque cycle
+                    // keep-alive, pour confirmer si le garde-fou live_param_poll_active
+                    // laisse vraiment passer cette lane idle f0 pendant le poll actif.
+                    eprintln!(
+                        "[KeepAlive][f0-lane] live_param_poll_active={} connected={} editor_ready={} preset_usb_read_in_progress={} will_send={}",
+                        live_param_poll_active, s.connected, s.editor_ready,
+                        s.preset_usb_read_in_progress(), !live_param_poll_active
+                    );
                     if !live_param_poll_active {
                         let cnt = s.next_x2_cnt();
                         let pkt = OutPacket::new(vec![
@@ -236,23 +244,25 @@ impl KeepAliveManager {
                 // ── Lane ed (+~453 ms) ────────────────────────────────────────
                 {
                     let mut s = state.lock().unwrap();
-                    // Même raison que la lane f0 ci-dessus : un poll idle (sub=0x10) sur
-                    // n'importe laquelle des 3 lanes semble annuler l'abonnement "notifications
-                    // actives" côté device pendant que le poll live-param tourne (confirmé sur
-                    // plusieurs captures — la lane ed/ef précède systématiquement le gel).
-                    let live_param_poll_active =
-                        s.connected && s.editor_ready && !s.preset_usb_read_in_progress();
-                    if !live_param_poll_active {
-                        let cnt = s.next_x80_cnt();
-                        trace_ed_poll(cnt);
-                        let pkt = OutPacket::new(vec![
-                            0x08, 0x00, 0x00, 0x18,
-                            0x80, 0x10, 0xed, 0x03,
-                            0x00, cnt, 0x00, POLL_SUB,
-                            TAIL_ED[0], TAIL_ED[1], TAIL_ED[2], TAIL_ED[3],
-                        ]);
-                        s.send(pkt);
-                    }
+                    // [Fix 29] Contrairement à la lane f0 ci-dessus, ed/ef ne sont PLUS
+                    // gardées derrière `live_param_poll_active` : cette hypothèse ("toute
+                    // lane idle casse l'abonnement pendant le poll actif") a été infirmée
+                    // par capture — HX Edit mélange en permanence ses lanes idle ed/ef avec
+                    // son poll actif f0 sans jamais geler (cf. mémoire session, "Découverte
+                    // 2"). Les bloquer ici privait le device de tout signal de vie ed/ef
+                    // pendant l'inactivité normale (le poll actif f0 tourne quasi tout le
+                    // temps), probable cause du timeout ~6-9s observé. La protection contre
+                    // une vraie lecture preset en cours reste assurée par `skip_cycle`
+                    // (préset_content_only / usb_host_transaction_hold) en tête de boucle.
+                    let cnt = s.next_x80_cnt();
+                    trace_ed_poll(cnt);
+                    let pkt = OutPacket::new(vec![
+                        0x08, 0x00, 0x00, 0x18,
+                        0x80, 0x10, 0xed, 0x03,
+                        0x00, cnt, 0x00, POLL_SUB,
+                        TAIL_ED[0], TAIL_ED[1], TAIL_ED[2], TAIL_ED[3],
+                    ]);
+                    s.send(pkt);
                 }
                 if Self::sleep_or_stop(&stop, DELAY_ED_TO_EF_MS) {
                     break;
@@ -261,18 +271,15 @@ impl KeepAliveManager {
                 // ── Lane ef (+~266 ms) ────────────────────────────────────────
                 {
                     let mut s = state.lock().unwrap();
-                    let live_param_poll_active =
-                        s.connected && s.editor_ready && !s.preset_usb_read_in_progress();
-                    if !live_param_poll_active {
-                        let cnt = s.next_x1_cnt();
-                        let pkt = OutPacket::new(vec![
-                            0x08, 0x00, 0x00, 0x18,
-                            0x01, 0x10, 0xef, 0x03,
-                            0x00, cnt, 0x00, POLL_SUB,
-                            TAIL_EF[0], TAIL_EF[1], TAIL_EF[2], TAIL_EF[3],
-                        ]);
-                        s.send(pkt);
-                    }
+                    // [Fix 29] Même raison que la lane ed ci-dessus.
+                    let cnt = s.next_x1_cnt();
+                    let pkt = OutPacket::new(vec![
+                        0x08, 0x00, 0x00, 0x18,
+                        0x01, 0x10, 0xef, 0x03,
+                        0x00, cnt, 0x00, POLL_SUB,
+                        TAIL_EF[0], TAIL_EF[1], TAIL_EF[2], TAIL_EF[3],
+                    ]);
+                    s.send(pkt);
                 }
                 if Self::sleep_or_stop(&stop, DELAY_EF_TO_NEXT_F0_MS) {
                     break;

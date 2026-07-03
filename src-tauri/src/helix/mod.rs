@@ -278,6 +278,17 @@ pub struct HelixState {
     pub preset_data:       Vec<u8>,
     pub preset_data_ready: bool,
 
+    /// [Fix 22 v2] `true` dès qu'une 2e lecture `RequestPreset` redondante a été évitée
+    /// une fois dans cette connexion (cf. `request_preset_content`, lib.rs) — la course
+    /// boot où la séquence auto (`RequestPresetName`→`RequestPreset(false)`) et le
+    /// `refresh()` frontend demandent tous deux le même 1er preset à ~750ms d'écart
+    /// (motif "double flash" observé par l'user). Volontairement à usage unique par
+    /// session : contrairement à Fix 22 v1 (retiré), on ne saute JAMAIS de lecture
+    /// pour un switch de preset ultérieur — seulement cette toute première course au
+    /// boot — pour ne pas laisser `session_no` devenir obsolète sur les presets suivants
+    /// (cause de la régression d'écriture de Fix 22 v1).
+    pub redundant_preset_read_skip_used: bool,
+
     // Si true : RequestPreset revient à Standard (clic utilisateur)
     // Si false : RequestPreset revient à Standard (corps preset après noms + nom actif)
     pub preset_content_only: bool,
@@ -635,6 +646,7 @@ impl HelixState {
             just_fetched_preset_names: false,
             preset_data:        Vec::new(),
             preset_data_ready:  false,
+            redundant_preset_read_skip_used: false,
             preset_content_only: false,
             preset_read_generation: 0,
             connecting:         true,

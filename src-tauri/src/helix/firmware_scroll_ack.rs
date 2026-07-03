@@ -143,6 +143,17 @@ pub fn handle_in_layer(state: &mut HelixState, data: &[u8]) -> LayerResult {
         return LayerResult::Ignored;
     }
     if !state.should_ack_firmware_1d_notify() {
+        // Comme pour le `1d` pré-scroll (voir doc module) : ne pas ACKer ici, mais TOUJOURS
+        // avancer la lane. Sinon la lane reste figée pendant toute la durée d'une lecture
+        // preset (`preset_usb_read_in_progress`), qui peut couvrir plusieurs notifs `1d`/`1f`
+        // du device — désynchronisant durablement notre compteur du sien. Repéré après un gel
+        // total et permanent du poll actif `f0:03` suite à un changement de preset (aucune
+        // réponse device sur des centaines de polls, alors que le poll continue d'être envoyé
+        // correctement) : cette lane figée est la cause suspectée.
+        let head = data.first().copied().unwrap_or(0);
+        if matches!(head, 0x1d | 0x1f) {
+            state.advance_firmware_scroll_lane(head);
+        }
         init_trace::trace_1d_ack_decision(false, "preset_usb_read");
         return LayerResult::Ignored;
     }
@@ -245,8 +256,10 @@ mod tests {
         state.set_preset_usb_read_modes_active(true);
         let r = handle_in_layer(&mut state, &sample_scroll_1d());
         assert!(matches!(r, LayerResult::Ignored));
-        // Skip AVANT le head-match (gate preset_usb_read) : lane non touchée ici.
-        assert_eq!(state.firmware_scroll_ack_ctr, 0x1009);
+        // Pas d'ACK pendant une lecture preset, MAIS la lane avance quand même (sinon
+        // désynchronisation avec le compteur de notifs du device — voir doc module).
+        // (None, 0x1d) => +0x3f : 0x1009 + 0x3f = 0x1048
+        assert_eq!(state.firmware_scroll_ack_ctr, 0x1048);
     }
 
     /// Spec A : armé au bootstrap (`ARM_f0`) MAIS fond OFF tant que pas `EditorReady`.

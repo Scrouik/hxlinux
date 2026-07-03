@@ -1783,7 +1783,11 @@ fn write_live_param(
     );
 
     s.send(OutPacket::new(frames.pre_packet_x80.clone()));
-    s.send(OutPacket::with_delay(frames.pre_packet_x2.clone(), 4));
+    // [TEST Fix 20] pre_packet_x2 (préambule f0:03 sub=10, "idle f0") désactivé
+    // temporairement : HX Edit ne l'envoie JAMAIS avant une écriture (confirmé
+    // 0 occurrence sur amp_change_param_from_UI.json, 39 écritures). Hypothèse :
+    // ce préambule casse l'abonnement "notifications actives" du poll f0:03.
+    // s.send(OutPacket::with_delay(frames.pre_packet_x2.clone(), 4));
     s.send(OutPacket::with_delay(frames.pre_packet_x80_sel.clone(), 8));
     s.send(OutPacket::with_delay(frames.packet_27.clone(), 12));
     // Deuxième jambe HX Edit (octet 11 = 0x0c), CTR/SEQ déjà avancés dans le builder.
@@ -2217,6 +2221,41 @@ fn request_preset_content(
             "Initialisation USB en cours (~{} ms) — aucune requête preset",
             helix::keep_alive::POST_PHASE4_SETTLE_MS
         ));
+    }
+    // [Fix 21] Une lecture preset (RequestPresetName(s)/RequestPreset) automatique
+    // de démarrage peut déjà être en cours côté Rust (jamais passée par cette
+    // commande, donc invisible au throttle PRESET_REQUEST_MIN_GAP_MS ci-dessous).
+    // Capturé en log : RequestPreset content_only=false auto (boot) suivi ~156ms
+    // après d'un 2e RequestPreset content_only=true déclenché ici par l'UI — deux
+    // transactions ED03 quasi simultanées, motif déjà documenté comme cause de
+    // saturation device (cf. addendum gel_multinotch). On diffère simplement le
+    // 2e appel (throttle, pas de fermeture) jusqu'à la fin du 1er.
+    if s.preset_usb_read_in_progress() {
+        return Err(
+            "request_preset_content throttled (lecture preset déjà en cours)".to_string(),
+        );
+    }
+    // [Fix 22 v2] v1 (retiré) sautait la 2e lecture redondante à CHAQUE fois que
+    // preset_index/active_preset coïncidaient déjà — corrigeait bien la course au
+    // boot (motif "double flash" : refresh() frontend + séquence auto backend
+    // demandent tous deux le même 1er preset à ~750ms d'écart), mais cassait
+    // l'écriture live sur les switches suivants : state.session_no n'était plus
+    // jamais rafraîchi par RequestPreset::shutdown() dès que le skip s'appliquait
+    // régulièrement. v2 restreint volontairement ce saut à UNE SEULE FOIS par
+    // connexion (`redundant_preset_read_skip_used`), donc uniquement pour la
+    // course au tout premier preset du boot — jamais pour les switches suivants,
+    // qui continuent chacun leur vraie lecture et rafraîchissent session_no
+    // normalement (pas de régression d'écriture attendue).
+    if !force_immediate
+        && !s.redundant_preset_read_skip_used
+        && s.preset_data_ready
+        && s.preset_index == active_preset
+    {
+        s.redundant_preset_read_skip_used = true;
+        eprintln!(
+            "[PresetDebug][request_preset_content] course boot évitée (une seule fois) preset={active_preset} — 2e lecture sautée"
+        );
+        return Ok(());
     }
     if helix::scroll_model_pull::hw_model_usb_busy(&s) {
         return Err(

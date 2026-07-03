@@ -152,6 +152,19 @@ impl Mode for Standard {
                 0x00, cnt,  0x00, 0x08,
                 double[0], double[1], 0x00, 0x00,
             ]));
+            // [Fix] `request_preset_content` (UI → lecture contenu) positionne déjà
+            // `state.preset_index` sur la cible ET vide `preset_data_ready` AVANT que
+            // ce x2 n'arrive, quand la lecture démarre pour ce même preset via le
+            // chemin immédiat (sans passer par `want_content_only_after_x2`). Si ce
+            // x2 rapporte exactement CET index déjà en attente de contenu, un dump
+            // `RequestPreset` va suivre de toute façon — il récupère aussi le nom
+            // comme sous-produit (`decode_from_ed03_packet` → `active_preset_name`,
+            // cf. request_preset.rs). Inutile de lancer EN PLUS une lecture
+            // `RequestPresetName` séparée pour le même preset : c'était la cause du
+            // bug "double flash"/`preset_index` écrasé pendant un dump déjà en cours.
+            let content_already_pending_for_this_index = data.len() > 40
+                && data[40] as usize == state.preset_index
+                && !state.preset_data_ready;
             if data.len() > 40 {
                 state.preset_index = data[40] as usize;
                 crate::helix::preset_name_wire::log_wire_preset("x2", state.preset_index, None);
@@ -160,7 +173,7 @@ impl Mode for Standard {
                 state.want_content_only_after_x2 = false;
                 state.preset_content_only = true;
                 state.switch_mode(ModeRequest::RequestPreset(true));
-            } else {
+            } else if !content_already_pending_for_this_index {
                 state.switch_mode(ModeRequest::RequestPresetName);
             }
             return true;

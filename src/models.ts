@@ -264,8 +264,22 @@ const REQUEST_PRESET_MIN_GAP_MS = 320;
 const REQUEST_PRESET_RECOVERY_DELAY_MS = 800;
 const REQUEST_PRESET_SOFT_STALL_TRIES = 18;
 const REQUEST_PRESET_HARD_RECOVERY_AFTER = 4;
+/** Nombre de cycles complets de récupération matérielle (force_recover_preset_reader)
+ * à tenter avant d'abandonner et d'afficher un message clair à l'utilisateur. Au-delà,
+ * la lecture preset échoue de façon permanente tant que le device n'est pas redémarré
+ * physiquement (limitation firmware confirmée, cf. mémoire session — HX Edit lui-même
+ * plante dans ce cas, un reset USB logiciel ne répare rien). */
+const PRESET_READ_GIVE_UP_AFTER_CYCLES = 2;
+let presetReadHardFailureCycles = 0;
 let lastHardwareSyncAt = 0;
 let lastSlotContentWatchAt = 0;
+/** Anti-doublon `invokeSlotFocusWatch` : évite deux `1d` focus quasi simultanés sur le même slot
+ * (observé ~64ms d'écart après un switch de preset — deux transactions ED03 ouvertes en rafale,
+ * piste suspectée dans le gel `f0:03` post-switch, cf. mémoire session). Purement un throttle
+ * host-side, aucun paquet nouveau — dans l'esprit validé de l'addendum gel multinotch. */
+let lastFocusWatchKi: number | null = null;
+let lastFocusWatchAt = 0;
+const FOCUS_WATCH_DEDUP_MS = 200;
 /** Dernier `request_preset_content` réussi déclenché par le soft-sync (pas les chargements utilisateur). */
 let lastSoftUsbPresetReadAt = 0;
 /** Dump preset USB immédiat hors chargement preset : sondage modèle slot, ou opt-in sur notif slot. */
@@ -610,8 +624,14 @@ async function buildCabDualPartsFromWireAndSession(
   const cab2Def = cab2ModelId
     ? await findModelDefinitionBySymbolicId(cab2ModelId, "Cab")
     : null;
+  // [Fix cab legacy defaults] Même correctif que buildDualTabPanesFromCabDualWire : un cab2
+  // legacy a besoin de ses défauts en ordre wireLocal, pas l'ordre de déclaration.
   const cab2Values = cab2Def
-    ? buildDefaultChainValuesForSourceOrder(cab2Def.entry.params ?? [], cab2Signal)
+    ? buildDefaultChainValuesForSourceOrder(
+        cab2Def.entry.params ?? [],
+        cab2Signal,
+        cabAssignVariantFromMeta(cab2Meta) === "legacy",
+      )
     : [];
   const cab2Part = await dualPartFromChainHex(cab2Hex, "Cab", cab2Values);
   if (cab2ModelId) cab2Part.modelId = cab2ModelId;
@@ -793,8 +813,14 @@ async function cabDefaultChainValuesForCatalogModelId(
   const def = await findModelDefinitionBySymbolicId(id, "Cab");
   const meta = await getPresetMetaForId(id);
   const signal = pickSignal(meta, chainHex ?? undefined);
+  // [Fix cab legacy defaults] Même correctif que loadAndShowModelsParamsFromCatalogDefaults /
+  // buildDualTabPanesFromCabDualWire : un cab legacy a besoin de ses défauts en ordre wireLocal.
   return def
-    ? buildDefaultChainValuesForSourceOrder(def.entry.params ?? [], signal)
+    ? buildDefaultChainValuesForSourceOrder(
+        def.entry.params ?? [],
+        signal,
+        cabAssignVariantFromMeta(meta) === "legacy",
+      )
     : [];
 }
 
@@ -1410,6 +1436,12 @@ async function applySlotContentWatchFromSync(
 async function invokeSlotFocusWatch(ki: number): Promise<void> {
   if (!slotFocusUsbSyncEnabled()) return;
   if (ki < 0 || ki >= 16) return;
+  const now = Date.now();
+  if (lastFocusWatchKi === ki && now - lastFocusWatchAt < FOCUS_WATCH_DEDUP_MS) {
+    return;
+  }
+  lastFocusWatchKi = ki;
+  lastFocusWatchAt = now;
   try {
     const snap = await invoke<SlotFocusSyncResponse>("sync_hardware_slot_focus_usb", {
       slotIndex: ki,
@@ -1429,6 +1461,14 @@ function scheduleHwFocusForOpenParamsPane(ki: number | undefined): void {
   void invoke("log_frontend_message", { message: `[DBG] scheduleHwFocusForOpenParamsPane ki=${String(ki)} enabled=${String(slotFocusUsbSyncEnabled())}` }).catch(() => {});
   if (ki === undefined || !Number.isInteger(ki) || ki < 0 || ki >= 16) return;
   if (!slotFocusUsbSyncEnabled()) return;
+  // [DIAG Problème B] Point d'entrée UNIQUE (tous les appelants passent par ici) pour
+  // le flag localStorage.models_debug_disable_postload_focus=1 — couvre les 3 sites
+  // d'appel (post-chargement preset, rendu panneau params simple/dual-tab), contrairement
+  // au 1er essai qui n'en couvrait qu'un seul et laissait passer FocusUSB via les autres.
+  if (localStorage.getItem("models_debug_disable_postload_focus") === "1") {
+    emitModelsSyncTrace(`scheduleHwFocusForOpenParamsPane ki=${ki} SKIPPÉ (diag Problème B, flag actif)`);
+    return;
+  }
   void invokeSlotFocusWatch(ki);
 }
 
@@ -1772,9 +1812,22 @@ function armRecoveryPresetLoad(reason: string): void {
     const next = pendingPresetIndex;
     pendingPresetIndex = -1;
     if (recoveryAttemptCount >= REQUEST_PRESET_HARD_RECOVERY_AFTER) {
+      presetReadHardFailureCycles += 1;
+      if (presetReadHardFailureCycles > PRESET_READ_GIVE_UP_AFTER_CYCLES) {
+        stopLoadingHeartbeat();
+        loading = false;
+        hardwareSyncPausedForPresetLoad = false;
+        setStatus(
+          "Le pédalier ne répond plus à la lecture de preset. Éteins-le, rallume-le, puis réessaie.",
+        );
+        emitModelsSyncTrace(
+          `preset read abandonné après ${presetReadHardFailureCycles} cycles de récupération — device probablement bloqué, redémarrage physique requis`,
+        );
+        return;
+      }
       setStatus("Sablier: reset communication USB en cours...");
       emitModelsSyncTrace(
-        `force_recover_preset_reader invoke attempts=${recoveryAttemptCount} nextPreset=${next}`,
+        `force_recover_preset_reader invoke attempts=${recoveryAttemptCount} cycle=${presetReadHardFailureCycles}/${PRESET_READ_GIVE_UP_AFTER_CYCLES} nextPreset=${next}`,
       );
       void invoke("force_recover_preset_reader")
         .catch(() => {
@@ -5823,8 +5876,18 @@ function modelParamWireLocalOrderIds(
 }
 
 /**
- * Ordre wire preset / live-write : `assign` croissant, puis champs sans `assign` dans l'ordre JSON.
- * Même convention que `alignChainValuesToModelParamOrder` (doc DSP Line 6).
+ * Ordre wire preset / live-write : ordre de déclaration JSON du catalogue.
+ *
+ * Le champ `assign` du catalogue a été essayé comme critère de tri (assign croissant,
+ * puis champs sans `assign` dans l'ordre JSON) mais s'est révélé non fiable : confirmé
+ * par capture HX Edit sur les amplis (Ampeg SVT Ch Vol/Master, MidFreq/Treble/Master —
+ * le fil suit l'ordre catalogue, pas `assign`) et par test hardware sur plusieurs
+ * modèles Dynamics/Distortion (Rochester Comp, Deluxe Comp, Teemah!). Un garde-fou
+ * (assignOrderConsistent) tentait de détecter les cas où `assign` contredit l'ordre
+ * catalogue, mais laissait passer des cas où `assign` est interne-cohérent tout en
+ * réordonnant quand même l'ensemble par rapport à la déclaration JSON (118/681 modèles
+ * du catalogue touchés). L'ordre de déclaration JSON pur s'est avéré correct partout où
+ * il a été vérifié (amp, cab, compressor, distortion) — `assign` n'est donc plus utilisé.
  */
 function modelParamWireOrderIds(
   allModelParams: ModelParamDefJson[],
@@ -5836,21 +5899,9 @@ function modelParamWireOrderIds(
   for (const p of allModelParams) {
     if (visibleSet.has(p)) visibleInJsonOrder.push(p);
   }
-  const withAssign: { assign: number; jsonIdx: number; sid: string }[] = [];
-  const withoutAssign: { jsonIdx: number; sid: string }[] = [];
-  for (let i = 0; i < visibleInJsonOrder.length; i += 1) {
-    const p = visibleInJsonOrder[i]!;
-    const sid = (p.symbolicID ?? "").trim();
-    if (!sid) continue;
-    const a = p.assign;
-    if (typeof a === "number" && Number.isFinite(a)) {
-      withAssign.push({ assign: a, jsonIdx: i, sid });
-    } else {
-      withoutAssign.push({ jsonIdx: i, sid });
-    }
-  }
-  withAssign.sort((a, b) => a.assign - b.assign || a.jsonIdx - b.jsonIdx);
-  return [...withAssign.map((x) => x.sid), ...withoutAssign.map((x) => x.sid)];
+  return visibleInJsonOrder
+    .map((p) => (p.symbolicID ?? "").trim())
+    .filter((sid) => sid.length > 0);
 }
 
 function modelParamSourceOrderIds(
@@ -9275,8 +9326,15 @@ async function buildDualTabPanesFromCabDualWire(
   const cab2Meta = await getPresetMetaForId(cab2ModelId);
   const cab2Image = await getCatalogModelImageForId(cab2ModelId);
   const cab2Signal = pickSignal(cab2Meta, cab2Hex);
+  // [Fix cab legacy defaults] Cab2 d'un dual legacy = un cab single legacy à part entière
+  // (cf. renderModelsParamsDualTabs / cabDualLegacyWireLocal) : mêmes défauts wireLocal que le
+  // cab1 legacy, sinon décalage Distance/Mic/LowCut/HighCut/EarlyReflections comme en single.
   const cab2Defaults = cab2Def
-    ? buildDefaultChainValuesForSourceOrder(cab2Def.entry.params ?? [], cab2Signal)
+    ? buildDefaultChainValuesForSourceOrder(
+        cab2Def.entry.params ?? [],
+        cab2Signal,
+        cabAssignVariantFromMeta(cab2Meta) === "legacy",
+      )
     : [];
   const cab2Title =
     cab2Def?.entry.name.trim() ||
@@ -9397,8 +9455,14 @@ async function buildDualTabPanesFromCabDualCatalog(
     const modelImage =
       i === 0 ? dualImage : await getCatalogModelImageForId(modelId);
     const signal = pickSignal(partMeta, hexes[i]);
+    // [Fix cab legacy defaults] Même correctif que les 4 autres sites : un cab legacy (cab1 ou
+    // cab2) a besoin de ses défauts en ordre wireLocal, sinon décalage à l'affichage.
     const defaults = def
-      ? buildDefaultChainValuesForSourceOrder(def.entry.params ?? [], signal)
+      ? buildDefaultChainValuesForSourceOrder(
+          def.entry.params ?? [],
+          signal,
+          cabAssignVariantFromMeta(partMeta) === "legacy",
+        )
       : [];
     const title =
       def?.entry.name.trim() ||
@@ -10407,9 +10471,26 @@ async function loadAndShowModelsParamsFromCatalogDefaults(
     }
     const helixControlsMap = await getHelixControlsMap();
     if (seq !== modelsParamsLoadSeq) return;
+    // [Fix cab legacy defaults] Pour un cab single legacy, renderModelsParamsPane aligne les
+    // chainValues avec wireLocal=true (cabAssignVariant === "legacy", voir
+    // alignChainValuesToModelParamOrder) — il faut donc construire les défauts dans le même
+    // ordre ici, sinon le tableau est décalé d'un cran à l'affichage (Distance/Mic/LowCut/
+    // HighCut/EarlyReflections mélangés). Pour un cab dual LEGACY (les deux côtés sont en fait
+    // des cabs single legacy, cf. renderModelsParamsDualTabs / cabDualLegacyWireLocal), le cab1
+    // (`found.entry.params`, utilisé ici comme defaultChain) a besoin du même traitement — le
+    // cab2 a son propre correctif séparé dans buildDualTabPanesFromCabDualWire. Le dual MODERN
+    // (cabmicirs/cabmicirswithpan, sans `assign`) n'est pas concerné : wireLocal reste false.
+    const isAmpCabForDefaults = slotWantsAmpCabDualTabs(slot, options?.assignVariant);
+    const isCabDualForDefaults = slotWantsCabDualTabs(slot, options?.assignVariant, presetMetaForFiles);
+    const defaultChainWireLocal = isAmpCabForDefaults
+      ? false
+      : isCabDualForDefaults
+        ? cabDualAssignVariantFromMeta(presetMetaForFiles) === "dual-legacy"
+        : cabAssignVariantFromMeta(presetMetaForFiles) === "legacy";
     const defaultChain = buildDefaultChainValuesForSourceOrder(
       found.entry.params ?? [],
       catalogRoutingSignal,
+      defaultChainWireLocal,
     );
     const ampChainValues = options?.ampChainValues ?? defaultChain;
     let dualTabPanes: DualTabPaneConfig[] | null = null;
@@ -12322,6 +12403,7 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
           `requestLoadForPreset slotsReady index=${index} count=${slots.length} tries=${tries}`,
         );
         recoveryAttemptCount = 0;
+        presetReadHardFailureCycles = 0;
         stopLoadingHeartbeat();
         loadedPresetIndex = index;
         clearPath1InputSourceHighlightOverride();
@@ -12401,6 +12483,9 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
           popPresetLoadUiLock();
           // Le hardware-slot-changed seq=1 peut avoir tiré avant que currentPresetIndex soit set.
           // On rétablit le focus sur le slot physique actif maintenant que le preset est chargé.
+          // [DIAG Problème B] Le flag localStorage.models_debug_disable_postload_focus=1 est
+          // maintenant vérifié DANS scheduleHwFocusForOpenParamsPane (point d'entrée unique,
+          // couvre aussi les autres appelants — rendu panneau params simple/dual-tab).
           void invoke<HardwareActiveSlotState>("get_active_hardware_slot_state")
             .then((hw) => {
               if (
