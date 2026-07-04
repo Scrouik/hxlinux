@@ -7891,8 +7891,10 @@ async function getHelixControlsMap(): Promise<Map<string, HelixControlDefJson>> 
 }
 
 function parsePrintfFloatPrecision(format: string): number | null {
-  const m = format.match(/^%[+\- 0#]*(?:\.(\d+))?f$/);
+  const m = format.match(/^%[+\- 0#]*(?:\.(\d+))?([fd])$/);
   if (!m) return null;
+  // `%d` (entier, ex. HelixControls "integer_slider_signed") : précision 0, pas de décimales.
+  if (m[2] === "d") return 0;
   const n = Number.parseInt(m[1] ?? "6", 10);
   if (!Number.isFinite(n) || n < 0 || n > 12) return null;
   return n;
@@ -7982,7 +7984,7 @@ function snapRawToIncrement(
   return s;
 }
 
-const HELIX_PRINTF_TOKEN_RE = /%[+\- 0#]*(?:\.\d+)?f/;
+const HELIX_PRINTF_TOKEN_RE = /%[+\- 0#]*(?:\.\d+)?[fd]/;
 
 /** `%%` dans les chaînes Helix = un `%` littéral (convention sprintf). */
 function helixUnescapePercentMarks(s: string): string {
@@ -8130,6 +8132,32 @@ function paramHiddenForMonoStereoOnly(
 function paramHiddenCatalogInternalBool(p: ModelParamDefJson): boolean {
   if (p.valueType !== 2) return false;
   return !(p.displayType ?? "").trim();
+}
+
+/**
+ * `TempoSync1/2` + `SyncSelect1/2` (~107 modèles delay/filter/modulation/pitch-synth/reverb) :
+ * absents de l'écran du device (confirmé user, ex. Optical Trem : seuls Speed/Intensity/Spread/
+ * Level y apparaissent, mono comme stéréo). Toujours déclarés juste avant `@enabled`/`@stereo`
+ * (jamais de param réel après, vérifié sur les 5 fichiers concernés) — masquage UI pur, même
+ * principe que `paramHiddenCatalogInternalBool`, sans toucher à l'ordre wire/chaîne.
+ */
+function paramHiddenTempoSync(p: ModelParamDefJson): boolean {
+  return /^(TempoSync|SyncSelect)\d*$/.test((p.symbolicID ?? "").trim());
+}
+
+/**
+ * Octet brut signé pour un discret à `min` négatif (ex. Pitch Wham Heel/Toe : fil `0xff` = `-1`,
+ * pas `255`). Le décodeur Rust (`read_params_hex`, preset_chain_params.rs) ne connaît pas le
+ * catalogue et pousse tout octet non bool/float comme `UInt` brut (0-255) — la conversion en
+ * entier signé (complément à deux) se fait ici, côté JS, où le `min` du `.models` est connu.
+ */
+function signedDiscreteChainValue(
+  raw: ChainParamValueJson | undefined,
+  p: ModelParamDefJson,
+): ChainParamValueJson | undefined {
+  if (typeof raw !== "number" || p.valueType !== 0) return raw;
+  if (typeof p.min !== "number" || !Number.isFinite(p.min) || p.min >= 0) return raw;
+  return raw > 127 ? raw - 256 : raw;
 }
 
 /**
@@ -8614,6 +8642,7 @@ function appendModelsParamRows(
     const pRaw = params[j];
     if (paramHiddenForMonoStereoOnly(pRaw, catalogSignal)) continue;
     if (paramHiddenCatalogInternalBool(pRaw)) continue;
+    if (paramHiddenTempoSync(pRaw)) continue;
     const p = paramForSignalVariant(pRaw, catalogSignal);
     const li = document.createElement("li");
     li.className = "models-params-row";
@@ -8631,7 +8660,7 @@ function appendModelsParamRows(
     minEl.textContent = formatParamBoundForDisplay(p.min, p, helixControlsMap);
     const chainEl = document.createElement("span");
     chainEl.className = "models-params-row-chain";
-    const cv = chainValues?.[j];
+    const cv = signedDiscreteChainValue(chainValues?.[j], p);
     chainEl.textContent =
       cv !== undefined ? formatChainParamValueJson(cv, p, helixControlsMap) : "—";
     const maxEl = document.createElement("span");
