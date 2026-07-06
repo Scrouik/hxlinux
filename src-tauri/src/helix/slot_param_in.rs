@@ -6,7 +6,7 @@
 use serde::Serialize;
 use std::collections::HashMap;
 
-use crate::helix::slot_bus_to_kempline_index;
+use crate::helix::{is_special_slot_bus, slot_bus_to_kempline_index};
 
 /// `85:62:bus:1d:<c2|c3>:1a:<Y>:1c` — ne pas figer `c3` seul (discrets HW en `c2`).
 fn model_param_block_anchor_matches(buf: &[u8], i: usize) -> bool {
@@ -256,7 +256,14 @@ impl SlotParamEmitState {
     }
 
     fn try_emit_sample(&mut self, sample: SlotParamWireSample) -> Option<SlotParamChangedPayload> {
-        let slot_index = slot_bus_to_kempline_index(sample.slot_bus)?;
+        // Bus spéciaux (Input/Output/Split/Merge) : pas d'index kempline (0..15), le frontend
+        // route ces échantillons par `slot_bus` (`flowIoKindFromHwSlotBus`) — `slot_index` est
+        // alors un placeholder ignoré côté UI.
+        let slot_index = match slot_bus_to_kempline_index(sample.slot_bus) {
+            Some(idx) => idx,
+            None if is_special_slot_bus(sample.slot_bus) => 0,
+            None => return None,
+        };
         let key = sample.fingerprint_key();
         let fp = sample.fingerprint_value();
         if self.last_fingerprint.get(&key) == Some(&fp) {
