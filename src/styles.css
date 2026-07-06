@@ -663,6 +663,18 @@ html, body {
   display: none !important;
 }
 
+/*
+ * Lignes grisées mais visibles (ex. Threshold/Decay quand Input Gate est Off — voir
+ * `appendModelsParamRows` / `data-models-gate-follower` dans `src/models.ts`).
+ */
+.models-params-row--gate-off {
+  opacity: 0.55;
+}
+
+.models-params-row--gate-off .models-params-slider {
+  cursor: default;
+}
+
 .models-params-row {
   font-size: 13px;
   line-height: 1.35;

@@ -337,7 +337,9 @@ let loadingHeartbeatBase = "";
 let loadingHeartbeatPhase = 0;
 let autoSelectFallbackTimer: number | null = null;
 type PendingLiveWrite = {
-  slotIndex: number;
+  slotIndex?: number;
+  /** Bus spécial (Input/Output/Split/Merge) quand `slotIndex` est absent — route `write_flow_io_live_param`. */
+  slotBus?: number;
   paramIndex: number;
   symbolicId: string;
   displayType: string | null;
@@ -2289,11 +2291,19 @@ function scheduleLiveParamWriteProbe(
   ampCabAmpParamCount: number | null = null,
 ): void {
   if (!liveWriteQueueEnabled()) return;
-  if (slotIndex === undefined || !Number.isInteger(slotIndex)) return;
+  const isKemplineSlot = slotIndex !== undefined && Number.isInteger(slotIndex);
+  // Slot spécial (Input/Output/Split/Merge, pas d'index kempline) : router par `slotBus` au lieu
+  // de bloquer l'écriture — voir mémoire session, symptôme "écriture jamais envoyée pour les
+  // slots spéciaux" (scheduleLiveParamWriteProbe early-return).
+  const flowKind = isKemplineSlot ? null : flowIoKindFromHwSlotBus(selectedSpecialHwSlotBus ?? -1);
+  const slotBus = !isKemplineSlot && flowKind ? (selectedSpecialHwSlotBus ?? undefined) : undefined;
+  if (!isKemplineSlot && slotBus === undefined) return;
   if (!Number.isFinite(rawValue)) return;
   const symbolicId = (p.symbolicID ?? "").trim();
   if (!symbolicId) return;
-  const key = `${slotIndex}:${symbolicId}:${paramIndex}`;
+  const key = isKemplineSlot
+    ? `${slotIndex}:${symbolicId}:${paramIndex}`
+    : `bus${slotBus}:${symbolicId}:${paramIndex}`;
   const vtRaw = p.valueType;
   const valueType =
     vtRaw !== undefined && vtRaw !== null && Number.isFinite(Number(vtRaw))
@@ -2302,23 +2312,20 @@ function scheduleLiveParamWriteProbe(
   const rawMin = typeof p.min === "number" && Number.isFinite(p.min) ? p.min : null;
   const rawMax = typeof p.max === "number" && Number.isFinite(p.max) ? p.max : null;
   if (currentPresetIndex >= 0) {
-    const flowKind =
-      slotIndex === undefined || !Number.isInteger(slotIndex)
-        ? flowIoKindFromHwSlotBus(selectedSpecialHwSlotBus ?? -1)
-        : null;
     if (flowKind) {
       recordFlowIoChainParamOverride(currentPresetIndex, flowKind, symbolicId, rawValue);
-    } else if (slotIndex !== undefined && Number.isInteger(slotIndex)) {
+    } else if (isKemplineSlot) {
       recordLiveChainParamOverrideForKemplineSlot(
         currentPresetIndex,
-        slotIndex,
+        slotIndex as number,
         symbolicId,
         rawValue,
       );
     }
   }
   pendingLiveWrites.set(key, {
-    slotIndex,
+    slotIndex: isKemplineSlot ? slotIndex : undefined,
+    slotBus,
     paramIndex,
     symbolicId,
     displayType: (p.displayType ?? "").trim() || null,
@@ -2696,6 +2703,25 @@ async function flushPendingLiveWrites(): Promise<boolean> {
   let anyOk = false;
   for (const w of batch) {
     try {
+      if (w.slotIndex === undefined && w.slotBus !== undefined) {
+        // Slot spécial (Input/Output/Split/Merge) : chemin dédié, pas de transport MIDI/probe
+        // équivalent — n'envoie réellement que si l'écriture live est activée (même prudence
+        // que le mode "probe" pour les slots normaux).
+        if (mode !== "probe") {
+          await invoke("write_flow_io_live_param", {
+            slotBus: w.slotBus,
+            paramIndex: w.paramIndex,
+            symbolicId: w.symbolicId,
+            displayType: w.displayType,
+            valueType: w.valueType,
+            rawValue: liveWriteUsbNormalized01(w),
+            chainMin: w.rawMin ?? undefined,
+            chainMax: w.rawMax ?? undefined,
+          });
+          anyOk = true;
+        }
+        continue;
+      }
       if (mode === "probe") {
         await invoke("probe_live_param_write", {
           slotIndex: w.slotIndex,
@@ -3102,6 +3128,18 @@ function scheduleSplitScrollParamsReload(slot: SlotDebug): void {
       selectedParamsSlotEl &&
       hwSlotBusFromSelectedParamsEl() === HW_SLOT_BUS_SPLIT
     ) {
+      // Le changement de type Split via device (Y/A-B/Crossover/Dynamique) doit être traité
+      // comme un changement de sélection à part entière — même reset qu'un clic manuel
+      // (src/models.ts:6958-6964) — sinon `selectedParamsHwWireContext` reste bloqué sur le
+      // premier type affiché et les échantillons `85:62` du nouveau type sont mal interprétés.
+      const nextSlotKey = makeSlotSelectionKey(slot, undefined);
+      if (selectedParamsSlotKey !== nextSlotKey) {
+        selectedParamsInPlaceUpdater = null;
+        selectedParamsActivePaneUpdater = null;
+        selectedParamsInPlaceSlotKey = null;
+        selectedParamsHwWireContext = null;
+      }
+      selectedParamsSlotKey = nextSlotKey;
       void loadAndShowModelsParamsForSlot(slot, undefined);
     }
   }, 150);
@@ -5891,6 +5929,11 @@ function modelParamWireOrderIds(
     if (visibleSet.has(p)) visibleInJsonOrder.push(p);
   }
   return visibleInJsonOrder
+    // `@input` (Input From) est hors chaîne (lu/écrit via `82:62:00:33:XX`, pas le flux `85:62`
+    // indexé PP) — confirmé par capture (`in_param_from_ui.json` : PP=0/1/2 = noiseGate/
+    // threshold/decay, jamais @input). L'inclure ici décale tous les params suivants de +1
+    // en lecture (`symbolicIdForWireParamIndex`) et en écriture (`liveWriteParamIndexForRow`).
+    .filter((p) => !paramHiddenInputSourceDuplicate(p))
     .map((p) => (p.symbolicID ?? "").trim())
     .filter((sid) => sid.length > 0);
 }
@@ -8137,6 +8180,24 @@ function paramHiddenTempoSync(p: ModelParamDefJson): boolean {
 }
 
 /**
+ * `@input` (Input From) : doublon du picker dédié source Input (Main/Return/USB, noms+icônes,
+ * voir `ioSources` dans `HX_ModelUsbAssign.json`) — masquage UI pur, index chaîne conservé,
+ * même principe que `paramHiddenCatalogInternalBool`.
+ */
+function paramHiddenInputSourceDuplicate(p: ModelParamDefJson): boolean {
+  return (p.symbolicID ?? "").trim() === "@input";
+}
+
+/**
+ * `bypass` (Split A/B, Crossover, Y, Dynamic — `io.models` uniquement) : pas un contrôle
+ * utilisateur voulu à l'écran (confirmé user) — masquage UI pur, index chaîne conservé,
+ * même principe que `paramHiddenCatalogInternalBool`.
+ */
+function paramHiddenSplitBypass(p: ModelParamDefJson): boolean {
+  return (p.symbolicID ?? "").trim() === "bypass";
+}
+
+/**
  * Octet brut signé pour un discret à `min` négatif (ex. Pitch Wham Heel/Toe : fil `0xff` = `-1`,
  * pas `255`). Le décodeur Rust (`read_params_hex`, preset_chain_params.rs) ne connaît pas le
  * catalogue et pousse tout octet non bool/float comme `UInt` brut (0-255) — la conversion en
@@ -8272,6 +8333,30 @@ function modelsEqMasterIndex(params: ModelParamDefJson[]): number {
   if (!Number.isFinite(vt) || vt !== 2) return -1;
   if ((p.displayType ?? "").trim().toLowerCase() !== "off_on") return -1;
   return i;
+}
+
+/**
+ * Gate d'entrée Input (`noiseGate`, `io.models` uniquement) : quand il est Off, Threshold/Decay
+ * sont grisés (visibles mais désactivés) — contrairement à l'EQ, on ne masque pas les lignes,
+ * juste `models-params-row--gate-off` + `disabled` sur leurs sliders.
+ */
+function modelsGateMasterIndex(params: ModelParamDefJson[]): number {
+  const i = params.findIndex((p) => (p.symbolicID ?? "").trim() === "noiseGate");
+  if (i < 0) return -1;
+  const p = params[i];
+  const vt = Number(p.valueType);
+  if (!Number.isFinite(vt) || vt !== 2) return -1;
+  if ((p.displayType ?? "").trim().toLowerCase() !== "off_on") return -1;
+  return i;
+}
+
+/** Gate allumé côté affichage : valeur chaîne (bool / 0–1) ou défaut du `.models`. */
+function gateSwitchDisplayedOn(cv: ChainParamValueJson | undefined, gateParam: ModelParamDefJson): boolean {
+  const b = chainValueAsBool(cv);
+  if (b !== null) return b;
+  const d = gateParam.default;
+  if (typeof d === "boolean") return d;
+  return true;
 }
 
 /** Premier index strictement après `EQ` où le `symbolicID` commence par `@`, sinon fin de liste. */
@@ -8628,12 +8713,17 @@ function appendModelsParamRows(
   const eqIdx = modelsEqMasterIndex(params);
   const eqOn =
     eqIdx >= 0 ? eqSwitchDisplayedOn(chainValues?.[eqIdx], params[eqIdx]) : true;
+  const gateIdx = modelsGateMasterIndex(params);
+  const gateOn =
+    gateIdx >= 0 ? gateSwitchDisplayedOn(chainValues?.[gateIdx], params[gateIdx]) : true;
   const rowValueUpdaters: Array<(v: ChainParamValueJson | undefined) => void> = [];
   for (let j = 0; j < params.length; j += 1) {
     const pRaw = params[j];
     if (paramHiddenForMonoStereoOnly(pRaw, catalogSignal)) continue;
     if (paramHiddenCatalogInternalBool(pRaw)) continue;
     if (paramHiddenTempoSync(pRaw)) continue;
+    if (paramHiddenInputSourceDuplicate(pRaw)) continue;
+    if (paramHiddenSplitBypass(pRaw)) continue;
     const p = paramForSignalVariant(pRaw, catalogSignal);
     const li = document.createElement("li");
     li.className = "models-params-row";
@@ -8643,6 +8733,11 @@ function appendModelsParamRows(
       // Voir docblock au-dessus de `eqSwitchDisplayedOn` : `hidden` exige le correctif CSS sur `.models-params-row[hidden]`.
       li.hidden = !eqOn;
     }
+    const isGateFollower = gateIdx >= 0 && j > gateIdx;
+    if (isGateFollower) {
+      li.dataset.modelsGateFollower = "1";
+      li.classList.toggle("models-params-row--gate-off", !gateOn);
+    }
     const label = document.createElement("span");
     label.className = "models-params-row-name";
     label.textContent = (p.name || p.symbolicID || "").trim() || "—";
@@ -8651,7 +8746,22 @@ function appendModelsParamRows(
     minEl.textContent = formatParamBoundForDisplay(p.min, p, helixControlsMap);
     const chainEl = document.createElement("span");
     chainEl.className = "models-params-row-chain";
-    const cv = signedDiscreteChainValue(chainValues?.[j], p);
+    const rawCv = signedDiscreteChainValue(chainValues?.[j], p);
+    // Repli sur le défaut catalogue (même logique que `buildDefaultChainValuesForSourceOrder`)
+    // quand aucune valeur utilisable n'est encore disponible au premier rendu : sans ça, la ligne
+    // bascule dans la branche texte-seul (pas de slider/interrupteur créé) et reste dégradée pour
+    // toujours, même une fois la vraie valeur reçue (rowValueUpdaters ne fait que mettre à jour
+    // le texte dans cette branche). `rawCv` peut être défini mais inutilisable (ex. NaN) — pas
+    // seulement `undefined` — confirmé sur Balance B (Split Y) et Attack (Split Dynamique), qui
+    // réapparaissait malgré le premier repli (limité au cas strictement `undefined`).
+    const rawCvUsable =
+      rawCv !== undefined &&
+      (typeof rawCv !== "number" || Number.isFinite(rawCv));
+    const cv =
+      rawCvUsable
+        ? rawCv
+        : (chainValueFromParamDefault(p) ??
+          (typeof p.min === "number" && Number.isFinite(p.min) ? p.min : undefined));
     chainEl.textContent =
       cv !== undefined ? formatChainParamValueJson(cv, p, helixControlsMap) : "—";
     const maxEl = document.createElement("span");
@@ -8787,6 +8897,7 @@ function appendModelsParamRows(
       if (sliderValueType !== 0) {
         input.classList.add("models-params-slider--filled");
       }
+      if (isGateFollower) input.disabled = !gateOn;
       input.min = String(sliderMin);
       input.max = String(sliderMax);
       const sliderSpan = sliderMax - sliderMin;
@@ -8894,6 +9005,16 @@ function appendModelsParamRows(
         `${(p.name || p.symbolicID || "").trim()} — aperçu local${ariaScopeLabel}, non envoyé au Helix`,
       );
       const isEqMaster = (p.symbolicID ?? "").trim() === "EQ";
+      const isGateMaster = (p.symbolicID ?? "").trim() === "noiseGate";
+      const applyGateFollowersState = (on: boolean): void => {
+        for (const node of list.querySelectorAll("li[data-models-gate-follower]")) {
+          if (!(node instanceof HTMLLIElement)) continue;
+          node.classList.toggle("models-params-row--gate-off", !on);
+          for (const inp of node.querySelectorAll("input")) {
+            if (inp instanceof HTMLInputElement) inp.disabled = !on;
+          }
+        }
+      };
       /** Sync hardware / in-place uniquement : ne pas ré-enfiler de write USB. */
       const applyBool = (nextB: boolean, syncInput = true): void => {
         currentB = nextB;
@@ -8910,6 +9031,7 @@ function appendModelsParamRows(
             if (node instanceof HTMLLIElement) node.hidden = !nextB;
           }
         }
+        if (isGateMaster) applyGateFollowersState(nextB);
       };
       /** Write live seulement depuis le geste utilisateur (comme les sliders float). */
       const applyBoolFromUserInput = (nextB: boolean): void => {
@@ -8949,6 +9071,7 @@ function appendModelsParamRows(
             if (node instanceof HTMLLIElement) node.hidden = !currentB;
           }
         }
+        if (isGateMaster) applyGateFollowersState(currentB);
       };
     } else {
       sliderCell.append(chainEl);
@@ -10076,8 +10199,13 @@ async function loadAndShowModelsParamsForSlot(
     if (!catalogModelIdTrimmed && mergeLike) {
       catalogModelIdTrimmed = FLOW_JOIN_CATALOG_ID;
     }
-    if (!catalogModelIdTrimmed && splitLike) {
+    if (splitLike) {
       await mountModelsSlotPicker();
+      // Lecture live systématique (pas seulement en secours) : le type Split peut changer sur
+      // le device sans que le preset ne soit resauvegardé (`s.preset_data` reste sur l'état
+      // sauvegardé, potentiellement périmé) — voir mémoire session, symptôme "mauvais type Split
+      // affiché après changement via device". La valeur live prime sur `catalogModelIdTrimmed`
+      // déjà résolu (moduleHex / cache de routage) en cas de désaccord.
       let wire: number | null = null;
       try {
         const liveWire = await invoke<number | null>("get_path1_split_type_wire_value");
@@ -10085,19 +10213,28 @@ async function loadAndShowModelsParamsForSlot(
       } catch {
         /* wire live optionnel */
       }
-      if (wire == null) {
+      if (wire == null && !catalogModelIdTrimmed) {
         const hex =
           (slot.moduleHex ?? "").trim() ||
           (splitRoutingMarkerFromCache()?.moduleHex ?? "").trim();
         if (hex) wire = splitWireFromChainHex(hex);
       }
       if (wire != null && catalogPickerDataCache) {
-        catalogModelIdTrimmed =
-          findSplitSourceIdByWireValue(
-            catalogPickerDataCache,
-            wire,
-            connectedDeviceName,
-          ) ?? "";
+        // `findSplitSourceIdByWireValue` renvoie l'id **picker** (ex. `HelixStomp_Split_AB`),
+        // pas le `catalogModelId` catalogue (`HD2_AppDSPFlowSplitAB`) attendu par la jointure
+        // `.models` — il faut re-résoudre la ligne pour prendre son `catalogModelId`.
+        const pickerId = findSplitSourceIdByWireValue(catalogPickerDataCache, wire, connectedDeviceName);
+        let liveCatalogModelId = "";
+        if (pickerId) {
+          for (const rows of catalogPickerDataCache.modelsByCategoryAndSub.values()) {
+            const row = rows.find((r) => r.id === pickerId);
+            if (row) {
+              liveCatalogModelId = (row.catalogModelId ?? "").trim();
+              break;
+            }
+          }
+        }
+        if (liveCatalogModelId) catalogModelIdTrimmed = liveCatalogModelId;
       }
     }
     if (!catalogModelIdTrimmed) {

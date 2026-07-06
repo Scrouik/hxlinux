@@ -296,7 +296,7 @@ fn force_discrete_c2_marker(pkt: &mut [u8]) {
 pub fn build_live_write_frames_from_state(
     state: &mut HelixState,
     raw_value: f32,
-    slot_index: u32,
+    slot_bus: u8,
     param_index: u32,
     _symbolic_id: &str,
     display_type: Option<&str>,
@@ -325,7 +325,6 @@ pub fn build_live_write_frames_from_state(
     let float_be_a = raw_value.to_bits().to_be_bytes();
     let leg_b = float_leg_b_from_norm(raw_value, chain_min, chain_max);
     let float_be_b = leg_b.to_bits().to_be_bytes();
-    let slot_bus = slot_bus_byte_from_kempline_index(slot_index);
     let pre_cnt_x80 = state.next_x80_cnt();
     let pre_cnt_x2 = state.next_x2_cnt();
     let pre_session = state.session_no;

@@ -119,17 +119,18 @@ fn has_split_path1_flow_context(buf: &[u8]) -> bool {
 /// Deux conventions Line 6 :
 /// - **Select / OUT `25` / HX Edit (`TT=05`)** : `0=Y`, `1=A/B` (JSON `splitSources[]`).
 /// - **Scroll hardware Stomp** (`21` + ancre, ou `TT=92`) : **Y=1**, **A/B=0** sur le fil.
-pub(crate) fn split_type_wire_in_21_to_catalog(raw: u8, term: u8, scroll_notify_21: bool) -> u8 {
-    if term == 0x05 {
-        return raw;
+/// Y/A-B toujours inversés sur le fil par rapport au catalogue, **y compris pour `term == 0x05`**
+/// (select) — confirmé par test device réel (écran physique) : un clic "Split A/B" (catalogue 1)
+/// envoie `wire=0` (fix écriture) et l'echo `term=0x05` associé rapporte `raw=0`, qui doit être
+/// reconverti en catalogue 1 (A/B), pas laissé tel quel. L'ancienne hypothèse « term=0x05 = pas
+/// d'inversion » n'était vérifiée que sur une capture HX Edit jamais confrontée au device réel
+/// pour ce cas précis (voir mémoire session).
+pub(crate) fn split_type_wire_in_21_to_catalog(raw: u8, _term: u8, _scroll_notify_21: bool) -> u8 {
+    if matches!(raw, 0x00 | 0x01) {
+        raw ^ 1
+    } else {
+        raw
     }
-    if scroll_notify_21 && matches!(raw, 0x00 | 0x01) {
-        return raw ^ 1;
-    }
-    if term == 0x92 && matches!(raw, 0x00 | 0x01) {
-        return raw ^ 1;
-    }
-    raw
 }
 
 /// Type Split depuis IN `21` / select UI : `82:62:0a:1a:…:WW:TT`.
@@ -157,6 +158,9 @@ fn scan_path1_split_type_wire_in_21(buf: &[u8]) -> Option<u8> {
 
 /// Type Split depuis pré-notif scroll ed03 (`82:0d:0a:18` … `84:08:cd:01:WW` ou `cd:02:33`).
 /// Capture `split scroll.json` frames 1055 / 1485 / 1975 / 2741 (avant IN `21`).
+/// Retourne la valeur **catalogue** (Y/A-B inversés sur le fil ici aussi — confirmé par test
+/// device réel : modifier un paramètre sur Split Y redéclenchait le bug de libellé via ce chemin
+/// ed03, qui renvoyait le byte brut non inversé).
 pub(crate) fn scan_path1_split_type_wire_ed03_scroll(buf: &[u8]) -> Option<u8> {
     if !has_split_path1_flow_context(buf) {
         return None;
@@ -166,7 +170,7 @@ pub(crate) fn scan_path1_split_type_wire_ed03_scroll(buf: &[u8]) -> Option<u8> {
         if buf[i..i + 4] == [0x84, 0x08, 0xcd, 0x01] {
             let w = buf[i + 4];
             if is_path1_split_type_wire_value(w) {
-                return Some(w);
+                return Some(if matches!(w, 0x00 | 0x01) { w ^ 1 } else { w });
             }
         }
         if i + 6 <= buf.len()
@@ -205,17 +209,6 @@ fn patch_split_wire_in_packet(pkt: &mut [u8], wire_value: u8) {
     } else {
         pkt[PATH1_SPLIT_CD_SUB_OFFSET] = 0x01;
         pkt[PATH1_SPLIT_WIRE_OFFSET] = wire_value;
-    }
-}
-
-/// Bloc modèle 16 o embarqué dans la trame `25` (`pkt[24..40]`) — offsets locaux `cd` / wire.
-fn patch_split_wire_in_model_block(block: &mut [u8; 16], wire_value: u8) {
-    if wire_value == 0x33 {
-        block[9] = 0x02;
-        block[10] = 0x33;
-    } else {
-        block[9] = 0x01;
-        block[10] = wire_value;
     }
 }
 
@@ -266,7 +259,11 @@ pub fn build_path1_split_type_packet(
         model.copy_from_slice(&pkt[24..40]);
         model[4] = state.live_write_yy;
     }
-    patch_split_wire_in_model_block(&mut model, wire_value);
+    // Ne PAS patcher le type dans le bloc modèle : les octets [9..11] (`62:0a`) sont la
+    // signature "bus 0x0a / Split" vérifiée par `is_path1_split_model_block` — les écraser
+    // casse cette identification (confirmé par capture `change_type_split_ui_linux.json` :
+    // écriture UI sans effet device tant que ce patch existait). Le type est déjà correctement
+    // encodé par `patch_split_wire_in_packet` (octets 41-42, testé par `patch_wire_offsets`).
     pkt[24..40].copy_from_slice(&model);
     patch_split_wire_in_packet(&mut pkt, wire_value);
     pkt[28] = state.live_write_yy;
@@ -275,6 +272,18 @@ pub fn build_path1_split_type_packet(
     state.live_write_yy = state.live_write_yy.wrapping_add(1);
 
     Ok(pkt)
+}
+
+/// Écriture `OUT 25` (select) : Y/A-B inversés côté device par rapport à la convention catalogue
+/// (`splitSources[].wireValue` : 0=Y, 1=A/B) — confirmé par test unique et non ambigu (clic
+/// "Split A/B" seul, écran physique du device affiche "Split Y" avec wire=1 envoyé tel quel).
+/// Même principe que `split_type_wire_in_21_to_catalog` côté lecture, appliqué à l'écriture.
+fn split_type_wire_out_from_catalog(wire_value: u8) -> u8 {
+    if matches!(wire_value, 0x00 | 0x01) {
+        wire_value ^ 1
+    } else {
+        wire_value
+    }
 }
 
 /// Envoie le type Split Path 1 (`splitSources[].id` dans `HX_ModelUsbAssign.json`).
@@ -296,7 +305,8 @@ pub fn send_path1_split_type(
         state.hw_active_slot_index = None;
     }
 
-    let pkt = build_path1_split_type_packet(state, &entry.template, entry.wire_value)?;
+    let wire_out = split_type_wire_out_from_catalog(entry.wire_value);
+    let pkt = build_path1_split_type_packet(state, &entry.template, wire_out)?;
     let ctr_lo = pkt[12];
     let ctr_hi = pkt[13];
     let hex: String = pkt.iter().map(|b| format!("{b:02x}")).collect();
@@ -334,12 +344,15 @@ mod tests {
 
     #[test]
     fn scan_split_wire_from_in_capture() {
+        // Confirmé par test device réel (écran physique) : Y/A-B inversés sur le fil même pour
+        // `term=0x05` (select) — raw=1 → catalogue 0 (Y), pas 1 (A/B). Voir
+        // `split_type_wire_in_21_to_catalog`.
         let hex = "21000018f0030210005900040902000000000400110000008269276a845201440379136a82620a1a00010105";
         let buf: Vec<u8> = (0..hex.len())
             .step_by(2)
             .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
             .collect();
-        assert_eq!(scan_path1_split_type_wire(&buf), Some(0x01));
+        assert_eq!(scan_path1_split_type_wire(&buf), Some(0x00));
     }
 
     #[test]
@@ -354,14 +367,16 @@ mod tests {
 
     #[test]
     fn scroll_split_ed03_wire_from_capture() {
+        // Byte brut `cd:01:01`/`cd:01:00` inversé en catalogue (Y/A-B swap confirmé device réel) —
+        // seuls ces deux cas swappent, Crossover (02) et Dynamique (0x33) inchangés.
         for (hex, wire) in [
             (
                 "4c000018ed03801000c90004e603000000000006003c0000008366cd03fe670068820d0a1882130214830e82050007830200030004900f8408cd01010d010ac307830203030493ca3f000000ca3f000000c212c3",
-                1u8,
+                0u8,
             ),
             (
                 "47000018ed03801000da00041b0400000000000600370000008366cd0401670068820d0a1882130214830e82050007830200030004900f8408cd01000d010ac307830202030292ca3f000000c212c348",
-                0u8,
+                1u8,
             ),
             (
                 "48000018ed03801000eb0004500400000000000600380000008366cd0404670068820d0a1882130214830e82050007830200030004900f8408cd01020d010ac307830203030493ca43fa0000c2c212c3",
@@ -426,11 +441,14 @@ mod tests {
     }
 
     #[test]
-    fn split_type_wire_in_21_y_ab_swap_only_on_stomp_scroll() {
+    fn split_type_wire_in_21_y_ab_always_swapped() {
+        // Confirmé par test device réel : Y/A-B toujours inversés sur le fil quel que soit le
+        // contexte (`term`, `scroll_notify_21`) — seul Crossover/Dynamique (raw ∉ {0,1}) ne
+        // swap jamais.
         assert_eq!(split_type_wire_in_21_to_catalog(0, 0x92, false), 1);
         assert_eq!(split_type_wire_in_21_to_catalog(1, 0x92, false), 0);
-        assert_eq!(split_type_wire_in_21_to_catalog(0, 0x05, true), 0);
-        assert_eq!(split_type_wire_in_21_to_catalog(1, 0x05, true), 1);
+        assert_eq!(split_type_wire_in_21_to_catalog(0, 0x05, true), 1);
+        assert_eq!(split_type_wire_in_21_to_catalog(1, 0x05, true), 0);
         assert_eq!(split_type_wire_in_21_to_catalog(1, 0x81, true), 0);
         assert_eq!(split_type_wire_in_21_to_catalog(0, 0x81, true), 1);
         assert_eq!(split_type_wire_in_21_to_catalog(2, 0x92, true), 2);

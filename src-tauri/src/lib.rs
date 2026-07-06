@@ -1768,10 +1768,11 @@ fn write_live_param(
         }
     }
 
+    let slot_bus_for_write = kempline_index_to_slot_bus(slot_index as usize).unwrap_or(1);
     let frames = build_live_write_frames_from_state(
         &mut s,
         raw,
-        slot_index,
+        slot_bus_for_write,
         param_index,
         sid,
         dt,
@@ -1821,6 +1822,89 @@ fn write_live_param(
         frames.packet_27.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" "),
         frames.packet_27_b.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" "),
         frames.post_packet_x80_sel.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ")
+    );
+    Ok(())
+}
+
+/// Écriture live USB paramètre générique pour un slot **spécial** (Input/Output/Split/Merge).
+/// Pendant de `write_live_param` mais pour un `slot_bus` direct au lieu d'un index kempline —
+/// volontairement séparé (pas de logique cab/dual/legacy, non pertinente ici) pour ne prendre
+/// aucun risque sur le chemin d'écriture FX existant.
+#[tauri::command]
+fn write_flow_io_live_param(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_bus: u8,
+    param_index: u32,
+    symbolic_id: String,
+    display_type: Option<String>,
+    value_type: Option<i32>,
+    raw_value: f64,
+    chain_min: Option<f64>,
+    chain_max: Option<f64>,
+) -> Result<(), String> {
+    if !helix::is_special_slot_bus(slot_bus) {
+        return Err("slotBus n'est pas un bus spécial (Input/Output/Split/Merge)".to_string());
+    }
+    if !raw_value.is_finite() {
+        return Err("rawValue invalide".to_string());
+    }
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+
+    let sid = symbolic_id.trim();
+    let dt = display_type.as_deref().map(str::trim);
+    let vt = value_type;
+
+    validate_usb_live_write_metadata(dt, vt)?;
+
+    let raw = raw_value.clamp(0.0, 1.0) as f32;
+    let mut s = helix_arc.lock().unwrap();
+
+    if s.hw_active_slot_bus != Some(slot_bus) {
+        let focus = helix::path1_io_live_write::build_special_slot_focus_packet(&mut s, slot_bus);
+        s.send(OutPacket::new(focus));
+        s.hw_active_slot_bus = Some(slot_bus);
+        s.hw_active_slot_index = None;
+    }
+
+    let frames = build_live_write_frames_from_state(
+        &mut s,
+        raw,
+        slot_bus,
+        param_index,
+        sid,
+        dt,
+        vt,
+        chain_min,
+        chain_max,
+        None,
+    );
+
+    s.send(OutPacket::new(frames.pre_packet_x80.clone()));
+    s.send(OutPacket::with_delay(frames.pre_packet_x80_sel.clone(), 8));
+    s.send(OutPacket::with_delay(frames.packet_27.clone(), 12));
+    s.send(OutPacket::with_delay(frames.packet_27_b.clone(), 8));
+    s.send(OutPacket::with_delay(frames.post_packet_x80_sel.clone(), 8));
+
+    drop(s);
+
+    eprintln!(
+        "[LiveWrite][flowio][sent] slotBus={:02x} param={} symbolicId={} displayType={} valueType={:?} opcode={:02x} rawValue={} sentRaw={} chainMin={:?} chainMax={:?} pp={:02x} pSel={:02x}",
+        slot_bus,
+        param_index,
+        sid,
+        dt.unwrap_or_default(),
+        value_type,
+        frames.primary_opcode,
+        raw_value,
+        raw,
+        chain_min,
+        chain_max,
+        frames.pp,
+        frames.param_selector,
     );
     Ok(())
 }
@@ -3767,9 +3851,13 @@ fn parse_preset_slots_internal(data: &[u8]) -> Vec<ParsedSlot> {
                 continue;
             }
             if w[1] == 0x01 {
+                // Convention "scroll matériel" (données preset écrites depuis le device) : Y=1, A/B=0
+                // — inversée par rapport à la convention "select HX Edit" (OUT 25, TT=05 : Y=0, A/B=1).
+                // Confirmé symétriquement par test utilisateur (Y sur device → affiché A/B dans l'UI
+                // et inversement) avant ce fix.
                 let mapped = match w[2] {
-                    0x00 => Some("6ccd0023"), // Split Y — OUT 25 / split select.json
-                    0x01 => Some("6ccd0024"), // Split A/B
+                    0x00 => Some("6ccd0024"), // Split A/B
+                    0x01 => Some("6ccd0023"), // Split Y
                     0x02 => Some("6ccd0025"), // Split Crossover
                     _ => None,
                 };
@@ -4921,6 +5009,7 @@ pub fn run() {
             probe_live_param_write,
             probe_slot_model_usb,
             write_live_param,
+            write_flow_io_live_param,
             focus_amp_cab_usb_part,
             focus_cab_dual_usb_part,
             write_live_param_midi_cc,
