@@ -6,9 +6,6 @@ pub const CAB2_REPLACE_HEAD_LEGACY: u8 = 0x23;
 /// Replace dual parent (picker slot entier).
 pub const DUAL_PARENT_REPLACE_HEAD: u8 = 0x25;
 
-/// Assign / create dual sur slot vide.
-pub const DUAL_CREATE_HEAD: u8 = 0x2d;
-
 pub use crate::helix::cab_dual::ir::CAB2_REPLACE_HEAD as CAB2_REPLACE_HEAD_IR;
 
 /// Têtes bulk pour le fire replace cab2 (IR + legacy 1 o / 3 o).
@@ -18,10 +15,6 @@ pub fn accepted_cab2_replace_heads() -> &'static [u8] {
         CAB2_REPLACE_HEAD_LEGACY,
         DUAL_PARENT_REPLACE_HEAD,
     ]
-}
-
-pub fn is_legacy_dual_bulk_head(head: u8) -> bool {
-    matches!(head, CAB2_REPLACE_HEAD_LEGACY | DUAL_PARENT_REPLACE_HEAD)
 }
 
 /// Dual legacy hybrid (`c319`, cab1+cab2) — exclut les singles IR head `0x25` avec `c219` seul.
@@ -37,6 +30,7 @@ pub fn bulk_is_legacy_dual_hybrid(bulk: &[u8]) -> bool {
     }
 }
 
+#[allow(dead_code)] // utilisé uniquement par les tests unitaires
 pub fn is_legacy_cab2_replace_bulk(bulk: &[u8]) -> bool {
     bulk.first() == Some(&CAB2_REPLACE_HEAD_LEGACY)
 }

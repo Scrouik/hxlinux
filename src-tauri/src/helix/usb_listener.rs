@@ -95,14 +95,19 @@ pub fn start_listener(
                         .unwrap_or(false);
                     if gate_ok && !backing_off {
                         let seq = s.next_x2_cnt();
-                        // En-tête `05:10` (pas `02:10`) : confirmé sur 10950/10950 polls actifs
-                        // de la capture HX Edit longue durée — `02:10` n'apparaît jamais pendant
-                        // une session d'édition live. Tail = compteur roulant (LE u32), pas figé.
+                        // En-tête `02:10` (pas `05:10`) : deux captures HX Edit indépendantes
+                        // (changement de slot au device, changement de paramètre au device —
+                        // juillet 2026) montrent 100% des polls actifs et 100% des réponses
+                        // `85:62` (knob HW) livrées avec `02:10`, jamais `05:10`. L'ancienne
+                        // validation "10950/10950 = 05:10" provenait très probablement d'une
+                        // édition faite depuis l'UI HX Edit (souris), pas depuis le device —
+                        // un contexte différent de celui qu'on couvre ici (gestes matériels).
+                        // Tail = compteur roulant (LE u32), pas figé.
                         let tick = poll_epoch.elapsed().as_millis() as u32;
                         let tick_bytes = tick.to_le_bytes();
                         let mut pkt = vec![
                             0x08, 0x00, 0x00, 0x18,
-                            0x05, 0x10, 0xf0, 0x03,
+                            0x02, 0x10, 0xf0, 0x03,
                             0x00, seq, 0x00, 0x08,
                         ];
                         pkt.extend_from_slice(&tick_bytes);

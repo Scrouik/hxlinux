@@ -155,9 +155,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn comp_mode_is_discrete_segmented_not_bool_markers() {
-        assert_eq!(discrete_23_step_count(Some("comp_mode")), Some(2));
-        assert!(!infer_bool_wire_payload(Some("comp_mode"), Some(2)));
+    fn comp_mode_is_bool_marker_not_discrete_segmented() {
+        assert_eq!(discrete_23_step_count(Some("comp_mode")), None);
+        assert!(infer_bool_wire_payload(Some("comp_mode"), Some(2)));
     }
 
     #[test]

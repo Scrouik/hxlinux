@@ -1458,17 +1458,8 @@ async function invokeSlotFocusWatch(ki: number): Promise<void> {
 
 /** Focus USB HX Edit sur le slot dont le panneau params est ouvert (arme notifs param HW). */
 function scheduleHwFocusForOpenParamsPane(ki: number | undefined): void {
-  void invoke("log_frontend_message", { message: `[DBG] scheduleHwFocusForOpenParamsPane ki=${String(ki)} enabled=${String(slotFocusUsbSyncEnabled())}` }).catch(() => {});
   if (ki === undefined || !Number.isInteger(ki) || ki < 0 || ki >= 16) return;
   if (!slotFocusUsbSyncEnabled()) return;
-  // [DIAG Problème B] Point d'entrée UNIQUE (tous les appelants passent par ici) pour
-  // le flag localStorage.models_debug_disable_postload_focus=1 — couvre les 3 sites
-  // d'appel (post-chargement preset, rendu panneau params simple/dual-tab), contrairement
-  // au 1er essai qui n'en couvrait qu'un seul et laissait passer FocusUSB via les autres.
-  if (localStorage.getItem("models_debug_disable_postload_focus") === "1") {
-    emitModelsSyncTrace(`scheduleHwFocusForOpenParamsPane ki=${ki} SKIPPÉ (diag Problème B, flag actif)`);
-    return;
-  }
   void invokeSlotFocusWatch(ki);
 }
 
@@ -12512,9 +12503,6 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
           popPresetLoadUiLock();
           // Le hardware-slot-changed seq=1 peut avoir tiré avant que currentPresetIndex soit set.
           // On rétablit le focus sur le slot physique actif maintenant que le preset est chargé.
-          // [DIAG Problème B] Le flag localStorage.models_debug_disable_postload_focus=1 est
-          // maintenant vérifié DANS scheduleHwFocusForOpenParamsPane (point d'entrée unique,
-          // couvre aussi les autres appelants — rendu panneau params simple/dual-tab).
           void invoke<HardwareActiveSlotState>("get_active_hardware_slot_state")
             .then((hw) => {
               if (
@@ -13245,6 +13233,18 @@ window.addEventListener("DOMContentLoaded", () => {
           void refreshSplitPickerFromLiveWireDelayed();
         }
       });
+    } else if (
+      p &&
+      typeof p.slotIndex === "number" &&
+      Number.isInteger(p.slotIndex) &&
+      p.slotIndex >= 0 &&
+      p.slotIndex < 16
+    ) {
+      // Le device a changé de slot actif (modèle) : le panneau de paramètres ouvert doit
+      // suivre, sinon un edit fait dans l'UI viserait le slot précédemment ouvert au lieu du
+      // slot réellement actif sur le device — risque de valeurs hors bornes sur le mauvais
+      // modèle (cf. mémoire session, rapport utilisateur).
+      void focusMatrixSlotParamsPane(p.slotIndex);
     }
     scheduleHardwareSyncFromEvent();
   });

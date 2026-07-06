@@ -33,7 +33,6 @@ enum CommitStep {
 #[derive(Debug, Clone)]
 pub struct StandaloneLegacyParamCommit {
     pub slot_index: u32,
-    pub slot_bus: u8,
     pub assign_block: [u8; 16],
     pub param_selector: u8,
     step: CommitStep,
@@ -83,7 +82,6 @@ pub fn start_standalone_legacy_cd03ff_write(
 
     state.standalone_legacy_param_commit = Some(StandaloneLegacyParamCommit {
         slot_index,
-        slot_bus,
         assign_block,
         param_selector,
         step: CommitStep::WaitDumpIn,

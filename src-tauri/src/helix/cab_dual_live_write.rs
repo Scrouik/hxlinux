@@ -191,6 +191,7 @@ pub fn build_cab_dual_cab2_tab_focus_packet_with_lane(
 }
 
 /// Focus **replace** Cab 2 (`cd:04`, `1a:01`) — `cab dual change right.json`.
+#[allow(dead_code)] // utilisé uniquement par les tests unitaires
 pub fn build_cab_dual_cab2_replace_focus_packet(state: &mut HelixState, slot_bus: u8) -> Vec<u8> {
     build_cab_dual_cab2_replace_focus_packet_with_lane(
         state,
@@ -201,6 +202,7 @@ pub fn build_cab_dual_cab2_replace_focus_packet(state: &mut HelixState, slot_bus
 }
 
 /// Focus sous-bloc **Cab 2** (replace). Enveloppe `1d …`, bloc `83:66:cd:04`, suffixe `1a:01`.
+#[allow(dead_code)] // utilisé uniquement par les tests unitaires
 pub fn build_cab_dual_cab2_focus_packet(state: &mut HelixState, slot_bus: u8) -> Vec<u8> {
     build_cab_dual_cab2_replace_focus_packet(state, slot_bus)
 }
@@ -225,6 +227,7 @@ pub fn build_cab_dual_cab2_replace_focus_packet_with_lane(
 }
 
 /// Compat tests historiques : `use_editor_lane` true→Editor / false→LiveWrite, octet 11 = `0x04`.
+#[allow(dead_code)] // utilisé uniquement par les tests unitaires
 pub fn build_cab_dual_cab2_focus_packet_with_source(
     state: &mut HelixState,
     slot_bus: u8,
@@ -334,6 +337,7 @@ pub fn cab_dual_ed08_ctr_from_in36(in36: &[u8]) -> Option<u16> {
 /// Ctr `ed:08` dérivé du focus `1d`. Octet14 ≠ 0 (ancienne lane éditeur, ex. `14 8a 1c`) →
 /// `LE(focus[13]+0x11, focus[14])`. Octet14 = 0 (lane keepalive `7e 1c` / live_write_ctr) →
 /// `LE(focus[12]+0x11, focus[13])` (keepalive `7e 1c` → `8f 1c`).
+#[allow(dead_code)] // utilisé uniquement par les tests unitaires
 pub fn cab_dual_ed08_ctr_from_focus(focus: &[u8]) -> Option<u16> {
     if focus.len() < 15 || focus.first() != Some(&0x1d) {
         return None;
@@ -354,6 +358,7 @@ pub fn cab_dual_ed08_ctr_from_focus(focus: &[u8]) -> Option<u16> {
 /// Ctr `ed:08` du handshake `IN 21` = **toujours** dérivé du focus (= lane keepalive + 0x11).
 /// La capture HX prouve que la lane d'écho device (`ec 02` / `5f 03`) ne valide PAS l'ed:08 ;
 /// on ne préfère donc plus l'IN 36o. `in36` reste en paramètre pour compat/diagnostic.
+#[allow(dead_code)] // utilisé uniquement par les tests unitaires
 pub fn cab_dual_ed08_ctr_for_handshake(focus: &[u8], _in36: &[u8]) -> u16 {
     cab_dual_ed08_ctr_from_focus(focus).unwrap_or(0)
 }
@@ -419,39 +424,6 @@ pub fn prepare_cab_dual_param_live_write(
     if cab_index == 1 {
         state.cab_dual_cab2_focus_sent_for_slot = Some(slot_index);
     }
-}
-
-/// Alias historique.
-pub fn send_cab_dual_tab_focus_for_live_write(
-    state: &mut HelixState,
-    slot_index: u32,
-    slot_bus: u8,
-    cab_index: u8,
-) {
-    prepare_cab_dual_param_live_write(state, slot_index, slot_bus, cab_index);
-}
-
-/// Focus Cab 2 immédiatement avant replace (HX Edit : `cd:04` + `1a:01`, pas l’onglet).
-pub fn send_cab_dual_cab2_focus(state: &mut HelixState, slot_index: u32, slot_bus: u8) {
-    state.cab_dual_live_write_tab_focus = None;
-    state.cab_dual_cab2_suppress_standard_ed08_until =
-        Some(Instant::now() + Duration::from_secs(45));
-    state.cab_dual_cab2_handshake_ed08_ctr = None;
-    if let Some(ctr) = state.cab_dual_cab2_last_in36_ed08_ctr {
-        state.live_write_ctr = ctr;
-    }
-    let focus = build_cab_dual_cab2_focus_packet(state, slot_bus);
-    state.last_cab_dual_cab2_focus_packet = Some(focus.clone());
-    state.send(crate::helix::packet::OutPacket::new(focus));
-    state.live_write_yy = state.live_write_yy.wrapping_add(1);
-    state.slot_model_lane_seq = Some(state.live_write_yy);
-    state.cab_dual_cab2_focus_sent_for_slot = Some(slot_index);
-}
-
-/// Segment preset dual legacy hybrid (suffixe modèle `64:83:17:c3:19`) — tests / debug uniquement.
-pub fn cab_dual_preset_segment_is_legacy_hybrid(seg: &[u8]) -> bool {
-    seg.windows(5)
-        .any(|w| w == [0x64, 0x83, 0x17, 0xc3, 0x19])
 }
 
 /// Variante catalogue live write : `dual-legacy` / `dual legacy` (hybrid `c3:19`), sinon IR.

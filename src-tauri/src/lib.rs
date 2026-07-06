@@ -1009,7 +1009,6 @@ fn probe_slot_model_usb(
     cab_catalog_model_id: Option<String>,
     cab_assign_variant: Option<String>,
     cab_dual_cab_index: Option<u32>,
-    skip_cab_dual_focus: Option<bool>,
 ) -> Result<String, String> {
     if slot_index >= 16 {
         return Err("slotIndex hors plage (0..15)".to_string());
@@ -3058,18 +3057,6 @@ pub(crate) fn cab_dual_effective_cab2_hex(wire_cab2: &str, c219_cab2: Option<&st
 /// 2ᵉ cab `c219` brut (sans fusion fil `c319`).
 fn raw_cab_dual_cab2_c219_hex(seg: &[u8]) -> Option<String> {
     cab_dual_c219_cab_hexes(seg).and_then(|v| v.get(1).cloned())
-}
-
-/// Cab 2 d’un slot Cab dual : fil `c319` + override `c219` si suffixe usine encore sur le fil.
-pub(crate) fn linked_cab_dual_cab2_hex_from_assignable_chunk(chunk: &[u8]) -> Option<String> {
-    let (_, wire_cab2) = resolve_cab_dual_wire_pair(chunk)?;
-    let c219_cab2 = raw_cab_dual_cab2_c219_hex(chunk);
-    let effective = cab_dual_effective_cab2_hex(&wire_cab2, c219_cab2.as_deref());
-    if effective.is_empty() {
-        None
-    } else {
-        Some(effective)
-    }
 }
 
 pub(crate) fn extract_cab_dual_cab2_hex_for_hw_scroll_dump(buf: &[u8]) -> Option<String> {

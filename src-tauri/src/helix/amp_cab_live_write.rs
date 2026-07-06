@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use crate::helix::live_write::LiveWriteRouteOverride;
-use crate::helix::live_write_config::{discrete_23_step_count, infer_bool_wire_payload, live_write_cfg};
+use crate::helix::live_write_config::{discrete_23_step_count, infer_bool_wire_payload};
 use crate::helix::{echo_model_cache_key, kempline_index_to_slot_bus, HelixState};
 
 /// `(param_selector, model_tag)` — guitar legacy hybrid (non assignable sur Stomp XL actuel).
@@ -243,6 +243,7 @@ pub fn cache_ed03_model_blocks_from_echo(
 
 /// Bloc modèle **Cab single** legacy (`…c2:19`, capture `cab single legacy.json`).
 /// Octet `[4]` = `param_selector` wire (pas le tag catalogue).
+#[allow(dead_code)] // utilisé uniquement par les tests unitaires (via resolve_standalone_legacy_cab_live_write_route)
 pub fn build_standalone_legacy_cab_param_model_block(param_selector: u8, slot_bus: u8) -> [u8; 16] {
     [
         0x83, 0x66, 0xcd, 0x04, param_selector, 0x64, 0x28, 0x65, 0x82, 0x62, slot_bus, 0x64,
@@ -407,37 +408,6 @@ fn dual_legacy_cab_module_field(
         .dual_legacy_cab_module_field_by_slot
         .get(&(slot_index, cab_index))
         .cloned()
-}
-
-fn discrete_wire_value_byte(
-    raw_norm: f32,
-    value_type: Option<i32>,
-    chain_min: Option<f64>,
-    chain_max: Option<f64>,
-    steps: Option<u8>,
-    bool_mark: u8,
-) -> u8 {
-    if let Some(n) = steps {
-        if let (Some(lo), Some(hi)) = (chain_min, chain_max) {
-            if matches!(value_type, Some(0)) {
-                let lo_i = lo.round();
-                let hi_i = hi.round();
-                if (lo - lo_i).abs() < 1e-6
-                    && (hi - hi_i).abs() < 1e-6
-                    && hi_i > lo_i
-                    && lo_i >= 0.0
-                    && hi_i <= 255.0
-                {
-                    let span = hi_i - lo_i;
-                    let v = lo_i + f64::from(raw_norm.clamp(0.0, 1.0)) * span;
-                    return v.round().clamp(lo_i, hi_i) as u8;
-                }
-            }
-        }
-        let max_i = (n as f32 - 1.0).max(0.0);
-        return ((raw_norm.clamp(0.0, 1.0) * max_i).round() as u8).min(n.saturating_sub(1));
-    }
-    bool_mark
 }
 
 fn float_leg_b_from_norm(norm: f32, chain_min: Option<f64>, chain_max: Option<f64>) -> f32 {
@@ -1001,6 +971,7 @@ pub fn resolve_standalone_legacy_cab_live_write_route_from_probe(
     })
 }
 
+#[allow(dead_code)] // utilisé uniquement par les tests unitaires
 pub fn resolve_standalone_legacy_cab_live_write_route(
     state: &HelixState,
     local_param_index: u32,

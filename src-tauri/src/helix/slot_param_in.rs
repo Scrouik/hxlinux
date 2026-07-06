@@ -225,7 +225,7 @@ impl Default for SlotParamEmitState {
 impl SlotParamEmitState {
     pub fn ingest_buffer(&mut self, buf: &[u8]) -> Vec<SlotParamChangedPayload> {
         let has_8562 = buf.windows(2).any(|w| w == [0x85, 0x62]);
-        if has_8562 {
+        if crate::helix::slot_param_debug_enabled() && has_8562 {
             let head = buf.iter().take(8).map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":");
             eprintln!("[SlotParamIn] 85:62 détecté len={} head={}", buf.len(), head);
         }

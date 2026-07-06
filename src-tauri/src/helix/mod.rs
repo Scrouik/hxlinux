@@ -336,8 +336,6 @@ pub struct HelixState {
     pub cab_dual_live_write_tab_focus: Option<(u32, u8)>,
     /// Dernier OUT focus Cab 2 (`1d`) — sert au ctr `ed:08` post-IN 36o.
     pub last_cab_dual_cab2_focus_packet: Option<Vec<u8>>,
-    /// Ctr `ed:08` calculé après IN `19`/36o (lane `cd:04` Stomp).
-    pub cab_dual_cab2_handshake_ed08_ctr: Option<u16>,
     /// Dernier ctr appris depuis un IN `19`/36o Cab 2 (`cd:04`) pendant focus/handshake.
     pub cab_dual_cab2_last_in36_ed08_ctr: Option<u16>,
     /// Dernière trame IN `19`/36o Cab 2 (`cd:04`) — réponse au focus onglet Cab 2.
@@ -676,7 +674,6 @@ impl HelixState {
             cab_dual_cab2_focus_sent_for_slot: None,
             cab_dual_live_write_tab_focus: None,
             last_cab_dual_cab2_focus_packet: None,
-            cab_dual_cab2_handshake_ed08_ctr: None,
             cab_dual_cab2_last_in36_ed08_ctr: None,
             cab_dual_cab2_last_in36_frame: None,
             live_write_ctr: 0x6cbd,

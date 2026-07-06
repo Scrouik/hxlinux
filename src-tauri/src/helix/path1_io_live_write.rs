@@ -194,34 +194,6 @@ pub fn send_matrix_dd_drag_arm(state: &mut HelixState) -> Result<(), String> {
     Ok(())
 }
 
-/// Commit D&D au **pointerup** : `1d` → ACK lo+`0x11` → `f0` sub 08 (préambule déjà armé).
-pub fn send_matrix_dd_1d_commit_only(state: &mut HelixState, pkt: Vec<u8>) -> Result<(), String> {
-    if pkt.len() != 40 || pkt.first() != Some(&0x1d) {
-        return Err(format!(
-            "send_matrix_dd_1d_commit_only: attendu 1d 40o, reçu {}o",
-            pkt.len()
-        ));
-    }
-    let ack_lo = pkt[12].wrapping_add(0x11);
-    let ack_hi = pkt[13];
-    let post_ed = build_post_1d_ack08(state, ack_lo, ack_hi);
-    let post_f0 = build_f0_dd_post_commit_sub08(state);
-
-    state.send(OutPacket::new(pkt));
-    state.send(OutPacket::with_delay(post_ed, 50));
-    state.send(OutPacket::with_delay(post_f0, 15));
-    Ok(())
-}
-
-/// Séquence HX Edit matrix D&D en un seul envoi (tests / secours) : arm + commit.
-pub fn send_matrix_dd_1d_preamble_commit(
-    state: &mut HelixState,
-    pkt: Vec<u8>,
-) -> Result<(), String> {
-    send_matrix_dd_drag_arm(state)?;
-    send_matrix_dd_1d_commit_only(state, pkt)
-}
-
 /// Construit la trame `1d` : compteurs session + bloc modèle Path 1 + valeur `@input`.
 pub fn build_path1_input_source_packet(
     state: &mut HelixState,

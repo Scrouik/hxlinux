@@ -218,14 +218,6 @@ impl KeepAliveManager {
                     // (40ms vs ~1047ms) : la lane idle f0 est redondante quand il tourne.
                     let live_param_poll_active =
                         s.connected && s.editor_ready && !s.preset_usb_read_in_progress();
-                    // [DIAG gel] trace inconditionnelle : voir l'état réel à chaque cycle
-                    // keep-alive, pour confirmer si le garde-fou live_param_poll_active
-                    // laisse vraiment passer cette lane idle f0 pendant le poll actif.
-                    eprintln!(
-                        "[KeepAlive][f0-lane] live_param_poll_active={} connected={} editor_ready={} preset_usb_read_in_progress={} will_send={}",
-                        live_param_poll_active, s.connected, s.editor_ready,
-                        s.preset_usb_read_in_progress(), !live_param_poll_active
-                    );
                     if !live_param_poll_active {
                         let cnt = s.next_x2_cnt();
                         let pkt = OutPacket::new(vec![

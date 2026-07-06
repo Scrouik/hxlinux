@@ -815,6 +815,7 @@ pub fn module_field_bytes_after_c219(bulk: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Bornes `[start, end)` du fil wire entre `c319` et le séparateur `1a` (ex. `2c` ou `23`).
+#[allow(dead_code)] // utilisé uniquement par les tests unitaires
 fn amp_cab_wire_range_before_1a_in_bulk(bulk: &[u8]) -> Option<(usize, usize)> {
     let pos = bulk
         .windows(AMP_CAB_BULK_MARKER.len())
@@ -827,23 +828,6 @@ fn amp_cab_wire_range_before_1a_in_bulk(bulk: &[u8]) -> Option<(usize, usize)> {
         return None;
     }
     Some((start, end))
-}
-
-/// Reprend le fil avant `1a` depuis une entrée `amp+cab-legacy` catalogue qui embarque ce cab.
-fn legacy_amp_cab_wire_before_1a_for_cab_field(cab_field: &[u8]) -> Option<Vec<u8>> {
-    let entries = USB_ASSIGN_ENTRIES.get_or_init(load_usb_assign_entries);
-    for e in entries {
-        if e.variant != "amp+cab-legacy" {
-            continue;
-        }
-        let (cs, ce) = amp_cab_cab_field_range_in_bulk(&e.bulk)?;
-        if &e.bulk[cs..ce] != cab_field {
-            continue;
-        }
-        let (ws, we) = amp_cab_wire_range_before_1a_in_bulk(&e.bulk)?;
-        return Some(e.bulk[ws..we].to_vec());
-    }
-    None
 }
 
 /// Bornes `[start, end)` du champ cab dans un bulk assign `amp+cab` / `amp+cab-legacy`.
@@ -871,25 +855,6 @@ fn amp_cab_cab_field_range_in_bulk(bulk: &[u8]) -> Option<(usize, usize)> {
         return None;
     }
     Some((cab_start, cab_end))
-}
-
-/// Replace legacy : patch le fil avant `1a` (ex. `2c`→`23`) en plus du cab après `1a`.
-fn patch_amp_cab_bulk_legacy_cab_wire(bulk: &mut Vec<u8>, cab_field: &[u8]) -> Result<(), String> {
-    let wire_before = legacy_amp_cab_wire_before_1a_for_cab_field(cab_field).ok_or_else(|| {
-        format!(
-            "wire legacy avant 1a introuvable pour cab {:?} — aucune entrée amp+cab-legacy catalogue",
-            cab_field
-        )
-    })?;
-    let (ws, we) = amp_cab_wire_range_before_1a_in_bulk(bulk)
-        .ok_or_else(|| "bulk ampli sans marqueur amp+cab (c319/1a)".to_string())?;
-    let old_len = we - ws;
-    if wire_before.len() == old_len {
-        bulk[ws..we].copy_from_slice(&wire_before);
-        return Ok(());
-    }
-    bulk.splice(ws..we, wire_before.iter().copied());
-    Ok(())
 }
 
 /// Remplace la partie cab (`… 1a <cab> …`) dans un bulk Amp+Cab existant.
@@ -1119,29 +1084,6 @@ pub fn build_amp_cab_replace_cab_bulk(
         amp_model_id, amp_cab_variant, cab_model_id, cab_variant, &bulk
     );
     Ok(bulk)
-}
-
-/// Préambule `ef` puis `f0` (16 o chacun) avant replace cab legacy occupé (captures HX Edit).
-pub fn build_ef_f0_slot_preamble_packets(state: &mut super::HelixState) -> Vec<Vec<u8>> {
-    let mut pre_ef = [0u8; 16];
-    let mut pre_f0 = [0u8; 16];
-    let ctr0 = state.live_write_ctr;
-    let ctr1 = ctr0.wrapping_add(0x1f);
-    patch_short_ed03_16(
-        &mut pre_ef,
-        [0xef, 0x03, 0x01, 0x10],
-        0x10,
-        state.next_x2_cnt(),
-        ctr0,
-    );
-    patch_short_ed03_16(
-        &mut pre_f0,
-        [0x02, 0x10, 0xf0, 0x03],
-        0x10,
-        state.next_x2_cnt(),
-        ctr1,
-    );
-    vec![pre_ef.to_vec(), pre_f0.to_vec()]
 }
 
 #[cfg(test)]
