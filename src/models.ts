@@ -5861,6 +5861,328 @@ function initAppContextMenuPolicy(): void {
   });
 }
 
+/** Clone le nom + l'icône déjà rendus dans l'onglet Edit (`models-params-pane-subhead` / `-model-icon-wrap`). */
+function syncControllersEditorHeader(): void {
+  const nameEl = document.getElementById("models-controllers-editor-model-name");
+  const iconEl = document.getElementById("models-controllers-editor-icon");
+  if (!nameEl || !iconEl) return;
+  const subheadText = (getModelsParamsSubheadEl()?.textContent ?? "").trim();
+  nameEl.textContent = subheadText || "—";
+  iconEl.replaceChildren();
+  const img = getModelsParamsModelIconWrapEl()?.querySelector("img");
+  if (img) iconEl.append(img.cloneNode(true));
+}
+
+/** Liste déroulante des paramètres du modèle du slot actif — même filtrage que l'onglet Edit. */
+function syncControllersEditorParamList(): void {
+  const select = document.getElementById(
+    "models-controllers-editor-param-select",
+  ) as HTMLSelectElement | null;
+  if (!select) return;
+  select.replaceChildren();
+  const ctx = selectedParamsHwWireContext;
+  if (!ctx) return;
+  for (const pRaw of ctx.paramsForDisplay) {
+    if (paramHiddenForMonoStereoOnly(pRaw, ctx.catalogSignal)) continue;
+    if (paramHiddenCatalogInternalBool(pRaw)) continue;
+    if (paramHiddenTempoSync(pRaw)) continue;
+    if (paramHiddenInputSourceDuplicate(pRaw)) continue;
+    if (paramHiddenSplitBypass(pRaw)) continue;
+    if (paramHiddenOutputTarget(pRaw)) continue;
+    const opt = document.createElement("option");
+    opt.value = (pRaw.symbolicID ?? "").trim();
+    opt.textContent = pRaw.name || pRaw.symbolicID || "—";
+    select.append(opt);
+  }
+}
+
+/** Reflète l'option choisie dans le select param + remet la source sur "None". */
+function syncControllersEditorSelectedParamRow(): void {
+  const paramSelect = document.getElementById(
+    "models-controllers-editor-param-select",
+  ) as HTMLSelectElement | null;
+  const label = document.getElementById("models-controllers-editor-selected-param");
+  const sourceSelect = document.getElementById(
+    "models-controllers-editor-source-select",
+  ) as HTMLSelectElement | null;
+  const detail = document.getElementById("models-controllers-editor-detail");
+  if (!paramSelect || !label || !sourceSelect || !detail) return;
+  const opt = paramSelect.options[paramSelect.selectedIndex];
+  label.textContent = opt?.textContent?.trim() || "—";
+  sourceSelect.value = "none";
+  detail.hidden = true;
+}
+
+function syncControllersEditorFromSelection(): void {
+  syncControllersEditorHeader();
+  syncControllersEditorParamList();
+  syncControllersEditorSelectedParamRow();
+}
+
+const CONTROLLERS_LED_COLORS = [
+  "Autocolor",
+  "White",
+  "Red",
+  "Dark Orange",
+  "Light Orange",
+  "Yellow",
+  "Green",
+  "Turquoise",
+  "Blue",
+  "Violet",
+  "Pink",
+  "Off",
+];
+
+/** Teinte approximative par couleur de switch (index aligné sur `CONTROLLERS_LED_COLORS`). `null` = pas de couleur fixe connue (Autocolor/Off). */
+const CONTROLLERS_LED_COLOR_HEX: Array<string | null> = [
+  null,
+  "#ffffff",
+  "#e0201f",
+  "#c2540a",
+  "#f2932e",
+  "#f5d90a",
+  "#2ecc55",
+  "#1fc8c8",
+  "#2f6fed",
+  "#8a3fe0",
+  "#ef5da8",
+  null,
+];
+
+/** Couleur de texte lisible (noir/blanc) selon la luminance perçue du fond. */
+function controllersReadableTextColorFor(hex: string): string {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!m) return "#000000";
+  const [r, g, b] = [m[1]!, m[2]!, m[3]!].map((h) => Number.parseInt(h, 16));
+  const luminance = (0.299 * r! + 0.587 * g! + 0.114 * b!) / 255;
+  return luminance > 0.6 ? "#000000" : "#ffffff";
+}
+
+/** Applique (ou retire) la couleur choisie sur le fond du champ Customize. */
+function applyControllersLedColorToNameInput(colorIndex: number): void {
+  const nameInput = document.getElementById("models-controllers-detail-name") as HTMLInputElement | null;
+  if (!nameInput) return;
+  const hex = CONTROLLERS_LED_COLOR_HEX[colorIndex] ?? null;
+  if (!hex) {
+    nameInput.style.backgroundColor = "";
+    nameInput.style.color = "";
+    return;
+  }
+  nameInput.style.backgroundColor = hex;
+  nameInput.style.color = controllersReadableTextColorFor(hex);
+}
+
+/** Définition catalogue du paramètre actuellement choisi dans le select param du panneau Controllers. */
+function currentControllersSelectedParamDef(): ModelParamDefJson | null {
+  const paramSelect = document.getElementById(
+    "models-controllers-editor-param-select",
+  ) as HTMLSelectElement | null;
+  const ctx = selectedParamsHwWireContext;
+  if (!paramSelect || !ctx) return null;
+  const sid = paramSelect.value;
+  return ctx.paramsForDisplay.find((p) => (p.symbolicID ?? "").trim() === sid) ?? null;
+}
+
+/**
+ * Bornes min/max réelles (déjà converties, ex. Drive 0-10 et non le 0-1 brut catalogue) + pas
+ * d'incrément réel, pour le paramètre choisi. Le slider de l'onglet Edit reste en unités brutes
+ * catalogue (0-1, pas 0.01) — seul le texte affiché à côté (`.models-params-row-min`/`-max`) est
+ * déjà passé par la conversion `HelixControls.json` (`formatParamBoundForDisplay`). On lit donc ce
+ * texte déjà converti plutôt que de dupliquer la logique de conversion (dspToDisplayScale/
+ * unitsMultiplier/bandes/exceptions), et on déduit le pas affiché en appliquant le même facteur
+ * d'échelle (plage affichée / plage brute) au pas brut du slider.
+ */
+function controllersSelectedParamEditTabBounds(): { min: number; max: number; step: number } | null {
+  const paramSelect = document.getElementById(
+    "models-controllers-editor-param-select",
+  ) as HTMLSelectElement | null;
+  const sid = paramSelect?.value;
+  if (!sid) return null;
+  const row = document.querySelector(
+    `#models-params-inner li.models-params-row[data-symbolic-id="${CSS.escape(sid)}"]`,
+  );
+  if (!row) return null;
+  const minText = row.querySelector(".models-params-row-min")?.textContent ?? "";
+  const maxText = row.querySelector(".models-params-row-max")?.textContent ?? "";
+  const min = Number.parseFloat(minText);
+  const max = Number.parseFloat(maxText);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+
+  const rawSlider = row.querySelector("input.models-params-slider") as HTMLInputElement | null;
+  const rawMin = Number(rawSlider?.min);
+  const rawMax = Number(rawSlider?.max);
+  const rawStep = Number(rawSlider?.step);
+  const rawSpan = rawMax - rawMin;
+  const step =
+    rawSlider && Number.isFinite(rawMin) && Number.isFinite(rawMax) && rawSpan > 0 &&
+    Number.isFinite(rawStep) && rawStep > 0
+      ? (rawStep * (max - min)) / rawSpan
+      : 1;
+  return { min, max, step };
+}
+
+/** Valeur actuelle (déjà convertie, même principe que les bornes) du paramètre choisi dans l'onglet Edit. */
+function controllersSelectedParamEditTabCurrentValue(): number | null {
+  const paramSelect = document.getElementById(
+    "models-controllers-editor-param-select",
+  ) as HTMLSelectElement | null;
+  const sid = paramSelect?.value;
+  if (!sid) return null;
+  const row = document.querySelector(
+    `#models-params-inner li.models-params-row[data-symbolic-id="${CSS.escape(sid)}"]`,
+  );
+  const text = row?.querySelector(".models-params-row-chain")?.textContent ?? "";
+  const value = Number.parseFloat(text);
+  return Number.isFinite(value) ? value : null;
+}
+
+/** Positionne (ou masque) le repère de valeur actuelle sur un slider Min/Max, en % entre minN et maxN. */
+function positionControllersCurrentValueMarker(
+  markerId: string,
+  currentValue: number | null,
+  minN: number,
+  maxN: number,
+): void {
+  const marker = document.getElementById(markerId);
+  if (!marker) return;
+  if (currentValue === null || maxN <= minN) {
+    marker.hidden = true;
+    return;
+  }
+  const pct = Math.max(0, Math.min(100, ((currentValue - minN) / (maxN - minN)) * 100));
+  marker.style.left = `${pct}%`;
+  marker.hidden = false;
+}
+
+/** Réinitialise le bloc détail (Type/Min/Max/Snapshot Control/couleur/nom) sur les valeurs par défaut. */
+function resetControllersEditorDetail(): void {
+  const typeSlider = document.getElementById("models-controllers-detail-type") as HTMLInputElement | null;
+  const typeValue = document.getElementById("models-controllers-detail-type-value");
+  const minSlider = document.getElementById("models-controllers-detail-min") as HTMLInputElement | null;
+  const minValue = document.getElementById("models-controllers-detail-min-value");
+  const maxSlider = document.getElementById("models-controllers-detail-max") as HTMLInputElement | null;
+  const maxValue = document.getElementById("models-controllers-detail-max-value");
+  const snapshotSlider = document.getElementById(
+    "models-controllers-detail-snapshot",
+  ) as HTMLInputElement | null;
+  const snapshotValue = document.getElementById("models-controllers-detail-snapshot-value");
+  const colorSlider = document.getElementById("models-controllers-detail-color") as HTMLInputElement | null;
+  const colorValue = document.getElementById("models-controllers-detail-color-value");
+  const nameInput = document.getElementById("models-controllers-detail-name") as HTMLInputElement | null;
+  if (
+    !typeSlider || !typeValue || !minSlider || !minValue || !maxSlider || !maxValue ||
+    !snapshotSlider || !snapshotValue || !colorSlider || !colorValue || !nameInput
+  ) return;
+
+  typeSlider.value = "0";
+  typeValue.textContent = "Latching";
+  snapshotSlider.value = "0";
+  snapshotValue.textContent = "Off";
+  colorSlider.value = "0";
+  colorValue.textContent = CONTROLLERS_LED_COLORS[0]!;
+  applyControllersLedColorToNameInput(0);
+
+  const pDef = currentControllersSelectedParamDef();
+  const editTabBounds = controllersSelectedParamEditTabBounds();
+  const variant = pDef ? paramForSignalVariant(pDef, selectedParamsHwWireContext?.catalogSignal) : null;
+  const minN = editTabBounds?.min ?? (typeof variant?.min === "number" ? variant.min : 0);
+  const maxN = editTabBounds?.max ?? (typeof variant?.max === "number" ? variant.max : 127);
+  const stepN = editTabBounds?.step ?? 1;
+  minSlider.min = String(minN);
+  minSlider.max = String(maxN);
+  minSlider.step = String(stepN);
+  minSlider.value = String(minN);
+  minValue.textContent = String(minN);
+  maxSlider.min = String(minN);
+  maxSlider.max = String(maxN);
+  maxSlider.step = String(stepN);
+  maxSlider.value = String(maxN);
+  maxValue.textContent = String(maxN);
+
+  const currentValue = controllersSelectedParamEditTabCurrentValue();
+  positionControllersCurrentValueMarker("models-controllers-detail-min-marker", currentValue, minN, maxN);
+  positionControllersCurrentValueMarker("models-controllers-detail-max-marker", currentValue, minN, maxN);
+
+  nameInput.value = pDef?.name || pDef?.symbolicID || "";
+}
+
+function initControllersEditorDetailControls(): void {
+  const typeSlider = document.getElementById("models-controllers-detail-type") as HTMLInputElement | null;
+  const typeValue = document.getElementById("models-controllers-detail-type-value");
+  typeSlider?.addEventListener("input", () => {
+    if (typeValue) typeValue.textContent = typeSlider.value === "1" ? "Momentary" : "Latching";
+  });
+
+  const minSlider = document.getElementById("models-controllers-detail-min") as HTMLInputElement | null;
+  const minValue = document.getElementById("models-controllers-detail-min-value");
+  minSlider?.addEventListener("input", () => {
+    if (minValue) minValue.textContent = minSlider.value;
+  });
+
+  const maxSlider = document.getElementById("models-controllers-detail-max") as HTMLInputElement | null;
+  const maxValue = document.getElementById("models-controllers-detail-max-value");
+  maxSlider?.addEventListener("input", () => {
+    if (maxValue) maxValue.textContent = maxSlider.value;
+  });
+
+  const snapshotSlider = document.getElementById(
+    "models-controllers-detail-snapshot",
+  ) as HTMLInputElement | null;
+  const snapshotValue = document.getElementById("models-controllers-detail-snapshot-value");
+  snapshotSlider?.addEventListener("input", () => {
+    if (snapshotValue) snapshotValue.textContent = snapshotSlider.value === "1" ? "On" : "Off";
+  });
+
+  const colorSlider = document.getElementById("models-controllers-detail-color") as HTMLInputElement | null;
+  const colorValue = document.getElementById("models-controllers-detail-color-value");
+  colorSlider?.addEventListener("input", () => {
+    const idx = Number(colorSlider.value);
+    if (colorValue) colorValue.textContent = CONTROLLERS_LED_COLORS[idx] ?? "—";
+    applyControllersLedColorToNameInput(idx);
+  });
+
+  const sourceSelect = document.getElementById(
+    "models-controllers-editor-source-select",
+  ) as HTMLSelectElement | null;
+  const detail = document.getElementById("models-controllers-editor-detail");
+  sourceSelect?.addEventListener("change", () => {
+    if (!detail) return;
+    const show = sourceSelect.value !== "none";
+    detail.hidden = !show;
+    if (show) resetControllersEditorDetail();
+  });
+}
+
+function initModelsMainTabs(): void {
+  const editTab = document.getElementById("models-main-tab-edit");
+  const controllersTab = document.getElementById("models-main-tab-controllers");
+  const editPanel = document.getElementById("models-main-tab-panel-edit");
+  const controllersPanel = document.getElementById("models-main-tab-panel-controllers");
+  if (!editTab || !controllersTab || !editPanel || !controllersPanel) return;
+
+  const paramSelect = document.getElementById("models-controllers-editor-param-select");
+  paramSelect?.addEventListener("change", syncControllersEditorSelectedParamRow);
+  initControllersEditorDetailControls();
+
+  const tabs = [editTab, controllersTab];
+  const panels = [editPanel, controllersPanel];
+
+  function activate(idx: number): void {
+    tabs.forEach((tab, i) => {
+      tab.classList.toggle("is-active", i === idx);
+      tab.setAttribute("aria-selected", i === idx ? "true" : "false");
+    });
+    panels.forEach((panel, i) => {
+      panel.hidden = i !== idx;
+    });
+    if (idx === 1) syncControllersEditorFromSelection();
+  }
+
+  editTab.addEventListener("click", () => activate(0));
+  controllersTab.addEventListener("click", () => activate(1));
+}
+
 function initMatrixGridPanelContextMenu(): void {
   const menu = document.getElementById("models-ctx-menu");
   const reloadItem = document.getElementById("models-ctx-reload");
@@ -8778,6 +9100,7 @@ function appendModelsParamRows(
     const p = paramForSignalVariant(pRaw, catalogSignal);
     const li = document.createElement("li");
     li.className = "models-params-row";
+    li.dataset.symbolicId = (pRaw.symbolicID ?? "").trim();
     const isEqGraphicFollower = modelsParamRowIsEqGraphicFollower(params, eqIdx, j);
     if (isEqGraphicFollower) {
       li.dataset.modelsEqBand = "1";
@@ -10200,7 +10523,16 @@ function showModelsParamsError(message: string) {
   inner.appendChild(p);
 }
 
+/** Recharge le panneau paramètres pour un slot, puis resynchronise l'onglet Controlers (modèle/liste de paramètres assignables). */
 async function loadAndShowModelsParamsForSlot(
+  slot: SlotDebug,
+  kemplineSlotIndex?: number,
+): Promise<void> {
+  await loadAndShowModelsParamsForSlotInner(slot, kemplineSlotIndex);
+  syncControllersEditorFromSelection();
+}
+
+async function loadAndShowModelsParamsForSlotInner(
   slot: SlotDebug,
   kemplineSlotIndex?: number,
 ) {
@@ -13336,6 +13668,7 @@ window.addEventListener("DOMContentLoaded", () => {
   hwUi.configure({ setParamsBrowsingMode: setModelsParamsBrowsingMode });
   void mountModelsSlotPicker();
   initAppContextMenuPolicy();
+  initModelsMainTabs();
   initMatrixGridPanelContextMenu();
   initMatrixDragDrop();
 

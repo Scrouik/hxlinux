@@ -85,14 +85,275 @@ html, body {
   overflow: auto;
 }
 
-.models-params-pane {
+.models-main-tabs {
   flex: 1 1 0;
   min-height: 120px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 0;
   border-top: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.models-main-tab-bar {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.models-main-tab {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.models-main-tab:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.models-main-tab.is-active {
+  color: var(--amber);
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.models-main-tab-panels {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.models-main-tab-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.models-main-tab-panel[hidden] {
+  display: none !important;
+}
+
+.models-controllers-body {
+  display: flex;
+  flex-direction: row;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.models-controllers-list {
+  flex: 0 0 min(320px, 38vw);
+  min-width: 220px;
+  max-width: 420px;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  padding: 8px 10px 12px;
+  overflow: auto;
+}
+
+.models-controllers-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.models-controllers-table th {
+  text-align: left;
+  color: var(--text-dim);
+  font-weight: 600;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.models-controllers-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-dim, var(--border));
+}
+
+.models-controllers-editor {
+  --controllers-label-col: 190px;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px 12px;
+}
+
+.models-controllers-editor-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.models-controllers-editor-header-label {
+  flex: 0 0 var(--controllers-label-col);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.models-controllers-editor-icon {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+}
+
+.models-controllers-editor-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.models-controllers-editor-model-name {
+  flex: 1 1 0;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.models-controllers-editor-param-select {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.models-controllers-editor-source-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.models-controllers-editor-selected-param {
+  flex: 0 0 var(--controllers-label-col);
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.models-controllers-editor-source-select {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.models-controllers-editor-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.models-controllers-editor-detail[hidden] {
+  display: none;
+}
+
+.models-controllers-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.models-controllers-detail-row label {
+  flex: 0 0 var(--controllers-label-col);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.models-controllers-detail-row .models-params-slider {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.models-controllers-detail-slider-wrap {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.models-controllers-detail-current-marker {
+  /* Même recette que `.models-params-slider-tick` (couche derrière le slider, z-index 1 < 2) :
+     le remplissage blanc + liseré noir reste visible même sous la piste native semi-transparente. */
+  position: absolute;
+  top: 50%;
+  width: 2px;
+  height: 14px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
+  transform: translate(-1px, -50%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.models-controllers-detail-current-marker[hidden] {
+  display: none;
+}
+
+.models-controllers-detail-value {
+  flex: 0 0 90px;
+  font-size: 12px;
+  color: var(--amber);
+  text-align: right;
+}
+
+.models-controllers-detail-name-input {
+  flex: 1 1 0;
+  min-width: 0;
+  box-sizing: border-box;
+  min-height: 26px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--amber);
+  background: var(--bg-base);
+  border: 1px solid var(--amber-dim);
+  border-radius: 3px;
+}
+
+.models-controllers-detail-name-input:hover {
+  border-color: var(--amber);
+  background: var(--bg-raised);
+}
+
+.models-controllers-detail-name-input:focus {
+  outline: none;
+  border-color: var(--amber);
+  box-shadow: 0 0 0 1px var(--amber-glow);
+}
+
+.models-params-pane {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
   background: var(--bg-raised);
 }
 

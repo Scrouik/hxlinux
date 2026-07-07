@@ -44,36 +44,201 @@
             <main class="models-content models-matrix-host" id="content">
               <div class="empty">Aucun modele charge.</div>
             </main>
-            <section
-              class="models-params-pane"
-              id="models-params-pane"
-              data-hx-pane="models-params"
-              aria-labelledby="models-params-pane-subhead"
-            >
-              <div class="models-params-pane-body">
-                <aside
-                  class="models-params-slot-picker"
-                  id="models-params-slot-picker"
-                  aria-label="Catalogue"
-                ></aside>
-                <div class="models-params-params-column" id="models-params-params-column">
-                  <header class="models-params-pane-header">
-                    <div id="models-params-pane-subhead" class="models-params-pane-subhead"></div>
-                    <div id="models-params-pane-basedon" class="models-params-pane-basedon"></div>
-                    <div
-                      id="models-params-pane-model-icon-wrap"
-                      class="models-params-pane-model-icon-wrap"
-                      aria-hidden="true"
-                    ></div>
-                  </header>
-                  <div class="models-params-inner" id="models-params-inner">
-                    <p class="models-params-placeholder">
-                      Les paramètres du bloc sélectionné s’afficheront ici.
-                    </p>
+            <div class="models-main-tabs" id="models-main-tabs">
+              <div class="models-main-tab-bar" role="tablist">
+                <button
+                  type="button"
+                  class="models-main-tab is-active"
+                  id="models-main-tab-edit"
+                  role="tab"
+                  aria-selected="true"
+                  aria-controls="models-main-tab-panel-edit"
+                >Edit</button>
+                <button
+                  type="button"
+                  class="models-main-tab"
+                  id="models-main-tab-controllers"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="models-main-tab-panel-controllers"
+                >Controllers</button>
+              </div>
+              <div class="models-main-tab-panels">
+                <div
+                  class="models-main-tab-panel"
+                  id="models-main-tab-panel-edit"
+                  role="tabpanel"
+                  aria-labelledby="models-main-tab-edit"
+                >
+                  <section
+                    class="models-params-pane"
+                    id="models-params-pane"
+                    data-hx-pane="models-params"
+                    aria-labelledby="models-params-pane-subhead"
+                  >
+                    <div class="models-params-pane-body">
+                      <aside
+                        class="models-params-slot-picker"
+                        id="models-params-slot-picker"
+                        aria-label="Catalogue"
+                      ></aside>
+                      <div class="models-params-params-column" id="models-params-params-column">
+                        <header class="models-params-pane-header">
+                          <div id="models-params-pane-subhead" class="models-params-pane-subhead"></div>
+                          <div id="models-params-pane-basedon" class="models-params-pane-basedon"></div>
+                          <div
+                            id="models-params-pane-model-icon-wrap"
+                            class="models-params-pane-model-icon-wrap"
+                            aria-hidden="true"
+                          ></div>
+                        </header>
+                        <div class="models-params-inner" id="models-params-inner">
+                          <p class="models-params-placeholder">
+                            Les paramètres du bloc sélectionné s’afficheront ici.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+                </div>
+                <div
+                  class="models-main-tab-panel"
+                  id="models-main-tab-panel-controllers"
+                  role="tabpanel"
+                  aria-labelledby="models-main-tab-controllers"
+                  hidden
+                >
+                  <div class="models-controllers-body">
+                    <aside class="models-controllers-list" id="models-controllers-list" aria-label="Assignations">
+                      <table class="models-controllers-table">
+                        <thead>
+                          <tr>
+                            <th>Block</th>
+                            <th>Parameter</th>
+                            <th>Source</th>
+                          </tr>
+                        </thead>
+                        <tbody id="models-controllers-table-body"></tbody>
+                      </table>
+                    </aside>
+                    <div class="models-controllers-editor" id="models-controllers-editor">
+                      <header class="models-controllers-editor-header">
+                        <div class="models-controllers-editor-header-label">
+                          <div
+                            class="models-controllers-editor-icon"
+                            id="models-controllers-editor-icon"
+                            aria-hidden="true"
+                          ></div>
+                          <div
+                            class="models-controllers-editor-model-name"
+                            id="models-controllers-editor-model-name"
+                          >—</div>
+                        </div>
+                        <select
+                          class="models-params-slot-picker-select models-controllers-editor-param-select"
+                          id="models-controllers-editor-param-select"
+                        ></select>
+                      </header>
+                      <div class="models-controllers-editor-source-row" id="models-controllers-editor-source-row">
+                        <div
+                          class="models-controllers-editor-selected-param"
+                          id="models-controllers-editor-selected-param"
+                        >—</div>
+                        <select
+                          class="models-params-slot-picker-select models-controllers-editor-source-select"
+                          id="models-controllers-editor-source-select"
+                        >
+                          <option value="none">None</option>
+                          <option value="fs1">Footswitch 1</option>
+                          <option value="fs2">Footswitch 2</option>
+                          <option value="fs3">Footswitch 3</option>
+                          <option value="fs4">Footswitch 4</option>
+                          <option value="fs5">Footswitch 5</option>
+                          <option value="fs6">Footswitch 6</option>
+                          <option value="fs7">Footswitch 7</option>
+                          <option value="fs8">Footswitch 8</option>
+                          <option value="exp1">EXP Pedal 1</option>
+                          <option value="exp2">EXP Pedal 2</option>
+                        </select>
+                      </div>
+                      <div class="models-controllers-editor-detail" id="models-controllers-editor-detail" hidden>
+                        <div class="models-controllers-detail-row">
+                          <label for="models-controllers-detail-type">Type</label>
+                          <input
+                            type="range"
+                            class="models-params-slider"
+                            id="models-controllers-detail-type"
+                            min="0"
+                            max="1"
+                            step="1"
+                            value="0"
+                          />
+                          <span class="models-controllers-detail-value" id="models-controllers-detail-type-value">Latching</span>
+                        </div>
+                        <div class="models-controllers-detail-row">
+                          <label for="models-controllers-detail-min">Min</label>
+                          <div class="models-controllers-detail-slider-wrap">
+                            <input type="range" class="models-params-slider" id="models-controllers-detail-min" />
+                            <div
+                              class="models-controllers-detail-current-marker"
+                              id="models-controllers-detail-min-marker"
+                              hidden
+                            ></div>
+                          </div>
+                          <span class="models-controllers-detail-value" id="models-controllers-detail-min-value">—</span>
+                        </div>
+                        <div class="models-controllers-detail-row">
+                          <label for="models-controllers-detail-max">Max</label>
+                          <div class="models-controllers-detail-slider-wrap">
+                            <input type="range" class="models-params-slider" id="models-controllers-detail-max" />
+                            <div
+                              class="models-controllers-detail-current-marker"
+                              id="models-controllers-detail-max-marker"
+                              hidden
+                            ></div>
+                          </div>
+                          <span class="models-controllers-detail-value" id="models-controllers-detail-max-value">—</span>
+                        </div>
+                        <div class="models-controllers-detail-row">
+                          <label for="models-controllers-detail-snapshot">Snapshot Control</label>
+                          <input
+                            type="range"
+                            class="models-params-slider"
+                            id="models-controllers-detail-snapshot"
+                            min="0"
+                            max="1"
+                            step="1"
+                            value="0"
+                          />
+                          <span class="models-controllers-detail-value" id="models-controllers-detail-snapshot-value">Off</span>
+                        </div>
+                        <div class="models-controllers-detail-row">
+                          <label for="models-controllers-detail-color">Switch LED</label>
+                          <input
+                            type="range"
+                            class="models-params-slider"
+                            id="models-controllers-detail-color"
+                            min="0"
+                            max="11"
+                            step="1"
+                            value="0"
+                          />
+                          <span class="models-controllers-detail-value" id="models-controllers-detail-color-value">Autocolor</span>
+                        </div>
+                        <div class="models-controllers-detail-row">
+                          <label for="models-controllers-detail-name">Customize</label>
+                          <input
+                            type="text"
+                            class="models-controllers-detail-name-input"
+                            id="models-controllers-detail-name"
+                          />
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
-            </section>
+            </div>
           </div>
         </section>
       </div>
