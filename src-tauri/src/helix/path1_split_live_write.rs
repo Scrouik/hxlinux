@@ -4,6 +4,7 @@
 //!   OUT `25` (48 o) → OUT `08` ed03 (16 o) ; IN `21` avec `82:62:0a:1a:…:05`.
 
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -315,6 +316,10 @@ pub fn send_path1_split_type(
     state.send(OutPacket::new(pkt));
     state.send(OutPacket::with_delay(post, 8));
     state.path1_split_type_wire = Some(entry.wire_value);
+    // Fenêtre de grâce : le premier echo `ed03` après cette écriture peut être périmé d'un cycle
+    // (rapporte encore l'ancien type) — voir `ingest_path1_split_type_wire_in`.
+    state.path1_split_type_write_grace =
+        Some((entry.wire_value, Instant::now() + Duration::from_millis(250)));
 
     Ok(format!(
         "catalogModelId={} wireValue={} len=48 hex={hex}",

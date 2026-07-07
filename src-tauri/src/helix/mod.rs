@@ -369,6 +369,12 @@ pub struct HelixState {
     pub path1_input_source_wire: Option<u8>,
     /// Dernier type Split Path 1 lu sur le fil (`82:62:0a:1a:…:05`).
     pub path1_split_type_wire: Option<u8>,
+    /// Fenêtre de grâce après une écriture UI (`send_path1_split_type`) : `(valeur catalogue
+    /// attendue, échéance)`. Le device répond parfois avec un echo périmé d'un cycle de sondage
+    /// (rapportant encore l'ancien type) juste après l'écriture — confirmé par capture (write
+    /// `wire=2` suivi d'un echo `raw=0`, puis un echo `raw=2` correct au cycle suivant). Pendant
+    /// cette fenêtre, un echo qui contredit la valeur qu'on vient d'écrire est ignoré.
+    pub path1_split_type_write_grace: Option<(u8, Instant)>,
 
     /// Fenêtre de capture des IN `0x81` après un OUT « focus slot » (`sync_hardware_slot_focus_usb`).
     /// Remplie par `usb_listener` tant que `Instant::now() < deadline` (courte, ~55 ms ; max ~40 trames).
@@ -689,6 +695,7 @@ impl HelixState {
             hw_active_slot_sequence: 0,
             path1_input_source_wire: None,
             path1_split_type_wire: None,
+            path1_split_type_write_grace: None,
             usb_slot_focus_capture_deadline: None,
             usb_slot_focus_capture: Vec::new(),
             cab_dual_cab2_handshake_until: None,
@@ -937,6 +944,19 @@ impl HelixState {
         .is_some();
         if self.path1_split_type_wire == Some(wire) && !from_scroll_21 && !from_ed03 {
             return None;
+        }
+        // Fenêtre de grâce post-écriture UI : un echo périmé d'un cycle peut encore rapporter
+        // l'ancien type juste après notre propre écriture — on l'ignore tant qu'il contredit la
+        // valeur qu'on vient d'écrire et que la fenêtre n'est pas expirée.
+        if let Some((expected, deadline)) = self.path1_split_type_write_grace {
+            if Instant::now() < deadline {
+                if wire != expected {
+                    return None;
+                }
+                self.path1_split_type_write_grace = None;
+            } else {
+                self.path1_split_type_write_grace = None;
+            }
         }
         self.path1_split_type_wire = Some(wire);
         eprintln!(

@@ -2984,6 +2984,19 @@ function clearFlowIoChainSessionForPreset(preset: number): void {
   }
 }
 
+/**
+ * Vide le cache de session (+ overrides live) d'un seul flow kind pour le preset courant.
+ * Utilisé au changement de type Split : les valeurs mises en cache (ex. Balance A/B de "Y")
+ * ne doivent pas être réutilisées pour le nouveau type (ex. "Crossover") — `resolveFlowIoChainValues`
+ * retombe alors sur les défauts catalogue (`buildDefaultChainValuesForSourceOrder`), sans accès
+ * device, symétrique au comportement d'assignation d'un modèle FX normal.
+ */
+function clearFlowIoChainSessionForKind(preset: number, kind: FlowIoKind): void {
+  const key = flowIoSessionKey(preset, kind);
+  flowIoChainSessionByKey.delete(key);
+  flowIoChainOverridesByKey.delete(key);
+}
+
 async function hydrateFlowIoChainSessionFromPresetData(presetIndex: number): Promise<void> {
   if (presetIndex < 0) return;
   clearFlowIoChainSessionForPreset(presetIndex);
@@ -4147,6 +4160,11 @@ async function applyPath1SplitTypeFromPicker(row: CatalogPickerModelRow): Promis
     const wire = row.wireValue ?? 0;
     await syncSplitPickerHighlightAsync(catId, splitChainHexFromWire(wire));
     if (selectedParamsSlotEl && catId) {
+      // Type Split changé depuis l'UI : mêmes raisons que le chemin device (voir plus bas) —
+      // repli sur les défauts catalogue du nouveau type, pas de réutilisation de l'ancien cache.
+      if (currentPresetIndex >= 0) {
+        clearFlowIoChainSessionForKind(currentPresetIndex, "split");
+      }
       const slot: SlotDebug = {
         category: "Split",
         name: row.name,
@@ -5288,6 +5306,19 @@ function selectParamsPaneByKemplineIndex(kemplineSlotIndex: number): boolean {
   return true;
 }
 
+/**
+ * Comme `focusMatrixSlotParamsPane`, mais attend la fin d'un chargement de preset en cours
+ * (`isModelsContentBusy`) avant de simuler le clic — évite de cibler un nœud de grille
+ * obsolète/partiellement reconstruit pendant une transition de preset (flash mauvais modèle).
+ */
+function scheduleFocusMatrixSlotParamsPaneWhenIdle(kemplineSlotIndex: number): void {
+  if (isModelsContentBusy()) {
+    window.setTimeout(() => scheduleFocusMatrixSlotParamsPaneWhenIdle(kemplineSlotIndex), 100);
+    return;
+  }
+  void focusMatrixSlotParamsPane(kemplineSlotIndex);
+}
+
 /** Focus UI + panneau params sur un slot (sans commande HW — déjà positionné). */
 async function focusMatrixSlotParamsPane(kemplineSlotIndex: number): Promise<void> {
   if (!Number.isInteger(kemplineSlotIndex) || kemplineSlotIndex < 0 || kemplineSlotIndex > 15) {
@@ -5374,6 +5405,11 @@ function consumePendingHardwareSlotSelection(): void {
 }
 
 function tryAutoSelectFallbackParamsPaneAfterRender(): boolean {
+  // Gel chargement preset (`isModelsContentBusy`) : sans ce garde, le clic synthétique ci-dessous
+  // ignore l'overlay CSS (qui ne bloque que les vrais clics utilisateur, pas `dispatchEvent`) et
+  // peut sélectionner un nœud de grille obsolète/partiellement rendu pendant un changement de
+  // preset — flash sur le mauvais modèle (rapporté par l'user).
+  if (isModelsContentBusy()) return false;
   if (selectedParamsPresetIndex === currentPresetIndex) return false;
   if (pendingHardwareSelectedKemplineSlotIndex !== null) return false;
   if (pendingHardwareSelectedSlotBus !== null) return false;
@@ -5391,6 +5427,11 @@ function armAutoSelectFallbackParamsPaneAfterRender(): void {
   if (autoSelectFallbackTimer !== null) return;
   autoSelectFallbackTimer = window.setTimeout(() => {
     autoSelectFallbackTimer = null;
+    if (isModelsContentBusy()) {
+      // Chargement encore en cours : réessayer plus tard plutôt qu'abandonner silencieusement.
+      armAutoSelectFallbackParamsPaneAfterRender();
+      return;
+    }
     if (selectedParamsPresetIndex === currentPresetIndex) return;
     if (pendingHardwareSelectedKemplineSlotIndex !== null) return;
     if (pendingHardwareSelectedSlotBus !== null) return;
@@ -8198,6 +8239,15 @@ function paramHiddenSplitBypass(p: ModelParamDefJson): boolean {
 }
 
 /**
+ * `@output` (Output To) : n'existe pas sur l'écran du device (confirmé user — seuls Pan et Level
+ * y sont visibles pour Output) — masquage UI pur, index chaîne conservé, même principe que
+ * `paramHiddenInputSourceDuplicate`.
+ */
+function paramHiddenOutputTarget(p: ModelParamDefJson): boolean {
+  return (p.symbolicID ?? "").trim() === "@output";
+}
+
+/**
  * Octet brut signé pour un discret à `min` négatif (ex. Pitch Wham Heel/Toe : fil `0xff` = `-1`,
  * pas `255`). Le décodeur Rust (`read_params_hex`, preset_chain_params.rs) ne connaît pas le
  * catalogue et pousse tout octet non bool/float comme `UInt` brut (0-255) — la conversion en
@@ -8724,6 +8774,7 @@ function appendModelsParamRows(
     if (paramHiddenTempoSync(pRaw)) continue;
     if (paramHiddenInputSourceDuplicate(pRaw)) continue;
     if (paramHiddenSplitBypass(pRaw)) continue;
+    if (paramHiddenOutputTarget(pRaw)) continue;
     const p = paramForSignalVariant(pRaw, catalogSignal);
     const li = document.createElement("li");
     li.className = "models-params-row";
@@ -10199,42 +10250,30 @@ async function loadAndShowModelsParamsForSlot(
     if (!catalogModelIdTrimmed && mergeLike) {
       catalogModelIdTrimmed = FLOW_JOIN_CATALOG_ID;
     }
-    if (splitLike) {
+    if (!catalogModelIdTrimmed && splitLike) {
+      // Repli uniquement (pas de lecture live systématique) : minimiser les accès device —
+      // voir mémoire session. Le libellé/type Split est déjà correctement synchronisé par les
+      // évènements `models:path1-split-type-changed` (fixes #1-5) ; ce repli ne sert que si
+      // `resolveSlotCatalogModelId` n'a rien trouvé (ex. premier rendu sans contexte connu).
       await mountModelsSlotPicker();
-      // Lecture live systématique (pas seulement en secours) : le type Split peut changer sur
-      // le device sans que le preset ne soit resauvegardé (`s.preset_data` reste sur l'état
-      // sauvegardé, potentiellement périmé) — voir mémoire session, symptôme "mauvais type Split
-      // affiché après changement via device". La valeur live prime sur `catalogModelIdTrimmed`
-      // déjà résolu (moduleHex / cache de routage) en cas de désaccord.
-      let wire: number | null = null;
-      try {
-        const liveWire = await invoke<number | null>("get_path1_split_type_wire_value");
-        if (liveWire != null && Number.isFinite(liveWire)) wire = liveWire;
-      } catch {
-        /* wire live optionnel */
-      }
-      if (wire == null && !catalogModelIdTrimmed) {
-        const hex =
-          (slot.moduleHex ?? "").trim() ||
-          (splitRoutingMarkerFromCache()?.moduleHex ?? "").trim();
-        if (hex) wire = splitWireFromChainHex(hex);
-      }
+      const hex =
+        (slot.moduleHex ?? "").trim() ||
+        (splitRoutingMarkerFromCache()?.moduleHex ?? "").trim();
+      const wire = hex ? splitWireFromChainHex(hex) : null;
       if (wire != null && catalogPickerDataCache) {
         // `findSplitSourceIdByWireValue` renvoie l'id **picker** (ex. `HelixStomp_Split_AB`),
         // pas le `catalogModelId` catalogue (`HD2_AppDSPFlowSplitAB`) attendu par la jointure
         // `.models` — il faut re-résoudre la ligne pour prendre son `catalogModelId`.
         const pickerId = findSplitSourceIdByWireValue(catalogPickerDataCache, wire, connectedDeviceName);
-        let liveCatalogModelId = "";
         if (pickerId) {
           for (const rows of catalogPickerDataCache.modelsByCategoryAndSub.values()) {
             const row = rows.find((r) => r.id === pickerId);
             if (row) {
-              liveCatalogModelId = (row.catalogModelId ?? "").trim();
+              catalogModelIdTrimmed = (row.catalogModelId ?? "").trim();
               break;
             }
           }
         }
-        if (liveCatalogModelId) catalogModelIdTrimmed = liveCatalogModelId;
       }
     }
     if (!catalogModelIdTrimmed) {
@@ -13381,7 +13420,12 @@ window.addEventListener("DOMContentLoaded", () => {
       // suivre, sinon un edit fait dans l'UI viserait le slot précédemment ouvert au lieu du
       // slot réellement actif sur le device — risque de valeurs hors bornes sur le mauvais
       // modèle (cf. mémoire session, rapport utilisateur).
-      void focusMatrixSlotParamsPane(p.slotIndex);
+      // Gel chargement preset : ce clic synthétique ignore l'overlay CSS — si cet évènement
+      // arrive pendant qu'un nouveau preset se charge, la grille peut ne pas encore être
+      // reconstruite ; le clic tomberait alors sur un nœud encore lié à l'ancien preset et
+      // afficherait le mauvais modèle (flash rapporté par l'user). On retente jusqu'à ce que
+      // le chargement soit terminé plutôt que de cliquer immédiatement.
+      scheduleFocusMatrixSlotParamsPaneWhenIdle(p.slotIndex);
     }
     scheduleHardwareSyncFromEvent();
   });
@@ -13497,6 +13541,12 @@ window.addEventListener("DOMContentLoaded", () => {
         }
       }
       if (chainHex && catalogModelId) {
+        // Type Split changé : le cache de session (ancien type) ne doit pas être réutilisé —
+        // repli sur les défauts catalogue du nouveau type, sans accès device (voir mémoire
+        // session : minimiser les accès device, symétrique à l'assignation d'un modèle FX).
+        if (currentPresetIndex >= 0) {
+          clearFlowIoChainSessionForKind(currentPresetIndex, "split");
+        }
         scheduleSplitScrollParamsReload({
           category: "Split",
           name,
