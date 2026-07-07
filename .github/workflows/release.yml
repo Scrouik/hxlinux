@@ -42,6 +42,23 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Extract changelog section for this tag
+        id: changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VERSION" '
+            /^## \[/ {
+              if (found) exit
+              if (index($0, "[" ver "]") > 0) { found=1; next }
+            }
+            found { print }
+          ' CHANGELOG.md > /tmp/changelog_section.md
+          {
+            echo "body<<CHANGELOG_EOF"
+            cat /tmp/changelog_section.md
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -50,9 +67,9 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: HXLinux ${{ github.ref_name }}
           releaseBody: |
-            ## First usable test build (HX Stomp XL · Linux)
-
             **Pre-release / early testers** — save your presets before trying.
+
+            ${{ steps.changelog.outputs.body }}
 
             ### Install
 
