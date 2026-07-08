@@ -219,6 +219,33 @@ fn parse_dual_slot_info_param_blocks(seg: &[u8]) -> Option<Vec<Vec<ChainParamVal
     if out.is_empty() { None } else { Some(out) }
 }
 
+/// État actif/inactif d'un slot : clé `0x0a` de la map MessagePack de métadonnées qui commence au
+/// marqueur `PAT_85188317` (`85:18:83:17:...`) — `false` = inactif (bypass du bloc entier),
+/// `true` = actif. Vérifié par capture différentielle (2 presets identiques sauf l'état
+/// actif/inactif d'un slot, 2026-07-08).
+///
+/// **Ne pas revenir à un gabarit d'octets à position fixe** : la clé `0x19` de cette même map
+/// (juste avant `0x0a` en ordre d'écriture) porte une valeur variable qui peut tenir sur 1 octet
+/// (fixint, ex. `0x64`) ou 2 octets (`0xcc` + valeur, ex. modèle "Pitch Wham") selon sa taille —
+/// un gabarit figé se décale silencieusement et casse la détection dans ce second cas (bug observé
+/// et corrigé le 2026-07-09, capture `slot_6_innactif.json`). Le décodeur MessagePack générique
+/// (`msgpack_lite`) est immunisé contre ce genre de décalage.
+pub fn slot_active_state_from_assignable_segment(seg: &[u8]) -> Option<bool> {
+    if !matches!(seg.first().copied(), Some(0x06 | 0x08)) {
+        return None;
+    }
+    let body = &seg[1..];
+    let h = hex_lower(body);
+    let marker_hex_pos = h.find(PAT_85188317)?;
+    if marker_hex_pos % 2 != 0 {
+        return None;
+    }
+    let mut pos = marker_hex_pos / 2;
+    let value = crate::msgpack_lite::parse_value(body, &mut pos)?;
+    let map = value.as_map()?;
+    crate::msgpack_lite::map_get(map, 0x0a)?.as_bool()
+}
+
 /// Extrait un ou plusieurs blocs `read_params` d’un segment assignable (cas standard et Amp+Cab).
 pub fn parse_assignable_segment_param_blocks(seg: &[u8]) -> Option<Vec<Vec<ChainParamValue>>> {
     // Même convention que `try_parse_preset_kempline_grid` : en-tête de segment `06` ou `08`.
@@ -301,6 +328,61 @@ mod tests {
             out.push(b);
         }
         out
+    }
+
+    /// Segment réel "Minotaur" désactivé (`Preset_with_unactive_slot.json`, slot Kempline 2) : la
+    /// clé `0x0a` (juste après `85:18:83:17:c2:19:<term>:1a:ff:09:01`) vaut `c2` (inactif) — vérifié
+    /// par capture différentielle 2026-07-08 (seul cet octet change entre 2 captures sinon
+    /// identiques, l'une avec le slot actif, l'autre inactif).
+    #[test]
+    fn slot_active_state_detects_inactive_on_real_minotaur_segment() {
+        let hex = "1485188317c21964\
+                   1aff09010ac20b8302030303049\
+                   3ca3ed70a3cca3f07ae14ca3f19999a0c8302000300049\
+                   0";
+        let seg = assignable_seg_from_ascii_hex(hex);
+        assert_eq!(slot_active_state_from_assignable_segment(&seg), Some(false));
+    }
+
+    /// Même segment avec l'octet `0a` basculé sur `c3` (actif) — vérifie l'autre branche.
+    #[test]
+    fn slot_active_state_detects_active_when_bool_is_c3() {
+        let hex = "1485188317c21964\
+                   1aff09010ac30b8302030303049\
+                   3ca3ed70a3cca3f07ae14ca3f19999a0c8302000300049\
+                   0";
+        let seg = assignable_seg_from_ascii_hex(hex);
+        assert_eq!(slot_active_state_from_assignable_segment(&seg), Some(true));
+    }
+
+    #[test]
+    fn slot_active_state_returns_none_when_marker_absent() {
+        let seg = assignable_seg_from_ascii_hex("00112233");
+        assert_eq!(slot_active_state_from_assignable_segment(&seg), None);
+    }
+
+    /// Régression (2026-07-09, capture `slot_6_innactif.json`) : la clé `0x19` (juste avant `0x0a`
+    /// en ordre d'écriture) tient sur 2 octets (`cc:b6`) pour ce modèle "Pitch Wham", contre 1 seul
+    /// octet fixint dans les autres captures testées — un gabarit à position fixe la ratait
+    /// silencieusement (retournait `None`, affiché comme actif par erreur côté UI).
+    #[test]
+    fn slot_active_state_handles_two_byte_term_value_pitch_wham_inactive() {
+        let hex = "1485188317c219ccb61aff09010ac20b83020503050495\
+                   ca3f000000ffffca3f800000ca000000000c83020003000490";
+        let seg = assignable_seg_from_ascii_hex(hex);
+        assert_eq!(slot_active_state_from_assignable_segment(&seg), Some(false));
+    }
+
+    /// Même capture, slot Ampeg SVT Nrm réellement actif (clé `0x19` = `05`, 1 octet fixint) —
+    /// vérifie que le décodage générique gère aussi bien le cas court que le cas long ci-dessus.
+    #[test]
+    fn slot_active_state_handles_one_byte_term_value_ampeg_active() {
+        let hex = "1485188317c219051aff09110ac30b83020c030c049c\
+                   ca3e6b851fca3f051eb8ca3e4ccccd01ca3f4f5c29ca3f800000\
+                   ca3f800000ca3f2147aeca00000000ca00000000ca3f3851ec\
+                   ca3edc28f60c83020003000490";
+        let seg = assignable_seg_from_ascii_hex(hex);
+        assert_eq!(slot_active_state_from_assignable_segment(&seg), Some(true));
     }
 
     /// En-tête `85188317` / `c219` identique à la capture SVT-4 Pro (`cd0207`) : après `num_params`,

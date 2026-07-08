@@ -212,7 +212,7 @@ pub fn start_listener(
 
                     // Dispatcher vers le mode actif
                     // On lock state et mode séparément pour éviter deadlock
-                    let (hw_slot_changed, fond_bootstrap_alert, slot_model_changed, path1_input_changed, path1_split_changed) = {
+                    let (hw_slot_changed, fond_bootstrap_alert, slot_model_changed, path1_input_changed, path1_split_changed, slot_active_changed) = {
                         let lock_start = Instant::now();
                         let mut s = state.lock().unwrap();
                         let state_wait_ms = lock_start.elapsed().as_millis();
@@ -237,6 +237,9 @@ pub fn start_listener(
                         let path1_split_changed = s
                             .ingest_path1_split_type_wire_in(&data)
                             .map(|wire| s.path1_split_type_changed_payload(wire, &data));
+                        // Bascule actif/inactif d'un bloc faite directement sur le device.
+                        let slot_active_changed =
+                            crate::helix::slot_active_state_write::ingest_slot_active_state_wire_in(&data);
                         // Slot actif unique (`hw_active_slot_*`) : `ingest_hw_slot_notify_in` — preset/HW/UI.
                         let ev = s.ingest_hw_slot_notify_in(&data);
                         crate::helix::init_trace::trace_in(&data);
@@ -362,7 +365,7 @@ pub fn start_listener(
                         }
                         let state_hold_ms = hold_start.elapsed().as_millis();
                         warn_slow_lock("HelixState.lock()", state_wait_ms, state_hold_ms, data.len());
-                        ((ev, param_events), fond_bootstrap_alert, slot_model_changed, path1_input_changed, path1_split_changed)
+                        ((ev, param_events), fond_bootstrap_alert, slot_model_changed, path1_input_changed, path1_split_changed, slot_active_changed)
                     };
                     if let (Some(app), Some(payload)) = (app_handle.as_ref(), hw_slot_changed.0) {
                         eprintln!(
@@ -383,6 +386,15 @@ pub fn start_listener(
                     if let (Some(app), Some(payload)) = (app_handle.as_ref(), path1_split_changed) {
                         if let Err(e) = app.emit("models:path1-split-type-changed", payload) {
                             eprintln!("[UsbListener] emit models:path1-split-type-changed: {e}");
+                        }
+                    }
+                    if let (Some(app), Some((slot_bus, active))) = (app_handle.as_ref(), slot_active_changed) {
+                        let payload = crate::helix::slot_active_state_write::SlotActiveStateChangedPayload {
+                            slot_bus,
+                            active,
+                        };
+                        if let Err(e) = app.emit("models:slot-active-state-changed", payload) {
+                            eprintln!("[UsbListener] emit models:slot-active-state-changed: {e}");
                         }
                     }
                     if let (Some(app), Some(payload)) = (app_handle.as_ref(), slot_model_changed) {

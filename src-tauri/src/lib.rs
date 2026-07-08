@@ -9,6 +9,8 @@ mod helix;
 mod stomp_layout;
 mod preset_chain_params;
 mod preset_snapshot_states;
+mod controller_assignments;
+mod msgpack_lite;
 
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -2821,6 +2823,76 @@ fn get_active_preset_slot_assignable_usb_json(
     })
 }
 
+/// Assignations Command Center (onglet Controllers) du preset actif, décodées depuis le dump
+/// `ed:03` déjà reçu (voir `controller_assignments::scan_controller_assignments`). Liste vide si
+/// le preset n'a aucune assignation ou si le dump n'est pas encore prêt.
+#[tauri::command]
+fn get_active_preset_controller_assignments(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Vec<controller_assignments::ControllerAssignment> {
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        match app.helix_state.clone() {
+            Some(h) => (app.active_preset, h),
+            None => return Vec::new(),
+        }
+    };
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() || s.preset_index != active_preset {
+        return Vec::new();
+    }
+    controller_assignments::scan_controller_assignments(&s.preset_data)
+}
+
+/// État actif/inactif de chaque slot Kempline (0..15) du preset actif — `None` si l'état n'a pas pu
+/// être déterminé (segment absent ou format inattendu), sinon `Some(true)`=actif / `Some(false)`=inactif.
+/// Voir `preset_chain_params::slot_active_state_from_assignable_segment`.
+#[tauri::command]
+fn get_active_preset_slot_active_states(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Vec<Option<bool>> {
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        match app.helix_state.clone() {
+            Some(h) => (app.active_preset, h),
+            None => return vec![None; 16],
+        }
+    };
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() || s.preset_index != active_preset {
+        return vec![None; 16];
+    }
+    (0..16)
+        .map(|slot_index| {
+            kempline_assignable_segment_bytes(&s.preset_data, slot_index)
+                .and_then(preset_chain_params::slot_active_state_from_assignable_segment)
+        })
+        .collect()
+}
+
+/// Bascule l'état actif/inactif d'un bloc (bus Kempline). Écriture live, paquet unique — voir
+/// `helix::slot_active_state_write::build_slot_active_state_write_packet`.
+#[tauri::command]
+fn write_slot_active_state(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_bus: u8,
+    active: bool,
+) -> Result<(), String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    let packet = helix::slot_active_state_write::build_slot_active_state_write_packet(
+        &mut s, slot_bus, active,
+    );
+    s.send(OutPacket::new(packet));
+    drop(s);
+    eprintln!("[LiveWrite][slotActive][sent] slotBus={slot_bus:02x} active={active}");
+    Ok(())
+}
+
 /// Cab rattaché détecté dans un slot Amp+Cab, sous la forme `[module_hex, catégorie, nom, model_id]`.
 #[tauri::command]
 fn get_active_preset_slot_linked_cab(
@@ -5038,6 +5110,9 @@ pub fn run() {
             get_active_preset_kempline_flow_chain_param_values,
             get_active_preset_snapshot_dsp0_block_states,
             get_active_preset_slot_assignable_usb_json,
+            get_active_preset_controller_assignments,
+            get_active_preset_slot_active_states,
+            write_slot_active_state,
             get_active_preset_slot_linked_cab,
             get_active_preset_slot_linked_cab_with_params,
             get_active_preset_slot_dual_parts,

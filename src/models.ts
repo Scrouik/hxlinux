@@ -5896,6 +5896,15 @@ function syncControllersEditorParamList(): void {
   }
 }
 
+/**
+ * Suspend la remise à zéro automatique (source→None, détail masqué) qui suit normalement tout
+ * rechargement de slot — utilisé le temps d'appliquer une assignation Command Center existante
+ * (clic sur une ligne du tableau), qui change de slot actif puis réapplique ses propres valeurs :
+ * sans ça, un rechargement de slot déclenché en parallèle (écho device retardé, etc.) écraserait
+ * ces valeurs juste après les avoir posées.
+ */
+let suppressControllersDetailAutoReset = false;
+
 /** Reflète l'option choisie dans le select param + remet la source sur "None". */
 function syncControllersEditorSelectedParamRow(): void {
   const paramSelect = document.getElementById(
@@ -5909,6 +5918,7 @@ function syncControllersEditorSelectedParamRow(): void {
   if (!paramSelect || !label || !sourceSelect || !detail) return;
   const opt = paramSelect.options[paramSelect.selectedIndex];
   label.textContent = opt?.textContent?.trim() || "—";
+  if (suppressControllersDetailAutoReset) return;
   sourceSelect.value = "none";
   detail.hidden = true;
 }
@@ -6154,6 +6164,211 @@ function initControllersEditorDetailControls(): void {
   });
 }
 
+/** Shape renvoyée par la commande Rust `get_active_preset_controller_assignments` (serde camelCase). */
+type ControllerAssignmentJson = {
+  slotBus: number;
+  kemplineSlotIndex: number | null;
+  paramName: string;
+  customName: string | null;
+  momentary: boolean;
+  colorIndex: number;
+  source: number;
+  minRaw: number;
+  maxRaw: number;
+};
+
+/** Libellé de la source, même énumération que le sélecteur (`0`=None, `1`/`2`=EXP Pedal, `3+`=Footswitch). */
+function controllerSourceLabel(source: number): string {
+  if (source === 0) return "None";
+  if (source === 1) return "EXP Pedal 1";
+  if (source === 2) return "EXP Pedal 2";
+  return `Footswitch ${source - 2}`;
+}
+
+/** Valeur du select source correspondant à l'énumération `source` du bloc décodé. */
+function controllerSourceSelectValue(source: number): string {
+  if (source === 0) return "none";
+  if (source === 1) return "exp1";
+  if (source === 2) return "exp2";
+  return `fs${source - 2}`;
+}
+
+/** Nom du modèle affiché ("Block") pour un slot Kempline, ou "—" si inconnu/hors grille. */
+function controllersBlockNameForKemplineIndex(kemplineSlotIndex: number | null): string {
+  if (kemplineSlotIndex === null) return "—";
+  const slot = lastHwSyncNormalizedSlots?.[kemplineSlotIndex];
+  return slot?.name?.trim() || "—";
+}
+
+/** Recharge le tableau des assignations Command Center depuis le device (dump preset déjà reçu). */
+async function refreshControllersAssignmentsTable(): Promise<void> {
+  const tbody = document.getElementById("models-controllers-table-body");
+  if (!tbody) return;
+  let assignments: ControllerAssignmentJson[] = [];
+  try {
+    assignments = await invoke<ControllerAssignmentJson[]>(
+      "get_active_preset_controller_assignments",
+    );
+  } catch {
+    assignments = [];
+  }
+  tbody.replaceChildren();
+  for (const a of assignments) {
+    const tr = document.createElement("tr");
+    tr.dataset.assignment = JSON.stringify(a);
+    const tdBlock = document.createElement("td");
+    tdBlock.textContent = controllersBlockNameForKemplineIndex(a.kemplineSlotIndex);
+    const tdParam = document.createElement("td");
+    tdParam.textContent = a.paramName.trim() || "—";
+    const tdSource = document.createElement("td");
+    tdSource.textContent = controllerSourceLabel(a.source);
+    tr.append(tdBlock, tdParam, tdSource);
+    tr.addEventListener("click", () => {
+      void applyControllerAssignmentRowToDetail(a);
+    });
+    tbody.append(tr);
+  }
+}
+
+/** Surligne la ligne du tableau correspondant à cette assignation (bus + paramètre + source). */
+function highlightControllerAssignmentRow(a: ControllerAssignmentJson): void {
+  const tbody = document.getElementById("models-controllers-table-body");
+  if (!tbody) return;
+  tbody
+    .querySelectorAll(".models-controllers-table-row--selected")
+    .forEach((el) => el.classList.remove("models-controllers-table-row--selected"));
+  for (const tr of Array.from(tbody.children)) {
+    const raw = (tr as HTMLElement).dataset.assignment;
+    if (!raw) continue;
+    try {
+      const row = JSON.parse(raw) as ControllerAssignmentJson;
+      if (
+        row.slotBus === a.slotBus &&
+        row.paramName === a.paramName &&
+        row.source === a.source
+      ) {
+        tr.classList.add("models-controllers-table-row--selected");
+        break;
+      }
+    } catch {
+      // ignore, ligne sans données exploitables
+    }
+  }
+}
+
+/** Remplit le panneau détail (Type/Min/Max/Snapshot Control/couleur/nom) depuis une ligne du tableau. */
+async function applyControllerAssignmentRowToDetail(a: ControllerAssignmentJson): Promise<void> {
+  // Positionne le slot contrôlé comme slot actif (comme un clic sur la grille) : ça charge le vrai
+  // modèle et sa liste de paramètres dans l'onglet Edit, dont on a besoin juste après pour
+  // sélectionner la bonne occurrence et obtenir les bornes Min/Max réelles. Ce rechargement
+  // reconstruit aussi le tableau (via le hook déjà en place) — on réapplique donc le surlignage
+  // après coup plutôt qu'avant. Le drapeau de suspension évite qu'un rechargement de slot déclenché
+  // en parallèle (écho device retardé, etc.) écrase les valeurs qu'on pose juste après.
+  suppressControllersDetailAutoReset = true;
+  try {
+    if (a.kemplineSlotIndex !== null) {
+      await focusMatrixSlotParamsPane(a.kemplineSlotIndex);
+    }
+    applyControllerAssignmentRowToDetailNow(a);
+    // Un changement de slot réel (vs reclic sur la même ligne) peut faire arriver un écho device
+    // retardé qui repeuple la liste de paramètres après coup et efface notre sélection — on
+    // réapplique une seconde fois passé un court délai pour absorber ce cas, avant de lever la
+    // suspension (même principe que les fenêtres de grâce déjà utilisées ailleurs dans ce projet).
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 350));
+    applyControllerAssignmentRowToDetailNow(a);
+  } finally {
+    suppressControllersDetailAutoReset = false;
+  }
+}
+
+function applyControllerAssignmentRowToDetailNow(a: ControllerAssignmentJson): void {
+  highlightControllerAssignmentRow(a);
+  // Icône + nom du modèle déjà à jour : `focusMatrixSlotParamsPane` a déclenché
+  // `syncControllersEditorHeader()` en interne (via le hook sur `loadAndShowModelsParamsForSlot`).
+
+  const realParamName = a.paramName.trim() || "—";
+  const customizeLabel = (a.customName ?? a.paramName).trim() || "—";
+  const paramSelect = document.getElementById(
+    "models-controllers-editor-param-select",
+  ) as HTMLSelectElement | null;
+  if (paramSelect) {
+    // Ne pas écraser la liste des paramètres assignables du modèle (déjà peuplée par l'onglet
+    // Edit) — juste sélectionner celui ciblé par cette assignation. Si la liste est vide (le slot
+    // de cette assignation n'est pas celui actuellement chargé dans l'onglet Edit), on retombe sur
+    // une option unique plutôt que de ne rien afficher.
+    const match = Array.from(paramSelect.options).find(
+      (opt) => opt.textContent?.trim() === realParamName,
+    );
+    if (match) {
+      paramSelect.value = match.value;
+    } else if (paramSelect.options.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = a.paramName;
+      opt.textContent = realParamName;
+      paramSelect.replaceChildren(opt);
+    }
+  }
+  const selectedParamLabel = document.getElementById("models-controllers-editor-selected-param");
+  if (selectedParamLabel) selectedParamLabel.textContent = realParamName;
+
+  const sourceSelect = document.getElementById(
+    "models-controllers-editor-source-select",
+  ) as HTMLSelectElement | null;
+  if (sourceSelect) sourceSelect.value = controllerSourceSelectValue(a.source);
+
+  const detail = document.getElementById("models-controllers-editor-detail");
+  if (detail) detail.hidden = false;
+
+  const typeSlider = document.getElementById("models-controllers-detail-type") as HTMLInputElement | null;
+  const typeValue = document.getElementById("models-controllers-detail-type-value");
+  if (typeSlider) typeSlider.value = a.momentary ? "1" : "0";
+  if (typeValue) typeValue.textContent = a.momentary ? "Momentary" : "Latching";
+
+  // Bornes réelles lues sur le slot désormais actif (voir focusMatrixSlotParamsPane ci-dessus) ;
+  // repli sur une plage englobant au moins les valeurs brutes connues si jamais le slot n'a pas de
+  // catégorie assignable (bus spécial I/O, `kemplineSlotIndex` nul).
+  const editTabBounds = controllersSelectedParamEditTabBounds();
+  const minN = editTabBounds?.min ?? Math.min(0, a.minRaw);
+  const maxN = editTabBounds?.max ?? Math.max(a.maxRaw, minN + 1);
+  const minSlider = document.getElementById("models-controllers-detail-min") as HTMLInputElement | null;
+  const minValue = document.getElementById("models-controllers-detail-min-value");
+  const maxSlider = document.getElementById("models-controllers-detail-max") as HTMLInputElement | null;
+  const maxValue = document.getElementById("models-controllers-detail-max-value");
+  if (minSlider) {
+    minSlider.min = String(minN);
+    minSlider.max = String(maxN);
+    minSlider.value = String(a.minRaw);
+  }
+  if (minValue) minValue.textContent = String(a.minRaw);
+  if (maxSlider) {
+    maxSlider.min = String(minN);
+    maxSlider.max = String(maxN);
+    maxSlider.value = String(a.maxRaw);
+  }
+  if (maxValue) maxValue.textContent = String(a.maxRaw);
+
+  const currentValue = controllersSelectedParamEditTabCurrentValue();
+  positionControllersCurrentValueMarker("models-controllers-detail-min-marker", currentValue, minN, maxN);
+  positionControllersCurrentValueMarker("models-controllers-detail-max-marker", currentValue, minN, maxN);
+
+  const colorSlider = document.getElementById("models-controllers-detail-color") as HTMLInputElement | null;
+  const colorValue = document.getElementById("models-controllers-detail-color-value");
+  if (colorSlider) colorSlider.value = String(a.colorIndex);
+  if (colorValue) colorValue.textContent = CONTROLLERS_LED_COLORS[a.colorIndex] ?? "—";
+  applyControllersLedColorToNameInput(a.colorIndex);
+
+  // Snapshot Control : encodage wire pas encore verrouillé côté écriture, valeur laissée par défaut.
+  const snapshotSlider = document.getElementById(
+    "models-controllers-detail-snapshot",
+  ) as HTMLInputElement | null;
+  const snapshotValue = document.getElementById("models-controllers-detail-snapshot-value");
+  if (snapshotSlider) snapshotSlider.value = "0";
+  if (snapshotValue) snapshotValue.textContent = "Off";
+
+  const nameInput = document.getElementById("models-controllers-detail-name") as HTMLInputElement | null;
+  if (nameInput) nameInput.value = customizeLabel;
+}
+
 function initModelsMainTabs(): void {
   const editTab = document.getElementById("models-main-tab-edit");
   const controllersTab = document.getElementById("models-main-tab-controllers");
@@ -6176,7 +6391,10 @@ function initModelsMainTabs(): void {
     panels.forEach((panel, i) => {
       panel.hidden = i !== idx;
     });
-    if (idx === 1) syncControllersEditorFromSelection();
+    if (idx === 1) {
+      syncControllersEditorFromSelection();
+      void refreshControllersAssignmentsTable();
+    }
   }
 
   editTab.addEventListener("click", () => activate(0));
@@ -10530,6 +10748,7 @@ async function loadAndShowModelsParamsForSlot(
 ): Promise<void> {
   await loadAndShowModelsParamsForSlotInner(slot, kemplineSlotIndex);
   syncControllersEditorFromSelection();
+  void refreshControllersAssignmentsTable();
 }
 
 async function loadAndShowModelsParamsForSlotInner(
@@ -12670,6 +12889,59 @@ function buildFlowSections(slots: SlotDebug[]) {
   return { pre, split, branchA, branchB, merge, post: mainPost, hasSplit: true };
 }
 
+/** Grise les slots désactivés de la grille (bloc assigné mais qui ne traite pas la chaîne de son). */
+async function applyInactiveSlotStyling(): Promise<void> {
+  let states: Array<boolean | null> = [];
+  try {
+    states = await invoke<Array<boolean | null>>("get_active_preset_slot_active_states");
+  } catch {
+    return;
+  }
+  for (let ki = 0; ki < states.length; ki += 1) {
+    const nodes = contentEl.querySelectorAll<HTMLElement>(`[data-kempline-slot-index="${ki}"]`);
+    const inactive = states[ki] === false;
+    nodes.forEach((node) => node.classList.toggle("node--slot-inactive", inactive));
+  }
+}
+
+/** Mapping index grille Kempline (0..15) -> bus USB, même convention que `helix::kempline_index_to_slot_bus`. */
+function kemplineIndexToSlotBusJs(kemplineSlotIndex: number): number | null {
+  if (!Number.isInteger(kemplineSlotIndex) || kemplineSlotIndex < 0 || kemplineSlotIndex > 15) {
+    return null;
+  }
+  return kemplineSlotIndex < 8 ? kemplineSlotIndex + 1 : kemplineSlotIndex + 3;
+}
+
+/** Mapping bus USB -> index grille Kempline (0..15), même convention que `helix::slot_bus_to_kempline_index`. */
+function slotBusToKemplineIndexJs(slotBus: number): number | null {
+  if (slotBus >= 0x01 && slotBus <= 0x08) return slotBus - 1;
+  if (slotBus >= 0x0b && slotBus <= 0x12) return slotBus - 3;
+  return null;
+}
+
+/** Bascule l'état actif/inactif du slot actuellement sélectionné (barre espace, comme HX Edit). */
+async function toggleSelectedSlotActiveState(): Promise<void> {
+  const ki = selectedParamsKemplineSlotIndex;
+  if (ki === null) return;
+  const slotBus = kemplineIndexToSlotBusJs(ki);
+  if (slotBus === null) return;
+  // Source de vérité : la classe déjà affichée dans la grille, pas `get_active_preset_slot_active_states`
+  // (qui relit le dump preset figé au chargement — jamais mis à jour par nos propres écritures live,
+  // donc systématiquement périmé après un premier toggle).
+  const nodes = contentEl.querySelectorAll<HTMLElement>(`[data-kempline-slot-index="${ki}"]`);
+  const currentlyInactive = Array.from(nodes).some((node) =>
+    node.classList.contains("node--slot-inactive"),
+  );
+  const nextActive = currentlyInactive;
+  try {
+    await invoke("write_slot_active_state", { slotBus, active: nextActive });
+  } catch (err) {
+    console.error("write_slot_active_state failed", err);
+    return;
+  }
+  nodes.forEach((node) => node.classList.toggle("node--slot-inactive", !nextActive));
+}
+
 async function renderSlots(
   rawSlots: SlotDebug[],
   routingFromFlow: RoutingMarker[] = [],
@@ -12690,6 +12962,7 @@ async function renderSlots(
   if (isKemplineGrid16(slots)) {
     renderGrid16(slots, routingFromFlow, stompLayout);
     await refreshAllSlotTooltipsInContent();
+    void applyInactiveSlotStyling();
     return;
   }
 
@@ -13673,6 +13946,16 @@ window.addEventListener("DOMContentLoaded", () => {
   initMatrixDragDrop();
 
   window.addEventListener("keydown", (e) => {
+    if (e.code === "Space" || e.key === " ") {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      const typing = tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable;
+      if (!typing && selectedParamsKemplineSlotIndex !== null) {
+        e.preventDefault();
+        void toggleSelectedSlotActiveState();
+        return;
+      }
+    }
     if (e.ctrlKey && e.altKey && (e.key === "d" || e.key === "D")) {
       debugRoutingMode = !debugRoutingMode;
       localStorage.setItem("models_debug_routing", debugRoutingMode ? "1" : "0");
@@ -13893,6 +14176,20 @@ window.addEventListener("DOMContentLoaded", () => {
       }
     })();
   });
+
+  void listen<{ slotBus: number; active: boolean }>(
+    "models:slot-active-state-changed",
+    (event) => {
+      const p = event.payload;
+      if (!p || typeof p.slotBus !== "number") return;
+      const ki = slotBusToKemplineIndexJs(p.slotBus);
+      if (ki === null) return;
+      const nodes = contentEl.querySelectorAll<HTMLElement>(
+        `[data-kempline-slot-index="${ki}"]`,
+      );
+      nodes.forEach((node) => node.classList.toggle("node--slot-inactive", !p.active));
+    },
+  );
 
   void listen<string>("helix-device-lost", () => {
     purgeModelsUi();

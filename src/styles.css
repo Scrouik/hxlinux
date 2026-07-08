@@ -185,6 +185,23 @@ html, body {
   border-bottom: 1px solid var(--border-dim, var(--border));
 }
 
+.models-controllers-table tbody tr {
+  cursor: pointer;
+}
+
+.models-controllers-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.models-controllers-table-row--selected,
+.models-controllers-table-row--selected:hover {
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.models-controllers-table-row--selected td {
+  color: var(--amber);
+}
+
 .models-controllers-editor {
   --controllers-label-col: 190px;
   flex: 1 1 0;
@@ -1679,6 +1696,12 @@ html, body {
 .models-pane .node.node--hx-slot.node--selected {
   border-color: var(--amber);
   box-shadow: 0 0 0 1px var(--amber);
+}
+
+/* Slot avec un modèle assigné mais désactivé (bypass du bloc entier, indépendant du preset). */
+.models-pane .node.node--hx-slot.node--slot-inactive {
+  opacity: 0.45;
+  filter: grayscale(0.6);
 }
 
 /* Chaîne linéaire (non grille Kempline) : mêmes gabarits 56×56 que la matrice. */
