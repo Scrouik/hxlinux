@@ -424,9 +424,21 @@ pub fn is_hw_model_slot_cleared_notify(data: &[u8]) -> bool {
             .any(|w| w == HW_MODEL_NONE_NOTIFY_MARK)
 }
 
-/// Seul déclencheur valide de pull (`1f` non-None).
+/// Marqueur "modèle en cours de scroll" (octets 24-26), présent sur les vrais `1d`
+/// pré-scroll et `1f` déclencheurs (voir `IN1F` en test, et `is_hw_model_scroll_1d`).
+/// Un `1f` accompagnant une bascule Command Center (actif/inactif) partage la même
+/// enveloppe générique (`1f`+`f0:03:02:10`+`09:02`) mais porte `82:69:29:6a` à cette
+/// position — confirmé par capture différentielle (`bug_FS_activation.json` vs
+/// `model_change_device.json`, 2026-07-09) : sans ce filtre, ce faux positif armait
+/// une capture de pull modèle à chaque bascule bypass, ré-émettant `slot-model-changed`
+/// avec le même modèle et effaçant le grisage actif/inactif côté UI (nœud DOM recréé).
+const HW_MODEL_SCROLL_MARK_PREFIX: &[u8] = &[0x82, 0x69, 0x31];
+
+/// Seul déclencheur valide de pull (`1f` non-None, réellement issu d'un scroll modèle).
 pub fn is_hw_model_pull_trigger_notify(data: &[u8]) -> bool {
-    is_hw_model_change_notify_1f(data) && !is_hw_model_slot_cleared_notify(data)
+    is_hw_model_change_notify_1f(data)
+        && !is_hw_model_slot_cleared_notify(data)
+        && data.get(24..27) == Some(HW_MODEL_SCROLL_MARK_PREFIX)
 }
 
 /// `IN 1d` de **pré-scroll** : porte le marqueur "modèle en cours de scroll"
@@ -1237,6 +1249,15 @@ mod tests {
         0x00, 0x00, 0x00, 0x04, 0x00, 0x0f, 0x00, 0x00, 0x00, 0x82, 0x69, 0x31, 0x6a, 0x84, 0x52,
         0x00, 0x44, 0x05, 0x79, 0x0e, 0x6a, 0x81, 0x62, 0x01, 0xc0,
     ];
+    /// `1f` réel précédant une bascule Command Center actif/inactif (bus `07`, "Pitch Wham"),
+    /// capturé 23 ms avant l'écho `82:62:07:3b:c3` — `bug_FS_activation.json` (2026-07-09).
+    /// Même enveloppe qu'un vrai déclencheur de scroll (`1f`+`f0:03:02:10`+`09:02`) mais
+    /// marqueur `82:69:29:6a` (au lieu de `82:69:31:6a`) : NE DOIT PAS armer de pull modèle.
+    const IN1F_BYPASS_TOGGLE_DECOY: &[u8] = &[
+        0x1f, 0x00, 0x00, 0x18, 0xf0, 0x03, 0x02, 0x10, 0x00, 0x17, 0x00, 0x04, 0x09, 0x02, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x0f, 0x00, 0x00, 0x00, 0x82, 0x69, 0x29, 0x6a, 0x83, 0x46,
+        0x04, 0x3f, 0xc3, 0x42, 0xce, 0x00, 0x32, 0x00, 0xff, 0x00,
+    ];
 
     /// +1 par OUT sur le double (motif HX f1→f2→f3), valable dans les deux modes.
     #[test]
@@ -1262,6 +1283,13 @@ mod tests {
     fn pull_trigger_1f_not_none() {
         assert!(is_hw_model_pull_trigger_notify(IN1F));
         assert!(!is_hw_model_pull_trigger_notify(IN1F_NONE));
+    }
+
+    /// Régression (2026-07-09) : un `1f` précédant une bascule Command Center actif/inactif
+    /// ne doit PAS être pris pour un déclencheur de scroll modèle (marqueur `29` != `31`).
+    #[test]
+    fn pull_trigger_rejects_bypass_toggle_decoy() {
+        assert!(!is_hw_model_pull_trigger_notify(IN1F_BYPASS_TOGGLE_DECOY));
     }
 
     #[test]
