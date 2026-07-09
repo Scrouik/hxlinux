@@ -49,8 +49,11 @@ function setStatus(
   }
 }
 
+/** Identifiant preset au format device (banque 2 chiffres + lettre, 4 presets/banque, ex. "01A"). */
 function padNum(n: number): string {
-  return String(n).padStart(3, "0");
+  const bank = Math.floor(n / 4) + 1;
+  const letter = "ABCD"[n % 4];
+  return `${String(bank).padStart(2, "0")}${letter}`;
 }
 
 function isEmpty(name: string): boolean {

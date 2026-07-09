@@ -162,13 +162,20 @@ let presetModified = false;
 let bannerPresetIndex = -1;
 let bannerPresetDisplayName = "";
 
+/** Identifiant preset au format device (banque 2 chiffres + lettre, 4 presets/banque, ex. "01A"). */
+function formatPresetBankLetter(index: number): string {
+  const bank = Math.floor(index / 4) + 1;
+  const letter = "ABCD"[index % 4];
+  return `${String(bank).padStart(2, "0")}${letter}`;
+}
+
 function refreshPresetBannerLabel(): void {
   if (!presetLabelEl) return;
   if (bannerPresetIndex < 0) {
     presetLabelEl.textContent = "—";
     return;
   }
-  const base = `${String(bannerPresetIndex).padStart(3, "0")} ${bannerPresetDisplayName}`;
+  const base = `${formatPresetBankLetter(bannerPresetIndex)} ${bannerPresetDisplayName}`;
   presetLabelEl.textContent = presetModified ? `${base}*` : base;
 }
 
@@ -6175,6 +6182,70 @@ function initControllersEditorDetailControls(): void {
     detail.hidden = !show;
     if (show) resetControllersEditorDetail();
   });
+
+  const saveTestBtn = document.getElementById(
+    "models-controllers-save-test-btn",
+  ) as HTMLButtonElement | null;
+  saveTestBtn?.addEventListener("click", () => {
+    void saveControllersAssignmentTest();
+  });
+}
+
+/**
+ * Version MINIMALE de test du bouton "Save Controllers" (2026-07-09) — écrit Source puis
+ * Type/Couleur/Nom en séquence pour l'assignation actuellement affichée dans le panneau détail.
+ * PAS la version finale : pas de lignes rouges/brouillons, pas de popup d'avertissement, et ne
+ * gère que la Source Footswitch (pas EXP Pedal/None) ni Min/Max (format d'écriture pas encore
+ * implémenté côté Rust — séquence de 3 paquets, voir mémoire session). Sert uniquement à valider
+ * que le mécanisme de base (contexte implicite établi par Source, cf. commentaire
+ * `command_center_write.rs`) fonctionne réellement sur le device avant de construire le reste.
+ */
+async function saveControllersAssignmentTest(): Promise<void> {
+  const ki = selectedParamsKemplineSlotIndex;
+  if (ki === null) {
+    setStatus("Save Controllers (test) : aucun slot actif");
+    return;
+  }
+  const slotBus = kemplineIndexToSlotBusJs(ki);
+  if (slotBus === null) {
+    setStatus("Save Controllers (test) : slot invalide");
+    return;
+  }
+  const sourceSelect = document.getElementById(
+    "models-controllers-editor-source-select",
+  ) as HTMLSelectElement | null;
+  const fsMatch = /^fs(\d)$/.exec(sourceSelect?.value ?? "");
+  if (!fsMatch) {
+    setStatus("Save Controllers (test) : seul Footswitch 1-8 est supporté pour l'instant");
+    return;
+  }
+  const footswitchNumber = Number(fsMatch[1]);
+
+  const typeSlider = document.getElementById("models-controllers-detail-type") as HTMLInputElement | null;
+  const momentary = typeSlider?.value === "1";
+  const colorSlider = document.getElementById("models-controllers-detail-color") as HTMLInputElement | null;
+  const colorIndex = Number(colorSlider?.value ?? "0");
+  const nameInput = document.getElementById("models-controllers-detail-name") as HTMLInputElement | null;
+  const name = nameInput?.value ?? "";
+
+  try {
+    setStatus("Save Controllers (test) : écriture en cours…");
+    await invoke("write_controller_source_footswitch", { slotBus, footswitchNumber });
+    await invoke("write_controller_type", { momentary });
+    await invoke("write_controller_color", { colorIndex });
+    await invoke("write_controller_name", { name });
+    setStatus("Save Controllers (test) : envoyé — vérifie l'écran du device");
+    console.info("[ControllersSaveTest] sent", {
+      slotBus,
+      footswitchNumber,
+      momentary,
+      colorIndex,
+      name,
+    });
+  } catch (e) {
+    setStatus(`Save Controllers (test) : erreur ${e}`);
+    console.error("[ControllersSaveTest]", e);
+  }
 }
 
 /** Shape renvoyée par la commande Rust `get_active_preset_controller_assignments` (serde camelCase). */

@@ -2893,6 +2893,89 @@ fn write_slot_active_state(
     Ok(())
 }
 
+/// Assigne un Footswitch comme Source de contrôle Command Center pour un bloc (bus Kempline).
+/// Établit le contexte d'édition device pour les écritures Type/Couleur/Nom qui suivent — voir
+/// `helix::command_center_write` (aucune de ces autres écritures ne porte d'identifiant de bus).
+#[tauri::command]
+fn write_controller_source_footswitch(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_bus: u8,
+    footswitch_number: u8,
+) -> Result<(), String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    let packet = helix::command_center_write::build_controller_source_footswitch_write_packet(
+        &mut s, slot_bus, footswitch_number,
+    );
+    s.send(OutPacket::new(packet));
+    drop(s);
+    eprintln!(
+        "[LiveWrite][controllerSource][sent] slotBus={slot_bus:02x} footswitch={footswitch_number}"
+    );
+    Ok(())
+}
+
+/// Écrit le Type (Latching/Momentary) du switch actuellement en contexte (Source déjà envoyée).
+#[tauri::command]
+fn write_controller_type(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    momentary: bool,
+) -> Result<(), String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    let packet = helix::command_center_write::build_controller_type_write_packet(&mut s, momentary);
+    s.send(OutPacket::new(packet));
+    drop(s);
+    eprintln!("[LiveWrite][controllerType][sent] momentary={momentary}");
+    Ok(())
+}
+
+/// Écrit la couleur LED (index 0-based) du switch actuellement en contexte.
+#[tauri::command]
+fn write_controller_color(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    color_index: u8,
+) -> Result<(), String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    let packet = helix::command_center_write::build_controller_color_write_packet(&mut s, color_index);
+    s.send(OutPacket::new(packet));
+    drop(s);
+    eprintln!("[LiveWrite][controllerColor][sent] colorIndex={color_index}");
+    Ok(())
+}
+
+/// Écrit le nom personnalisé (Customize) du switch actuellement en contexte.
+#[tauri::command]
+fn write_controller_name(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    name: String,
+) -> Result<(), String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    let packet = helix::command_center_write::build_controller_name_write_packet(&mut s, &name);
+    s.send(OutPacket::new(packet));
+    drop(s);
+    eprintln!("[LiveWrite][controllerName][sent] name={name:?}");
+    Ok(())
+}
+
 /// Cab rattaché détecté dans un slot Amp+Cab, sous la forme `[module_hex, catégorie, nom, model_id]`.
 #[tauri::command]
 fn get_active_preset_slot_linked_cab(
@@ -5113,6 +5196,10 @@ pub fn run() {
             get_active_preset_controller_assignments,
             get_active_preset_slot_active_states,
             write_slot_active_state,
+            write_controller_source_footswitch,
+            write_controller_type,
+            write_controller_color,
+            write_controller_name,
             get_active_preset_slot_linked_cab,
             get_active_preset_slot_linked_cab_with_params,
             get_active_preset_slot_dual_parts,
