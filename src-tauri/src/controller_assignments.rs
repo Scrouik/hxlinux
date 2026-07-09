@@ -23,6 +23,8 @@ pub struct ControllerAssignment {
     /// Index grille Kempline (0..15) du bloc contrôlé, `None` si bus spécial (Input/Output/Split/Merge).
     pub kempline_slot_index: Option<usize>,
     /// Nom réel du paramètre catalogue (immuable, ex. "Drive") — fiable même si `custom_name` diffère.
+    /// Vaut littéralement `"Bypass"` quand `is_bypass` est vrai (le fil ne porte pas de nom de
+    /// paramètre pour ce cas, voir `is_bypass`).
     pub param_name: String,
     /// Nom personnalisé (Customize) si défini, `None` sinon (utiliser `param_name` par défaut).
     pub custom_name: Option<String>,
@@ -31,10 +33,17 @@ pub struct ControllerAssignment {
     /// Index couleur switch LED (0 = Autocolor, voir liste front `CONTROLLERS_LED_COLORS`).
     pub color_index: u8,
     /// Source : 0 = None, 1 = EXP Pedal 1, 2 = EXP Pedal 2, 3+ = Footswitch (source - 2).
+    /// Pour Bypass, toujours un footswitch (jamais de pédale EXP, voir `is_bypass`).
     pub source: u8,
     /// Bornes Min/Max en unités **brutes catalogue** du paramètre (avant conversion d'affichage).
+    /// Sans signification pour Bypass (`is_bypass=true`) — valent `0.0`, à ignorer côté front.
     pub min_raw: f32,
     pub max_raw: f32,
+    /// `true` si cette assignation contrôle l'activation/désactivation du bloc entier (« Bypass »)
+    /// plutôt qu'un vrai paramètre catalogue. Format wire différent (voir `decode_bypass_slots`) :
+    /// pas de Bloc2 (Source encodée par la POSITION dans un tableau de 8 emplacements, un par
+    /// footswitch — jamais assignable à une pédale EXP), pas de Min/Max/Snapshot Control.
+    pub is_bypass: bool,
 }
 
 
@@ -50,6 +59,13 @@ struct Block1Fields {
 fn decode_block1_element(el: &Value) -> Option<Block1Fields> {
     let outer = el.as_map()?;
     let nested = map_get(outer, 0x0b)?.as_map()?;
+    // Clé imbriquée `0x00` : `2` = vrai paramètre catalogue, `1` = assignation Bypass (structure
+    // différente, décodée séparément par `decode_bypass_slot_element` — pas de nom de paramètre
+    // ni de Bloc2 pour ce cas, donc on ne le traite pas ici pour éviter un `param_name` erroné
+    // (le nom porté à la clé `0x05` serait alors celui du bloc, pas un paramètre).
+    if map_get(nested, 0x00)?.as_int()? != 2 {
+        return None;
+    }
     let param_name = map_get(nested, 0x05)?.as_str()?.to_string();
     let slot_bus = map_get(nested, 0x08)?.as_int()? as u8;
     let momentary = map_get(outer, 0x0c)?.as_bool()?;
@@ -89,6 +105,80 @@ fn decode_block2_element(el: &Value) -> Option<Block2Fields> {
         min_raw,
         max_raw,
     })
+}
+
+/// Nombre d'emplacements du tableau Bypass (un par footswitch physique, jamais une pédale EXP).
+const BYPASS_SLOTS_COUNT: usize = 8;
+
+/// Décode un élément peuplé du tableau Bypass (`91:87:{...}`, structure identique au Bloc1 d'un
+/// vrai paramètre mais nested clé `0x00=1` au lieu de `2`, et pas de clé `0x05` utile — le nom
+/// porté là est celui du BLOC, pas un nom de paramètre, donc ignoré au profit de `"Bypass"` en dur).
+fn decode_bypass_slot_element(el: &Value) -> Option<ControllerAssignment> {
+    let outer = el.as_map()?;
+    let nested = map_get(outer, 0x0b)?.as_map()?;
+    let kind = map_get(nested, 0x00)?.as_int()?;
+    if kind != 1 {
+        return None; // pas une structure Bypass (nested key 0x00=2 => vrai paramètre, pas notre cas)
+    }
+    let slot_bus = map_get(nested, 0x08)?.as_int()? as u8;
+    let momentary = map_get(outer, 0x0c)?.as_bool()?;
+    let color_index = map_get(outer, 0x10)?.as_int()? as u8;
+    let custom_name = map_get(outer, 0x0e)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Some(ControllerAssignment {
+        slot_bus,
+        kempline_slot_index: crate::helix::slot_bus_to_kempline_index(slot_bus),
+        param_name: "Bypass".to_string(),
+        custom_name,
+        momentary,
+        color_index,
+        source: 0, // renseigné par l'appelant (position dans le tableau de 8 = footswitch)
+        min_raw: 0.0,
+        max_raw: 0.0,
+        is_bypass: true,
+    })
+}
+
+/// Tente de décoder un tableau de 8 emplacements footswitch (`98:<8 éléments, chacun `nil` ou
+/// `9187:{...}`>`) commençant en `data[pos]`. Retourne les assignations **Bypass** trouvées (un
+/// footswitch peut être vide, ou porter un vrai paramètre catalogue — cf. `BASELINE_DRIVE_FS1` où
+/// ce même tableau contient "Drive" — auquel cas on l'ignore ici : il est déjà couvert par le scan
+/// générique du Bloc1) + le nombre d'octets consommés. `None` dès que la shape ne correspond pas
+/// exactement (pas de faux positif silencieux sur un fixarray(8) non lié).
+fn try_decode_bypass_slots(data: &[u8], pos: usize) -> Option<(Vec<ControllerAssignment>, usize)> {
+    if data.get(pos).copied()? != 0x90 | (BYPASS_SLOTS_COUNT as u8) {
+        return None;
+    }
+    let mut cursor = pos + 1;
+    let mut found = Vec::new();
+    for fs_index in 0..BYPASS_SLOTS_COUNT {
+        match data.get(cursor).copied()? {
+            0xc0 => cursor += 1, // emplacement vide (pas d'assignation sur ce switch pour ce bloc)
+            0x91 => {
+                cursor += 1;
+                if data.get(cursor).copied() != Some(0x87) {
+                    return None;
+                }
+                let val = parse_value(data, &mut cursor)?;
+                // `None` = emplacement occupé par un vrai paramètre (kind nested 0x00=2), pas du
+                // Bypass — on continue le balayage du tableau plutôt que d'abandonner tout le
+                // groupe (un bloc peut cumuler un vrai paramètre sur un switch et Bypass sur un
+                // autre, dans ce même tableau de 8).
+                if let Some(mut a) = decode_bypass_slot_element(&val) {
+                    // Source = position dans le tableau : Footswitch (fs_index + 1), même
+                    // convention que les vrais paramètres (source = numéro_footswitch + 2,
+                    // encodage 0=None, 1=EXP1, 2=EXP2, 3+=FS(source-2)).
+                    a.source = (fs_index as u8) + 3;
+                    found.push(a);
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some((found, cursor - pos))
 }
 
 /// Tente de décoder un groupe `9N:<element_tag>{...}` commençant en `data[pos]`. Retourne les
@@ -177,7 +267,21 @@ pub fn scan_controller_assignments(data: &[u8]) -> Vec<ControllerAssignment> {
             source: b2.source,
             min_raw: b2.min_raw,
             max_raw: b2.max_raw,
+            is_bypass: false,
         });
+    }
+
+    // Bypass suit un format à part (voir `try_decode_bypass_slots`) : pas de Bloc2, Source encodée
+    // par la position dans un tableau de 8 emplacements (un par footswitch), scanné séparément.
+    let mut pos = 0usize;
+    while pos < data.len() {
+        match try_decode_bypass_slots(data, pos) {
+            Some((group, consumed)) => {
+                out.extend(group);
+                pos += consumed;
+            }
+            None => pos += 1,
+        }
     }
     out
 }
@@ -281,5 +385,63 @@ mod tests {
         assert_eq!(drive.source, 3);
         assert!((drive.min_raw - 0.5).abs() < 1e-6);
         assert!((drive.max_raw - 0.7).abs() < 1e-5);
+    }
+
+    /// Capture `preset_control_bypass.json` (2026-07-09) — Bypass assigné à Footswitch 1 (premier
+    /// emplacement du tableau de 8), nom personnalisé "MonByPass". Format à part, pas de Bloc2 :
+    /// tableau `98` (8 emplacements), le premier peuplé, les 7 autres `nil`.
+    const BYPASS_FOOTSWITCH1_CUSTOM_NAME: &str = concat!(
+        "98:91:87:0a:07:0b:85:00:01:05:ac:44:65:6c:75:78:65:20:43:6f:6d:70:00:06:ce:00:84:ff:00:07:",
+        "c3:08:01:0c:c2:0e:aa:4d:6f:6e:42:79:50:61:73:73:00:0d:c3:10:00:0f:c2:c0:c0:c0:c0:c0:c0:c0",
+    );
+
+    #[test]
+    fn decodes_bypass_on_footswitch1_with_custom_name() {
+        let data = hex_to_bytes(BYPASS_FOOTSWITCH1_CUSTOM_NAME);
+        let found = scan_controller_assignments(&data);
+        assert_eq!(found.len(), 1, "should find exactly the bypass assignment");
+        let a = &found[0];
+        assert!(a.is_bypass);
+        assert_eq!(a.param_name, "Bypass");
+        assert_eq!(a.slot_bus, 0x01);
+        assert_eq!(a.kempline_slot_index, Some(0));
+        assert_eq!(a.custom_name.as_deref(), Some("MonByPass"));
+        assert!(!a.momentary);
+        assert_eq!(a.color_index, 0);
+        assert_eq!(a.source, 3); // Footswitch 1 (position 0 dans le tableau)
+    }
+
+    /// Capture `preset_control_bypass_FS5.json` (2026-07-09) — même Bypass, sans nom personnalisé,
+    /// déplacé au 5e emplacement du tableau (index 4) — confirme que la Source vient bien de la
+    /// POSITION dans le tableau, pas d'un champ dédié (contrairement aux vrais paramètres).
+    const BYPASS_FOOTSWITCH5_NO_CUSTOM_NAME: &str = concat!(
+        "98:c0:c0:c0:c0:91:87:0a:07:0b:85:00:01:05:ac:44:65:6c:75:78:65:20:43:6f:6d:70:00:06:ce:00:",
+        "84:ff:00:07:c3:08:01:0c:c2:0e:a1:00:0d:c2:10:00:0f:c2:c0:c0:c0",
+    );
+
+    #[test]
+    fn decodes_bypass_on_footswitch5_from_array_position() {
+        let data = hex_to_bytes(BYPASS_FOOTSWITCH5_NO_CUSTOM_NAME);
+        let found = scan_controller_assignments(&data);
+        assert_eq!(found.len(), 1);
+        let a = &found[0];
+        assert!(a.is_bypass);
+        assert_eq!(a.param_name, "Bypass");
+        assert_eq!(a.slot_bus, 0x01);
+        assert_eq!(a.custom_name, None);
+        assert_eq!(a.source, 7); // Footswitch 5 (position 4 dans le tableau, 4 + 3 = 7)
+    }
+
+    /// Le même tableau de 8 emplacements peut contenir un VRAI paramètre (kind nested `0x00=2`,
+    /// déjà couvert par `BASELINE_DRIVE_FS1`) : vérifie qu'un tel emplacement n'est pas
+    /// (ré-)interprété comme du Bypass et ne produit pas de doublon.
+    #[test]
+    fn real_param_inside_footswitch_array_is_not_treated_as_bypass() {
+        let data = hex_to_bytes(BASELINE_DRIVE_FS1);
+        let found = scan_controller_assignments(&data);
+        assert!(
+            !found.iter().any(|a| a.is_bypass),
+            "no bypass entry expected, only the real Drive parameter"
+        );
     }
 }

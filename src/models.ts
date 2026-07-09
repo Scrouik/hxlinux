@@ -5880,6 +5880,10 @@ function syncControllersEditorParamList(): void {
   ) as HTMLSelectElement | null;
   if (!select) return;
   select.replaceChildren();
+  const bypassOpt = document.createElement("option");
+  bypassOpt.value = CONTROLLERS_BYPASS_PARAM_VALUE;
+  bypassOpt.textContent = "Bypass";
+  select.append(bypassOpt);
   const ctx = selectedParamsHwWireContext;
   if (!ctx) return;
   for (const pRaw of ctx.paramsForDisplay) {
@@ -6093,6 +6097,15 @@ function resetControllersEditorDetail(): void {
   colorValue.textContent = CONTROLLERS_LED_COLORS[0]!;
   applyControllersLedColorToNameInput(0);
 
+  const isBypass = isControllersBypassParamSelected();
+  setControllersDetailBypassFieldsHidden(isBypass);
+  if (isBypass) {
+    // Bypass n'a ni bornes ni Snapshot Control (simple on/off du bloc entier) — nom par défaut
+    // vide (le device n'a pas de nom de paramètre à proposer, contrairement à un vrai paramètre).
+    nameInput.value = "";
+    return;
+  }
+
   const pDef = currentControllersSelectedParamDef();
   const editTabBounds = controllersSelectedParamEditTabBounds();
   const variant = pDef ? paramForSignalVariant(pDef, selectedParamsHwWireContext?.catalogSignal) : null;
@@ -6175,7 +6188,31 @@ type ControllerAssignmentJson = {
   source: number;
   minRaw: number;
   maxRaw: number;
+  isBypass: boolean;
 };
+
+/** Valeur sentinelle de l'option "Bypass" dans le select param (n'est pas un `symbolicID` catalogue). */
+const CONTROLLERS_BYPASS_PARAM_VALUE = "__bypass__";
+
+/** `true` si l'option actuellement choisie dans le select param est "Bypass" (pas un vrai paramètre). */
+function isControllersBypassParamSelected(): boolean {
+  const paramSelect = document.getElementById(
+    "models-controllers-editor-param-select",
+  ) as HTMLSelectElement | null;
+  return paramSelect?.value === CONTROLLERS_BYPASS_PARAM_VALUE;
+}
+
+/** Affiche/masque les lignes Min/Max/Snapshot Control du panneau détail (sans objet pour Bypass). */
+function setControllersDetailBypassFieldsHidden(hidden: boolean): void {
+  for (const id of [
+    "models-controllers-detail-row-min",
+    "models-controllers-detail-row-max",
+    "models-controllers-detail-row-snapshot",
+  ]) {
+    const row = document.getElementById(id);
+    if (row) row.hidden = hidden;
+  }
+}
 
 /** Libellé de la source, même énumération que le sélecteur (`0`=None, `1`/`2`=EXP Pedal, `3+`=Footswitch). */
 function controllerSourceLabel(source: number): string {
@@ -6324,46 +6361,52 @@ function applyControllerAssignmentRowToDetailNow(a: ControllerAssignmentJson): v
   if (typeSlider) typeSlider.value = a.momentary ? "1" : "0";
   if (typeValue) typeValue.textContent = a.momentary ? "Momentary" : "Latching";
 
-  // Bornes réelles lues sur le slot désormais actif (voir focusMatrixSlotParamsPane ci-dessus) ;
-  // repli sur une plage englobant au moins les valeurs brutes connues si jamais le slot n'a pas de
-  // catégorie assignable (bus spécial I/O, `kemplineSlotIndex` nul).
-  const editTabBounds = controllersSelectedParamEditTabBounds();
-  const minN = editTabBounds?.min ?? Math.min(0, a.minRaw);
-  const maxN = editTabBounds?.max ?? Math.max(a.maxRaw, minN + 1);
-  const minSlider = document.getElementById("models-controllers-detail-min") as HTMLInputElement | null;
-  const minValue = document.getElementById("models-controllers-detail-min-value");
-  const maxSlider = document.getElementById("models-controllers-detail-max") as HTMLInputElement | null;
-  const maxValue = document.getElementById("models-controllers-detail-max-value");
-  if (minSlider) {
-    minSlider.min = String(minN);
-    minSlider.max = String(maxN);
-    minSlider.value = String(a.minRaw);
-  }
-  if (minValue) minValue.textContent = String(a.minRaw);
-  if (maxSlider) {
-    maxSlider.min = String(minN);
-    maxSlider.max = String(maxN);
-    maxSlider.value = String(a.maxRaw);
-  }
-  if (maxValue) maxValue.textContent = String(a.maxRaw);
+  // Bypass n'a ni Min/Max ni Snapshot Control (simple on/off du bloc entier, pas un paramètre
+  // continu) — masqués plutôt que remplis avec des valeurs sans signification (voir `is_bypass`
+  // côté Rust, `controller_assignments.rs`).
+  setControllersDetailBypassFieldsHidden(a.isBypass);
+  if (!a.isBypass) {
+    // Bornes réelles lues sur le slot désormais actif (voir focusMatrixSlotParamsPane ci-dessus) ;
+    // repli sur une plage englobant au moins les valeurs brutes connues si jamais le slot n'a pas
+    // de catégorie assignable (bus spécial I/O, `kemplineSlotIndex` nul).
+    const editTabBounds = controllersSelectedParamEditTabBounds();
+    const minN = editTabBounds?.min ?? Math.min(0, a.minRaw);
+    const maxN = editTabBounds?.max ?? Math.max(a.maxRaw, minN + 1);
+    const minSlider = document.getElementById("models-controllers-detail-min") as HTMLInputElement | null;
+    const minValue = document.getElementById("models-controllers-detail-min-value");
+    const maxSlider = document.getElementById("models-controllers-detail-max") as HTMLInputElement | null;
+    const maxValue = document.getElementById("models-controllers-detail-max-value");
+    if (minSlider) {
+      minSlider.min = String(minN);
+      minSlider.max = String(maxN);
+      minSlider.value = String(a.minRaw);
+    }
+    if (minValue) minValue.textContent = String(a.minRaw);
+    if (maxSlider) {
+      maxSlider.min = String(minN);
+      maxSlider.max = String(maxN);
+      maxSlider.value = String(a.maxRaw);
+    }
+    if (maxValue) maxValue.textContent = String(a.maxRaw);
 
-  const currentValue = controllersSelectedParamEditTabCurrentValue();
-  positionControllersCurrentValueMarker("models-controllers-detail-min-marker", currentValue, minN, maxN);
-  positionControllersCurrentValueMarker("models-controllers-detail-max-marker", currentValue, minN, maxN);
+    const currentValue = controllersSelectedParamEditTabCurrentValue();
+    positionControllersCurrentValueMarker("models-controllers-detail-min-marker", currentValue, minN, maxN);
+    positionControllersCurrentValueMarker("models-controllers-detail-max-marker", currentValue, minN, maxN);
+
+    // Snapshot Control : encodage wire pas encore verrouillé côté écriture, valeur laissée par défaut.
+    const snapshotSlider = document.getElementById(
+      "models-controllers-detail-snapshot",
+    ) as HTMLInputElement | null;
+    const snapshotValue = document.getElementById("models-controllers-detail-snapshot-value");
+    if (snapshotSlider) snapshotSlider.value = "0";
+    if (snapshotValue) snapshotValue.textContent = "Off";
+  }
 
   const colorSlider = document.getElementById("models-controllers-detail-color") as HTMLInputElement | null;
   const colorValue = document.getElementById("models-controllers-detail-color-value");
   if (colorSlider) colorSlider.value = String(a.colorIndex);
   if (colorValue) colorValue.textContent = CONTROLLERS_LED_COLORS[a.colorIndex] ?? "—";
   applyControllersLedColorToNameInput(a.colorIndex);
-
-  // Snapshot Control : encodage wire pas encore verrouillé côté écriture, valeur laissée par défaut.
-  const snapshotSlider = document.getElementById(
-    "models-controllers-detail-snapshot",
-  ) as HTMLInputElement | null;
-  const snapshotValue = document.getElementById("models-controllers-detail-snapshot-value");
-  if (snapshotSlider) snapshotSlider.value = "0";
-  if (snapshotValue) snapshotValue.textContent = "Off";
 
   const nameInput = document.getElementById("models-controllers-detail-name") as HTMLInputElement | null;
   if (nameInput) nameInput.value = customizeLabel;

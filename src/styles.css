@@ -294,6 +294,10 @@ html, body {
   gap: 10px;
 }
 
+.models-controllers-detail-row[hidden] {
+  display: none;
+}
+
 .models-controllers-detail-row label {
   flex: 0 0 var(--controllers-label-col);
   font-size: 12px;
