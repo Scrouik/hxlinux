@@ -122,9 +122,18 @@ fn source_footswitch_packet_bytes(
 /// réel est **`+0x11`**, pas `+0x57`. Cette fonction combinée calcule Confirm à partir de la valeur
 /// de Source AVANT tout avancement, pas de l'état partagé relu après coup.
 ///
-/// `yy` de Confirm = `yy` de Source `+1` (confirmé). L'avancement de l'état partagé APRÈS Confirm
-/// (`+0x44`/`+1`) reste une estimation non isolée (mesurée entre deux Confirm successifs incluant
-/// d'autres trafics entre-temps) — à revalider si les écritures suivantes semblent désynchronisées.
+/// **Correctif 2026-07-11** : le champ `cd:<hi>:<lo>` (octets 27-28) est UN compteur 16 bits unique.
+/// Mesuré sur 5 captures HX Edit, Source→Confirm = **+1 exact** sur ce 16 bits (multi_controls
+/// 0x0416→0x0417, Preset_one_Bypass 0x0410→0x0411, 2_controls_one_FS 0x03f1→0x03f2 avec octet haut
+/// 0x03, add_bypass_switch_FS 0x0401→0x0402). L'octet haut varie selon la session ⇒ compteur libre,
+/// pas champ sémantique. L'ancienne version hardcodait pp=0x04 côté Confirm (Source pp=0x03), d'où un
+/// saut `+0x101` au lieu de `+1`. Confirm dérive donc `cd = cd_Source + 1` sur le 16 bits complet
+/// (carry géré) — on est maintenant strictement calé sur HX Edit. NB (2026-07-11) : ce correctif ne
+/// suffit PAS à réparer la synchro live d'un contrôle créé mid-session — capture ultérieure a montré
+/// que le device ne sert simplement pas notre canal de notifications `f0:03` (problème d'armement du
+/// mode éditeur, indépendant de ce paquet). Ce correctif reste juste (conformité HX Edit) et n'entrave
+/// pas ce chantier. L'avancement de l'état partagé APRÈS Confirm (`ctr +0x44`, `yy +1`) reste une
+/// estimation non isolée — à revalider si les écritures suivantes semblent désynchronisées.
 pub fn build_controller_source_and_confirm_write_packets(
     state: &mut HelixState,
     slot_bus: u8,
@@ -138,8 +147,17 @@ pub fn build_controller_source_and_confirm_write_packets(
 
     let confirm_seq = state.next_x80_cnt();
     let confirm_ctr = source_ctr.wrapping_add(0x11);
-    let confirm_yy = source_yy.wrapping_add(1);
-    let pp_confirm: u8 = 0x04;
+    // `cd:<hi>:<lo>` (octets 27-28) est UN SEUL compteur 16 bits, pas deux champs séparés.
+    // Mesuré 2026-07-11 sur 5 captures HX Edit : Source→Confirm = +1 EXACT (l'octet haut ne
+    // change que si l'octet bas boucle 0xff→0x00). L'ancienne version hardcodait pp=0x04 côté
+    // Confirm alors que la Source utilise pp=0x03 (voir source_footswitch_packet_bytes), produisant
+    // un saut de +0x101. On dérive donc Confirm = Source + 1 sur le 16 bits complet, pour se caler
+    // exactement sur HX Edit (voir doc de fonction pour le contexte synchro live / canal f0:03).
+    const SOURCE_PP: u8 = 0x03; // doit rester synchro avec source_footswitch_packet_bytes
+    let source_cd: u16 = ((SOURCE_PP as u16) << 8) | source_yy as u16;
+    let confirm_cd = source_cd.wrapping_add(1);
+    let confirm_pp = (confirm_cd >> 8) as u8;
+    let confirm_yy = (confirm_cd & 0xff) as u8;
 
     let confirm_packet = vec![
         0x1b, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03,
@@ -147,7 +165,7 @@ pub fn build_controller_source_and_confirm_write_packets(
         (confirm_ctr & 0xff) as u8, ((confirm_ctr >> 8) & 0xff) as u8,
         0x00, 0x00,
         0x01, 0x00, 0x06, 0x00, 0x0b, 0x00, 0x00, 0x00,
-        0x83, 0x66, 0xcd, pp_confirm, confirm_yy, 0x64, 0x21, 0x65,
+        0x83, 0x66, 0xcd, confirm_pp, confirm_yy, 0x64, 0x21, 0x65,
         0x81, 0x66, 0x01, 0x00,
     ];
 
@@ -405,17 +423,19 @@ mod tests {
         let (source_pkt, confirm_pkt) =
             build_controller_source_and_confirm_write_packets(&mut state, 0x01, 1);
 
-        // Source : ctr=0x419c, yy=0x01 (valeurs de départ, inchangées).
+        // Source : ctr=0x419c, yy=0x01 (valeurs de départ, inchangées). cd Source = 0x03:01.
         assert_eq!(&source_pkt[12..14], &[0x9c, 0x41]);
         assert_eq!(source_pkt[28], 0x01);
+        assert_eq!(&source_pkt[24..29], &[0x83, 0x66, 0xcd, 0x03, 0x01], "cd Source = 0x0301");
         assert_eq!(&source_pkt[32..40], &[0x82, 0x62, 0x01, 0x66, 0x00, 0x00, 0x00, 0x00]);
 
-        // Confirm : ctr=0x41ad (=0x419c+0x11), yy=0x02 (=0x01+1) — octets réels capturés.
+        // Confirm : ctr=0x41ad (=0x419c+0x11). cd Confirm = cd Source + 1 = 0x0302 (correctif
+        // 2026-07-11 : compteur 16 bits, +1 exact comme HX Edit — plus de saut +0x101 pp 03→04).
         assert_eq!(confirm_pkt.len(), 36);
         assert_eq!(confirm_pkt[0], 0x1b);
         assert_eq!(&confirm_pkt[10..14], &[0x00, 0x0c, 0xad, 0x41]);
         assert_eq!(pkt_confirm_yy(&confirm_pkt), 0x02);
-        assert_eq!(&confirm_pkt[24..32], &[0x83, 0x66, 0xcd, 0x04, 0x02, 0x64, 0x21, 0x65]);
+        assert_eq!(&confirm_pkt[24..32], &[0x83, 0x66, 0xcd, 0x03, 0x02, 0x64, 0x21, 0x65]);
         assert_eq!(&confirm_pkt[32..36], &[0x81, 0x66, 0x01, 0x00]);
     }
 

@@ -6255,24 +6255,19 @@ async function writeControllersSourceSelectionLive(sourceValue: string): Promise
       await invoke("write_controller_create_real_param_assignment", { slotBus, paramSelector });
     }
     // Source + confirmation obligatoire envoyées ensemble côté Rust (même verrou, séquence
-    // atomique) — voir `command_center_write.rs` pour le bug de calcul de `ctr` corrigé le
-    // 2026-07-10 (la confirmation doit dériver son `ctr` directement de celui de Source, pas de
-    // l'état partagé relu après coup).
+    // atomique) — voir `command_center_write.rs` : le compteur 16 bits `cd` du couple Source→Confirm
+    // avance de +1 exact (correctif 2026-07-11), pour se caler sur HX Edit.
     await invoke("write_controller_source_footswitch", { slotBus, footswitchNumber });
     console.info("[ControllersLiveWrite] source sent", { slotBus, isBypass, paramSelector, footswitchNumber });
 
-    // Relecture COMPLÈTE du preset après création (décision user 2026-07-10) : le tableau lit
-    // `preset_data` (buffer figé au chargement, jamais mis à jour par nos écritures), donc un
-    // simple `refreshControllersAssignmentsTable()` ne montrerait rien de neuf. C'est empiriquement
-    // la relecture preset (= ce que fait un débranchement/rebranchement USB) qui rend l'assignation
-    // pleinement opérationnelle côté app : elle repeuple `preset_data` (→ la ligne apparaît dans le
-    // tableau) ET, semble-t-il, réarme la synchro live (appui FS physique → grisage slot). Un settle
-    // court laisse le device committer l'assignation avant la relecture.
-    await delayMs(MATRIX_USB_OP_SETTLE_MS);
-    if (currentPresetIndex >= 0) {
-      markPresetModified();
-      await requestLoadForPreset(currentPresetIndex, { fullPresetReload: true });
-    }
+    // Plus de relecture preset après création (retirée le 2026-07-11) : elle avait été ajoutée en
+    // pensant qu'elle réarmerait la synchro live — hypothèse RÉFUTÉE (le device restait muet même
+    // après relecture). HX Edit ne relit d'ailleurs pas le preset après création : il remplit le
+    // tableau localement. On marque juste le preset comme modifié (dirty flag), comme HX Edit.
+    // NB : le tableau des assignations ne se rafraîchit donc plus tout seul à la création — à traiter
+    // séparément (MAJ locale façon HX Edit). Le vrai problème de synchro live restant est ailleurs :
+    // le device ne sert pas notre canal de notifications `f0:03` (armement mode éditeur, cf. mémoire).
+    markPresetModified();
   } catch (e) {
     console.error("[ControllersLiveWrite] source", e);
   }
