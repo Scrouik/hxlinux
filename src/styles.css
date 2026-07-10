@@ -368,25 +368,6 @@ html, body {
   box-shadow: 0 0 0 1px var(--amber-glow);
 }
 
-.models-controllers-save-test-btn {
-  flex: 0 0 auto;
-  margin-left: var(--controllers-label-col);
-  min-height: 26px;
-  padding: 4px 12px;
-  font: inherit;
-  font-size: 11px;
-  color: var(--amber);
-  background: var(--bg-base);
-  border: 1px solid var(--amber-dim);
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.models-controllers-save-test-btn:hover {
-  border-color: var(--amber);
-  background: var(--bg-raised);
-}
-
 .models-params-pane {
   flex: 1 1 0;
   min-height: 0;

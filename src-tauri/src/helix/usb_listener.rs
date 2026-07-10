@@ -23,7 +23,12 @@ use crate::helix::{
 use crate::helix::packet::{classify_in_packet, packet_counter, OutPacket};
 
 const ENDPOINT_IN: u8 = 0x81;
-const READ_TIMEOUT_MS: u64 = 50;
+/// Timeout modéré (pas infini) : réveille la boucle pour tester `stop` (arrêt propre) et permet
+/// une annulation d'URB parfaitement inoffensive après un silence — le bulk USB n'est pas lossy,
+/// le device bufferise et répond au `read_bulk` suivant. Découplé du poll depuis le 2026-07-10
+/// (voir `LiveParamPollShared`) : ce timeout n'a plus aucun impact sur la cadence du poll, donc
+/// peut être aussi long que souhaité sans retarder l'envoi du poll f0:03.
+const READ_TIMEOUT_MS: u64 = 500;
 const BUFFER_SIZE: usize = 512;
 /// Intervalle de poll f0:03 pour recevoir les changements de paramètre knob HW (85:62).
 const LIVE_PARAM_POLL_INTERVAL_MS: u64 = 40;
@@ -38,6 +43,110 @@ fn warn_slow_lock(label: &str, wait_ms: u128, hold_ms: u128, in_len: usize) {
     }
 }
 
+/// État partagé entre le thread POLL (cadence 40ms, indépendante) et le thread LECTURE (draine
+/// 0x81 en continu) — voir découverte 2026-07-10 (mémoire session) : un `read_bulk` bloquant
+/// jusqu'à 50ms dans la MÊME boucle que le poll retardait/gigotait ce dernier, donc le device
+/// était interrogé irrégulièrement et répondait moins (376 octets/18 transferts côté Linux contre
+/// 1724 octets/54 transferts côté HX Edit sur ce même canal, mesuré par capture différentielle).
+/// Séparer les deux responsabilités sur deux threads élimine ce couplage : la cadence du poll ne
+/// dépend plus jamais de la durée d'un `read_bulk`.
+struct LiveParamPollShared {
+    /// Diagnostic transitoire (gel du poll live-param) : log uniquement au CHANGEMENT d'état pour
+    /// identifier laquelle des 3 conditions bloque, sans spammer.
+    last_gate_ok: Option<bool>,
+    /// Référence pour le compteur roulant des octets 12-15 du poll actif (voir plus bas) —
+    /// capture HX Edit longue durée (`long_long_capture.pcapng`, 6 min) : ce champ progresse
+    /// à ~1,14 unité/ms de façon continue, jamais figé. Notre valeur figée précédente
+    /// (`09 10 01 00` constant) est la cause probable du gel après un moment (requête perçue
+    /// comme périmée par le device).
+    poll_epoch: Instant,
+    // Récupération après gel : sur 4 captures, un silence device de ~650-800ms précède
+    // systématiquement une dégradation PERMANENTE des réponses au poll actif (48/52 octets
+    // → 16 octets, sans 85:62). HX Edit tolère des silences plus courts (≤243ms observé sur
+    // 6 min) sans jamais dégrader. Faute de capture de référence pour une reprise, on tente
+    // une récupération empirique : après N réponses dégradées consécutives, on marque une
+    // pause (laisse le device souffler) puis on repart avec un tick à zéro (nouvelle
+    // "session" pour le compteur roulant du poll actif).
+    degraded_in_a_row: u32,
+    backoff_until: Option<Instant>,
+}
+
+impl LiveParamPollShared {
+    fn new() -> Self {
+        Self {
+            last_gate_ok: None,
+            poll_epoch: Instant::now(),
+            degraded_in_a_row: 0,
+            backoff_until: None,
+        }
+    }
+}
+
+const DEGRADED_THRESHOLD: u32 = 8;
+const RECOVER_BACKOFF_MS: u64 = 500;
+
+/// Thread dédié au poll actif f0:03 (cadence 40ms, propre — voir `LiveParamPollShared`). Ne fait
+/// QUE décider d'envoyer le poll et le mettre en file via `state.send()` (le thread `usb_writer`
+/// se charge de l'écriture réelle, avec son propre espacement `MIN_ED03_OUT_GAP_MS`) — aucune
+/// lecture, aucun couplage avec le thread de lecture 0x81.
+fn start_live_param_poll_thread(
+    state: Arc<Mutex<HelixState>>,
+    stop: Arc<AtomicBool>,
+    shared: Arc<Mutex<LiveParamPollShared>>,
+) {
+    thread::spawn(move || {
+        // Cadence basée sur un `Instant` de référence (pas un `sleep(40ms)` répété tel quel) pour
+        // éviter la dérive accumulée au fil des itérations.
+        let mut next_tick = Instant::now();
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                break;
+            }
+            let now = Instant::now();
+            if now < next_tick {
+                thread::sleep(next_tick - now);
+            }
+            next_tick += Duration::from_millis(LIVE_PARAM_POLL_INTERVAL_MS);
+
+            let mut sh = shared.lock().unwrap();
+            let mut s = state.lock().unwrap();
+            let connected = s.connected;
+            let editor_ready = s.editor_ready;
+            let preset_read_in_progress = s.preset_usb_read_in_progress();
+            let gate_ok = connected && editor_ready && !preset_read_in_progress;
+            if sh.last_gate_ok != Some(gate_ok) {
+                eprintln!(
+                    "[LiveParamPoll][gate] {} connected={} editor_ready={} preset_usb_read_in_progress={}",
+                    if gate_ok { "OUVERT" } else { "FERMÉ" },
+                    connected, editor_ready, preset_read_in_progress
+                );
+                sh.last_gate_ok = Some(gate_ok);
+            }
+            let backing_off = sh.backoff_until.map(|t| Instant::now() < t).unwrap_or(false);
+            if gate_ok && !backing_off {
+                let seq = s.next_x2_cnt();
+                // En-tête `02:10` (pas `05:10`) : deux captures HX Edit indépendantes
+                // (changement de slot au device, changement de paramètre au device —
+                // juillet 2026) montrent 100% des polls actifs et 100% des réponses
+                // `85:62` (knob HW) livrées avec `02:10`, jamais `05:10`. L'ancienne
+                // validation "10950/10950 = 05:10" provenait très probablement d'une
+                // édition faite depuis l'UI HX Edit (souris), pas depuis le device —
+                // un contexte différent de celui qu'on couvre ici (gestes matériels).
+                // Tail = compteur roulant (LE u32), pas figé.
+                let tick = sh.poll_epoch.elapsed().as_millis() as u32;
+                let tick_bytes = tick.to_le_bytes();
+                let mut pkt = vec![
+                    0x08, 0x00, 0x00, 0x18,
+                    0x02, 0x10, 0xf0, 0x03,
+                    0x00, seq, 0x00, 0x08,
+                ];
+                pkt.extend_from_slice(&tick_bytes);
+                s.send(OutPacket::new(pkt));
+            }
+        }
+    });
+}
+
 pub fn start_listener(
     handle: Arc<DeviceHandle<GlobalContext>>,
     state: Arc<Mutex<HelixState>>,
@@ -46,82 +155,23 @@ pub fn start_listener(
     session_stop: Arc<AtomicBool>,
     app_handle: Option<tauri::AppHandle>,
 ) {
+    let poll_shared = Arc::new(Mutex::new(LiveParamPollShared::new()));
+    start_live_param_poll_thread(Arc::clone(&state), Arc::clone(&stop), Arc::clone(&poll_shared));
+
     thread::spawn(move || {
         let mut buf = vec![0u8; BUFFER_SIZE];
         let mut seen_fingerprints: HashSet<Vec<u8>> = HashSet::new();
         let mut suppressed_repeats: u64 = 0;
-        let mut last_f0_poll = Instant::now();
-        // Diagnostic transitoire (gel du poll live-param) : log uniquement au CHANGEMENT
-        // d'état pour identifier laquelle des 3 conditions bloque, sans spammer.
-        let mut last_poll_gate_ok: Option<bool> = None;
-        // Référence pour le compteur roulant des octets 12-15 du poll actif (voir plus bas) —
-        // capture HX Edit longue durée (`long_long_capture.pcapng`, 6 min) : ce champ progresse
-        // à ~1,14 unité/ms de façon continue, jamais figé. Notre valeur figée précédente
-        // (`09 10 01 00` constant) est la cause probable du gel après un moment (requête perçue
-        // comme périmée par le device).
-        let mut poll_epoch = Instant::now();
-        // Récupération après gel : sur 4 captures, un silence device de ~650-800ms précède
-        // systématiquement une dégradation PERMANENTE des réponses au poll actif (48/52 octets
-        // → 16 octets, sans 85:62). HX Edit tolère des silences plus courts (≤243ms observé sur
-        // 6 min) sans jamais dégrader. Faute de capture de référence pour une reprise, on tente
-        // une récupération empirique : après N réponses dégradées consécutives, on marque une
-        // pause (laisse le device souffler) puis on repart avec un tick à zéro (nouvelle
-        // "session" pour le compteur roulant du poll actif).
-        let mut degraded_in_a_row: u32 = 0;
-        let mut poll_backoff_until: Option<Instant> = None;
-        const DEGRADED_THRESHOLD: u32 = 8;
-        const RECOVER_BACKOFF_MS: u64 = 500;
 
         loop {
-            // Poll actif f0:03/sub=08 toutes les 40ms : le device n'envoie 85:62 (param knob)
-            // qu'en réponse à ce poll avec byte14=0x01. Le keep-alive (sub=10/1047ms) ne suffit pas.
-            if last_f0_poll.elapsed().as_millis() >= LIVE_PARAM_POLL_INTERVAL_MS as u128 {
-                last_f0_poll = Instant::now();
-                if let Ok(mut s) = state.try_lock() {
-                    let connected = s.connected;
-                    let editor_ready = s.editor_ready;
-                    let preset_read_in_progress = s.preset_usb_read_in_progress();
-                    let gate_ok = connected && editor_ready && !preset_read_in_progress;
-                    if last_poll_gate_ok != Some(gate_ok) {
-                        eprintln!(
-                            "[LiveParamPoll][gate] {} connected={} editor_ready={} preset_usb_read_in_progress={}",
-                            if gate_ok { "OUVERT" } else { "FERMÉ" },
-                            connected, editor_ready, preset_read_in_progress
-                        );
-                        last_poll_gate_ok = Some(gate_ok);
-                    }
-                    let backing_off = poll_backoff_until
-                        .map(|t| Instant::now() < t)
-                        .unwrap_or(false);
-                    if gate_ok && !backing_off {
-                        let seq = s.next_x2_cnt();
-                        // En-tête `02:10` (pas `05:10`) : deux captures HX Edit indépendantes
-                        // (changement de slot au device, changement de paramètre au device —
-                        // juillet 2026) montrent 100% des polls actifs et 100% des réponses
-                        // `85:62` (knob HW) livrées avec `02:10`, jamais `05:10`. L'ancienne
-                        // validation "10950/10950 = 05:10" provenait très probablement d'une
-                        // édition faite depuis l'UI HX Edit (souris), pas depuis le device —
-                        // un contexte différent de celui qu'on couvre ici (gestes matériels).
-                        // Tail = compteur roulant (LE u32), pas figé.
-                        let tick = poll_epoch.elapsed().as_millis() as u32;
-                        let tick_bytes = tick.to_le_bytes();
-                        let mut pkt = vec![
-                            0x08, 0x00, 0x00, 0x18,
-                            0x02, 0x10, 0xf0, 0x03,
-                            0x00, seq, 0x00, 0x08,
-                        ];
-                        pkt.extend_from_slice(&tick_bytes);
-                        s.send(OutPacket::new(pkt));
-                    }
-                }
-            }
-
             // Vérifier si on doit s'arrêter
             if stop.load(Ordering::SeqCst) {
                 break;
             }
 
-            // Lire depuis l'endpoint 0x81
+            // Lire depuis l'endpoint 0x81 — boucle serrée, rien d'autre entre deux appels (le
+            // poll périodique vit sur son propre thread depuis le 2026-07-10, voir
+            // `start_live_param_poll_thread`).
             match handle.read_bulk(
                 ENDPOINT_IN,
                 &mut buf,
@@ -129,27 +179,30 @@ pub fn start_listener(
             ) {
                 Ok(n) if n > 0 => {
                     let data = buf[..n].to_vec();
-                    if last_poll_gate_ok == Some(true)
-                        && classify_in_packet(&data) == "in_x2_stream"
                     {
-                        if data.len() <= 16 {
-                            degraded_in_a_row += 1;
-                            if degraded_in_a_row == DEGRADED_THRESHOLD {
-                                eprintln!(
-                                    "[LiveParamPoll][recover] {DEGRADED_THRESHOLD} réponses dégradées (len<=16) d'affilée — pause {RECOVER_BACKOFF_MS}ms puis reset du tick"
-                                );
-                                poll_backoff_until =
-                                    Some(Instant::now() + Duration::from_millis(RECOVER_BACKOFF_MS));
-                                poll_epoch = Instant::now();
+                        let mut sh = poll_shared.lock().unwrap();
+                        if sh.last_gate_ok == Some(true)
+                            && classify_in_packet(&data) == "in_x2_stream"
+                        {
+                            if data.len() <= 16 {
+                                sh.degraded_in_a_row += 1;
+                                if sh.degraded_in_a_row == DEGRADED_THRESHOLD {
+                                    eprintln!(
+                                        "[LiveParamPoll][recover] {DEGRADED_THRESHOLD} réponses dégradées (len<=16) d'affilée — pause {RECOVER_BACKOFF_MS}ms puis reset du tick"
+                                    );
+                                    sh.backoff_until =
+                                        Some(Instant::now() + Duration::from_millis(RECOVER_BACKOFF_MS));
+                                    sh.poll_epoch = Instant::now();
+                                }
+                            } else if data.len() >= 40 {
+                                if sh.degraded_in_a_row >= DEGRADED_THRESHOLD {
+                                    eprintln!(
+                                        "[LiveParamPoll][recover] réponse complète retrouvée (len={}) — abonnement rétabli",
+                                        data.len()
+                                    );
+                                }
+                                sh.degraded_in_a_row = 0;
                             }
-                        } else if data.len() >= 40 {
-                            if degraded_in_a_row >= DEGRADED_THRESHOLD {
-                                eprintln!(
-                                    "[LiveParamPoll][recover] réponse complète retrouvée (len={}) — abonnement rétabli",
-                                    data.len()
-                                );
-                            }
-                            degraded_in_a_row = 0;
                         }
                     }
                     if usb_io_diag_enabled() {

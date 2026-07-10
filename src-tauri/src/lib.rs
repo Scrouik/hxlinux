@@ -2893,9 +2893,40 @@ fn write_slot_active_state(
     Ok(())
 }
 
-/// Assigne un Footswitch comme Source de contrôle Command Center pour un bloc (bus Kempline).
-/// Établit le contexte d'édition device pour les écritures Type/Couleur/Nom qui suivent — voir
-/// `helix::command_center_write` (aucune de ces autres écritures ne porte d'identifiant de bus).
+/// Lie un switch à un vrai paramètre catalogue (`param_selector` = index du paramètre dans la
+/// liste du modèle) — étape OBLIGATOIRE avant Source pour créer une assignation sur autre chose
+/// que Bypass, sinon le device assigne par défaut au Bypass du bloc. Voir
+/// `helix::command_center_write::build_controller_create_real_param_assignment_write_packet`
+/// pour les limites connues (delta `ctr` non confirmé, ordinal `4a` fixé à 3 — une seule création
+/// à la fois pour l'instant).
+#[tauri::command]
+fn write_controller_create_real_param_assignment(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_bus: u8,
+    param_selector: u8,
+) -> Result<(), String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    let packet = helix::command_center_write::build_controller_create_real_param_assignment_write_packet(
+        &mut s, slot_bus, param_selector,
+    );
+    s.send(OutPacket::new(packet));
+    drop(s);
+    eprintln!(
+        "[LiveWrite][controllerCreateParam][sent] slotBus={slot_bus:02x} paramSelector={param_selector}"
+    );
+    Ok(())
+}
+
+/// Assigne un Footswitch comme Source de contrôle Command Center pour un bloc (bus Kempline), puis
+/// envoie IMMÉDIATEMENT le paquet de confirmation obligatoire (même verrou, séquence atomique) —
+/// voir `helix::command_center_write::build_controller_source_and_confirm_write_packets` pour le
+/// détail du bug corrigé le 2026-07-10 (le `ctr` de confirmation doit être dérivé directement de
+/// celui de Source, pas relu depuis l'état partagé après l'avancement de Source).
 #[tauri::command]
 fn write_controller_source_footswitch(
     state: tauri::State<Arc<Mutex<AppState>>>,
@@ -2908,13 +2939,15 @@ fn write_controller_source_footswitch(
     };
     let helix_arc = helix_arc.ok_or("HX non connecté")?;
     let mut s = helix_arc.lock().unwrap();
-    let packet = helix::command_center_write::build_controller_source_footswitch_write_packet(
-        &mut s, slot_bus, footswitch_number,
-    );
-    s.send(OutPacket::new(packet));
+    let (source_packet, confirm_packet) =
+        helix::command_center_write::build_controller_source_and_confirm_write_packets(
+            &mut s, slot_bus, footswitch_number,
+        );
+    s.send(OutPacket::new(source_packet));
+    s.send(OutPacket::new(confirm_packet));
     drop(s);
     eprintln!(
-        "[LiveWrite][controllerSource][sent] slotBus={slot_bus:02x} footswitch={footswitch_number}"
+        "[LiveWrite][controllerSource+Confirm][sent] slotBus={slot_bus:02x} footswitch={footswitch_number}"
     );
     Ok(())
 }
@@ -5196,6 +5229,7 @@ pub fn run() {
             get_active_preset_controller_assignments,
             get_active_preset_slot_active_states,
             write_slot_active_state,
+            write_controller_create_real_param_assignment,
             write_controller_source_footswitch,
             write_controller_type,
             write_controller_color,

@@ -6143,6 +6143,11 @@ function initControllersEditorDetailControls(): void {
   typeSlider?.addEventListener("input", () => {
     if (typeValue) typeValue.textContent = typeSlider.value === "1" ? "Momentary" : "Latching";
   });
+  typeSlider?.addEventListener("change", () => {
+    void invoke("write_controller_type", { momentary: typeSlider.value === "1" }).catch((e) =>
+      console.error("[ControllersLiveWrite] type", e),
+    );
+  });
 
   const minSlider = document.getElementById("models-controllers-detail-min") as HTMLInputElement | null;
   const minValue = document.getElementById("models-controllers-detail-min-value");
@@ -6171,6 +6176,18 @@ function initControllersEditorDetailControls(): void {
     if (colorValue) colorValue.textContent = CONTROLLERS_LED_COLORS[idx] ?? "—";
     applyControllersLedColorToNameInput(idx);
   });
+  colorSlider?.addEventListener("change", () => {
+    void invoke("write_controller_color", { colorIndex: Number(colorSlider.value) }).catch((e) =>
+      console.error("[ControllersLiveWrite] color", e),
+    );
+  });
+
+  const nameInput = document.getElementById("models-controllers-detail-name") as HTMLInputElement | null;
+  nameInput?.addEventListener("change", () => {
+    void invoke("write_controller_name", { name: nameInput.value }).catch((e) =>
+      console.error("[ControllersLiveWrite] name", e),
+    );
+  });
 
   const sourceSelect = document.getElementById(
     "models-controllers-editor-source-select",
@@ -6180,71 +6197,84 @@ function initControllersEditorDetailControls(): void {
     if (!detail) return;
     const show = sourceSelect.value !== "none";
     detail.hidden = !show;
-    if (show) resetControllersEditorDetail();
-  });
-
-  const saveTestBtn = document.getElementById(
-    "models-controllers-save-test-btn",
-  ) as HTMLButtonElement | null;
-  saveTestBtn?.addEventListener("click", () => {
-    void saveControllersAssignmentTest();
+    if (show) {
+      resetControllersEditorDetail();
+      void writeControllersSourceSelectionLive(sourceSelect.value);
+    }
   });
 }
 
 /**
- * Version MINIMALE de test du bouton "Save Controllers" (2026-07-09) — écrit Source puis
- * Type/Couleur/Nom en séquence pour l'assignation actuellement affichée dans le panneau détail.
- * PAS la version finale : pas de lignes rouges/brouillons, pas de popup d'avertissement, et ne
- * gère que la Source Footswitch (pas EXP Pedal/None) ni Min/Max (format d'écriture pas encore
- * implémenté côté Rust — séquence de 3 paquets, voir mémoire session). Sert uniquement à valider
- * que le mécanisme de base (contexte implicite établi par Source, cf. commentaire
- * `command_center_write.rs`) fonctionne réellement sur le device avant de construire le reste.
+ * Reproduit la mécanique HX Edit (2026-07-10, décision explicite de l'user après avoir constaté
+ * les risques de désynchronisation observés sur le scroll model pull) : écriture live IMMÉDIATE à
+ * chaque action, pas de bouton "Save" groupé. Cette fonction gère l'écriture au moment précis où
+ * une Source (Footswitch) est choisie — elle crée l'assignation (liaison paramètre si ce n'est pas
+ * Bypass, obligatoire sinon le device assigne par défaut au Bypass du bloc, voir
+ * `command_center_write.rs`) puis écrit la Source elle-même. Type/Couleur/Nom sont écrits
+ * séparément, à chaque modification (voir `initControllersEditorDetailControls`). Ne gère que la
+ * Source Footswitch (pas EXP Pedal/None) ni Min/Max (format d'écriture pas encore implémenté côté
+ * Rust — séquence de 3 paquets, voir mémoire session).
  */
-async function saveControllersAssignmentTest(): Promise<void> {
+async function writeControllersSourceSelectionLive(sourceValue: string): Promise<void> {
   const ki = selectedParamsKemplineSlotIndex;
   if (ki === null) {
-    setStatus("Save Controllers (test) : aucun slot actif");
+    console.warn("[ControllersLiveWrite] source: aucun slot actif");
     return;
   }
   const slotBus = kemplineIndexToSlotBusJs(ki);
   if (slotBus === null) {
-    setStatus("Save Controllers (test) : slot invalide");
+    console.warn("[ControllersLiveWrite] source: slot invalide");
     return;
   }
-  const sourceSelect = document.getElementById(
-    "models-controllers-editor-source-select",
-  ) as HTMLSelectElement | null;
-  const fsMatch = /^fs(\d)$/.exec(sourceSelect?.value ?? "");
+  const fsMatch = /^fs(\d)$/.exec(sourceValue);
   if (!fsMatch) {
-    setStatus("Save Controllers (test) : seul Footswitch 1-8 est supporté pour l'instant");
+    console.warn("[ControllersLiveWrite] source: seul Footswitch 1-8 est supporté pour l'instant");
     return;
   }
   const footswitchNumber = Number(fsMatch[1]);
 
-  const typeSlider = document.getElementById("models-controllers-detail-type") as HTMLInputElement | null;
-  const momentary = typeSlider?.value === "1";
-  const colorSlider = document.getElementById("models-controllers-detail-color") as HTMLInputElement | null;
-  const colorIndex = Number(colorSlider?.value ?? "0");
-  const nameInput = document.getElementById("models-controllers-detail-name") as HTMLInputElement | null;
-  const name = nameInput?.value ?? "";
+  const isBypass = isControllersBypassParamSelected();
+  let paramSelector: number | undefined;
+  if (!isBypass) {
+    const ctx = selectedParamsHwWireContext;
+    const paramSelect = document.getElementById(
+      "models-controllers-editor-param-select",
+    ) as HTMLSelectElement | null;
+    const rowIndex = ctx?.paramsForDisplay.findIndex(
+      (p) => (p.symbolicID ?? "").trim() === paramSelect?.value,
+    );
+    if (!ctx || rowIndex === undefined || rowIndex < 0) {
+      console.warn("[ControllersLiveWrite] source: paramètre introuvable dans le modèle chargé");
+      return;
+    }
+    paramSelector = liveWriteParamIndexForRow(ctx.paramsForDisplay, rowIndex, ctx.catalogSignal);
+  }
 
   try {
-    setStatus("Save Controllers (test) : écriture en cours…");
+    if (!isBypass) {
+      await invoke("write_controller_create_real_param_assignment", { slotBus, paramSelector });
+    }
+    // Source + confirmation obligatoire envoyées ensemble côté Rust (même verrou, séquence
+    // atomique) — voir `command_center_write.rs` pour le bug de calcul de `ctr` corrigé le
+    // 2026-07-10 (la confirmation doit dériver son `ctr` directement de celui de Source, pas de
+    // l'état partagé relu après coup).
     await invoke("write_controller_source_footswitch", { slotBus, footswitchNumber });
-    await invoke("write_controller_type", { momentary });
-    await invoke("write_controller_color", { colorIndex });
-    await invoke("write_controller_name", { name });
-    setStatus("Save Controllers (test) : envoyé — vérifie l'écran du device");
-    console.info("[ControllersSaveTest] sent", {
-      slotBus,
-      footswitchNumber,
-      momentary,
-      colorIndex,
-      name,
-    });
+    console.info("[ControllersLiveWrite] source sent", { slotBus, isBypass, paramSelector, footswitchNumber });
+
+    // Relecture COMPLÈTE du preset après création (décision user 2026-07-10) : le tableau lit
+    // `preset_data` (buffer figé au chargement, jamais mis à jour par nos écritures), donc un
+    // simple `refreshControllersAssignmentsTable()` ne montrerait rien de neuf. C'est empiriquement
+    // la relecture preset (= ce que fait un débranchement/rebranchement USB) qui rend l'assignation
+    // pleinement opérationnelle côté app : elle repeuple `preset_data` (→ la ligne apparaît dans le
+    // tableau) ET, semble-t-il, réarme la synchro live (appui FS physique → grisage slot). Un settle
+    // court laisse le device committer l'assignation avant la relecture.
+    await delayMs(MATRIX_USB_OP_SETTLE_MS);
+    if (currentPresetIndex >= 0) {
+      markPresetModified();
+      await requestLoadForPreset(currentPresetIndex, { fullPresetReload: true });
+    }
   } catch (e) {
-    setStatus(`Save Controllers (test) : erreur ${e}`);
-    console.error("[ControllersSaveTest]", e);
+    console.error("[ControllersLiveWrite] source", e);
   }
 }
 
