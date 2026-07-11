@@ -987,19 +987,22 @@ pub fn build_slot_model_probe_packets(
     // Cela évite les transitions de session "bloquées" après un envoi 0310 qui
     // peuvent ensuite faire ignorer les bulks 8010 (et inversement).
     //
-    // EXCEPTION CREATE-sur-slot-vide (2026-07-11) : HX Edit n'envoie AUCUN préambule avant un ajout
-    // sur slot vide (juste le CREATE puis un `02:10:f0:03(0x10)` APRÈS). Ce préambule (surtout
-    // `pre_ef` ef:03:01:10) coupe le canal éditeur `f0:03` — mesuré : add_bypass_switch_FS_LinuxV4
-    // (préambule → f0:03 mort) vs add_empty_*_HXEdit (pas de préambule → f0:03 survit + 82:69).
-    // On le saute donc dès qu'une substitution CREATE s'applique (simple, amp+cab-legacy, cab-dual).
+    // EXCEPTION CREATE/REPLACE modèle (2026-07-11) : HX Edit n'envoie AUCUN préambule avant un ajout
+    // sur slot vide NI avant un remplacement sur slot occupé. Ce préambule (surtout `pre_ef`
+    // ef:03:01:10) coupe le canal éditeur `f0:03` — mesuré : add_bypass_switch_FS_LinuxV4 & replace
+    // (préambule → f0:03 mort) vs captures HX Edit correspondantes (pas de préambule → f0:03 survit).
+    // On le saute donc dès qu'une substitution CREATE s'applique (add, toutes variantes) OU pour un
+    // ReplaceOccupied (dont la forme REPLACE catalogue est déjà correcte).
     let any_create_substitution = simple_model_create_owned.is_some()
         || amp_cab_legacy_create_owned.is_some()
         || cab_dual_legacy_create_owned.is_some()
         || amp_cab_create_owned.is_some()
         || cab_dual_create_owned.is_some();
+    let skip_preamble =
+        any_create_substitution || matches!(op, SlotModelProbeOp::ReplaceOccupied);
     if use_json_bulk
         && !cab_dual_cab2_replace_after_focus
-        && !any_create_substitution
+        && !skip_preamble
     {
         let mut pre_ef = [0u8; 16];
         let mut pre_f0 = [0u8; 16];
