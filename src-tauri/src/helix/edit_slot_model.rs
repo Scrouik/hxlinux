@@ -258,12 +258,16 @@ pub fn build_cab_dual_create_bulk(dual_assign_bulk: &[u8]) -> Option<Vec<u8>> {
 /// Le 2ᵉ clic UI (replace) envoie le bulkHex assign head=23 cd:07 — c’est celui que le HW accepte ;
 /// voir capture `amp_cab legacy guitar.json` #1259 (pas de 2d sur assign initial).
 fn amp_cab_legacy_create_head2d_enabled() -> bool {
+    // Défaut ON depuis 2026-07-11 : la forme CREATE amp+cab-legacy (build_amp_cab_legacy_create_bulk)
+    // correspond byte-exact à la capture HX Edit `add_ampcab_legacy.json` (trailer 09:12), et l'ajout
+    // sur slot vide en REPLACE coupait le canal éditeur f0:03. `HX_AMP_CAB_LEGACY_CREATE_HEAD2D=0`
+    // pour revenir à l'ancien comportement.
     match std::env::var("HX_AMP_CAB_LEGACY_CREATE_HEAD2D").as_deref() {
-        Ok(v) => matches!(
+        Ok(v) => !matches!(
             v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
+            "0" | "false" | "no" | "off"
         ),
-        Err(_) => false,
+        Err(_) => true,
     }
 }
 
@@ -282,12 +286,32 @@ fn simple_model_create_enabled() -> bool {
     }
 }
 
-/// Bulk assign `amp+cab-legacy` compact (head `0x23`, lane `cd:07`, marqueur `c3:19`).
+/// Bulk assign `amp+cab-legacy` compact (head `0x23`, marqueur `c3:19`, byte 14 = `0x02`).
+///
+/// Distingué structurellement (validé sur les 1060 entrées catalogue 2026-07-11) : head 0x23 est
+/// partagé (amp, mono, single, stereo, dual…), mais amp+cab-legacy = **byte14 = 0x02 + PAS de `1a ff`**.
+/// L'amp standalone (byte14=0x02 aussi) a `1a ff` → capté par le garde simple. Le `cd` (octet haut du
+/// compteur) VARIE par modèle (guitar cd:07, bass cd:08) — on ne le teste donc PAS.
 fn bulk_is_amp_cab_legacy_assign(bulk: &[u8]) -> bool {
     bulk.first() == Some(&0x23)
         && bulk.len() == 44
-        && bulk.windows(4).any(|w| w == [0x83, 0x66, 0xcd, 0x07])
-        && bulk.windows(AMP_CAB_BULK_MARKER.len())
+        && bulk.get(14) == Some(&0x02)
+        && !bulk.windows(2).any(|w| w == [0x1a, 0xff])
+        && bulk
+            .windows(AMP_CAB_BULK_MARKER.len())
+            .any(|w| w == AMP_CAB_BULK_MARKER)
+}
+
+/// Bulk assign `cab-dual-legacy` (variante `dual` en forme legacy : head `0x23`, marqueur `c3:19`,
+/// byte 14 = `0x00`, PAS de `1a ff`). Distinct du dual moderne (`cd:0a`, head 0x27) et des
+/// mono/single/stereo head 0x23 (qui ont `1a ff` → garde simple).
+fn bulk_is_cab_dual_legacy_assign(bulk: &[u8]) -> bool {
+    bulk.first() == Some(&0x23)
+        && bulk.len() == 44
+        && bulk.get(14) == Some(&0x00)
+        && !bulk.windows(2).any(|w| w == [0x1a, 0xff])
+        && bulk
+            .windows(AMP_CAB_BULK_MARKER.len())
             .any(|w| w == AMP_CAB_BULK_MARKER)
 }
 
@@ -307,9 +331,21 @@ pub fn build_amp_cab_legacy_create_bulk(assign_bulk: &[u8]) -> Option<Vec<u8>> {
     let mut out = assign_bulk.to_vec();
     out[0] = 0x2d;
 
+    // `83 66 cd <hi>` → force l'octet haut du compteur à 0x03 (valeur absolue sans importance ;
+    // le cd catalogue varie par modèle, ex. guitar 0x07 / bass 0x08).
     for i in 0..out.len().saturating_sub(4) {
-        if out[i..i + 4] == [0x83, 0x66, 0xcd, 0x07] {
+        if out[i] == 0x83 && out[i + 1] == 0x66 && out[i + 2] == 0xcd {
             out[i + 3] = 0x03;
+            break;
+        }
+    }
+
+    // term `64 28 65` (REPLACE) → `64 27 65` (CREATE) — sans ça le device n'ajoute pas le modèle
+    // (le Bypass ne se crée pas ensuite). Manquait dans la version d'origine (bug dormant, path OFF).
+    // Confirmé sur capture HX Edit `add_ampcab_legacy.json`.
+    for i in 0..out.len().saturating_sub(2) {
+        if out[i] == 0x64 && out[i + 1] == 0x28 && out[i + 2] == 0x65 {
+            out[i + 1] = 0x27;
             break;
         }
     }
@@ -336,6 +372,128 @@ pub fn build_amp_cab_legacy_create_bulk(assign_bulk: &[u8]) -> Option<Vec<u8>> {
         out[20] = out.len().saturating_sub(24 + 3) as u8;
     }
     // Capture HX Edit (#1467) : octets 14–15 = `00 00` (pas `02 00` du bulkHex assign cd:07).
+    if out.len() > 15 {
+        out[14] = 0x00;
+        out[15] = 0x00;
+    }
+    Some(out)
+}
+
+/// Trailer de création pour le **plain amp+cab** (head `0x25`) — capture HX Edit `add_ampcab.json`
+/// (`09 21 0a c3 00`, diffère du legacy `09 12 …`).
+const AMP_CAB_CREATE_TRAILER: [u8; 5] = [0x09, 0x21, 0x0a, 0xc3, 0x00];
+
+/// Bulk assign **plain amp+cab** (head `0x25`, 48 o, lane `cd:07`, marqueur `c3:19`) — distinct du
+/// legacy (head `0x23`) et du cab-dual (`cd:0a`).
+fn bulk_is_amp_cab_assign(bulk: &[u8]) -> bool {
+    bulk.first() == Some(&0x25)
+        && bulk.len() == 48
+        && !bulk_is_cab_dual_cd0a(bulk)
+        && bulk.windows(4).any(|w| w == [0x83, 0x66, 0xcd, 0x07])
+        && bulk
+            .windows(AMP_CAB_BULK_MARKER.len())
+            .any(|w| w == AMP_CAB_BULK_MARKER)
+}
+
+/// Plain amp+cab (head `0x25`, `cd:07`) → forme CREATE (head recalculé, `term=0x27`, segment création,
+/// trailer `09:21`). Miroir de `build_amp_cab_legacy_create_bulk` mais pour le head `0x25`. Byte-exact
+/// vs capture HX Edit `add_ampcab.json` (2026-07-11). Longueurs (b0, b20) dérivées du nombre d'octets
+/// `00` finaux — formule générale validée sur simple/legacy/plain.
+pub fn build_amp_cab_create_bulk(assign_bulk: &[u8]) -> Option<Vec<u8>> {
+    if !bulk_is_amp_cab_assign(assign_bulk) {
+        return None;
+    }
+    let mut out = assign_bulk.to_vec();
+
+    // cd:07 → cd:03 (octet haut du compteur ; valeur absolue sans importance pour le device).
+    for i in 0..out.len().saturating_sub(4) {
+        if out[i..i + 4] == [0x83, 0x66, 0xcd, 0x07] {
+            out[i + 3] = 0x03;
+            break;
+        }
+    }
+    // term `64 28 65` → `64 27 65`.
+    for i in 0..out.len().saturating_sub(2) {
+        if out[i] == 0x64 && out[i + 1] == 0x28 && out[i + 2] == 0x65 {
+            out[i + 1] = 0x27;
+            break;
+        }
+    }
+    // `82 62 <slot> 64` → `… 63`.
+    for i in 0..out.len().saturating_sub(4) {
+        if out[i] == 0x82 && out[i + 1] == 0x62 && out[i + 3] == 0x64 {
+            out[i + 3] = 0x63;
+            break;
+        }
+    }
+    // Insère le segment création avant `83 17`.
+    let insert_pos = out.windows(2).position(|w| w == [0x83, 0x17])?;
+    out.splice(
+        insert_pos..insert_pos,
+        AMP_CAB_LEGACY_CREATE_SEGMENT.iter().copied(),
+    );
+    // Tronque après le champ cab, ajoute le trailer création plain.
+    let (_cab_s, cab_e) = amp_cab_cab_field_range_in_bulk(&out)?;
+    out.truncate(cab_e);
+    out.extend_from_slice(&AMP_CAB_CREATE_TRAILER);
+
+    // Longueurs depuis le nombre d'octets `00` finaux (b0 = len-8-tz, b20 = len-24-tz).
+    let tz = out.iter().rev().take_while(|&&b| b == 0).count();
+    out[0] = out.len().saturating_sub(8 + tz) as u8;
+    if out.len() > 20 {
+        out[20] = out.len().saturating_sub(24 + tz) as u8;
+    }
+    // Octets 14-15 = `00 00` (comme le legacy, pas le `02 00` du bulkHex assign cd:07).
+    if out.len() > 15 {
+        out[14] = 0x00;
+        out[15] = 0x00;
+    }
+    Some(out)
+}
+
+/// Trailer de création `cab-dual-legacy` — capture HX Edit `add_cab_dual_legacy.json` (`09 10 …`,
+/// diffère de l'amp+cab-legacy `09 12 …`).
+const CAB_DUAL_LEGACY_CREATE_TRAILER: [u8; 7] = [0x09, 0x10, 0x0a, 0xc3, 0x00, 0x00, 0x00];
+
+/// cab-dual-legacy (variante `dual` en head `0x23`) → forme CREATE (head `0x2d`, `term=0x27`, segment
+/// création, trailer `09:10`). Miroir de `build_amp_cab_legacy_create_bulk` (structure identique) avec
+/// un trailer différent. Byte-exact vs capture HX Edit `add_cab_dual_legacy.json` (2026-07-11).
+pub fn build_cab_dual_legacy_create_bulk(assign_bulk: &[u8]) -> Option<Vec<u8>> {
+    if !bulk_is_cab_dual_legacy_assign(assign_bulk) {
+        return None;
+    }
+    let mut out = assign_bulk.to_vec();
+    out[0] = 0x2d;
+
+    for i in 0..out.len().saturating_sub(4) {
+        if out[i] == 0x83 && out[i + 1] == 0x66 && out[i + 2] == 0xcd {
+            out[i + 3] = 0x03;
+            break;
+        }
+    }
+    for i in 0..out.len().saturating_sub(2) {
+        if out[i] == 0x64 && out[i + 1] == 0x28 && out[i + 2] == 0x65 {
+            out[i + 1] = 0x27;
+            break;
+        }
+    }
+    for i in 0..out.len().saturating_sub(4) {
+        if out[i] == 0x82 && out[i + 1] == 0x62 && out[i + 3] == 0x64 {
+            out[i + 3] = 0x63;
+            break;
+        }
+    }
+    let insert_pos = out.windows(2).position(|w| w == [0x83, 0x17])?;
+    out.splice(
+        insert_pos..insert_pos,
+        AMP_CAB_LEGACY_CREATE_SEGMENT.iter().copied(),
+    );
+    let (_cab_s, cab_e) = amp_cab_cab_field_range_in_bulk(&out)?;
+    out.truncate(cab_e);
+    out.extend_from_slice(&CAB_DUAL_LEGACY_CREATE_TRAILER);
+    if out.len() >= 21 {
+        out[20] = out.len().saturating_sub(24 + 3) as u8;
+    }
     if out.len() > 15 {
         out[14] = 0x00;
         out[15] = 0x00;
@@ -737,6 +895,42 @@ pub fn build_slot_model_probe_packets(
     } else {
         None
     };
+    // cab-dual-legacy (variante `dual` en head 0x23, byte14=0x00) sur slot vide → forme CREATE dédiée
+    // (trailer 09:10, byte-exact vs add_cab_dual_legacy.json).
+    let cab_dual_legacy_create_owned: Option<Vec<u8>> = if matches!(op, SlotModelProbeOp::AddToEmpty)
+        && cab_dual_create_owned.is_none()
+        && amp_cab_legacy_create_owned.is_none()
+        && matches!(usb_assign_full_bulk, Some(b) if bulk_is_cab_dual_legacy_assign(b))
+    {
+        let made = usb_assign_full_bulk.and_then(build_cab_dual_legacy_create_bulk);
+        if let Some(ref c) = made {
+            eprintln!(
+                "[SlotModelProbe] cab-dual-legacy CREATE ({} o) substitué au bulk REPLACE (head 0x23)",
+                c.len()
+            );
+        }
+        made
+    } else {
+        None
+    };
+    // Plain amp+cab (head 0x25) sur slot vide : pas de builder legacy (head 0x23) → forme CREATE
+    // dédiée (byte-exact vs capture HX Edit add_ampcab.json, trailer 09:21).
+    let amp_cab_create_owned: Option<Vec<u8>> = if matches!(op, SlotModelProbeOp::AddToEmpty)
+        && cab_dual_create_owned.is_none()
+        && amp_cab_legacy_create_owned.is_none()
+        && matches!(usb_assign_full_bulk, Some(b) if bulk_is_amp_cab_assign(b))
+    {
+        let made = usb_assign_full_bulk.and_then(build_amp_cab_create_bulk);
+        if let Some(ref c) = made {
+            eprintln!(
+                "[SlotModelProbe] amp+cab plain CREATE ({} o) substitué au bulk REPLACE (head 0x25)",
+                c.len()
+            );
+        }
+        made
+    } else {
+        None
+    };
     // Modèle SIMPLE (bloc unique) sur slot vide : le bulkHex catalogue est une forme REMPLACEMENT
     // (`term=0x28`, sans segment création) — car toutes les entrées `HX_ModelUsbAssign.json` ont été
     // capturées en remplacement (confirmé user 2026-07-11). Envoyé tel quel sur slot vide, ce REPLACE
@@ -763,6 +957,8 @@ pub fn build_slot_model_probe_packets(
     let usb_assign_full_bulk: Option<&[u8]> = cab_dual_create_owned
         .as_deref()
         .or(amp_cab_legacy_create_owned.as_deref())
+        .or(cab_dual_legacy_create_owned.as_deref())
+        .or(amp_cab_create_owned.as_deref())
         .or(simple_model_create_owned.as_deref())
         .or(usb_assign_full_bulk);
 
@@ -791,14 +987,19 @@ pub fn build_slot_model_probe_packets(
     // Cela évite les transitions de session "bloquées" après un envoi 0310 qui
     // peuvent ensuite faire ignorer les bulks 8010 (et inversement).
     //
-    // EXCEPTION modèle simple CREATE (2026-07-11) : HX Edit n'envoie AUCUN préambule avant un ajout
-    // simple sur slot vide (juste le CREATE puis un `02:10:f0:03(0x10)` APRÈS). Ce préambule (surtout
+    // EXCEPTION CREATE-sur-slot-vide (2026-07-11) : HX Edit n'envoie AUCUN préambule avant un ajout
+    // sur slot vide (juste le CREATE puis un `02:10:f0:03(0x10)` APRÈS). Ce préambule (surtout
     // `pre_ef` ef:03:01:10) coupe le canal éditeur `f0:03` — mesuré : add_bypass_switch_FS_LinuxV4
-    // (préambule → f0:03 mort) vs add_empty_disto_HXEdit (pas de préambule → f0:03 survit + 82:69).
-    // On le saute donc quand la substitution CREATE modèle-simple s'applique.
+    // (préambule → f0:03 mort) vs add_empty_*_HXEdit (pas de préambule → f0:03 survit + 82:69).
+    // On le saute donc dès qu'une substitution CREATE s'applique (simple, amp+cab-legacy, cab-dual).
+    let any_create_substitution = simple_model_create_owned.is_some()
+        || amp_cab_legacy_create_owned.is_some()
+        || cab_dual_legacy_create_owned.is_some()
+        || amp_cab_create_owned.is_some()
+        || cab_dual_create_owned.is_some();
     if use_json_bulk
         && !cab_dual_cab2_replace_after_focus
-        && simple_model_create_owned.is_none()
+        && !any_create_substitution
     {
         let mut pre_ef = [0u8; 16];
         let mut pre_f0 = [0u8; 16];
@@ -1274,6 +1475,76 @@ mod simple_model_create_tests {
     fn create_form_bulk_is_rejected() {
         assert!(build_simple_model_create_bulk(&ADD_MODEL_BULK_TEMPLATE).is_none());
     }
+
+    /// amp+cab-legacy (`HD2_AmpWhoWatt100`) : bulk REPLACE (44o, head 0x23, `64:28:65`) → CREATE 56o
+    /// identique à la capture HX Edit `add_ampcab_legacy.json` (term `64:27:65`, trailer `09:12`).
+    /// Masque seq(9)/ctr(12-13)/cd(27-28) = compteurs runtime.
+    #[test]
+    fn ampcab_legacy_replace_becomes_hxedit_create() {
+        let input = resolve_usb_assign_bulk("HD2_AmpWhoWatt100", "amp+cab-legacy").expect("bulk");
+        let out = build_amp_cab_legacy_create_bulk(&input).expect("create");
+        let hx_create = hx("2d:00:00:18:80:10:ed:03:00:fc:00:04:37:89:00:00:01:00:06:00:1d:00:00:00:83:66:cd:04:28:64:27:65:82:62:01:63:82:13:06:14:83:18:83:17:c3:19:2c:1a:47:09:12:0a:c3:00:00:00");
+        assert_eq!(out.len(), hx_create.len(), "longueur");
+        for (i, (g, e)) in out.iter().zip(hx_create.iter()).enumerate() {
+            if matches!(i, 9 | 12 | 13 | 27 | 28) {
+                continue; // seq / ctr / cd = runtime
+            }
+            assert_eq!(g, e, "octet #{i} diffère ({g:#04x} vs {e:#04x})");
+        }
+        assert!(out.windows(3).any(|w| w == [0x64, 0x27, 0x65]), "term CREATE 0x27");
+        assert!(!out.windows(3).any(|w| w == [0x64, 0x28, 0x65]), "plus de term REPLACE 0x28");
+    }
+
+    /// plain amp+cab (`HD2_AmpWhoWatt100` variant `amp+cab`) : REPLACE (48o, head 0x25) → CREATE 56o
+    /// identique à la capture HX Edit `add_ampcab.json` (term `64:27:65`, trailer `09:21`).
+    #[test]
+    fn ampcab_plain_replace_becomes_hxedit_create() {
+        let input = resolve_usb_assign_bulk("HD2_AmpWhoWatt100", "amp+cab").expect("bulk");
+        let out = build_amp_cab_create_bulk(&input).expect("create");
+        let hx_create = hx("2f:00:00:18:80:10:ed:03:00:d1:00:04:70:7d:00:00:01:00:06:00:1f:00:00:00:83:66:cd:04:24:64:27:65:82:62:01:63:82:13:06:14:83:18:83:17:c3:19:2c:1a:cd:03:29:09:21:0a:c3:00");
+        assert_eq!(out.len(), hx_create.len(), "longueur");
+        for (i, (g, e)) in out.iter().zip(hx_create.iter()).enumerate() {
+            if matches!(i, 9 | 12 | 13 | 27 | 28) {
+                continue; // seq / ctr / cd = runtime
+            }
+            assert_eq!(g, e, "octet #{i} diffère ({g:#04x} vs {e:#04x})");
+        }
+        assert!(out.windows(3).any(|w| w == [0x64, 0x27, 0x65]), "term CREATE 0x27");
+    }
+
+    /// amp+cab-legacy **bass** (`HD2_AmpTucknGo`, cd:08) : REPLACE (head 0x23) → CREATE identique à
+    /// la capture HX Edit `add_ampcab_legacy_bass.json` (même trailer `09:12` que le guitar).
+    #[test]
+    fn ampcab_legacy_bass_replace_becomes_hxedit_create() {
+        let input = resolve_usb_assign_bulk("HD2_AmpTucknGo", "amp+cab-legacy").expect("bulk");
+        assert_eq!(input.get(27), Some(&0x08), "modèle bass = cd:08 (≠ 07 du guitar)");
+        let out = build_amp_cab_legacy_create_bulk(&input).expect("create");
+        let hx_create = hx("2d:00:00:18:80:10:ed:03:00:6a:00:04:c9:33:00:00:01:00:06:00:1d:00:00:00:83:66:cd:03:fa:64:27:65:82:62:01:63:82:13:06:14:83:18:83:17:c3:19:06:1a:32:09:12:0a:c3:00:00:00");
+        assert_eq!(out.len(), hx_create.len(), "longueur");
+        for (i, (g, e)) in out.iter().zip(hx_create.iter()).enumerate() {
+            if matches!(i, 9 | 12 | 13 | 27 | 28) {
+                continue;
+            }
+            assert_eq!(g, e, "octet #{i} diffère ({g:#04x} vs {e:#04x})");
+        }
+    }
+
+    /// cab-dual-legacy (`HD2_Cab1x6x9SoupProEllipse`, variante `dual` head 0x23) : REPLACE → CREATE
+    /// identique à la capture HX Edit `add_cab_dual_legacy.json` (trailer `09:10`).
+    #[test]
+    fn cab_dual_legacy_replace_becomes_hxedit_create() {
+        let input = resolve_usb_assign_bulk("HD2_Cab1x6x9SoupProEllipse", "dual").expect("bulk");
+        let out = build_cab_dual_legacy_create_bulk(&input).expect("create");
+        let hx_create = hx("2d:00:00:18:80:10:ed:03:00:61:00:04:b7:a0:00:00:01:00:06:00:1d:00:00:00:83:66:cd:04:30:64:27:65:82:62:01:63:82:13:06:14:83:18:83:17:c3:19:33:1a:30:09:10:0a:c3:00:00:00");
+        assert_eq!(out.len(), hx_create.len(), "longueur");
+        for (i, (g, e)) in out.iter().zip(hx_create.iter()).enumerate() {
+            if matches!(i, 9 | 12 | 13 | 27 | 28) {
+                continue;
+            }
+            assert_eq!(g, e, "octet #{i} diffère ({g:#04x} vs {e:#04x})");
+        }
+        assert!(out.windows(2).any(|w| w == [0x09, 0x10]), "trailer 09:10");
+    }
 }
 
 #[cfg(test)]
@@ -1627,7 +1898,7 @@ mod amp_cab_replace_cab_tests {
     }
 
     #[test]
-    fn add_to_empty_amp_cab_legacy_uses_head23_assign_by_default() {
+    fn add_to_empty_amp_cab_legacy_uses_create_head2d_by_default() {
         let mut state = super::super::HelixState::new();
         let assign = resolve_usb_assign_bulk("HD2_AmpWhoWatt100", "amp+cab-legacy").expect("assign");
         let packs = build_slot_model_probe_packets(
@@ -1639,11 +1910,22 @@ mod amp_cab_replace_cab_tests {
             Some(&assign),
             false,
         );
-        let bulk = packs.iter().find(|p| p.len() == 44).expect("assign bulk 44o head=23");
-        assert_eq!(bulk[0], 0x23, "AddToEmpty legacy = bulkHex assign (comme 2ᵉ clic replace)");
+        // Défaut ON depuis 2026-07-11 : forme CREATE (head 0x2d, segment création `82 13 06 14 83 18`),
+        // pas le REPLACE head 0x23. Cf. capture HX Edit add_ampcab_legacy.json.
+        let create = packs
+            .iter()
+            .find(|p| p.len() >= 44 && p[0] == 0x2d)
+            .expect("create bulk head=2d");
         assert!(
-            bulk.windows(4).any(|w| w == [0x83, 0x66, 0xcd, 0x07]),
-            "lane cd:07 catalogue"
+            create.windows(6).any(|w| w == [0x82, 0x13, 0x06, 0x14, 0x83, 0x18]),
+            "segment création présent"
+        );
+        // Skip préambule : plus de court `pre_ef` (ef:03:01:10) devant le bulk (sinon f0:03 coupé).
+        assert!(
+            !packs
+                .iter()
+                .any(|p| p.len() == 16 && p.get(4..8) == Some(&[0xef, 0x03, 0x01, 0x10])),
+            "pas de préambule pre_ef pour un CREATE sur slot vide"
         );
     }
 
