@@ -267,6 +267,21 @@ fn amp_cab_legacy_create_head2d_enabled() -> bool {
     }
 }
 
+/// Active la substitution CREATE pour les **modèles simples** ajoutés sur slot vide
+/// (`build_simple_model_create_bulk`) — corrige l'envoi d'un bulk REPLACE (`term=0x28`) sur slot vide
+/// qui coupe le canal éditeur `f0:03` (bug synchro Command Center). **Défaut ON** depuis validation
+/// device 2026-07-11 (capture `add_bypass_switch_FS_LinuxV5.json` : f0:03 survit + notifs FS OK).
+/// Positionner `HX_SIMPLE_MODEL_CREATE=0` pour revenir à l'ancien comportement (REPLACE).
+fn simple_model_create_enabled() -> bool {
+    match std::env::var("HX_SIMPLE_MODEL_CREATE").as_deref() {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
 /// Bulk assign `amp+cab-legacy` compact (head `0x23`, lane `cd:07`, marqueur `c3:19`).
 fn bulk_is_amp_cab_legacy_assign(bulk: &[u8]) -> bool {
     bulk.first() == Some(&0x23)
@@ -324,6 +339,100 @@ pub fn build_amp_cab_legacy_create_bulk(assign_bulk: &[u8]) -> Option<Vec<u8>> {
     if out.len() > 15 {
         out[14] = 0x00;
         out[15] = 0x00;
+    }
+    Some(out)
+}
+
+/// Trailer de création pour un modèle SIMPLE (part après `1a ff`) — capture HX Edit 2026-07-11
+/// (`add_empty_disto_HXEdit.json` / `add_empty_comp_HXEdit.json`). Diffère du trailer amp+cab
+/// (`09 12 …`) : ici `09 01 0a c3 00`.
+const SIMPLE_MODEL_CREATE_TRAILER: [u8; 5] = [0x09, 0x01, 0x0a, 0xc3, 0x00];
+
+/// Vrai si `bulk` est une forme REMPLACEMENT d'un modèle SIMPLE (bloc unique) : `term=0x28`
+/// (`64 28 65`), motif param `82 62 <slot> 64 83 17`, PAS déjà une forme création
+/// (`82 13 06 14 83 18`), ET terminateur `1a ff` suivi uniquement de `00`.
+///
+/// Ce dernier critère distingue **structurellement** (pas par nom de variante — cf. note maintenance)
+/// les modèles simples (`amp, legacy, mono, preamp, sendReturn, single, stereo` : ont `1a ff` + zéros)
+/// des multi-blocs (`amp+cab, amp+cab-legacy, dual` : PAS de `1a ff`, gérés par leurs propres
+/// substitutions `build_amp_cab_legacy_create_bulk` / `build_cab_dual_create_bulk`). Vérifié sur les
+/// 1060 entrées de `HX_ModelUsbAssign.json` (toutes `term=0x28` = captures de remplacement, 2026-07-11).
+fn bulk_is_simple_replace_assign(bulk: &[u8]) -> bool {
+    let has_term28 = bulk.windows(3).any(|w| w == [0x64, 0x28, 0x65]);
+    let has_simple_param = bulk
+        .windows(6)
+        .any(|w| w[0] == 0x82 && w[1] == 0x62 && w[3] == 0x64 && w[4] == 0x83 && w[5] == 0x17);
+    let already_create = bulk.windows(6).any(|w| w == AMP_CAB_LEGACY_CREATE_SEGMENT);
+    let single_block = bulk
+        .windows(2)
+        .position(|w| w == [0x1a, 0xff])
+        .map(|p| bulk[p + 2..].iter().all(|&x| x == 0))
+        .unwrap_or(false);
+    has_term28 && has_simple_param && !already_create && single_block
+}
+
+/// Transforme le bulk d'ASSIGNATION (forme REPLACE, `term=0x28`) d'un **modèle simple** en bulk de
+/// CRÉATION (forme CREATE, `term=0x27`) pour un ajout sur slot vide — miroir de
+/// `build_amp_cab_legacy_create_bulk`, mais pour les modèles simples (ni amp+cab, ni cab-dual).
+///
+/// Confirmé byte-pour-byte sur captures HX Edit 2026-07-11 (`add_empty_disto_HXEdit.json` Disto
+/// `cd:01:84`, `add_empty_comp_HXEdit.json` Comp `77`) : la VALEUR du modèle est identique entre
+/// REPLACE et CREATE ; seul l'emballage change. Sans cette substitution, on envoie le REPLACE
+/// (`0x28`) sur slot vide, ce qui coupe le canal éditeur `f0:03` (bug notifs Command Center).
+///
+/// Transformations : cd-high→`0x03` ; `64 28 65`→`64 27 65` ; `82 62 <slot> 64`→`… 63` ; insertion
+/// du segment `82 13 06 14 83 18` avant `83 17` ; trailer après `1a ff` remplacé par `09 01 0a c3 00` ;
+/// longueurs `b0 = content-9`, `b20 = content-25` (dérivées des 2 captures) ; padding `00` au
+/// multiple de 4. Les compteurs runtime (seq octet 9, ctr 12-13, cd-low 28) sont patchés en aval.
+pub fn build_simple_model_create_bulk(assign_bulk: &[u8]) -> Option<Vec<u8>> {
+    if !bulk_is_simple_replace_assign(assign_bulk) {
+        return None;
+    }
+    let mut out = assign_bulk.to_vec();
+
+    // cd-high → 0x03 (HX Edit CREATE utilise toujours `83 66 cd 03 …`).
+    for i in 0..out.len().saturating_sub(3) {
+        if out[i] == 0x83 && out[i + 1] == 0x66 && out[i + 2] == 0xcd {
+            out[i + 3] = 0x03;
+            break;
+        }
+    }
+    // term `64 28 65` → `64 27 65`.
+    for i in 0..out.len().saturating_sub(2) {
+        if out[i] == 0x64 && out[i + 1] == 0x28 && out[i + 2] == 0x65 {
+            out[i + 1] = 0x27;
+            break;
+        }
+    }
+    // `82 62 <slot> 64` → `82 62 <slot> 63`.
+    for i in 0..out.len().saturating_sub(3) {
+        if out[i] == 0x82 && out[i + 1] == 0x62 && out[i + 3] == 0x64 {
+            out[i + 3] = 0x63;
+            break;
+        }
+    }
+    // Insère le segment création `82 13 06 14 83 18` avant `83 17`.
+    let insert_pos = out.windows(2).position(|w| w == [0x83, 0x17])?;
+    out.splice(
+        insert_pos..insert_pos,
+        AMP_CAB_LEGACY_CREATE_SEGMENT.iter().copied(),
+    );
+
+    // Remplace le trailer après `1a ff` (les `00` finaux du REPLACE) par le trailer création.
+    let aff = out.windows(2).position(|w| w == [0x1a, 0xff])?;
+    out.truncate(aff + 2);
+    out.extend_from_slice(&SIMPLE_MODEL_CREATE_TRAILER);
+
+    // Longueurs, calculées AVANT padding (dérivées des captures HX Edit Disto/Comp).
+    let content = out.len();
+    out[0] = content.saturating_sub(9) as u8;
+    if out.len() > 20 {
+        out[20] = content.saturating_sub(25) as u8;
+    }
+
+    // Padding `00` jusqu'au multiple de 4 (aligné sur HX Edit : Comp 54→56).
+    while out.len() % 4 != 0 {
+        out.push(0x00);
     }
     Some(out)
 }
@@ -628,9 +737,33 @@ pub fn build_slot_model_probe_packets(
     } else {
         None
     };
+    // Modèle SIMPLE (bloc unique) sur slot vide : le bulkHex catalogue est une forme REMPLACEMENT
+    // (`term=0x28`, sans segment création) — car toutes les entrées `HX_ModelUsbAssign.json` ont été
+    // capturées en remplacement (confirmé user 2026-07-11). Envoyé tel quel sur slot vide, ce REPLACE
+    // coupe le canal éditeur `f0:03` (les notifs FS Command Center s'arrêtent). On substitue la forme
+    // CREATE (`term=0x27` + `82 13 06 14 83 18`), byte-exact HX Edit (cf. build_simple_model_create_bulk).
+    let simple_model_create_owned: Option<Vec<u8>> = if matches!(op, SlotModelProbeOp::AddToEmpty)
+        && simple_model_create_enabled()
+        && cab_dual_create_owned.is_none()
+        && amp_cab_legacy_create_owned.is_none()
+        && matches!(usb_assign_full_bulk, Some(b) if bulk_is_simple_replace_assign(b))
+    {
+        let made = usb_assign_full_bulk.and_then(build_simple_model_create_bulk);
+        if let Some(ref c) = made {
+            eprintln!(
+                "[SlotModelProbe] modèle simple CREATE ({} o) substitué au bulk REPLACE (term 0x28) — \
+                 préserve le canal éditeur f0:03 (pas de préambule ef/f0)",
+                c.len()
+            );
+        }
+        made
+    } else {
+        None
+    };
     let usb_assign_full_bulk: Option<&[u8]> = cab_dual_create_owned
         .as_deref()
         .or(amp_cab_legacy_create_owned.as_deref())
+        .or(simple_model_create_owned.as_deref())
         .or(usb_assign_full_bulk);
 
     let (_op_short, bulk_template): ([u8; 4], Cow<'_, [u8]>) = match (op, usb_assign_full_bulk) {
@@ -657,7 +790,16 @@ pub fn build_slot_model_probe_packets(
     // Préambule unifié: deux courts de contexte (ef puis f0) avant le bulk.
     // Cela évite les transitions de session "bloquées" après un envoi 0310 qui
     // peuvent ensuite faire ignorer les bulks 8010 (et inversement).
-    if use_json_bulk && !cab_dual_cab2_replace_after_focus {
+    //
+    // EXCEPTION modèle simple CREATE (2026-07-11) : HX Edit n'envoie AUCUN préambule avant un ajout
+    // simple sur slot vide (juste le CREATE puis un `02:10:f0:03(0x10)` APRÈS). Ce préambule (surtout
+    // `pre_ef` ef:03:01:10) coupe le canal éditeur `f0:03` — mesuré : add_bypass_switch_FS_LinuxV4
+    // (préambule → f0:03 mort) vs add_empty_disto_HXEdit (pas de préambule → f0:03 survit + 82:69).
+    // On le saute donc quand la substitution CREATE modèle-simple s'applique.
+    if use_json_bulk
+        && !cab_dual_cab2_replace_after_focus
+        && simple_model_create_owned.is_none()
+    {
         let mut pre_ef = [0u8; 16];
         let mut pre_f0 = [0u8; 16];
         let ctr0 = state.live_write_ctr;
@@ -1084,6 +1226,54 @@ pub fn build_amp_cab_replace_cab_bulk(
         amp_model_id, amp_cab_variant, cab_model_id, cab_variant, &bulk
     );
     Ok(bulk)
+}
+
+#[cfg(test)]
+mod simple_model_create_tests {
+    use super::*;
+
+    fn hx(s: &str) -> Vec<u8> {
+        s.split(':')
+            .map(|b| u8::from_str_radix(b, 16).unwrap())
+            .collect()
+    }
+
+    /// Compare octet-par-octet en masquant les compteurs runtime (seq=9, ctr=12-13, cd-low=28).
+    fn assert_eq_masked(got: &[u8], expected: &[u8], label: &str) {
+        assert_eq!(got.len(), expected.len(), "{label}: longueur");
+        for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+            if matches!(i, 9 | 12 | 13 | 28) {
+                continue; // seq / ctr / cd-low patchés en aval
+            }
+            assert_eq!(g, e, "{label}: octet #{i} diffère ({g:#04x} vs {e:#04x})");
+        }
+    }
+
+    /// Disto (`HD2_DistKinkyBoost` mono) : bulk catalogue REPLACE (48o, `cd:03`) → CREATE 56o
+    /// identique à la capture HX Edit `add_empty_disto_HXEdit.json`.
+    #[test]
+    fn disto_replace_bulk_becomes_hxedit_create() {
+        let input = resolve_usb_assign_bulk("HD2_DistKinkyBoost", "mono").expect("disto bulk");
+        let out = build_simple_model_create_bulk(&input).expect("create");
+        let hx_create = hx("2f:00:00:18:80:10:ed:03:00:76:00:04:87:34:00:00:01:00:06:00:1f:00:00:00:83:66:cd:03:f7:64:27:65:82:62:01:63:82:13:06:14:83:18:83:17:c2:19:cd:01:84:1a:ff:09:01:0a:c3:00");
+        assert_eq_masked(&out, &hx_create, "disto");
+    }
+
+    /// Compresseur (`HD2_CompressorDeluxeComp` mono) : bulk REPLACE (44o, `cd:04`) → CREATE 56o
+    /// identique à la capture HX Edit `add_empty_comp_HXEdit.json` (padding 54→56 inclus).
+    #[test]
+    fn comp_replace_bulk_becomes_hxedit_create() {
+        let input = resolve_usb_assign_bulk("HD2_CompressorDeluxeComp", "mono").expect("comp bulk");
+        let out = build_simple_model_create_bulk(&input).expect("create");
+        let hx_create = hx("2d:00:00:18:80:10:ed:03:00:c5:00:04:fa:3f:00:00:01:00:06:00:1d:00:00:00:83:66:cd:03:fb:64:27:65:82:62:01:63:82:13:06:14:83:18:83:17:c2:19:77:1a:ff:09:01:0a:c3:00:00:00");
+        assert_eq_masked(&out, &hx_create, "comp");
+    }
+
+    /// Un bulk déjà de forme CREATE (ADD template, `64:27:65`) n'est pas re-transformé.
+    #[test]
+    fn create_form_bulk_is_rejected() {
+        assert!(build_simple_model_create_bulk(&ADD_MODEL_BULK_TEMPLATE).is_none());
+    }
 }
 
 #[cfg(test)]

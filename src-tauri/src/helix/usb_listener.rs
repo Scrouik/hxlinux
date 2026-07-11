@@ -30,8 +30,14 @@ const ENDPOINT_IN: u8 = 0x81;
 /// peut être aussi long que souhaité sans retarder l'envoi du poll f0:03.
 const READ_TIMEOUT_MS: u64 = 500;
 const BUFFER_SIZE: usize = 512;
-/// Intervalle de poll f0:03 pour recevoir les changements de paramètre knob HW (85:62).
-const LIVE_PARAM_POLL_INTERVAL_MS: u64 = 40;
+/// Intervalle de poll f0:03 pour recevoir les changements de paramètre knob HW (85:62) et les
+/// notifications d'assignation (82:62:3b). Calé sur HX Edit (~78 ms, mesuré 2026-07-11 sur
+/// `boot_device_add_model_add_bypass.json`) : HX Edit poll f0:03 toutes les 78 ms et reçoit une
+/// réponse à chaque poll (flux télémétrie `82:69` ~10/s = mode éditeur vivant). À 40 ms (25/s) le
+/// device semble rate-limiter/saturer et ne répond quasi jamais (28 réponses / 578 polls mesurés) —
+/// hypothèse : notre flood empêche l'armement/télémétrie du canal f0:03. Repassé à 78 ms pour coller
+/// exactement à HX Edit.
+const LIVE_PARAM_POLL_INTERVAL_MS: u64 = 78;
 /// Log si acquisition ou section critique HelixState dépasse ce seuil (contention / travail long).
 const STATE_LOCK_WARN_MS: u128 = 10;
 
