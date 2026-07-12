@@ -6587,6 +6587,16 @@ function syncEditedControllerToCache(): void {
   });
 }
 
+/**
+ * Icône poubelle SVG inline (monochrome, `stroke="currentColor"` → hérite de la couleur du bouton :
+ * gris atténué, rouge au survol). Indépendante des polices système (Symbola n'est pas garantie
+ * installée) — contrairement au glyphe Unicode U+1F5D1 qui retombait en emoji couleur.
+ */
+const CONTROLLERS_TRASH_SVG =
+  '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" ' +
+  'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 14h10l1-14"/><path d="M10 10v6M14 10v6"/></svg>';
+
 /** Re-rend le tableau des assignations Command Center depuis le cache local (aucun appel backend). */
 function renderControllersAssignmentsTable(): void {
   const tbody = document.getElementById("models-controllers-table-body");
@@ -6608,7 +6618,7 @@ function renderControllersAssignmentsTable(): void {
     trashBtn.className = "models-controllers-trash";
     trashBtn.title = "Supprimer ce contrôle";
     trashBtn.setAttribute("aria-label", "Supprimer ce contrôle");
-    trashBtn.textContent = "🗑";
+    trashBtn.innerHTML = CONTROLLERS_TRASH_SVG; // icône SVG inline (currentColor, indépendante des polices)
     trashBtn.addEventListener("click", (ev) => {
       ev.stopPropagation(); // ne pas déclencher la sélection de ligne
       void deleteControllerRow(a);

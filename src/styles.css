@@ -215,16 +215,23 @@ html, body {
   border: none;
   cursor: pointer;
   padding: 2px 4px;
-  font-size: 13px;
-  line-height: 1;
+  line-height: 0;
   opacity: 0.55;
   border-radius: 4px;
   color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.models-controllers-trash svg {
+  display: block;
 }
 
 .models-controllers-trash:hover {
   opacity: 1;
-  background: rgba(239, 68, 68, 0.18);
+  color: #ef4444; /* le trait SVG (currentColor) devient rouge = affordance suppression */
+  background: rgba(239, 68, 68, 0.15);
 }
 
 .models-controllers-trash[hidden] {
