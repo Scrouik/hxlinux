@@ -219,6 +219,15 @@ type ProbeSlotModelUsbArgs = {
 };
 
 async function invokeProbeSlotModelUsb(args: ProbeSlotModelUsbArgs): Promise<string> {
+  // #6 : un changement (replace) ou une suppression (remove) de modèle rend obsolètes les contrôles
+  // du slot — ils pointaient sur des paramètres de l'ANCIEN modèle. On les supprime AVANT d'envoyer
+  // le probe : sinon le device transfère silencieusement le contrôle au nouveau modèle (paramètre au
+  // même index) — qui peut ne pas exister (ex. Drive → EQ) et corrompre/crasher le preset. En
+  // purgeant pendant que l'ancien modèle est encore en place, le nouveau charge sans contrôle bancal.
+  // `add` (slot vide) n'a rien à purger.
+  if (args.op === "replace" || args.op === "remove") {
+    await purgeControllersForSlotBeforeModelChange(args.slotIndex);
+  }
   const out = await invoke<string>("probe_slot_model_usb", args);
   markPresetModified();
   return out;
@@ -6682,6 +6691,28 @@ async function deleteAllControllers(): Promise<void> {
   controllerAssignmentsCache = [];
   renderControllersAssignmentsTable();
   markPresetModified();
+}
+
+/**
+ * #6 — supprime tous les contrôles du bus d'un slot AVANT un changement/suppression de modèle sur
+ * ce slot (voir `invokeProbeSlotModelUsb`). Envoi device (par bus, déjà validé) + retrait du cache
+ * + re-rendu. Sans objet si le slot n'a pas de contrôle. Best-effort : une erreur d'écriture sur un
+ * contrôle n'empêche pas la purge des autres ni le changement de modèle qui suit.
+ */
+async function purgeControllersForSlotBeforeModelChange(kemplineSlotIndex: number): Promise<void> {
+  const bus = kemplineIndexToSlotBusJs(kemplineSlotIndex);
+  if (bus === null) return;
+  const doomed = controllerAssignmentsCache.filter((a) => a.slotBus === bus);
+  if (doomed.length === 0) return;
+  for (const a of doomed) {
+    try {
+      await deleteControllerAssignmentOnDevice(a);
+    } catch (e) {
+      console.error("[ControllersLiveWrite] purgeOnModelChange", e);
+    }
+  }
+  controllerAssignmentsCache = controllerAssignmentsCache.filter((a) => a.slotBus !== bus);
+  renderControllersAssignmentsTable();
 }
 
 /** Surligne la ligne du tableau correspondant à cette assignation (bus + paramètre + source). */
