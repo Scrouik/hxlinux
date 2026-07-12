@@ -6685,11 +6685,72 @@ async function deleteControllerRow(a: ControllerAssignmentJson): Promise<void> {
   markPresetModified();
 }
 
+/**
+ * Modale de confirmation intégrée (thème app), en remplacement de `window.confirm` dont le titre
+ * (« javascript - http://localhost… ») n'est pas paramétrable. Retourne `true` si l'utilisateur
+ * confirme. Un seul dialogue à la fois (l'app n'en a pas besoin de concurrent).
+ */
+function showConfirmDialog(opts: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  cancelLabel: string;
+  danger?: boolean;
+}): Promise<boolean> {
+  const overlay = document.getElementById("app-confirm-overlay");
+  const titleEl = document.getElementById("app-confirm-title");
+  const messageEl = document.getElementById("app-confirm-message");
+  const okBtn = document.getElementById("app-confirm-ok") as HTMLButtonElement | null;
+  const cancelBtn = document.getElementById("app-confirm-cancel") as HTMLButtonElement | null;
+  if (!overlay || !titleEl || !messageEl || !okBtn || !cancelBtn) {
+    // Repli : si le markup manque, ne pas bloquer l'action (fallback natif).
+    return Promise.resolve(window.confirm(opts.message));
+  }
+  titleEl.textContent = opts.title;
+  messageEl.textContent = opts.message;
+  okBtn.textContent = opts.confirmLabel;
+  cancelBtn.textContent = opts.cancelLabel;
+  okBtn.classList.toggle("app-modal-btn--danger", opts.danger !== false);
+  overlay.hidden = false;
+
+  return new Promise<boolean>((resolve) => {
+    const cleanup = (result: boolean) => {
+      overlay.hidden = true;
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      overlay.removeEventListener("click", onOverlay);
+      document.removeEventListener("keydown", onKey);
+      resolve(result);
+    };
+    const onOk = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+    const onOverlay = (ev: MouseEvent) => {
+      if (ev.target === overlay) cleanup(false);
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") cleanup(false);
+      else if (ev.key === "Enter") cleanup(true);
+    };
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+    overlay.addEventListener("click", onOverlay);
+    document.addEventListener("keydown", onKey);
+    okBtn.focus();
+  });
+}
+
 /** Supprime TOUS les contrôles (après confirmation) : un paquet de suppression par contrôle. */
 async function deleteAllControllers(): Promise<void> {
   const n = controllerAssignmentsCache.length;
   if (n === 0) return;
-  if (!window.confirm(`Supprimer les ${n} contrôle${n > 1 ? "s" : ""} de ce preset ?`)) return;
+  const confirmed = await showConfirmDialog({
+    title: "Delete all controllers",
+    message: `Remove all ${n} controller${n > 1 ? "s" : ""} from this preset? This cannot be undone.`,
+    confirmLabel: "Delete all",
+    cancelLabel: "Cancel",
+    danger: true,
+  });
+  if (!confirmed) return;
   const toDelete = [...controllerAssignmentsCache];
   for (const a of toDelete) {
     try {

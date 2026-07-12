@@ -2421,3 +2421,71 @@ body.models-preset-load-busy .app {
   pointer-events: none;
   cursor: wait;
 }
+/* Modale de confirmation générique (voir index.html #app-confirm-overlay, showConfirmDialog). */
+.app-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.app-modal-overlay[hidden] {
+  display: none;
+}
+
+.app-modal {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 18px 20px 16px;
+  width: min(420px, calc(100vw - 48px));
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.app-modal-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.app-modal-message {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin-bottom: 18px;
+}
+
+.app-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.app-modal-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-light);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.app-modal-btn:hover {
+  background: var(--bg-hover);
+}
+
+.app-modal-btn--danger {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  font-weight: 600;
+}
+
+.app-modal-btn--danger:hover {
+  background: rgba(239, 68, 68, 0.28);
+}

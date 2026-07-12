@@ -299,6 +299,24 @@
       <div class="ctx-item" id="models-ctx-clean-all" role="menuitem">Clean All block</div>
     </div>
 
+    <!-- Modale de confirmation générique (remplace window.confirm pour avoir un vrai titre). -->
+    <div class="app-modal-overlay" id="app-confirm-overlay" hidden>
+      <div
+        class="app-modal"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="app-confirm-title"
+        aria-describedby="app-confirm-message"
+      >
+        <h2 class="app-modal-title" id="app-confirm-title"></h2>
+        <p class="app-modal-message" id="app-confirm-message"></p>
+        <div class="app-modal-actions">
+          <button type="button" class="app-modal-btn" id="app-confirm-cancel"></button>
+          <button type="button" class="app-modal-btn app-modal-btn--danger" id="app-confirm-ok"></button>
+        </div>
+      </div>
+    </div>
+
     <script type="module" src="/src/main.ts"></script>
     <script type="module" src="/src/models.ts"></script>
   </body>
