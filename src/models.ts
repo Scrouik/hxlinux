@@ -6328,6 +6328,7 @@ async function writeControllersSourceSelectionLive(sourceValue: string): Promise
       minRaw: 0,
       maxRaw: 0,
       isBypass,
+      paramSelector: isBypass ? undefined : paramSelector,
     });
     markPresetModified();
   } catch (e) {
@@ -6347,6 +6348,13 @@ type ControllerAssignmentJson = {
   minRaw: number;
   maxRaw: number;
   isBypass: boolean;
+  /**
+   * Index wire du paramètre contrôlé (`param_selector`, même convention qu'à la création) —
+   * renseigné pour les contrôles créés en live (on l'a sous la main), `undefined` pour ceux décodés
+   * du dump preset (le décodeur ne fournit que le nom). Utilisé pour cibler la suppression d'un vrai
+   * paramètre (Bypass n'en a pas). Non renvoyé par le backend (champ purement front).
+   */
+  paramSelector?: number;
 };
 
 /**
@@ -6566,6 +6574,7 @@ function syncEditedControllerToCache(): void {
     minRaw: !isBypass && minSlider ? controllerMinMaxDisplayToRaw(Number(minSlider.value)) : 0,
     maxRaw: !isBypass && maxSlider ? controllerMinMaxDisplayToRaw(Number(maxSlider.value)) : 0,
     isBypass,
+    paramSelector: isBypass ? undefined : (currentControllerParamSelector() ?? undefined),
   });
 }
 
@@ -6583,12 +6592,96 @@ function renderControllersAssignmentsTable(): void {
     tdParam.textContent = a.paramName.trim() || "—";
     const tdSource = document.createElement("td");
     tdSource.textContent = controllerSourceLabel(a.source);
-    tr.append(tdBlock, tdParam, tdSource);
+    const tdTrash = document.createElement("td");
+    tdTrash.className = "models-controllers-td-actions";
+    const trashBtn = document.createElement("button");
+    trashBtn.type = "button";
+    trashBtn.className = "models-controllers-trash";
+    trashBtn.title = "Supprimer ce contrôle";
+    trashBtn.setAttribute("aria-label", "Supprimer ce contrôle");
+    trashBtn.textContent = "🗑";
+    trashBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation(); // ne pas déclencher la sélection de ligne
+      void deleteControllerRow(a);
+    });
+    tdTrash.append(trashBtn);
+    tr.append(tdBlock, tdParam, tdSource, tdTrash);
     tr.addEventListener("click", () => {
       void applyControllerAssignmentRowToDetail(a);
     });
     tbody.append(tr);
   }
+  // Icône « tout supprimer » (en-tête) masquée quand il n'y a aucun contrôle.
+  const clearAllBtn = document.getElementById("models-controllers-clear-all");
+  if (clearAllBtn) clearAllBtn.hidden = controllerAssignmentsCache.length === 0;
+}
+
+/** `footswitch_number` (1-8) d'un contrôle depuis son `source` (source = fs_number + 2). 0 si non-FS. */
+function controllerFootswitchNumberFromSource(source: number): number {
+  return source >= 3 ? source - 2 : 0;
+}
+
+/**
+ * `param_selector` (index wire) d'une ligne du cache pour la suppression d'un vrai paramètre :
+ * priorité au champ mémorisé à la création ; sinon, si la ligne concerne le slot actuellement
+ * chargé, recalcul depuis la liste de paramètres du modèle ; sinon `0` (repli, cf capture de
+ * suppression qui portait param 0 — à valider device pour le cas multi-contrôles/slot inactif).
+ */
+function paramSelectorForCachedControllerRow(a: ControllerAssignmentJson): number {
+  if (typeof a.paramSelector === "number") return a.paramSelector;
+  if (a.kemplineSlotIndex !== null && a.kemplineSlotIndex === selectedParamsKemplineSlotIndex) {
+    const ctx = selectedParamsHwWireContext;
+    const rowIndex = ctx?.paramsForDisplay.findIndex(
+      (p) => (p.name || p.symbolicID || "").trim() === a.paramName.trim(),
+    );
+    if (ctx && rowIndex !== undefined && rowIndex >= 0) {
+      return liveWriteParamIndexForRow(ctx.paramsForDisplay, rowIndex, ctx.catalogSignal);
+    }
+  }
+  return 0;
+}
+
+/** Envoie au device la suppression d'UN contrôle (0x25 vrai param / 0x39 Bypass), sans MAJ cache. */
+async function deleteControllerAssignmentOnDevice(a: ControllerAssignmentJson): Promise<void> {
+  await invoke("delete_controller_assignment", {
+    slotBus: a.slotBus,
+    paramSelector: a.isBypass ? 0 : paramSelectorForCachedControllerRow(a),
+    isBypass: a.isBypass,
+    footswitchNumber: controllerFootswitchNumberFromSource(a.source),
+  });
+}
+
+/** Supprime UNE ligne : écriture device + retrait du cache + re-rendu. */
+async function deleteControllerRow(a: ControllerAssignmentJson): Promise<void> {
+  try {
+    await deleteControllerAssignmentOnDevice(a);
+  } catch (e) {
+    console.error("[ControllersLiveWrite] delete", e);
+    return;
+  }
+  controllerAssignmentsCache = controllerAssignmentsCache.filter(
+    (x) => !(x.slotBus === a.slotBus && x.paramName === a.paramName && x.source === a.source),
+  );
+  renderControllersAssignmentsTable();
+  markPresetModified();
+}
+
+/** Supprime TOUS les contrôles (après confirmation) : un paquet de suppression par contrôle. */
+async function deleteAllControllers(): Promise<void> {
+  const n = controllerAssignmentsCache.length;
+  if (n === 0) return;
+  if (!window.confirm(`Supprimer les ${n} contrôle${n > 1 ? "s" : ""} de ce preset ?`)) return;
+  const toDelete = [...controllerAssignmentsCache];
+  for (const a of toDelete) {
+    try {
+      await deleteControllerAssignmentOnDevice(a);
+    } catch (e) {
+      console.error("[ControllersLiveWrite] deleteAll", e);
+    }
+  }
+  controllerAssignmentsCache = [];
+  renderControllersAssignmentsTable();
+  markPresetModified();
 }
 
 /** Surligne la ligne du tableau correspondant à cette assignation (bus + paramètre + source). */
@@ -6755,6 +6848,10 @@ function initModelsMainTabs(): void {
   const paramSelect = document.getElementById("models-controllers-editor-param-select");
   paramSelect?.addEventListener("change", syncControllersEditorSelectedParamRow);
   initControllersEditorDetailControls();
+
+  document
+    .getElementById("models-controllers-clear-all")
+    ?.addEventListener("click", () => void deleteAllControllers());
 
   const tabs = [editTab, controllersTab];
   const panels = [editPanel, controllersPanel];

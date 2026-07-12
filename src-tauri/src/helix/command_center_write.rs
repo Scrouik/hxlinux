@@ -363,9 +363,109 @@ pub fn build_controller_min_max_write_packet(
     packet
 }
 
+/// Supprime une assignation sur **vrai paramètre** : réutilise le paquet de création `term=0x25`
+/// mais avec `source(4a)=0` (None) et `47=0` — « réassigner à rien » = suppression côté device.
+/// Un SEUL paquet (pas de 0x24/0x21 comme à la création). Byte-exact contre
+/// `controllers/clear_selected_assigment.json` (bus 01, param 0). `param_selector` cible le
+/// paramètre contrôlé (même convention qu'à la création). Compteurs `ctr +0x11`/`yy +1`.
+pub fn build_controller_delete_real_param_write_packet(
+    state: &mut HelixState,
+    slot_bus: u8,
+    param_selector: u8,
+) -> Vec<u8> {
+    let seq = state.next_x80_cnt();
+    let ctr = state.live_write_ctr;
+    let yy = state.live_write_yy;
+
+    let packet = vec![
+        0x28, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03,
+        0x00, seq, 0x00, 0x04,
+        (ctr & 0xff) as u8, ((ctr >> 8) & 0xff) as u8,
+        0x00, 0x00,
+        0x01, 0x00, 0x06, 0x00, 0x18, 0x00, 0x00, 0x00,
+        0x83, 0x66, 0xcd, 0x04, yy, 0x64, 0x25, 0x65,
+        0x87, 0x62, slot_bus, 0x1d, 0xc3, 0x1a, 0x00, 0x1c, param_selector,
+        0x4a, 0x00, 0x47, 0x00, 0xcc, 0x81, 0xc2,
+    ];
+
+    state.live_write_ctr = state.live_write_ctr.wrapping_add(0x11);
+    state.live_write_yy = state.live_write_yy.wrapping_add(1);
+    packet
+}
+
+/// Supprime une assignation **Bypass** : paquet `term=0x39` (= le Source compact du Bypass
+/// `82 62 <bus> 66 <fs_index>` mais terme `0x39` au lieu de `0x38` = « clear source »). Le Bypass
+/// n'ayant pas de `param_selector` (source positionnelle), on l'efface par sa position footswitch.
+/// Byte-exact contre le 2e paquet de `controllers/clear_all_assigment.json` (bus 01, fs_index 04).
+/// `footswitch_number` = numéro HX Edit (1-8). Compteurs `ctr +0x11`/`yy +1`.
+pub fn build_controller_delete_bypass_write_packet(
+    state: &mut HelixState,
+    slot_bus: u8,
+    footswitch_number: u8,
+) -> Vec<u8> {
+    let seq = state.next_x80_cnt();
+    let ctr = state.live_write_ctr;
+    let yy = state.live_write_yy;
+    let fs_index = footswitch_number.saturating_sub(1);
+
+    let packet = vec![
+        0x1d, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03,
+        0x00, seq, 0x00, 0x0c,
+        (ctr & 0xff) as u8, ((ctr >> 8) & 0xff) as u8,
+        0x00, 0x00,
+        0x01, 0x00, 0x06, 0x00, 0x0d, 0x00, 0x00, 0x00,
+        0x83, 0x66, 0xcd, 0x04, yy, 0x64, 0x39, 0x65,
+        0x82, 0x62, slot_bus, 0x66, fs_index, 0x00, 0x00, 0x00,
+    ];
+
+    state.live_write_ctr = state.live_write_ctr.wrapping_add(0x11);
+    state.live_write_yy = state.live_write_yy.wrapping_add(1);
+    packet
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Octets réels capturés (`controllers/clear_selected_assigment.json`, frame 2243) —
+    /// suppression d'un contrôle sur vrai paramètre (bus 01, param 0) : paquet `0x25` avec
+    /// `4a=0`/`47=0`. ctr=0xa8b0, yy=0x27.
+    #[test]
+    fn builds_expected_bytes_for_delete_real_param() {
+        let mut state = HelixState::new();
+        state.live_write_ctr = 0xa8b0;
+        state.live_write_yy = 0x27;
+        let pkt = build_controller_delete_real_param_write_packet(&mut state, 0x01, 0x00);
+        assert_eq!(pkt.len(), 48);
+        assert_eq!(pkt[0], 0x28);
+        assert_eq!(&pkt[12..14], &[0xb0, 0xa8]);
+        assert_eq!(&pkt[24..32], &[0x83, 0x66, 0xcd, 0x04, 0x27, 0x64, 0x25, 0x65]);
+        assert_eq!(
+            &pkt[32..],
+            &[0x87, 0x62, 0x01, 0x1d, 0xc3, 0x1a, 0x00, 0x1c, 0x00, 0x4a, 0x00, 0x47, 0x00, 0xcc, 0x81, 0xc2],
+            "4a=0 (source None) et 47=0 = suppression"
+        );
+        assert_eq!(state.live_write_ctr, 0xa8c1);
+        assert_eq!(state.live_write_yy, 0x28);
+    }
+
+    /// Octets réels capturés (`controllers/clear_all_assigment.json`, frame 2793) — suppression
+    /// d'un Bypass : paquet `0x39` (`82 62 <bus> 66 <fs_index>`). bus 01, fs_index 04 (=FS5).
+    /// ctr=0xa9c7, yy=0x2e.
+    #[test]
+    fn builds_expected_bytes_for_delete_bypass() {
+        let mut state = HelixState::new();
+        state.live_write_ctr = 0xa9c7;
+        state.live_write_yy = 0x2e;
+        let pkt = build_controller_delete_bypass_write_packet(&mut state, 0x01, 5);
+        assert_eq!(pkt.len(), 40);
+        assert_eq!(pkt[0], 0x1d);
+        assert_eq!(&pkt[10..14], &[0x00, 0x0c, 0xc7, 0xa9]);
+        assert_eq!(&pkt[24..32], &[0x83, 0x66, 0xcd, 0x04, 0x2e, 0x64, 0x39, 0x65]);
+        assert_eq!(&pkt[32..40], &[0x82, 0x62, 0x01, 0x66, 0x04, 0x00, 0x00, 0x00]);
+        assert_eq!(state.live_write_ctr, 0xa9d8);
+        assert_eq!(state.live_write_yy, 0x2f);
+    }
 
     /// Octets réels capturés (`controllers_select_all_switch_one_by_one.json`), bus=0x0b,
     /// Footswitch 1 (pkt#440) et Footswitch 4 (pkt#1904, après un premier wrap de `yy`) — vérifie

@@ -202,6 +202,35 @@ html, body {
   color: var(--amber);
 }
 
+/* Colonne poubelle (suppression contrôle par ligne + tout supprimer en en-tête). */
+.models-controllers-th-actions,
+.models-controllers-td-actions {
+  width: 1%;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.models-controllers-trash {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.55;
+  border-radius: 4px;
+  color: inherit;
+}
+
+.models-controllers-trash:hover {
+  opacity: 1;
+  background: rgba(239, 68, 68, 0.18);
+}
+
+.models-controllers-trash[hidden] {
+  display: none;
+}
+
 .models-controllers-editor {
   --controllers-label-col: 190px;
   flex: 1 1 0;

@@ -3042,6 +3042,42 @@ fn write_controller_min_max(
     Ok(())
 }
 
+/// Supprime UNE assignation de contrôle : `term=0x25` (source None) pour un vrai paramètre, ou
+/// `term=0x39` (clear source) pour un Bypass — voir
+/// `helix::command_center_write::build_controller_delete_real_param_write_packet` /
+/// `build_controller_delete_bypass_write_packet`. Pour Bypass, `footswitch_number` (1-8) cible la
+/// position ; pour un vrai paramètre, `param_selector` cible le paramètre contrôlé.
+#[tauri::command]
+fn delete_controller_assignment(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_bus: u8,
+    param_selector: u8,
+    is_bypass: bool,
+    footswitch_number: u8,
+) -> Result<(), String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    let packet = if is_bypass {
+        helix::command_center_write::build_controller_delete_bypass_write_packet(
+            &mut s, slot_bus, footswitch_number,
+        )
+    } else {
+        helix::command_center_write::build_controller_delete_real_param_write_packet(
+            &mut s, slot_bus, param_selector,
+        )
+    };
+    s.send(OutPacket::new(packet));
+    drop(s);
+    eprintln!(
+        "[LiveWrite][controllerDelete][sent] slotBus={slot_bus:02x} isBypass={is_bypass} param={param_selector} fs={footswitch_number}"
+    );
+    Ok(())
+}
+
 /// Cab rattaché détecté dans un slot Amp+Cab, sous la forme `[module_hex, catégorie, nom, model_id]`.
 #[tauri::command]
 fn get_active_preset_slot_linked_cab(
@@ -5268,6 +5304,7 @@ pub fn run() {
             write_controller_color,
             write_controller_name,
             write_controller_min_max,
+            delete_controller_assignment,
             get_active_preset_slot_linked_cab,
             get_active_preset_slot_linked_cab_with_params,
             get_active_preset_slot_dual_parts,
