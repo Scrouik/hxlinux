@@ -2893,17 +2893,18 @@ fn write_slot_active_state(
     Ok(())
 }
 
-/// Lie un switch à un vrai paramètre catalogue (`param_selector` = index du paramètre dans la
-/// liste du modèle) — étape OBLIGATOIRE avant Source pour créer une assignation sur autre chose
-/// que Bypass, sinon le device assigne par défaut au Bypass du bloc. Voir
-/// `helix::command_center_write::build_controller_create_real_param_assignment_write_packet`
-/// pour les limites connues (delta `ctr` non confirmé, ordinal `4a` fixé à 3 — une seule création
-/// à la fois pour l'instant).
+/// Crée un lien switch↔vrai paramètre catalogue (`param_selector` = index du paramètre dans la
+/// liste du modèle) ET lui assigne un Footswitch, en un seul trio de paquets — voir
+/// `helix::command_center_write::build_controller_create_real_param_write_packets` (découverte
+/// 2026-07-12 : HX Edit n'envoie PAS de paquet Source séparé pour ce cas, le FS est encodé
+/// directement dans ce trio ; PAS d'appel à `write_controller_source_footswitch` après celui-ci
+/// pour un vrai paramètre — uniquement pour Bypass, cf frontend `writeControllersSourceSelectionLive`).
 #[tauri::command]
 fn write_controller_create_real_param_assignment(
     state: tauri::State<Arc<Mutex<AppState>>>,
     slot_bus: u8,
     param_selector: u8,
+    footswitch_number: u8,
 ) -> Result<(), String> {
     let helix_arc = {
         let app = state.lock().unwrap();
@@ -2911,13 +2912,16 @@ fn write_controller_create_real_param_assignment(
     };
     let helix_arc = helix_arc.ok_or("HX non connecté")?;
     let mut s = helix_arc.lock().unwrap();
-    let packet = helix::command_center_write::build_controller_create_real_param_assignment_write_packet(
-        &mut s, slot_bus, param_selector,
-    );
-    s.send(OutPacket::new(packet));
+    let (create_packet, link_packet, confirm_packet) =
+        helix::command_center_write::build_controller_create_real_param_write_packets(
+            &mut s, slot_bus, param_selector, footswitch_number,
+        );
+    s.send(OutPacket::new(create_packet));
+    s.send(OutPacket::new(link_packet));
+    s.send(OutPacket::new(confirm_packet));
     drop(s);
     eprintln!(
-        "[LiveWrite][controllerCreateParam][sent] slotBus={slot_bus:02x} paramSelector={param_selector}"
+        "[LiveWrite][controllerCreateParam+Source+Confirm][sent] slotBus={slot_bus:02x} paramSelector={param_selector} footswitch={footswitch_number}"
     );
     Ok(())
 }
@@ -3006,6 +3010,35 @@ fn write_controller_name(
     s.send(OutPacket::new(packet));
     drop(s);
     eprintln!("[LiveWrite][controllerName][sent] name={name:?}");
+    Ok(())
+}
+
+/// Écrit la borne Min (`is_max=false`) ou Max (`is_max=true`) d'un contrôle sur vrai paramètre.
+/// `value` = valeur BRUTE catalogue du paramètre (mêmes unités que `min_raw`/`max_raw` décodés).
+/// Le paquet est auto-suffisant (porte le bus + `param_selector`), voir
+/// `helix::command_center_write::build_controller_min_max_write_packet`.
+#[tauri::command]
+fn write_controller_min_max(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_bus: u8,
+    param_selector: u8,
+    is_max: bool,
+    value: f32,
+) -> Result<(), String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    let packet = helix::command_center_write::build_controller_min_max_write_packet(
+        &mut s, slot_bus, param_selector, is_max, value,
+    );
+    s.send(OutPacket::new(packet));
+    drop(s);
+    eprintln!(
+        "[LiveWrite][controllerMinMax][sent] slotBus={slot_bus:02x} param={param_selector} isMax={is_max} value={value}"
+    );
     Ok(())
 }
 
@@ -5234,6 +5267,7 @@ pub fn run() {
             write_controller_type,
             write_controller_color,
             write_controller_name,
+            write_controller_min_max,
             get_active_preset_slot_linked_cab,
             get_active_preset_slot_linked_cab_with_params,
             get_active_preset_slot_dual_parts,

@@ -157,22 +157,27 @@ fn try_decode_bypass_slots(data: &[u8], pos: usize) -> Option<(Vec<ControllerAss
     for fs_index in 0..BYPASS_SLOTS_COUNT {
         match data.get(cursor).copied()? {
             0xc0 => cursor += 1, // emplacement vide (pas d'assignation sur ce switch pour ce bloc)
-            0x91 => {
+            // Un même footswitch peut piloter PLUSIEURS contrôles à la fois (« augmenter le drive,
+            // baisser le volume, monter les graves, bypass un autre bloc » sur un seul switch) —
+            // l'emplacement est alors un sous-tableau `9N` de N contrôles (`0x91`=1, `0x92`=2, …),
+            // pas seulement `0x91`. On itère les N éléments (chacun un `87`). Ceux qui sont des
+            // vrais paramètres (kind nested 0x00=2) sont ignorés ici (couverts par le scan
+            // groupe1/groupe2), on ne garde que les Bypass (kind 0x00=1).
+            tag @ 0x91..=0x9f => {
+                let count = (tag & 0x0f) as usize;
                 cursor += 1;
-                if data.get(cursor).copied() != Some(0x87) {
-                    return None;
-                }
-                let val = parse_value(data, &mut cursor)?;
-                // `None` = emplacement occupé par un vrai paramètre (kind nested 0x00=2), pas du
-                // Bypass — on continue le balayage du tableau plutôt que d'abandonner tout le
-                // groupe (un bloc peut cumuler un vrai paramètre sur un switch et Bypass sur un
-                // autre, dans ce même tableau de 8).
-                if let Some(mut a) = decode_bypass_slot_element(&val) {
-                    // Source = position dans le tableau : Footswitch (fs_index + 1), même
-                    // convention que les vrais paramètres (source = numéro_footswitch + 2,
-                    // encodage 0=None, 1=EXP1, 2=EXP2, 3+=FS(source-2)).
-                    a.source = (fs_index as u8) + 3;
-                    found.push(a);
+                for _ in 0..count {
+                    if data.get(cursor).copied() != Some(0x87) {
+                        return None;
+                    }
+                    let val = parse_value(data, &mut cursor)?;
+                    if let Some(mut a) = decode_bypass_slot_element(&val) {
+                        // Source = position dans le tableau : Footswitch (fs_index + 1), même
+                        // convention que les vrais paramètres (source = numéro_footswitch + 2,
+                        // encodage 0=None, 1=EXP1, 2=EXP2, 3+=FS(source-2)).
+                        a.source = (fs_index as u8) + 3;
+                        found.push(a);
+                    }
                 }
             }
             _ => return None,
@@ -182,8 +187,17 @@ fn try_decode_bypass_slots(data: &[u8], pos: usize) -> Option<(Vec<ControllerAss
 }
 
 /// Tente de décoder un groupe `9N:<element_tag>{...}` commençant en `data[pos]`. Retourne les
-/// éléments décodés + le nombre d'octets consommés. `None` dès que la shape ne correspond pas
-/// exactement à ce qu'on attend (pas de faux positif silencieux sur un fixarray non lié).
+/// éléments décodés + le nombre d'octets consommés. `None` dès que la shape STRUCTURELLE ne
+/// correspond pas (tag hors `9N`, ou un élément dont le tag n'est pas `element_tag`) — pas de faux
+/// positif silencieux sur un fixarray non lié.
+///
+/// **Décodage TOLÉRANT au niveau élément** : un élément bien formé (bon tag) mais que
+/// `decode_element` refuse (`None`) est SAUTÉ, pas fatal pour tout le groupe — ses octets ont déjà
+/// été consommés par `parse_value`, le curseur reste donc aligné. Nécessaire pour les groupes
+/// MIXTES `9N:87` où un footswitch pilote à la fois des vrais paramètres ET des Bypass : sans ça,
+/// le premier élément Bypass (rejeté par `decode_block1_element`, nested 0x00≠2) faisait tomber
+/// TOUT le groupe, emportant les vrais paramètres voisins (bug affichage 2026-07-12). Les Bypass
+/// ainsi sautés sont récupérés séparément par `try_decode_bypass_slots` (tableau positionnel `98`).
 fn try_decode_group<T>(
     data: &[u8],
     pos: usize,
@@ -202,7 +216,9 @@ fn try_decode_group<T>(
             return None;
         }
         let val = parse_value(data, &mut cursor)?;
-        elements.push(decode_element(&val)?);
+        if let Some(el) = decode_element(&val) {
+            elements.push(el);
+        }
     }
     Some((elements, cursor - pos))
 }
@@ -443,5 +459,52 @@ mod tests {
             !found.iter().any(|a| a.is_bypass),
             "no bypass entry expected, only the real Drive parameter"
         );
+    }
+
+    /// Région contrôleurs réelle reconstruite du dump ed:03 de `read_controls_error.json`
+    /// (2026-07-12) — preset device réel où **4 contrôles** existaient mais le décodeur n'en lisait
+    /// qu'UN (bug). Structure : tableau positionnel `98` de 8 footswitchs, FS1 pilotant DEUX
+    /// contrôles (`92` : Bypass « Kinky Boost » + vrai paramètre Drive), FS2 un vrai paramètre
+    /// Level, FS3 un Bypass « Deluxe Comp », FS4-8 vides ; suivi des blocs source/min/max `9N:82`
+    /// des 2 vrais paramètres (Drive bus1, Level bus2).
+    const MULTI_CONTROLS_ONE_FS_TWO_CONTROLS: &str = concat!(
+        "98:92:87:0a:07:0b:85:00:01:05:ac:4b:69:6e:6b:79:20:42:6f:6f:73:74:00:06:ce:00:d0:af:00:07:",
+        "c3:08:01:0c:c2:0e:a1:00:0d:c2:10:00:0f:c2:87:0a:00:0b:87:00:02:05:a6:44:72:69:76:65:00:06:",
+        "ce:00:07:10:0c:07:c2:08:01:02:00:09:83:1c:00:1d:00:29:c2:0c:c2:0e:a1:00:0d:c2:10:00:0f:c2:",
+        "91:87:0a:00:0b:87:00:02:05:a6:4c:65:76:65:6c:00:06:ce:00:07:10:0c:07:c2:08:02:02:00:09:83:",
+        "1c:00:1d:05:29:c2:0c:c2:0e:a1:00:0d:c2:10:00:0f:c2:91:87:0a:07:0b:85:00:01:05:ac:44:65:6c:",
+        "75:78:65:20:43:6f:6d:70:00:06:ce:00:84:ff:00:07:c3:08:02:0c:c2:0e:a1:00:0d:c2:10:00:0f:c2:",
+        "c0:c0:c0:c0:c0:04:9d:c0:c0:c0:91:82:00:00:01:89:00:03:01:04:02:ca:00:00:00:00:03:ca:3f:80:",
+        "00:00:04:00:05:01:06:83:1c:00:1d:00:29:c2:07:00:0d:c2:91:82:00:01:01:89:00:04:01:04:02:ca:",
+        "c2:70:00:00:03:ca:42:10:00:00:04:00:05:02:06:83:1c:00:1d:05:29:c2:07:00:0d:c2:c0",
+    );
+
+    /// Le bug d'affichage : un footswitch pilotant plusieurs contrôles (ici FS1 = Bypass + Drive)
+    /// faisait tomber TOUT le groupe (Drive perdu à cause du Bypass voisin), et le tableau
+    /// positionnel `98` échouait entièrement dès qu'un emplacement portait `≥2` contrôles (`92`).
+    /// Les 4 contrôles doivent maintenant être lus.
+    #[test]
+    fn decodes_all_four_controls_with_multi_control_footswitch() {
+        let data = hex_to_bytes(MULTI_CONTROLS_ONE_FS_TWO_CONTROLS);
+        let found = scan_controller_assignments(&data);
+        assert_eq!(found.len(), 4, "les 4 contrôles doivent être lus (2 vrais params + 2 Bypass)");
+
+        let drive = found.iter().find(|a| a.param_name == "Drive").expect("Drive");
+        assert!(!drive.is_bypass);
+        assert_eq!(drive.slot_bus, 0x01);
+        assert_eq!(drive.source, 3); // FS1
+
+        let level = found.iter().find(|a| a.param_name == "Level").expect("Level");
+        assert!(!level.is_bypass);
+        assert_eq!(level.slot_bus, 0x02);
+        assert_eq!(level.source, 4); // FS2
+
+        // Deux Bypass : un sur bus1 (FS1, cohabite avec Drive sur le même switch), un sur bus2 (FS3).
+        let byp: Vec<_> = found.iter().filter(|a| a.is_bypass).collect();
+        assert_eq!(byp.len(), 2, "deux Bypass attendus");
+        let byp_fs1 = byp.iter().find(|a| a.slot_bus == 0x01).expect("Bypass bus1");
+        assert_eq!(byp_fs1.source, 3); // FS1, même switch que Drive
+        let byp_fs3 = byp.iter().find(|a| a.slot_bus == 0x02).expect("Bypass bus2");
+        assert_eq!(byp_fs3.source, 5); // FS3 (position 2 -> 2 + 3)
     }
 }

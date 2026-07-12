@@ -1,76 +1,125 @@
 //! Écriture live des champs d'assignation Command Center (onglet « Controllers »).
 //!
-//! **Créer une assignation sur un VRAI paramètre** (pas Bypass) nécessite d'abord un paquet
-//! dédié (`build_controller_create_real_param_assignment_write_packet`, terme `0x25`) qui porte
-//! le `param_selector` (même convention que `live_write.rs` : index du paramètre dans la liste du
-//! modèle) — sans lui, rien n'indique au device QUEL paramètre est visé, et il assigne par défaut
-//! au Bypass du bloc. Ce paquet doit être envoyé **avant** la Source. Bypass n'en a pas besoin
-//! (voir `build_controller_source_and_confirm_write_packets`, format simple, fonctionne déjà).
+//! **Créer une assignation sur un VRAI paramètre** (pas Bypass) est un trio de paquets
+//! (`build_controller_create_real_param_write_packets`, termes `0x25`+`0x24`+`0x21`) qui porte à
+//! la fois le `param_selector` (même convention que `live_write.rs` : index du paramètre dans la
+//! liste du modèle) ET le Footswitch choisi — **contrairement à ce qu'on pensait avant le
+//! 2026-07-12, HX Edit n'envoie JAMAIS de paquet Source (`term=0x38`) séparé pour ce cas** : le FS
+//! est directement encodé dans ce trio (champ `4a` du `term=0x25`, dernier octet du Confirm). Sans
+//! le `term=0x24` (découvert le 2026-07-12, absent de l'ancienne implémentation), le lien n'est
+//! jamais finalisé côté device, qui assigne par défaut au Bypass du bloc — bug rapporté par l'user.
+//! Bypass, lui, n'a pas de vrai paramètre à lier : il garde le format Source+Confirm simple (voir
+//! `build_controller_source_and_confirm_write_packets`).
 //!
-//! Le reste des paquets ne porte **aucun identifiant de bus/switch** dans leur payload
-//! (`82:66:00:<champ>:...`, confirmé sur la capture Type) : le device retient implicitement
-//! « quel switch est en cours d'édition » à partir du dernier paquet de sélection de **Source**
-//! envoyé (`82:62:<bus>:66:<idx>`, qui lui porte bien le bus). Il faut donc TOUJOURS écrire la
-//! Source ensuite — avec le bon slot déjà actif côté device (vérifié aussi manuellement dans HX
-//! Edit par l'user, 2026-07-09) — avant d'écrire Type/Couleur/Nom/Min-Max sur ce même switch.
+//! Le reste des paquets (Type/Couleur/Nom) ne porte **aucun identifiant de bus/switch** dans leur
+//! payload (`82:66:00:<champ>:...`, confirmé sur la capture Type) : le device retient implicitement
+//! « quel switch est en cours d'édition » à partir du dernier paquet Source/création envoyé. Il
+//! faut donc toujours créer/sélectionner la Source d'abord — avec le bon slot déjà actif côté
+//! device (vérifié aussi manuellement dans HX Edit par l'user, 2026-07-09) — avant d'écrire
+//! Type/Couleur/Nom/Min-Max sur ce même switch.
 //!
-//! Format Source vérifié par capture (`controllers_select_all_switch_one_by_one.json`, 8
+//! Format Source (Bypass) vérifié par capture (`controllers_select_all_switch_one_by_one.json`, 8
 //! échantillons Footswitch 1-8 cohérents, ctr delta=0x57, yy delta=+2). Seul le format compact
 //! Footswitch est implémenté ici ; le format long EXP Pedal/None
 //! (`...5f:05:60:cd:01:2c:4a:<N>:47:...`, voir mémoire session 2026-07-07) reste à faire.
 
 use crate::helix::HelixState;
 
-/// Construit le paquet qui lie un switch à un **vrai paramètre catalogue** (obligatoire avant
-/// Source pour cibler autre chose que Bypass). `param_selector` = index du paramètre dans la
-/// liste du modèle (même convention que `live_write.rs::param_selector_byte_from_index`).
+/// Construit le trio de paquets qui crée un lien switch↔**vrai paramètre catalogue** ET lui
+/// assigne un Footswitch, en une seule séquence — HX Edit n'envoie JAMAIS de paquet Source
+/// (`term=0x38`) séparé pour ce cas, le Footswitch est directement encodé dans ce trio.
+/// `param_selector` = index du paramètre dans la liste du modèle (même convention que
+/// `live_write.rs::param_selector_byte_from_index`). `footswitch_number` = numéro HX Edit (1-8).
 ///
-/// Format et compteurs vérifiés par capture différentielle (2026-07-10) : `Preset_one_Drive_FS1.json`
-/// / `Preset_two_Drive_FS1.json` (une seule assignation, preset propre à chaque fois) +
-/// `multi_controls_multi_FS.json` (7 créations consécutives, mêmes bus/slot).
-/// - Champ `4a` (ordinal d'assignation) : vaut **`3`** pour la toute première assignation d'un
-///   contexte propre (confirmé identique sur 2 presets différents, et sur une capture antérieure
-///   distincte `Controllers_Drive_control.json` — donc PAS un compteur global persistant du
-///   device : il repart de cette base à chaque nouveau preset). Avance de `+1` par création
-///   supplémentaire dans la MÊME session d'édition (confirmé 6/6 sur `multi_controls_multi_FS.json`).
-///   Cette fonction ne gère que le cas simple (une seule création, `4a=3` fixe) — créer plusieurs
-///   assignations d'affilée dans un même appel `Save` n'est pas encore géré.
-/// - `yy` avance de **`+3`** par création (confirmé 6/6, écart exact sur tous les intervalles).
-/// - `ctr` : delta **NON confirmé avec certitude** — les échantillons multi-créations incluent la
-///   cascade d'accusés de réception/relecture automatique de HX Edit (paquets qu'on n'envoie pas
-///   nous-mêmes), donc le delta mesuré (~160, variable ±3) n'isole pas la contribution de CE seul
-///   paquet. Valeur retenue ici (`0x57`) par analogie avec Source (l'autre paquet qui établit un
-///   nouveau contexte) — **à valider prudemment lors du prochain test device**, un changement à la
-///   fois, en surveillant si les écritures suivantes (Source/Type/Couleur/Nom) restent cohérentes.
-/// - Découverte bonus : `Clear Assignment`/`Clear All` dans HX Edit réutilisent ce MÊME paquet avec
-///   `param_selector=0` ET `4a=0` (voir `clear_selected_assigment.json`/`clear_all_assigment.json`)
-///   — confirme que ce paquet est le point central de liaison switch↔paramètre.
-pub fn build_controller_create_real_param_assignment_write_packet(
+/// Format et compteurs vérifiés par capture différentielle le 2026-07-12 sur 3 captures HX Edit,
+/// **12/12 contrôles concordants, 0 exception** : `add_drive_slot1_add_level_slot2.json` (2
+/// contrôles), `add_8_controles_8_slots.json` (8 contrôles, FS=numéro de slot), et surtout
+/// `add_FS1_slot8_add_FS8_slot4.json` — capture DÉLIBÉRÉMENT décorrélée (bus, ordre de création et
+/// FS tous différents entre eux : FS1 sur slot8, FS8 sur slot4) qui a permis de trancher sans
+/// ambiguïté.
+///
+/// **3 paquets, `pp=0x04` CONSTANT sur les 3** (pas de dérivation cd comme pour Bypass, dont le
+/// premier paquet Source utilise `pp=0x03`) :
+/// 1. `term=0x25` (tag `87`, 7 clés) : lie `bus`+`param_selector`, ET porte le FS choisi dans le
+///    champ `4a` — **PAS un « ordinal d'assignation » comme documenté avant le 2026-07-12**, mais
+///    le champ `source` avec la MÊME convention d'enum que partout ailleurs dans ce module
+///    (`0`=None, `1`/`2`=EXP Pedal 1/2, `3+`=Footswitch(N-2)) : **`4a = footswitch_number + 2`**.
+///    L'ancienne théorie (« 4a=3 fixe » ou « 3+nombre de contrôles existants ») était une
+///    coïncidence : dans toutes les anciennes captures, le FS choisi montait par hasard en
+///    séquence depuis 1.
+/// 2. `term=0x24` (tag `84`, 4 clés — SOUS-ENSEMBLE de (1), même `bus`+`param_selector`, SANS
+///    ordinal ni trailer) : paquet qui manquait entièrement dans l'ancienne implémentation.
+/// 3. `term=0x21` Confirm : payload `81:66:<N>:00` où **`N` = `footswitch_number` BRUT** (1-8, PAS
+///    la convention enum de (1)) — anciennement fixé à `0x01` en dur (voir aussi le fix apporté à
+///    `build_controller_source_and_confirm_write_packets` pour Bypass, même champ).
+///
+/// Deltas `ctr`/`yy` entre chaque paquet consécutif du trio : **`+0x31`/`+1`**, confirmés
+/// identiques sur les 12 contrôles des 3 captures (0 exception) — remplace l'ancien `+0x57`/`+3`
+/// (qui datait d'une mesure non isolée, cf ancien commentaire). L'avancement de l'état partagé
+/// APRÈS ce trio (utilisé par le paquet suivant, ex. un changement de focus de slot `term=0x4e`
+/// observé entre deux créations dans les 3 captures, mais géré ailleurs dans le code) reste une
+/// ESTIMATION non isolée (`+0x44`/`+1`, par analogie avec `build_controller_source_and_confirm_write_packets`)
+/// — à revalider si les écritures suivantes semblent désynchronisées.
+///
+/// Découverte bonus (pré-2026-07-12, toujours valable) : `Clear Assignment`/`Clear All` dans HX
+/// Edit réutilisent le paquet `term=0x25` avec `param_selector=0` ET `4a=0` (voir
+/// `clear_selected_assigment.json`/`clear_all_assigment.json`) — `4a=0` ne correspond à aucun FS
+/// réel (formule `footswitch_number+2` donnerait `2` pour FS0 inexistant), cohérent avec un usage
+/// comme sentinelle "aucun lien" pour l'effacement.
+pub fn build_controller_create_real_param_write_packets(
     state: &mut HelixState,
     slot_bus: u8,
     param_selector: u8,
-) -> Vec<u8> {
-    let seq = state.next_x80_cnt();
-    let ctr = state.live_write_ctr;
-    let yy = state.live_write_yy;
+    footswitch_number: u8,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let pp: u8 = 0x04;
-    // Ordinal d'assignation : `3` fixe (cas géré ici — une seule création par contexte propre).
-    let assignment_ordinal: u8 = 0x03;
+    let source_value = footswitch_number + 2;
 
-    let packet = vec![
+    let create_seq = state.next_x80_cnt();
+    let create_ctr = state.live_write_ctr;
+    let create_yy = state.live_write_yy;
+    let create_packet = vec![
         0x28, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03,
-        0x00, seq, 0x00, 0x04,
-        (ctr & 0xff) as u8, ((ctr >> 8) & 0xff) as u8,
+        0x00, create_seq, 0x00, 0x04,
+        (create_ctr & 0xff) as u8, ((create_ctr >> 8) & 0xff) as u8,
         0x00, 0x00,
         0x01, 0x00, 0x06, 0x00, 0x18, 0x00, 0x00, 0x00,
-        0x83, 0x66, 0xcd, pp, yy, 0x64, 0x25, 0x65,
+        0x83, 0x66, 0xcd, pp, create_yy, 0x64, 0x25, 0x65,
         0x87, 0x62, slot_bus, 0x1d, 0xc3, 0x1a, 0x00, 0x1c, param_selector,
-        0x4a, assignment_ordinal, 0x47, 0x04, 0xcc, 0x81, 0xc2,
+        0x4a, source_value, 0x47, 0x04, 0xcc, 0x81, 0xc2,
     ];
 
-    state.live_write_ctr = state.live_write_ctr.wrapping_add(0x57);
-    state.live_write_yy = state.live_write_yy.wrapping_add(3);
-    packet
+    let link_seq = state.next_x80_cnt();
+    let link_ctr = create_ctr.wrapping_add(0x31);
+    let link_yy = create_yy.wrapping_add(1);
+    let link_packet = vec![
+        0x21, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03,
+        0x00, link_seq, 0x00, 0x0c,
+        (link_ctr & 0xff) as u8, ((link_ctr >> 8) & 0xff) as u8,
+        0x00, 0x00,
+        0x01, 0x00, 0x06, 0x00, 0x11, 0x00, 0x00, 0x00,
+        0x83, 0x66, 0xcd, pp, link_yy, 0x64, 0x24, 0x65,
+        0x84, 0x62, slot_bus, 0x1d, 0xc3, 0x1a, 0x00, 0x1c, param_selector,
+        0x00, 0x00, 0x00,
+    ];
+
+    let confirm_seq = state.next_x80_cnt();
+    let confirm_ctr = link_ctr.wrapping_add(0x31);
+    let confirm_yy = link_yy.wrapping_add(1);
+    let confirm_packet = vec![
+        0x1b, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03,
+        0x00, confirm_seq, 0x00, 0x0c,
+        (confirm_ctr & 0xff) as u8, ((confirm_ctr >> 8) & 0xff) as u8,
+        0x00, 0x00,
+        0x01, 0x00, 0x06, 0x00, 0x0b, 0x00, 0x00, 0x00,
+        0x83, 0x66, 0xcd, pp, confirm_yy, 0x64, 0x21, 0x65,
+        0x81, 0x66, footswitch_number, 0x00,
+    ];
+
+    state.live_write_ctr = confirm_ctr.wrapping_add(0x44);
+    state.live_write_yy = confirm_yy.wrapping_add(1);
+
+    (create_packet, link_packet, confirm_packet)
 }
 
 /// Octets bruts du paquet Source Footswitch (format compact), sans toucher à l'état partagé —
@@ -166,7 +215,12 @@ pub fn build_controller_source_and_confirm_write_packets(
         0x00, 0x00,
         0x01, 0x00, 0x06, 0x00, 0x0b, 0x00, 0x00, 0x00,
         0x83, 0x66, 0xcd, confirm_pp, confirm_yy, 0x64, 0x21, 0x65,
-        0x81, 0x66, 0x01, 0x00,
+        // 3e octet du payload = footswitch_number BRUT (1-8), PAS une constante `1` — confirmé le
+        // 2026-07-12 sur le trio de création vrai-paramètre (`build_controller_create_real_param_write_packets`,
+        // 12/12 contrôles concordants sur 3 captures dont une décorrélée bus/ordre/FS). Non re-vérifié
+        // séparément pour Bypass (FS≠1) mais même paquet `term=0x21`, donc même champ — fix appliqué
+        // par cohérence, à confirmer si besoin par une capture Bypass+FS≠1 (cf mémoire session).
+        0x81, 0x66, footswitch_number, 0x00,
     ];
 
     state.live_write_ctr = confirm_ctr.wrapping_add(0x44);
@@ -259,6 +313,50 @@ pub fn build_controller_name_write_packet(state: &mut HelixState, name: &str) ->
     packet.extend_from_slice(name_bytes);
     packet.push(0x00); // terminateur nul du fixstr
     packet.extend_from_slice(&[0x00, 0x00]); // bourrage final (déduit d'un seul échantillon)
+
+    state.live_write_ctr = state.live_write_ctr.wrapping_add(0x11);
+    state.live_write_yy = state.live_write_yy.wrapping_add(1);
+    packet
+}
+
+/// Construit le paquet d'écriture de la borne **Min** (`is_max=false`, terme `0x41`) ou **Max**
+/// (`is_max=true`, terme `0x42`) d'un contrôle sur vrai paramètre. `value` = valeur BRUTE catalogue
+/// du paramètre (même unité que `min_raw`/`max_raw` décodés dans `controller_assignments.rs`),
+/// encodée en flottant 32 bits **big-endian** (`ca:<f32>`).
+///
+/// Format vérifié byte-exact sur capture `controllers/save/Controllers_Drive_control.json`
+/// (2026-07-12, Drive slot1 : Min 0.0→0.4, Max 1.0→0.54 — cohérent avec la fixture décodage
+/// `BASELINE_DRIVE_FS1`). Contrairement aux champs Type/Couleur/Nom (qui ne portent pas
+/// d'identifiant et reposent sur le « switch en cours d'édition »), ce paquet est AUTO-SUFFISANT :
+/// il porte le bus du bloc contrôlé ET le `param_selector`, comme le paquet de création `0x25`.
+/// `pp=0x04` constant (comme la création, pas `0x03` des single-field). `ctr +0x11` / `yy +1` par
+/// écriture (mesuré 6/6 sur la capture). L'octet `sub` (offset 11) vaut `0x04` ici (HX Edit
+/// alterne 04/0c dans sa capture — framing interne toléré par le device ; on garde `0x04` comme
+/// tous les autres builders single-field déjà validés sur le device).
+pub fn build_controller_min_max_write_packet(
+    state: &mut HelixState,
+    slot_bus: u8,
+    param_selector: u8,
+    is_max: bool,
+    value: f32,
+) -> Vec<u8> {
+    let seq = state.next_x80_cnt();
+    let ctr = state.live_write_ctr;
+    let yy = state.live_write_yy;
+    let pp: u8 = 0x04;
+    let term: u8 = if is_max { 0x42 } else { 0x41 };
+    let f = value.to_be_bytes();
+
+    let packet = vec![
+        0x27, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03,
+        0x00, seq, 0x00, 0x04,
+        (ctr & 0xff) as u8, ((ctr >> 8) & 0xff) as u8,
+        0x00, 0x00,
+        0x01, 0x00, 0x06, 0x00, 0x17, 0x00, 0x00, 0x00,
+        0x83, 0x66, 0xcd, pp, yy, 0x64, term, 0x65,
+        0x85, 0x62, slot_bus, 0x1d, 0xc3, 0x1a, 0x00, 0x1c, param_selector,
+        0x77, 0xca, f[0], f[1], f[2], f[3], 0x00,
+    ];
 
     state.live_write_ctr = state.live_write_ctr.wrapping_add(0x11);
     state.live_write_yy = state.live_write_yy.wrapping_add(1);
@@ -360,56 +458,154 @@ mod tests {
         assert_eq!(&pkt[32..], &[0x82, 0x66, 0x00, 0x6d, 0xa3, b'A', b'B', 0x00, 0x00, 0x00]);
     }
 
-    /// Octets réels capturés (`Preset_one_Drive_FS1.json`, pkt#1174) — Drive (param_selector=0),
-    /// preset propre, première création (ordinal `4a`=3).
+    /// Octets réels capturés (`controllers/save/Controllers_Drive_control.json`, frames 3281/3329
+    /// pour Min, 3969 pour Max) — Drive (bus=01, param_selector=0). Vérifie term (0x41 Min / 0x42
+    /// Max), le flottant f32 big-endian (`ca:<f32>`), et le template auto-suffisant (bus+param).
     #[test]
-    fn builds_expected_bytes_for_create_real_param_assignment_drive_preset_one() {
+    fn builds_expected_bytes_for_min_max_write_drive() {
+        // Frame 3281 : Min = 0.0, ctr=0x6012, yy=0x07.
         let mut state = HelixState::new();
-        state.live_write_ctr = 0x8501;
-        state.live_write_yy = 0x16;
-        let pkt = build_controller_create_real_param_assignment_write_packet(&mut state, 0x01, 0x00);
-        assert_eq!(pkt.len(), 48);
-        assert_eq!(pkt[0], 0x28);
-        assert_eq!(&pkt[12..14], &[0x01, 0x85]);
-        assert_eq!(pkt[20], 0x18);
-        assert_eq!(&pkt[24..32], &[0x83, 0x66, 0xcd, 0x04, 0x16, 0x64, 0x25, 0x65]);
+        state.live_write_ctr = 0x6012;
+        state.live_write_yy = 0x07;
+        let min0 = build_controller_min_max_write_packet(&mut state, 0x01, 0x00, false, 0.0);
+        assert_eq!(min0.len(), 48);
+        assert_eq!(min0[0], 0x27);
+        assert_eq!(&min0[10..14], &[0x00, 0x04, 0x12, 0x60]);
+        assert_eq!(min0[20], 0x17);
+        assert_eq!(&min0[24..32], &[0x83, 0x66, 0xcd, 0x04, 0x07, 0x64, 0x41, 0x65]);
         assert_eq!(
-            &pkt[32..],
-            &[0x87, 0x62, 0x01, 0x1d, 0xc3, 0x1a, 0x00, 0x1c, 0x00, 0x4a, 0x03, 0x47, 0x04, 0xcc, 0x81, 0xc2]
+            &min0[32..],
+            &[0x85, 0x62, 0x01, 0x1d, 0xc3, 0x1a, 0x00, 0x1c, 0x00, 0x77, 0xca, 0x00, 0x00, 0x00, 0x00, 0x00]
         );
+        // avancement partagé : ctr +0x11, yy +1
+        assert_eq!(state.live_write_ctr, 0x6023);
+        assert_eq!(state.live_write_yy, 0x08);
+
+        // Frame 3329 : Min = 0.4 (0x3ecccccd), ctr=0x6034, yy=0x09.
+        let mut state = HelixState::new();
+        state.live_write_ctr = 0x6034;
+        state.live_write_yy = 0x09;
+        let min04 = build_controller_min_max_write_packet(&mut state, 0x01, 0x00, false, 0.4);
+        assert_eq!(&min04[24..32], &[0x83, 0x66, 0xcd, 0x04, 0x09, 0x64, 0x41, 0x65]);
+        assert_eq!(
+            &min04[41..48],
+            &[0x77, 0xca, 0x3e, 0xcc, 0xcc, 0xcd, 0x00],
+            "flottant 0.4 encodé big-endian ca:3e:cc:cc:cd"
+        );
+
+        // Frame 3969 : Max = 1.0 (0x3f800000), ctr=0x6045, yy=0x0a.
+        let mut state = HelixState::new();
+        state.live_write_ctr = 0x6045;
+        state.live_write_yy = 0x0a;
+        let max1 = build_controller_min_max_write_packet(&mut state, 0x01, 0x00, true, 1.0);
+        assert_eq!(&max1[24..32], &[0x83, 0x66, 0xcd, 0x04, 0x0a, 0x64, 0x42, 0x65]);
+        assert_eq!(
+            &max1[41..48],
+            &[0x77, 0xca, 0x3f, 0x80, 0x00, 0x00, 0x00],
+            "term 0x42 (Max) + flottant 1.0 = ca:3f:80:00:00"
+        );
+        assert_eq!(max1[34], 0x01, "bus du bloc contrôlé");
+        assert_eq!(max1[40], 0x00, "param_selector");
     }
 
-    /// Même capture, preset two (`Preset_two_Drive_FS1.json`, pkt#994) — même bus, param, ordinal
-    /// (`4a`=3 identique malgré le changement de preset) : confirme que `4a` n'est pas un compteur
-    /// global persistant du device (voir mémoire session 2026-07-10).
+    /// Octets réels capturés (`add_drive_slot1_add_level_slot2.json`, frames 5151/5169/5177) —
+    /// Drive (param_selector=0) sur slot bus=01, FS1 choisi → `4a`=1+2=3.
     #[test]
-    fn builds_same_ordinal_across_different_presets() {
+    fn builds_expected_bytes_for_create_real_param_drive_slot1_fs1() {
         let mut state = HelixState::new();
-        state.live_write_ctr = 0xa810;
-        state.live_write_yy = 0x24;
-        let pkt = build_controller_create_real_param_assignment_write_packet(&mut state, 0x01, 0x00);
-        assert_eq!(&pkt[24..32], &[0x83, 0x66, 0xcd, 0x04, 0x24, 0x64, 0x25, 0x65]);
-        assert_eq!(&pkt[39..42], &[0x1c, 0x00, 0x4a], "1c, param_selector, puis tag 4a");
-        assert_eq!(pkt[42], 0x03, "ordinal 4a=3, identique au preset one");
+        state.live_write_ctr = 0x6f97;
+        state.live_write_yy = 0x0a;
+        let (create, link, confirm) =
+            build_controller_create_real_param_write_packets(&mut state, 0x01, 0x00, 1);
+
+        assert_eq!(create.len(), 48);
+        assert_eq!(create[0], 0x28);
+        assert_eq!(&create[12..14], &[0x97, 0x6f]);
+        assert_eq!(&create[24..32], &[0x83, 0x66, 0xcd, 0x04, 0x0a, 0x64, 0x25, 0x65]);
+        assert_eq!(
+            &create[32..],
+            &[0x87, 0x62, 0x01, 0x1d, 0xc3, 0x1a, 0x00, 0x1c, 0x00, 0x4a, 0x03, 0x47, 0x04, 0xcc, 0x81, 0xc2]
+        );
+
+        assert_eq!(link.len(), 44);
+        assert_eq!(link[0], 0x21);
+        assert_eq!(&link[12..14], &[0xc8, 0x6f], "ctr = create_ctr + 0x31");
+        assert_eq!(&link[24..32], &[0x83, 0x66, 0xcd, 0x04, 0x0b, 0x64, 0x24, 0x65]);
+        assert_eq!(&link[32..], &[0x84, 0x62, 0x01, 0x1d, 0xc3, 0x1a, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x00]);
+
+        assert_eq!(confirm.len(), 36);
+        assert_eq!(confirm[0], 0x1b);
+        assert_eq!(&confirm[12..14], &[0xf9, 0x6f], "ctr = link_ctr + 0x31");
+        assert_eq!(&confirm[24..32], &[0x83, 0x66, 0xcd, 0x04, 0x0c, 0x64, 0x21, 0x65]);
+        assert_eq!(&confirm[32..], &[0x81, 0x66, 0x01, 0x00], "N = footswitch_number brut = 1");
+    }
+
+    /// Même capture, 2e contrôle (frames 12543/12563/12573) — Level (param_selector=5) sur slot
+    /// bus=02, FS2 choisi → `4a`=2+2=4, Confirm N=2. Ordre de création=2 mais N suit le FS, pas
+    /// l'ordre (confirmé sans ambiguïté par une capture ultérieure décorrélée, cf test ci-dessous).
+    #[test]
+    fn builds_expected_bytes_for_create_real_param_level_slot2_fs2() {
+        let mut state = HelixState::new();
+        state.live_write_ctr = 0x7048;
+        state.live_write_yy = 0x0e;
+        let (create, link, confirm) =
+            build_controller_create_real_param_write_packets(&mut state, 0x02, 0x05, 2);
+
+        assert_eq!(
+            &create[32..],
+            &[0x87, 0x62, 0x02, 0x1d, 0xc3, 0x1a, 0x00, 0x1c, 0x05, 0x4a, 0x04, 0x47, 0x04, 0xcc, 0x81, 0xc2]
+        );
+        assert_eq!(&link[32..], &[0x84, 0x62, 0x02, 0x1d, 0xc3, 0x1a, 0x00, 0x1c, 0x05, 0x00, 0x00, 0x00]);
+        assert_eq!(&confirm[32..], &[0x81, 0x66, 0x02, 0x00]);
+    }
+
+    /// `add_FS1_slot8_add_FS8_slot4.json` — capture DÉLIBÉRÉMENT décorrélée (bus, ordre de
+    /// création et FS tous différents) qui a permis de trancher : `4a`/`N` suivent le FS choisi,
+    /// PAS le bus ni l'ordre de création. 1er contrôle créé = FS1 sur slot bus=08 (pas FS8/FS-ordre1).
+    #[test]
+    fn create_ordinal_and_confirm_n_follow_chosen_footswitch_not_bus_or_creation_order() {
+        let mut state = HelixState::new();
+        state.live_write_ctr = 0x7cb4;
+        state.live_write_yy = 0x54;
+        let (create, _link, confirm) =
+            build_controller_create_real_param_write_packets(&mut state, 0x08, 0x00, 1);
+        assert_eq!(create[34], 0x08, "bus du bloc contrôlé = slot8");
+        assert_eq!(create[42], 0x03, "4a = FS1+2 = 3, PAS lié au bus (8) ni à l'ordre (1er)");
+        assert_eq!(confirm[34], 0x01, "N = FS1 brut");
+
+        // 2e contrôle : FS8 sur slot bus=04 (2e créé, mais N/4a suivent le FS=8, pas l'ordre=2).
+        let mut state2 = HelixState::new();
+        state2.live_write_ctr = 0x7d65;
+        state2.live_write_yy = 0x58;
+        let (create2, _link2, confirm2) =
+            build_controller_create_real_param_write_packets(&mut state2, 0x04, 0x05, 8);
+        assert_eq!(create2[34], 0x04, "bus du bloc contrôlé = slot4");
+        assert_eq!(create2[42], 0x0a, "4a = FS8+2 = 10, PAS lié au bus (4) ni à l'ordre (2e)");
+        assert_eq!(confirm2[34], 0x08, "N = FS8 brut");
     }
 
     #[test]
     fn param_selector_byte_reflects_chosen_parameter() {
         let mut state = HelixState::new();
-        let pkt = build_controller_create_real_param_assignment_write_packet(&mut state, 0x05, 0x07);
-        assert_eq!(pkt[39], 0x1c);
-        assert_eq!(pkt[40], 0x07, "param_selector = index du paramètre choisi");
-        assert_eq!(pkt[34], 0x05, "bus du bloc contrôlé");
+        let (create, link, _confirm) =
+            build_controller_create_real_param_write_packets(&mut state, 0x05, 0x07, 3);
+        assert_eq!(create[39], 0x1c);
+        assert_eq!(create[40], 0x07, "param_selector = index du paramètre choisi");
+        assert_eq!(create[34], 0x05, "bus du bloc contrôlé");
+        assert_eq!(link[40], 0x07, "le paquet 0x24 porte le même param_selector que le 0x25");
     }
 
     #[test]
-    fn create_assignment_advances_shared_live_write_counters() {
+    fn create_link_confirm_trio_advances_shared_live_write_counters_by_0x31_each_step() {
         let mut state = HelixState::new();
         let ctr_before = state.live_write_ctr;
         let yy_before = state.live_write_yy;
-        let _ = build_controller_create_real_param_assignment_write_packet(&mut state, 0x01, 0x00);
-        assert_eq!(state.live_write_ctr, ctr_before.wrapping_add(0x57));
-        assert_eq!(state.live_write_yy, yy_before.wrapping_add(3));
+        let _ = build_controller_create_real_param_write_packets(&mut state, 0x01, 0x00, 1);
+        // Après le trio : confirm_ctr(create_ctr+0x62) + 0x44, confirm_yy(create_yy+2) + 1 —
+        // estimation non isolée pour l'état APRÈS le trio (cf doc de fonction).
+        let confirm_ctr = ctr_before.wrapping_add(0x62);
+        assert_eq!(state.live_write_ctr, confirm_ctr.wrapping_add(0x44));
+        assert_eq!(state.live_write_yy, yy_before.wrapping_add(2).wrapping_add(1));
     }
 
     /// Octets réels capturés (`add_bypass_switch_FS.json`, pkt#600 Source + pkt#610 Confirm) —
@@ -441,6 +637,18 @@ mod tests {
 
     fn pkt_confirm_yy(pkt: &[u8]) -> u8 {
         pkt[28]
+    }
+
+    /// Fix 2026-07-12 : le 3e octet du payload Confirm doit suivre `footswitch_number`, pas rester
+    /// figé à `1` — non re-capturé spécifiquement pour Bypass (cf doc module), mais même paquet
+    /// `term=0x21` que le trio de création vrai-paramètre où c'est confirmé 12/12. Avant ce fix,
+    /// cette assertion aurait échoué (`0x01` en dur quel que soit `footswitch_number`).
+    #[test]
+    fn bypass_confirm_n_follows_footswitch_number_not_hardcoded_one() {
+        let mut state = HelixState::new();
+        let (_source, confirm_pkt) =
+            build_controller_source_and_confirm_write_packets(&mut state, 0x01, 4);
+        assert_eq!(&confirm_pkt[32..36], &[0x81, 0x66, 0x04, 0x00]);
     }
 
     #[test]

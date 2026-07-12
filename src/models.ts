@@ -145,6 +145,9 @@ let loadedPresetIndex = -1;
 let loading = false;
 let pendingPresetIndex = -1;
 let lastRequestedPresetIndex = -1;
+/** Dernier preset pour lequel on a évalué le retour auto sur l'onglet Edit (#2 Command Center UX) —
+ * suivi indépendant de `currentPresetIndex`, que plusieurs chemins mutent AVANT `requestLoadForPreset`. */
+let lastControllersTabPresetIndex = -1;
 const ENABLE_PRESET_CONTENT = true;
 const DEBUG_MODEL_ID_JOIN_FALLBACK =
   localStorage.getItem("models_debug_id_join") === "1";
@@ -2916,6 +2919,15 @@ let lastCabDualTabPanesContext: {
 /** Bus USB du slot structurel sélectionné (Input 0, Output 9, Split 10, Merge 19). */
 let selectedSpecialHwSlotBus: number | null = null;
 
+/**
+ * Type du slot actif pour le panneau Controllers :
+ * - `model`   : slot FX avec un modèle (liste de paramètres + Bypass).
+ * - `special` : Input/Output/Split/Merge (liste de paramètres SANS Bypass).
+ * - `empty`   : slot FX vide → panneau entièrement masqué.
+ */
+type ControllersActiveSlotKind = "model" | "special" | "empty";
+let controllersActiveSlotKind: ControllersActiveSlotKind = "empty";
+
 const HW_SLOT_BUS_INPUT = 0;
 const HW_SLOT_BUS_OUTPUT = 9;
 const HW_SLOT_BUS_SPLIT = 0x0a;
@@ -5336,7 +5348,14 @@ async function focusMatrixSlotParamsPane(kemplineSlotIndex: number): Promise<voi
   lastUserHwSlotSwitchAt = Date.now();
   selectParamsPaneByKemplineIndex(kemplineSlotIndex);
   const slot = lastHwSyncNormalizedSlots?.[kemplineSlotIndex];
-  if (!slot || slot.name === "<empty>") return;
+  if (!slot || slot.name === "<empty>") {
+    // Slot FX vide : `loadAndShowModelsParamsForSlot` (qui met à jour l'onglet Controllers) n'est
+    // PAS appelé sur ce chemin → on masque explicitement le panneau param/FS ici, sinon il reste
+    // figé sur le contenu du slot précédent.
+    controllersActiveSlotKind = "empty";
+    syncControllersEditorFromSelection();
+    return;
+  }
 
   selectedParamsInPlaceUpdater = null;
   selectedParamsActivePaneUpdater = null;
@@ -5460,6 +5479,11 @@ function resetModelsParamsIdleHint() {
 
 /** Panneau Paramètres Models : aucun contenu (ex. clic sur un slot vide). */
 function clearModelsParamsPaneContent() {
+  // Slot vide : masquer aussi le panneau Controllers (param/FS). Ce chemin (slot vide) ne passe NI
+  // par `loadAndShowModelsParamsForSlot` NI par la branche empty de `focusMatrixSlotParamsPane` —
+  // c'est le seul point commun aux 2 appelants « slot vide » (isEmptyGridCell + slot === null).
+  controllersActiveSlotKind = "empty";
+  syncControllersEditorFromSelection();
   clearModelsParamsSubheadAndIcon();
   const inner = getModelsParamsInner();
   if (!inner) return;
@@ -5887,10 +5911,14 @@ function syncControllersEditorParamList(): void {
   ) as HTMLSelectElement | null;
   if (!select) return;
   select.replaceChildren();
-  const bypassOpt = document.createElement("option");
-  bypassOpt.value = CONTROLLERS_BYPASS_PARAM_VALUE;
-  bypassOpt.textContent = "Bypass";
-  select.append(bypassOpt);
+  // Bypass = on/off du bloc entier : sans objet pour les slots structurels Input/Output/Split/Merge,
+  // on ne l'ajoute donc pas à leur liste de paramètres (#4).
+  if (controllersActiveSlotKind !== "special") {
+    const bypassOpt = document.createElement("option");
+    bypassOpt.value = CONTROLLERS_BYPASS_PARAM_VALUE;
+    bypassOpt.textContent = "Bypass";
+    select.append(bypassOpt);
+  }
   const ctx = selectedParamsHwWireContext;
   if (!ctx) return;
   for (const pRaw of ctx.paramsForDisplay) {
@@ -5935,6 +5963,11 @@ function syncControllersEditorSelectedParamRow(): void {
 }
 
 function syncControllersEditorFromSelection(): void {
+  // Slot vide (aucun modèle) : tout le panneau est masqué — on ne doit pas pouvoir choisir un
+  // paramètre / FS s'il n'y a rien sur le slot actif.
+  const editor = document.getElementById("models-controllers-editor");
+  if (editor) editor.hidden = controllersActiveSlotKind === "empty";
+  if (controllersActiveSlotKind === "empty") return;
   syncControllersEditorHeader();
   syncControllersEditorParamList();
   syncControllersEditorSelectedParamRow();
@@ -6147,6 +6180,7 @@ function initControllersEditorDetailControls(): void {
     void invoke("write_controller_type", { momentary: typeSlider.value === "1" }).catch((e) =>
       console.error("[ControllersLiveWrite] type", e),
     );
+    syncEditedControllerToCache();
   });
 
   const minSlider = document.getElementById("models-controllers-detail-min") as HTMLInputElement | null;
@@ -6154,11 +6188,17 @@ function initControllersEditorDetailControls(): void {
   minSlider?.addEventListener("input", () => {
     if (minValue) minValue.textContent = minSlider.value;
   });
+  minSlider?.addEventListener("change", () => {
+    writeControllerMinMaxLive(false, Number(minSlider.value));
+  });
 
   const maxSlider = document.getElementById("models-controllers-detail-max") as HTMLInputElement | null;
   const maxValue = document.getElementById("models-controllers-detail-max-value");
   maxSlider?.addEventListener("input", () => {
     if (maxValue) maxValue.textContent = maxSlider.value;
+  });
+  maxSlider?.addEventListener("change", () => {
+    writeControllerMinMaxLive(true, Number(maxSlider.value));
   });
 
   const snapshotSlider = document.getElementById(
@@ -6180,6 +6220,7 @@ function initControllersEditorDetailControls(): void {
     void invoke("write_controller_color", { colorIndex: Number(colorSlider.value) }).catch((e) =>
       console.error("[ControllersLiveWrite] color", e),
     );
+    syncEditedControllerToCache();
   });
 
   const nameInput = document.getElementById("models-controllers-detail-name") as HTMLInputElement | null;
@@ -6187,6 +6228,7 @@ function initControllersEditorDetailControls(): void {
     void invoke("write_controller_name", { name: nameInput.value }).catch((e) =>
       console.error("[ControllersLiveWrite] name", e),
     );
+    syncEditedControllerToCache();
   });
 
   const sourceSelect = document.getElementById(
@@ -6234,12 +6276,12 @@ async function writeControllersSourceSelectionLive(sourceValue: string): Promise
   const footswitchNumber = Number(fsMatch[1]);
 
   const isBypass = isControllersBypassParamSelected();
+  const paramSelect = document.getElementById(
+    "models-controllers-editor-param-select",
+  ) as HTMLSelectElement | null;
   let paramSelector: number | undefined;
   if (!isBypass) {
     const ctx = selectedParamsHwWireContext;
-    const paramSelect = document.getElementById(
-      "models-controllers-editor-param-select",
-    ) as HTMLSelectElement | null;
     const rowIndex = ctx?.paramsForDisplay.findIndex(
       (p) => (p.symbolicID ?? "").trim() === paramSelect?.value,
     );
@@ -6251,22 +6293,42 @@ async function writeControllersSourceSelectionLive(sourceValue: string): Promise
   }
 
   try {
-    if (!isBypass) {
-      await invoke("write_controller_create_real_param_assignment", { slotBus, paramSelector });
+    if (isBypass) {
+      // Source + confirmation obligatoire envoyées ensemble côté Rust (même verrou, séquence
+      // atomique) — voir `command_center_write.rs` : le compteur 16 bits `cd` du couple
+      // Source→Confirm avance de +1 exact (correctif 2026-07-11), pour se caler sur HX Edit.
+      await invoke("write_controller_source_footswitch", { slotBus, footswitchNumber });
+    } else {
+      // Découverte 2026-07-12 : pour un vrai paramètre, HX Edit n'envoie JAMAIS de paquet Source
+      // séparé — le FS est encodé directement dans le trio création (`term=0x25`+`0x24`+`0x21`),
+      // voir `command_center_write.rs::build_controller_create_real_param_write_packets`. PAS
+      // d'appel à `write_controller_source_footswitch` ici (contrairement à avant, où le FS était
+      // toujours envoyé séparément et retombait en Bypass par défaut faute de lien finalisé).
+      await invoke("write_controller_create_real_param_assignment", {
+        slotBus,
+        paramSelector,
+        footswitchNumber,
+      });
     }
-    // Source + confirmation obligatoire envoyées ensemble côté Rust (même verrou, séquence
-    // atomique) — voir `command_center_write.rs` : le compteur 16 bits `cd` du couple Source→Confirm
-    // avance de +1 exact (correctif 2026-07-11), pour se caler sur HX Edit.
-    await invoke("write_controller_source_footswitch", { slotBus, footswitchNumber });
     console.info("[ControllersLiveWrite] source sent", { slotBus, isBypass, paramSelector, footswitchNumber });
 
-    // Plus de relecture preset après création (retirée le 2026-07-11) : elle avait été ajoutée en
-    // pensant qu'elle réarmerait la synchro live — hypothèse RÉFUTÉE (le device restait muet même
-    // après relecture). HX Edit ne relit d'ailleurs pas le preset après création : il remplit le
-    // tableau localement. On marque juste le preset comme modifié (dirty flag), comme HX Edit.
-    // NB : le tableau des assignations ne se rafraîchit donc plus tout seul à la création — à traiter
-    // séparément (MAJ locale façon HX Edit). Le vrai problème de synchro live restant est ailleurs :
-    // le device ne sert pas notre canal de notifications `f0:03` (armement mode éditeur, cf. mémoire).
+    // Plus de relecture preset après création (retirée le 2026-07-11) : elle n'avait pas réarmé la
+    // synchro live (hypothèse RÉFUTÉE). HX Edit ne relit pas le preset après création : il remplit
+    // le tableau localement — on fait pareil ici (`upsertControllerAssignmentCacheEntry`), le cache
+    // n'étant sinon rechargé depuis `preset_data` qu'au prochain vrai chargement de preset (voir
+    // `controllerAssignmentsCache`).
+    upsertControllerAssignmentCacheEntry({
+      slotBus,
+      kemplineSlotIndex: ki,
+      paramName: paramSelect?.selectedOptions[0]?.textContent?.trim() || (isBypass ? "Bypass" : "—"),
+      customName: null,
+      momentary: false,
+      colorIndex: 0,
+      source: footswitchNumber + 2,
+      minRaw: 0,
+      maxRaw: 0,
+      isBypass,
+    });
     markPresetModified();
   } catch (e) {
     console.error("[ControllersLiveWrite] source", e);
@@ -6286,6 +6348,17 @@ type ControllerAssignmentJson = {
   maxRaw: number;
   isBypass: boolean;
 };
+
+/**
+ * Cache local des assignations Command Center du preset actif, peuplé UNE fois par vrai
+ * chargement de preset (voir `loadControllerAssignmentsCacheFromBackend`, appelé depuis
+ * `requestLoadForPreset` une fois le dump `preset_data` frais). `preset_data` backend n'est
+ * JAMAIS mis à jour par une écriture live de contrôle (choix assumé, cf commentaire dans
+ * `writeControllersSourceSelectionLive`) — donc entre deux chargements de preset, ce cache est
+ * la seule source de vérité pour le tableau ; les créations live y sont ajoutées localement
+ * (voir `upsertControllerAssignmentCacheEntry`) au lieu de dépendre d'un rescan backend.
+ */
+let controllerAssignmentsCache: ControllerAssignmentJson[] = [];
 
 /** Valeur sentinelle de l'option "Bypass" dans le select param (n'est pas un `symbolicID` catalogue). */
 const CONTROLLERS_BYPASS_PARAM_VALUE = "__bypass__";
@@ -6333,20 +6406,175 @@ function controllersBlockNameForKemplineIndex(kemplineSlotIndex: number | null):
   return slot?.name?.trim() || "—";
 }
 
-/** Recharge le tableau des assignations Command Center depuis le device (dump preset déjà reçu). */
-async function refreshControllersAssignmentsTable(): Promise<void> {
-  const tbody = document.getElementById("models-controllers-table-body");
-  if (!tbody) return;
-  let assignments: ControllerAssignmentJson[] = [];
+/**
+ * Recharge le cache local des assignations Command Center depuis le backend (décodage de
+ * `preset_data`) — à appeler UNE SEULE fois par vrai chargement de preset (le dump venant
+ * d'être rafraîchi), jamais à chaque clic de slot ni chaque changement d'onglet : sinon on
+ * écrase les créations live faites depuis le dernier dump (voir cache `controllerAssignmentsCache`).
+ */
+async function loadControllerAssignmentsCacheFromBackend(): Promise<void> {
   try {
-    assignments = await invoke<ControllerAssignmentJson[]>(
+    controllerAssignmentsCache = await invoke<ControllerAssignmentJson[]>(
       "get_active_preset_controller_assignments",
     );
   } catch {
-    assignments = [];
+    controllerAssignmentsCache = [];
   }
+  renderControllersAssignmentsTable();
+}
+
+/** Ajoute ou remplace (par slotBus + paramName) une entrée du cache local, puis re-rend le tableau. */
+function upsertControllerAssignmentCacheEntry(entry: ControllerAssignmentJson): void {
+  const idx = controllerAssignmentsCache.findIndex(
+    (x) => x.slotBus === entry.slotBus && x.paramName === entry.paramName,
+  );
+  if (idx >= 0) controllerAssignmentsCache[idx] = entry;
+  else controllerAssignmentsCache.push(entry);
+  renderControllersAssignmentsTable();
+}
+
+/**
+ * Résout le `param_selector` (index wire du paramètre dans le modèle chargé) du contrôle en cours
+ * d'édition — même convention que `write_controller_create_real_param_assignment`. `null` si le
+ * paramètre n'est pas trouvable (liste non chargée, ou option "Bypass" qui n'a pas de vrai param).
+ */
+function currentControllerParamSelector(): number | null {
+  if (isControllersBypassParamSelected()) return null;
+  const paramSelect = document.getElementById(
+    "models-controllers-editor-param-select",
+  ) as HTMLSelectElement | null;
+  const ctx = selectedParamsHwWireContext;
+  const rowIndex = ctx?.paramsForDisplay.findIndex(
+    (p) => (p.symbolicID ?? "").trim() === paramSelect?.value,
+  );
+  if (!ctx || rowIndex === undefined || rowIndex < 0) return null;
+  return liveWriteParamIndexForRow(ctx.paramsForDisplay, rowIndex, ctx.catalogSignal);
+}
+
+/**
+ * Bornes BRUTES catalogue (slider `.models-params-slider`, 0-1 etc.) ET AFFICHAGE (texte
+ * `.models-params-row-min/max`, ex. %/dB) du paramètre sélectionné — pour convertir la valeur du
+ * slider Min/Max du contrôle (en unités d'affichage) vers/depuis le brut que le device attend.
+ * `null` si la ligne paramètre n'est pas dans le modèle actuellement chargé.
+ */
+function controllerMinMaxScale(): { rawMin: number; rawMax: number; dispMin: number; dispMax: number } | null {
+  const paramSelect = document.getElementById(
+    "models-controllers-editor-param-select",
+  ) as HTMLSelectElement | null;
+  const sid = paramSelect?.value;
+  if (!sid) return null;
+  const row = document.querySelector(
+    `#models-params-inner li.models-params-row[data-symbolic-id="${CSS.escape(sid)}"]`,
+  );
+  if (!row) return null;
+  const dispMin = Number.parseFloat(row.querySelector(".models-params-row-min")?.textContent ?? "");
+  const dispMax = Number.parseFloat(row.querySelector(".models-params-row-max")?.textContent ?? "");
+  const rawSlider = row.querySelector("input.models-params-slider") as HTMLInputElement | null;
+  const rawMin = Number(rawSlider?.min);
+  const rawMax = Number(rawSlider?.max);
+  if (![dispMin, dispMax, rawMin, rawMax].every((n) => Number.isFinite(n))) return null;
+  return { rawMin, rawMax, dispMin, dispMax };
+}
+
+/**
+ * Valeur AFFICHAGE du slider Min/Max → valeur BRUTE catalogue (que le device attend), par
+ * interpolation linéaire de position entre les bornes. Repli identité si l'échelle est
+ * indisponible/dégénérée. NB : linéaire — approximation pour les rares paramètres à affichage
+ * non-linéaire (dB/log), limite assumée (décision session 2026-07-12, pas d'inverse de
+ * `formatChainParamValueJson` disponible).
+ */
+function controllerMinMaxDisplayToRaw(displayValue: number): number {
+  const s = controllerMinMaxScale();
+  if (!s || s.dispMax === s.dispMin) return displayValue;
+  const frac = (displayValue - s.dispMin) / (s.dispMax - s.dispMin);
+  return s.rawMin + frac * (s.rawMax - s.rawMin);
+}
+
+/** Inverse : valeur BRUTE catalogue → valeur AFFICHAGE du slider Min/Max (même interpolation). */
+function controllerMinMaxRawToDisplay(rawValue: number): number {
+  const s = controllerMinMaxScale();
+  if (!s || s.rawMax === s.rawMin) return rawValue;
+  const frac = (rawValue - s.rawMin) / (s.rawMax - s.rawMin);
+  return s.dispMin + frac * (s.dispMax - s.dispMin);
+}
+
+/** Écrit au device la borne Min (`isMax=false`) ou Max (`isMax=true`) du contrôle en cours d'édition. */
+function writeControllerMinMaxLive(isMax: boolean, displayValue: number): void {
+  const ki = selectedParamsKemplineSlotIndex;
+  if (ki === null) return;
+  const slotBus = kemplineIndexToSlotBusJs(ki);
+  if (slotBus === null) return;
+  const paramSelector = currentControllerParamSelector();
+  if (paramSelector === null) return; // Bypass n'a pas de Min/Max, ou paramètre introuvable
+  // Le slider est en unités d'affichage ; le device attend le brut catalogue → conversion.
+  const value = controllerMinMaxDisplayToRaw(displayValue);
+  void invoke("write_controller_min_max", { slotBus, paramSelector, isMax, value }).catch((e) =>
+    console.error("[ControllersLiveWrite] minmax", e),
+  );
+  syncEditedControllerToCache();
+}
+
+/** Inverse de `controllerSourceSelectValue` : valeur du select source → énumération `source`. */
+function controllerSourceEnumFromSelectValue(value: string): number {
+  if (value === "none") return 0;
+  if (value === "exp1") return 1;
+  if (value === "exp2") return 2;
+  const m = /^fs(\d)$/.exec(value);
+  return m ? Number(m[1]) + 2 : 0;
+}
+
+/**
+ * Construit une entrée de cache à partir de l'état COURANT de l'éditeur de contrôle (slot actif +
+ * champs du panneau détail) et l'upsert. Appelé après chaque écriture live d'un champ
+ * (Type/Couleur/Nom/Min/Max/Source) : `preset_data` backend n'étant pas rafraîchi par ces
+ * écritures, le cache local est la seule source de vérité entre deux chargements de preset, et il
+ * doit refléter la modif pour que le tableau ET le panneau détail (au re-clic de la ligne) soient
+ * justes. Ne fait rien si aucun slot/contrôle n'est en cours d'édition (garde de sûreté).
+ */
+function syncEditedControllerToCache(): void {
+  const ki = selectedParamsKemplineSlotIndex;
+  if (ki === null) return;
+  const slotBus = kemplineIndexToSlotBusJs(ki);
+  if (slotBus === null) return;
+  const isBypass = isControllersBypassParamSelected();
+  const paramSelect = document.getElementById(
+    "models-controllers-editor-param-select",
+  ) as HTMLSelectElement | null;
+  const sourceSelect = document.getElementById(
+    "models-controllers-editor-source-select",
+  ) as HTMLSelectElement | null;
+  const typeSlider = document.getElementById("models-controllers-detail-type") as HTMLInputElement | null;
+  const colorSlider = document.getElementById("models-controllers-detail-color") as HTMLInputElement | null;
+  const nameInput = document.getElementById("models-controllers-detail-name") as HTMLInputElement | null;
+  const minSlider = document.getElementById("models-controllers-detail-min") as HTMLInputElement | null;
+  const maxSlider = document.getElementById("models-controllers-detail-max") as HTMLInputElement | null;
+
+  const paramName = isBypass
+    ? "Bypass"
+    : paramSelect?.selectedOptions[0]?.textContent?.trim() || "—";
+  const customRaw = nameInput?.value.trim() ?? "";
+  upsertControllerAssignmentCacheEntry({
+    slotBus,
+    kemplineSlotIndex: ki,
+    paramName,
+    customName: customRaw.length > 0 ? customRaw : null,
+    momentary: typeSlider?.value === "1",
+    colorIndex: colorSlider ? Number(colorSlider.value) : 0,
+    source: sourceSelect ? controllerSourceEnumFromSelectValue(sourceSelect.value) : 0,
+    // Slider en affichage → cache en brut (comme le décodage device `min_raw`/`max_raw`), pour que
+    // le round-trip re-clic/re-dump soit cohérent (voir `controllerMinMaxDisplayToRaw`).
+    minRaw: !isBypass && minSlider ? controllerMinMaxDisplayToRaw(Number(minSlider.value)) : 0,
+    maxRaw: !isBypass && maxSlider ? controllerMinMaxDisplayToRaw(Number(maxSlider.value)) : 0,
+    isBypass,
+  });
+}
+
+/** Re-rend le tableau des assignations Command Center depuis le cache local (aucun appel backend). */
+function renderControllersAssignmentsTable(): void {
+  const tbody = document.getElementById("models-controllers-table-body");
+  if (!tbody) return;
   tbody.replaceChildren();
-  for (const a of assignments) {
+  for (const a of controllerAssignmentsCache) {
     const tr = document.createElement("tr");
     tr.dataset.assignment = JSON.stringify(a);
     const tdBlock = document.createElement("td");
@@ -6472,18 +6700,23 @@ function applyControllerAssignmentRowToDetailNow(a: ControllerAssignmentJson): v
     const minValue = document.getElementById("models-controllers-detail-min-value");
     const maxSlider = document.getElementById("models-controllers-detail-max") as HTMLInputElement | null;
     const maxValue = document.getElementById("models-controllers-detail-max-value");
+    // `a.minRaw`/`a.maxRaw` sont en BRUT catalogue ; le slider est en unités d'AFFICHAGE (bornes
+    // `minN`/`maxN` ci-dessus) → convertir brut→affichage pour positionner slider + label
+    // (symétrique de la conversion affichage→brut à l'écriture, voir `controllerMinMaxRawToDisplay`).
+    const minDisp = controllerMinMaxRawToDisplay(a.minRaw);
+    const maxDisp = controllerMinMaxRawToDisplay(a.maxRaw);
     if (minSlider) {
       minSlider.min = String(minN);
       minSlider.max = String(maxN);
-      minSlider.value = String(a.minRaw);
+      minSlider.value = String(minDisp);
     }
-    if (minValue) minValue.textContent = String(a.minRaw);
+    if (minValue) minValue.textContent = String(minDisp);
     if (maxSlider) {
       maxSlider.min = String(minN);
       maxSlider.max = String(maxN);
-      maxSlider.value = String(a.maxRaw);
+      maxSlider.value = String(maxDisp);
     }
-    if (maxValue) maxValue.textContent = String(a.maxRaw);
+    if (maxValue) maxValue.textContent = String(maxDisp);
 
     const currentValue = controllersSelectedParamEditTabCurrentValue();
     positionControllersCurrentValueMarker("models-controllers-detail-min-marker", currentValue, minN, maxN);
@@ -6507,6 +6740,10 @@ function applyControllerAssignmentRowToDetailNow(a: ControllerAssignmentJson): v
   const nameInput = document.getElementById("models-controllers-detail-name") as HTMLInputElement | null;
   if (nameInput) nameInput.value = customizeLabel;
 }
+
+/** Bascule l'onglet principal Models (0 = Edit, 1 = Controllers) — exposé pour `requestLoadForPreset`
+ * (retour automatique sur Edit au changement de preset, cf. #2 Command Center UX). */
+let activateModelsMainTab: ((idx: number) => void) | null = null;
 
 function initModelsMainTabs(): void {
   const editTab = document.getElementById("models-main-tab-edit");
@@ -6532,9 +6769,10 @@ function initModelsMainTabs(): void {
     });
     if (idx === 1) {
       syncControllersEditorFromSelection();
-      void refreshControllersAssignmentsTable();
+      renderControllersAssignmentsTable();
     }
   }
+  activateModelsMainTab = activate;
 
   editTab.addEventListener("click", () => activate(0));
   controllersTab.addEventListener("click", () => activate(1));
@@ -10886,8 +11124,14 @@ async function loadAndShowModelsParamsForSlot(
   kemplineSlotIndex?: number,
 ): Promise<void> {
   await loadAndShowModelsParamsForSlotInner(slot, kemplineSlotIndex);
+  // Type de slot pour le panneau Controllers (ordre : spécial d'abord, puis vide, sinon modèle).
+  controllersActiveSlotKind = flowIoKindFromSlotCategory(slot.category)
+    ? "special"
+    : !slot.name || slot.name === "<empty>" || !slot.category
+      ? "empty"
+      : "model";
   syncControllersEditorFromSelection();
-  void refreshControllersAssignmentsTable();
+  renderControllersAssignmentsTable();
 }
 
 async function loadAndShowModelsParamsForSlotInner(
@@ -13227,6 +13471,20 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
   if (index !== currentPresetIndex) {
     clearPath1InputSourceHighlightOverride();
   }
+  // Retour automatique sur l'onglet Edit à un VRAI changement de preset (#2 Command Center UX).
+  // NE PAS se fier à `index !== currentPresetIndex` ici : plusieurs chemins (ex. détection hardware
+  // d'un changement de preset via FS physique, cf. `deviceActive mismatch CONFIRMED`) posent déjà
+  // `currentPresetIndex = deviceActive` AVANT d'appeler `requestLoadForPreset`, donc les 2 valeurs
+  // sont déjà égales ici — le check échouait silencieusement (constaté device 2026-07-11). On suit
+  // donc `index` avec une variable dédiée (`lastControllersTabPresetIndex`), indépendante de toute
+  // mutation externe de `currentPresetIndex`, et on ignore les relectures du même preset
+  // (`hardwareRefresh` = fullPresetReload / hardwareRefreshAfterEdit / etc., cf. opts).
+  if (!hardwareRefresh) {
+    if (index !== lastControllersTabPresetIndex) {
+      activateModelsMainTab?.(0);
+    }
+    lastControllersTabPresetIndex = index;
+  }
   mergeProbeSlotModelUntil = null;
   suppressUsbPresetPollUntilMs = 0;
   pendingPresetIndex = -1;
@@ -13379,6 +13637,10 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
             await logCatalogChainHexDiffIfNeeded(normalizedSlots, index);
             await renderSlots(normalizedSlots, routingFlow, stompLayout);
             rememberHwSyncChainLayout(normalizedSlots);
+            // `preset_data` backend vient d'être rafraîchi par ce dump : c'est le SEUL moment où
+            // on recharge le cache local des assignations Command Center depuis le backend (voir
+            // `controllerAssignmentsCache`) — pas à chaque clic de slot ni chaque changement d'onglet.
+            void loadControllerAssignmentsCacheFromBackend();
             if (hardwareRefresh) {
               // Le dump frais est autoritaire : reconstruire la grille comme un chargement normal.
               await hydrateSlotChainSessionFromPresetData(index);
