@@ -407,6 +407,24 @@ function liveChainOverrideStorageKey(preset: number, kemplineSlotIndex: number):
   return `${preset}|${kemplineSlotIndex}`;
 }
 
+/**
+ * Snapshot actif courant (0-based, 0..3). Les 4 snapshots d'un preset partagent le même squelette
+ * (modèles/routing) et la même chaîne de base ; SEULES les valeurs de params (overrides) diffèrent
+ * par snapshot. On indexe donc le store d'overrides par snapshot actif (pas la base, partagée) —
+ * voir `overrideMapKey`. Mis à jour à la bascule (bouton S1-S4). Défaut Snap 1 (index 0).
+ */
+let activeSnapshotIndex = 0;
+
+/**
+ * Clé du store d'overrides `liveChainParamOverridesByPresetSlot`, incluant le snapshot actif : deux
+ * snapshots du même slot ont des overrides distincts, mais partagent la base (`slotChainSessionByKey`,
+ * clé sans snapshot). Résultat : un param non modifié affiche la base (identique sur les 4 snapshots) ;
+ * un param modifié affiche l'override du snapshot où il a été modifié. Cœur du refresh snapshot.
+ */
+function overrideMapKey(preset: number, kemplineSlotIndex: number): string {
+  return `${liveChainOverrideStorageKey(preset, kemplineSlotIndex)}|s${activeSnapshotIndex}`;
+}
+
 function recordLiveChainParamOverrideForKemplineSlot(
   preset: number,
   kemplineSlotIndex: number,
@@ -416,7 +434,9 @@ function recordLiveChainParamOverrideForKemplineSlot(
   if (preset < 0 || !Number.isInteger(kemplineSlotIndex) || kemplineSlotIndex < 0) return;
   const sid = symbolicId.trim();
   if (!sid) return;
-  const key = liveChainOverrideStorageKey(preset, kemplineSlotIndex);
+  // Override attribué au snapshot ACTIF (clé snapshot-aware) — une modif d'un param n'affecte que
+  // le snapshot où elle est faite (device + affichage), les autres gardent leur valeur.
+  const key = overrideMapKey(preset, kemplineSlotIndex);
   let m = liveChainParamOverridesByPresetSlot.get(key);
   if (!m) {
     m = new Map();
@@ -426,7 +446,13 @@ function recordLiveChainParamOverrideForKemplineSlot(
 }
 
 function clearLiveChainOverridesForKemplineSlot(preset: number, kemplineSlotIndex: number): void {
-  liveChainParamOverridesByPresetSlot.delete(liveChainOverrideStorageKey(preset, kemplineSlotIndex));
+  // Un changement de modèle invalide les overrides du slot dans TOUS les snapshots (chaîne de base
+  // partagée qui change) — on purge les 4 clés snapshot + la base.
+  for (let s = 0; s < 4; s += 1) {
+    liveChainParamOverridesByPresetSlot.delete(
+      `${liveChainOverrideStorageKey(preset, kemplineSlotIndex)}|s${s}`,
+    );
+  }
   slotChainSessionByKey.delete(liveChainOverrideStorageKey(preset, kemplineSlotIndex));
 }
 
@@ -906,7 +932,10 @@ async function resolveChainValuesForKemplineSlot(
   }
   if (!base || base.length === 0) return null;
 
-  const om = liveChainParamOverridesByPresetSlot.get(sessionKey);
+  // Base = partagée par les 4 snapshots ; overrides = spécifiques au snapshot actif.
+  const om = liveChainParamOverridesByPresetSlot.get(
+    overrideMapKey(currentPresetIndex, kemplineSlotIndex),
+  );
   if (!om || om.size === 0) return base;
 
   const bySid = new Map<string, ChainParamValueJson>();
@@ -935,7 +964,7 @@ function mergeLiveChainOverridesIntoAligned(
     return chainAligned ?? null;
   }
   const om = liveChainParamOverridesByPresetSlot.get(
-    liveChainOverrideStorageKey(preset, kemplineSlotIndex),
+    overrideMapKey(preset, kemplineSlotIndex),
   );
   if (!om || om.size === 0) return chainAligned ?? null;
   const base = (chainAligned?.slice() as Array<ChainParamValueJson | undefined>) ?? [];
@@ -6977,19 +7006,26 @@ function initModelsMainTabs(): void {
   controllersTab.addEventListener("click", () => activate(1));
 }
 
-/** Met en surbrillance le bouton du snapshot actif (0-based) dans le bandeau (état porté par le DOM). */
+/**
+ * Bascule le snapshot actif affiché (0-based) : met à jour `activeSnapshotIndex` (→ clé du store
+ * d'overrides), la surbrillance du bouton, et rafraîchit le panneau params ouvert depuis les
+ * overrides du nouveau snapshot. N'envoie RIEN au device (usage : refléter une bascule).
+ */
 function setActiveSnapshotHighlight(index: number): void {
+  activeSnapshotIndex = index;
   document.querySelectorAll<HTMLButtonElement>(".snapshot-btn").forEach((btn) => {
     btn.classList.toggle("is-active", Number(btn.dataset.snapshot) === index);
   });
+  // Ré-affiche le slot params ouvert avec les valeurs du snapshot désormais actif (base partagée +
+  // overrides propres à ce snapshot). Sans objet si aucun panneau params n'est ouvert.
+  refreshOpenParamsPaneFromLiveOverrides();
 }
 
 /**
  * Sélecteur de snapshot (bandeau preset) : 4 boutons S1-S4. Un clic active le snapshot sur le
- * device (paquet `0x58`, cf `snapshot_write.rs`). NB : le rafraîchissement des valeurs de params/
- * bypass affichées après bascule est un chantier séparé (lecture des valeurs PAR snapshot pas encore
- * décodée) — pour l'instant, le device bascule bien (audible/physique) et le bouton actif se met à
- * jour, mais la grille ne reflète pas encore les valeurs du nouveau snapshot.
+ * device (paquet `0x58`, cf `snapshot_write.rs`) ET rafraîchit l'affichage des params depuis le
+ * cache d'overrides du snapshot (voir `overrideMapKey`). Les modifs de params (UI ou molette) sont
+ * routées vers le snapshot actif via l'écho `f0:03` `85 62…ca` → `applyHardwareSlotParamChanged`.
  */
 function initSnapshotSelector(): void {
   const buttons = document.querySelectorAll<HTMLButtonElement>(".snapshot-btn");
@@ -13710,6 +13746,9 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
   if (!hardwareRefresh) {
     if (index !== lastControllersTabPresetIndex) {
       activateModelsMainTab?.(0);
+      // Nouveau preset : revenir au snapshot 1 par défaut (approx — le vrai snapshot actif sauvegardé
+      // n'est pas encore lu du dump ; cf « Snap N »/`81 5c`). Réinitialise l'index du cache d'overrides.
+      setActiveSnapshotHighlight(0);
     }
     lastControllersTabPresetIndex = index;
   }
@@ -14111,7 +14150,7 @@ function chainCatalogIndexValuesForHlxExport(
   let om: Map<string, ChainParamValueJson> | undefined;
   if (mergeContext?.kind === "slot") {
     om = liveChainParamOverridesByPresetSlot.get(
-      liveChainOverrideStorageKey(currentPresetIndex, mergeContext.kemplineSlotIndex),
+      overrideMapKey(currentPresetIndex, mergeContext.kemplineSlotIndex),
     );
   } else if (mergeContext?.kind === "flow") {
     om = flowIoChainOverridesByKey.get(flowIoSessionKey(currentPresetIndex, mergeContext.flowKind));
