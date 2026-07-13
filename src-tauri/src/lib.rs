@@ -9,6 +9,7 @@ mod helix;
 mod stomp_layout;
 mod preset_chain_params;
 mod preset_snapshot_states;
+mod snapshot_param_values;
 mod controller_assignments;
 mod msgpack_lite;
 
@@ -2844,6 +2845,27 @@ fn get_active_preset_controller_assignments(
     controller_assignments::scan_controller_assignments(&s.preset_data)
 }
 
+/// Paramètres contrôlés par snapshot (source "Snapshot") + leurs 4 valeurs par snapshot, décodés
+/// depuis `preset_data`. Voir `snapshot_param_values::scan_snapshot_param_values`. Liste vide si
+/// aucun param n'est assigné à la source Snapshot ou si le dump n'est pas prêt.
+#[tauri::command]
+fn get_active_preset_snapshot_param_values(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Vec<snapshot_param_values::SnapshotParamValues> {
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        match app.helix_state.clone() {
+            Some(h) => (app.active_preset, h),
+            None => return Vec::new(),
+        }
+    };
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() || s.preset_index != active_preset {
+        return Vec::new();
+    }
+    snapshot_param_values::scan_snapshot_param_values(&s.preset_data)
+}
+
 /// État actif/inactif de chaque slot Kempline (0..15) du preset actif — `None` si l'état n'a pas pu
 /// être déterminé (segment absent ou format inattendu), sinon `Some(true)`=actif / `Some(false)`=inactif.
 /// Voir `preset_chain_params::slot_active_state_from_assignable_segment`.
@@ -5320,6 +5342,7 @@ pub fn run() {
             get_active_preset_snapshot_dsp0_block_states,
             get_active_preset_slot_assignable_usb_json,
             get_active_preset_controller_assignments,
+            get_active_preset_snapshot_param_values,
             get_active_preset_slot_active_states,
             write_slot_active_state,
             write_controller_create_real_param_assignment,
