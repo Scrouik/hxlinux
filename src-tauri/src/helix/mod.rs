@@ -458,6 +458,12 @@ pub struct HelixState {
     /// Timeout global dialogue post-1a (armé à l'entrée de `PostArm`).
     /// Si expiré, la FSM passe en `Done` pour ne pas bloquer l'amorçage.
     pub phase4_post1a_timeout: Option<Instant>,
+    /// Timeout de repli sur l'état `Waiting1fB` (armé à son entrée). La variante deux-étages
+    /// (`216/cf → Waiting1fB → 1f spontané → PostArm`) attend un `1f` que le device n'envoie QUE
+    /// pour certains presets. Pour les presets à snapshots, aucun `1f` spontané n'arrive après le
+    /// `216/cf` (confirmé captures 2026-07-13 : HX Edit poste directement le `76:0e`/`term=0x18`).
+    /// À l'expiration, on force `Waiting1fB → PostArm` pour envoyer ce `76:0e` et débloquer le boot.
+    pub phase4_waiting1fb_timeout: Option<Instant>,
     /// Chunks dump **pleins** (272 o) vus en `WaitingDump` — fin sans trailer partiel
     /// (presets Amp+Cab slot 0 : rafale de 272 o puis écho IN sub=`08` 16 o).
     pub phase4_dump_full_272_count: u16,
@@ -743,6 +749,7 @@ impl HelixState {
             phase4_step: phase4_state::Phase4Step::Idle,
             phase4_seen_19ef_pre_postarm: false,
             phase4_post1a_timeout: None,
+            phase4_waiting1fb_timeout: None,
             phase4_dump_full_272_count: 0,
         }
     }

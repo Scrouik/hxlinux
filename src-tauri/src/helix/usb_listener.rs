@@ -334,6 +334,15 @@ pub fn start_listener(
                                         s.phase4_step.label()
                                     ));
                                 }
+                                // Armer un court timeout de repli à l'entrée de Waiting1fB : le `1f`
+                                // spontané attendu n'arrive PAS pour les presets à snapshots (cf
+                                // captures 2026-07-13). À l'expiration on force PostArm (envoi 76:0e).
+                                if matches!(s.phase4_step, P::Waiting1fB) {
+                                    s.phase4_waiting1fb_timeout =
+                                        Some(Instant::now() + Duration::from_millis(400));
+                                } else {
+                                    s.phase4_waiting1fb_timeout = None;
+                                }
                                 match s.phase4_step {
                                     P::PostArm => {
                                         crate::helix::phase4_state::on_enter_post_arm(&mut s)
@@ -357,6 +366,24 @@ pub fn start_listener(
                                         crate::helix::phase4_state::on_enter_pb_commit(&mut s)
                                     }
                                     _ => {}
+                                }
+                            }
+                        }
+                        // Repli Waiting1fB : pas de `1f` spontané après le `216/cf` (presets à
+                        // snapshots) → forcer PostArm pour poster le `76:0e` (comme HX Edit), au lieu
+                        // de rester bloqué jusqu'au timeout global 3500 ms (mode éditeur non armé →
+                        // `bytes=0`). Le cas avec `1f` spontané est capté AVANT ce délai, inchangé.
+                        if matches!(s.phase4_step, crate::helix::phase4_state::Phase4Step::Waiting1fB) {
+                            if let Some(t) = s.phase4_waiting1fb_timeout {
+                                if Instant::now() >= t {
+                                    crate::helix::init_trace::trace(
+                                        "[phase4_fsm] Waiting1fB timeout (pas de 1f spontané) → PostArm (76:0e)",
+                                    );
+                                    s.phase4_waiting1fb_timeout = None;
+                                    s.phase4_step = crate::helix::phase4_state::Phase4Step::PostArm;
+                                    s.phase4_post1a_timeout =
+                                        Some(Instant::now() + Duration::from_millis(2000));
+                                    crate::helix::phase4_state::on_enter_post_arm(&mut s);
                                 }
                             }
                         }
