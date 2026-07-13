@@ -6977,6 +6977,35 @@ function initModelsMainTabs(): void {
   controllersTab.addEventListener("click", () => activate(1));
 }
 
+/** Met en surbrillance le bouton du snapshot actif (0-based) dans le bandeau (état porté par le DOM). */
+function setActiveSnapshotHighlight(index: number): void {
+  document.querySelectorAll<HTMLButtonElement>(".snapshot-btn").forEach((btn) => {
+    btn.classList.toggle("is-active", Number(btn.dataset.snapshot) === index);
+  });
+}
+
+/**
+ * Sélecteur de snapshot (bandeau preset) : 4 boutons S1-S4. Un clic active le snapshot sur le
+ * device (paquet `0x58`, cf `snapshot_write.rs`). NB : le rafraîchissement des valeurs de params/
+ * bypass affichées après bascule est un chantier séparé (lecture des valeurs PAR snapshot pas encore
+ * décodée) — pour l'instant, le device bascule bien (audible/physique) et le bouton actif se met à
+ * jour, mais la grille ne reflète pas encore les valeurs du nouveau snapshot.
+ */
+function initSnapshotSelector(): void {
+  const buttons = document.querySelectorAll<HTMLButtonElement>(".snapshot-btn");
+  buttons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const index = Number(btn.dataset.snapshot);
+      if (!Number.isInteger(index) || index < 0 || index > 3) return;
+      setActiveSnapshotHighlight(index);
+      void invoke("activate_snapshot", { snapshotIndex: index }).catch((e) =>
+        console.error("[SnapshotActivate]", e),
+      );
+    });
+  });
+  setActiveSnapshotHighlight(0);
+}
+
 function initMatrixGridPanelContextMenu(): void {
   const menu = document.getElementById("models-ctx-menu");
   const reloadItem = document.getElementById("models-ctx-reload");
@@ -14542,6 +14571,7 @@ window.addEventListener("DOMContentLoaded", () => {
   void mountModelsSlotPicker();
   initAppContextMenuPolicy();
   initModelsMainTabs();
+  initSnapshotSelector();
   initMatrixGridPanelContextMenu();
   initMatrixDragDrop();
 

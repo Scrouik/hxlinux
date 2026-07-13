@@ -38,7 +38,15 @@
         </section>
         <section class="models-pane" aria-label="Preset models">
           <header class="models-header">
-            <div class="models-title" id="preset-label">—</div>
+            <div class="models-header-left">
+              <div class="models-title" id="preset-label">—</div>
+            </div>
+            <div class="models-header-right" id="snapshot-selector" role="group" aria-label="Snapshots">
+              <button type="button" class="snapshot-btn" data-snapshot="0" title="Snapshot 1">S1</button>
+              <button type="button" class="snapshot-btn" data-snapshot="1" title="Snapshot 2">S2</button>
+              <button type="button" class="snapshot-btn" data-snapshot="2" title="Snapshot 3">S3</button>
+              <button type="button" class="snapshot-btn" data-snapshot="3" title="Snapshot 4">S4</button>
+            </div>
           </header>
           <div class="models-main-stack">
             <main class="models-content models-matrix-host" id="content">

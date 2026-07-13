@@ -1645,8 +1645,23 @@ html, body {
   flex-shrink: 0;
 }
 
+.models-header-left {
+  flex: 1 1 50%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.models-header-right {
+  flex: 1 1 50%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .models-title {
-  flex: 1;
   min-width: 0;
   color: var(--amber);
   font-weight: 600;
@@ -1654,6 +1669,29 @@ html, body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.snapshot-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-light);
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.snapshot-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.snapshot-btn.is-active {
+  border-color: var(--amber);
+  color: var(--amber);
+  background: var(--amber-glow);
 }
 
 .models-content {

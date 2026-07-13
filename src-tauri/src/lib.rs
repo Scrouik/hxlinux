@@ -3078,6 +3078,30 @@ fn delete_controller_assignment(
     Ok(())
 }
 
+/// Active un snapshot (0-based : Snap 1 = 0, … Snap 4 = 3) — envoie le paquet `term=0x58`
+/// (approche minimale, cf `helix::snapshot_write`). Le device recharge alors l'état complet du
+/// preset pour ce snapshot (valeurs de params + bypass).
+#[tauri::command]
+fn activate_snapshot(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    snapshot_index: u8,
+) -> Result<(), String> {
+    if snapshot_index > 3 {
+        return Err(format!("index snapshot invalide: {snapshot_index} (attendu 0..=3)"));
+    }
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    let packet = helix::snapshot_write::build_snapshot_activate_packet(&mut s, snapshot_index);
+    s.send(OutPacket::new(packet));
+    drop(s);
+    eprintln!("[LiveWrite][snapshotActivate][sent] index={snapshot_index}");
+    Ok(())
+}
+
 /// Cab rattaché détecté dans un slot Amp+Cab, sous la forme `[module_hex, catégorie, nom, model_id]`.
 #[tauri::command]
 fn get_active_preset_slot_linked_cab(
@@ -5305,6 +5329,7 @@ pub fn run() {
             write_controller_name,
             write_controller_min_max,
             delete_controller_assignment,
+            activate_snapshot,
             get_active_preset_slot_linked_cab,
             get_active_preset_slot_linked_cab_with_params,
             get_active_preset_slot_dual_parts,
