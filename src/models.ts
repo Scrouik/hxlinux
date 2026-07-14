@@ -6275,10 +6275,14 @@ function initControllersEditorDetailControls(): void {
   const detail = document.getElementById("models-controllers-editor-detail");
   sourceSelect?.addEventListener("change", () => {
     if (!detail) return;
-    const show = sourceSelect.value !== "none";
+    // Source « Snapshot » = simple setup (« ce param est piloté par snapshot ») : PAS de panneau
+    // détail (ni Type/Couleur/Nom, ni Min/Max) — les valeurs se règlent dans l'onglet Edit, par
+    // snapshot. Contrairement à un footswitch, il n'y a pas d'actif/inactif ni de LED/nom.
+    const isSnapshot = sourceSelect.value === "snapshot";
+    const show = sourceSelect.value !== "none" && !isSnapshot;
     detail.hidden = !show;
-    if (show) {
-      resetControllersEditorDetail();
+    if (show) resetControllersEditorDetail();
+    if (sourceSelect.value !== "none") {
       void writeControllersSourceSelectionLive(sourceSelect.value);
     }
   });
@@ -6306,17 +6310,53 @@ async function writeControllersSourceSelectionLive(sourceValue: string): Promise
     console.warn("[ControllersLiveWrite] source: slot invalide");
     return;
   }
+  const paramSelect = document.getElementById(
+    "models-controllers-editor-param-select",
+  ) as HTMLSelectElement | null;
+  const isBypass = isControllersBypassParamSelected();
+  const isSnapshot = sourceValue === "snapshot";
+
+  // Source « Snapshot » : setup d'un param contrôlé par snapshot (assignation `0x25`+`0x24`, source
+  // 12, sans confirm). Uniquement pour un VRAI paramètre (Bypass ne se contrôle pas par snapshot).
+  if (isSnapshot) {
+    if (isBypass) {
+      console.warn("[ControllersLiveWrite] snapshot: Bypass ne peut pas être contrôlé par snapshot");
+      return;
+    }
+    const paramSelector = currentControllerParamSelector();
+    if (paramSelector === null) {
+      console.warn("[ControllersLiveWrite] snapshot: paramètre introuvable dans le modèle chargé");
+      return;
+    }
+    try {
+      await invoke("write_controller_source_snapshot", { slotBus, paramSelector });
+      upsertControllerAssignmentCacheEntry({
+        slotBus,
+        kemplineSlotIndex: ki,
+        paramName: paramSelect?.selectedOptions[0]?.textContent?.trim() || "—",
+        customName: null,
+        momentary: false,
+        colorIndex: 0,
+        source: CONTROLLERS_SNAPSHOT_SOURCE,
+        minRaw: 0,
+        maxRaw: 0,
+        isBypass: false,
+        paramSelector,
+      });
+      markPresetModified();
+    } catch (e) {
+      console.error("[ControllersLiveWrite] snapshot", e);
+    }
+    return;
+  }
+
   const fsMatch = /^fs(\d)$/.exec(sourceValue);
   if (!fsMatch) {
-    console.warn("[ControllersLiveWrite] source: seul Footswitch 1-8 est supporté pour l'instant");
+    console.warn("[ControllersLiveWrite] source: seul Footswitch 1-8 / Snapshot est supporté pour l'instant");
     return;
   }
   const footswitchNumber = Number(fsMatch[1]);
 
-  const isBypass = isControllersBypassParamSelected();
-  const paramSelect = document.getElementById(
-    "models-controllers-editor-param-select",
-  ) as HTMLSelectElement | null;
   let paramSelector: number | undefined;
   if (!isBypass) {
     const ctx = selectedParamsHwWireContext;
@@ -6430,10 +6470,14 @@ function setControllersDetailBypassFieldsHidden(hidden: boolean): void {
 }
 
 /** Libellé de la source, même énumération que le sélecteur (`0`=None, `1`/`2`=EXP Pedal, `3+`=Footswitch). */
+/** Valeur wire de la source « Snapshot » (0=None, 1/2=EXP, 3-10=FS1-8, 12=Snapshot). */
+const CONTROLLERS_SNAPSHOT_SOURCE = 12;
+
 function controllerSourceLabel(source: number): string {
   if (source === 0) return "None";
   if (source === 1) return "EXP Pedal 1";
   if (source === 2) return "EXP Pedal 2";
+  if (source === CONTROLLERS_SNAPSHOT_SOURCE) return "Snapshot";
   return `Footswitch ${source - 2}`;
 }
 
@@ -6442,6 +6486,7 @@ function controllerSourceSelectValue(source: number): string {
   if (source === 0) return "none";
   if (source === 1) return "exp1";
   if (source === 2) return "exp2";
+  if (source === CONTROLLERS_SNAPSHOT_SOURCE) return "snapshot";
   return `fs${source - 2}`;
 }
 
@@ -6565,6 +6610,7 @@ function controllerSourceEnumFromSelectValue(value: string): number {
   if (value === "none") return 0;
   if (value === "exp1") return 1;
   if (value === "exp2") return 2;
+  if (value === "snapshot") return CONTROLLERS_SNAPSHOT_SOURCE;
   const m = /^fs(\d)$/.exec(value);
   return m ? Number(m[1]) + 2 : 0;
 }
@@ -6902,6 +6948,12 @@ function applyControllerAssignmentRowToDetailNow(a: ControllerAssignmentJson): v
   if (sourceSelect) sourceSelect.value = controllerSourceSelectValue(a.source);
 
   const detail = document.getElementById("models-controllers-editor-detail");
+  // Source « Snapshot » : aucun réglage à afficher (ni Type/Couleur/Nom, ni Min/Max) — la valeur se
+  // règle dans l'onglet Edit, par snapshot. On masque tout le panneau détail et on s'arrête là.
+  if (a.source === CONTROLLERS_SNAPSHOT_SOURCE) {
+    if (detail) detail.hidden = true;
+    return;
+  }
   if (detail) detail.hidden = false;
 
   const typeSlider = document.getElementById("models-controllers-detail-type") as HTMLInputElement | null;

@@ -2978,6 +2978,34 @@ fn write_controller_source_footswitch(
     Ok(())
 }
 
+/// Assigne un paramètre à la source « Snapshot » (le param devient contrôlé par snapshot) — deux
+/// paquets `0x25`(4a=12)+`0x24`, sans confirm. Voir
+/// `helix::command_center_write::build_controller_source_snapshot_write_packets`.
+#[tauri::command]
+fn write_controller_source_snapshot(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    slot_bus: u8,
+    param_selector: u8,
+) -> Result<(), String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    let mut s = helix_arc.lock().unwrap();
+    let (create_packet, link_packet) =
+        helix::command_center_write::build_controller_source_snapshot_write_packets(
+            &mut s, slot_bus, param_selector,
+        );
+    s.send(OutPacket::new(create_packet));
+    s.send(OutPacket::new(link_packet));
+    drop(s);
+    eprintln!(
+        "[LiveWrite][controllerSourceSnapshot][sent] slotBus={slot_bus:02x} param={param_selector}"
+    );
+    Ok(())
+}
+
 /// Écrit le Type (Latching/Momentary) du switch actuellement en contexte (Source déjà envoyée).
 #[tauri::command]
 fn write_controller_type(
@@ -5347,6 +5375,7 @@ pub fn run() {
             write_slot_active_state,
             write_controller_create_real_param_assignment,
             write_controller_source_footswitch,
+            write_controller_source_snapshot,
             write_controller_type,
             write_controller_color,
             write_controller_name,

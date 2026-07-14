@@ -122,6 +122,55 @@ pub fn build_controller_create_real_param_write_packets(
     (create_packet, link_packet, confirm_packet)
 }
 
+/// Assigne un paramètre à la source **« Snapshot »** (le param devient « contrôlé par snapshot » :
+/// ses valeurs sont mémorisées PAR snapshot, éditées ensuite normalement dans l'onglet Edit).
+/// Décodé sur `add_drive_to_snapshot.json` (2026-07-13) : **DEUX paquets** `term=0x25`(`4a=0x0c=12`)
+/// + `term=0x24`, exactement comme le trio de création d'un vrai paramètre MAIS **sans le paquet de
+/// confirmation `0x21`** (Snapshot n'a pas de footswitch à confirmer). `4a=0x0c` = valeur source
+/// Snapshot (énum 0=None, 1/2=EXP, 3-10=FS1-8, 12=Snapshot). `pp=0x04` (comme la création, cf note
+/// trio) ; `ctr +0x31`/`yy +1` entre les deux paquets.
+pub fn build_controller_source_snapshot_write_packets(
+    state: &mut HelixState,
+    slot_bus: u8,
+    param_selector: u8,
+) -> (Vec<u8>, Vec<u8>) {
+    const SNAPSHOT_SOURCE: u8 = 0x0c;
+    let pp: u8 = 0x04;
+
+    let create_seq = state.next_x80_cnt();
+    let create_ctr = state.live_write_ctr;
+    let create_yy = state.live_write_yy;
+    let create_packet = vec![
+        0x28, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03,
+        0x00, create_seq, 0x00, 0x04,
+        (create_ctr & 0xff) as u8, ((create_ctr >> 8) & 0xff) as u8,
+        0x00, 0x00,
+        0x01, 0x00, 0x06, 0x00, 0x18, 0x00, 0x00, 0x00,
+        0x83, 0x66, 0xcd, pp, create_yy, 0x64, 0x25, 0x65,
+        0x87, 0x62, slot_bus, 0x1d, 0xc3, 0x1a, 0x00, 0x1c, param_selector,
+        0x4a, SNAPSHOT_SOURCE, 0x47, 0x04, 0xcc, 0x81, 0xc2,
+    ];
+
+    let link_seq = state.next_x80_cnt();
+    let link_ctr = create_ctr.wrapping_add(0x31);
+    let link_yy = create_yy.wrapping_add(1);
+    let link_packet = vec![
+        0x21, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03,
+        0x00, link_seq, 0x00, 0x0c,
+        (link_ctr & 0xff) as u8, ((link_ctr >> 8) & 0xff) as u8,
+        0x00, 0x00,
+        0x01, 0x00, 0x06, 0x00, 0x11, 0x00, 0x00, 0x00,
+        0x83, 0x66, 0xcd, pp, link_yy, 0x64, 0x24, 0x65,
+        0x84, 0x62, slot_bus, 0x1d, 0xc3, 0x1a, 0x00, 0x1c, param_selector,
+        0x00, 0x00, 0x00,
+    ];
+
+    state.live_write_ctr = link_ctr.wrapping_add(0x31);
+    state.live_write_yy = link_yy.wrapping_add(1);
+
+    (create_packet, link_packet)
+}
+
 /// Octets bruts du paquet Source Footswitch (format compact), sans toucher à l'état partagé —
 /// utilisé à la fois par l'envoi standalone (réassignation FS sur une assignation existante) et
 /// par la paire Source+Confirmation (création), qui ont chacun leurs propres règles d'avancement
@@ -483,6 +532,34 @@ mod tests {
         assert_eq!(&pkt[24..30], &[0x83, 0x66, 0xcd, 0x03, 0xf9, 0x64]);
         assert_eq!(&pkt[30..32], &[0x38, 0x65]);
         assert_eq!(&pkt[32..40], &[0x82, 0x62, 0x0b, 0x66, 0x00, 0x00, 0x00, 0x00]);
+    }
+
+    /// Octets réels capturés (`add_drive_to_snapshot.json`, frames 3781/3793) — Drive (bus=01,
+    /// param_selector=00) assigné à la source « Snapshot ». Deux paquets seulement (0x25+0x24, PAS
+    /// de 0x21). Champ `4a=0x0c` = source Snapshot. (pp suit le compteur de session — 0x03 dans la
+    /// capture, 0x04 par notre convention comme le trio de création ; on n'assert donc pas pp.)
+    #[test]
+    fn builds_expected_bytes_for_source_snapshot_assignment() {
+        let mut state = HelixState::new();
+        state.live_write_ctr = 0x28a0;
+        state.live_write_yy = 0xf5;
+        let (create, link) = build_controller_source_snapshot_write_packets(&mut state, 0x01, 0x00);
+
+        assert_eq!(create.len(), 48);
+        assert_eq!(create[0], 0x28);
+        assert_eq!(&create[12..14], &[0xa0, 0x28], "ctr create = 0x28a0");
+        assert_eq!(&create[29..32], &[0x64, 0x25, 0x65], "term 0x25");
+        assert_eq!(
+            &create[32..],
+            &[0x87, 0x62, 0x01, 0x1d, 0xc3, 0x1a, 0x00, 0x1c, 0x00, 0x4a, 0x0c, 0x47, 0x04, 0xcc, 0x81, 0xc2],
+            "4a=0x0c = source Snapshot"
+        );
+
+        assert_eq!(link.len(), 44);
+        assert_eq!(link[0], 0x21);
+        assert_eq!(&link[12..14], &[0xd1, 0x28], "ctr link = create+0x31");
+        assert_eq!(&link[29..32], &[0x64, 0x24, 0x65], "term 0x24");
+        assert_eq!(&link[32..], &[0x84, 0x62, 0x01, 0x1d, 0xc3, 0x1a, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x00]);
     }
 
     #[test]
