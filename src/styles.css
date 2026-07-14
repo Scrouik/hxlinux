@@ -1685,7 +1685,10 @@ html, body {
 }
 
 .snapshot-btn {
-  padding: 4px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.03em;
@@ -1694,6 +1697,15 @@ html, body {
   background: var(--bg-raised);
   color: var(--text-dim);
   cursor: pointer;
+}
+
+.snapshot-btn-cam {
+  display: block;
+  flex-shrink: 0;
+}
+
+.snapshot-btn-num {
+  line-height: 1;
 }
 
 .snapshot-btn:hover {
