@@ -408,21 +408,20 @@ function liveChainOverrideStorageKey(preset: number, kemplineSlotIndex: number):
 }
 
 /**
- * Snapshot actif courant (0-based, 0..3). Les 4 snapshots d'un preset partagent le même squelette
- * (modèles/routing) et la même chaîne de base ; SEULES les valeurs de params (overrides) diffèrent
- * par snapshot. On indexe donc le store d'overrides par snapshot actif (pas la base, partagée) —
- * voir `overrideMapKey`. Mis à jour à la bascule (bouton S1-S4). Défaut Snap 1 (index 0).
+ * Snapshot actif courant (0-based, 0..3). Mis à jour à la bascule (bouton S1-S4). Défaut Snap 1.
+ *
+ * Correction 2026-07-13 (étape 4) : le store d'overrides est GLOBAL (clé sans snapshot) — un param
+ * GLOBAL modifié est partagé par les 4 snapshots (correct). SEULS les params source « Snapshot »
+ * (`isParamSnapshotControlled`) sont per-snapshot : leurs valeurs viennent de `snapshotParamValuesCache`
+ * et sont SEEDÉES dans l'override global du slot actif à chaque bascule/chargement
+ * (`seedSnapshotOverridesForActiveSlot`). L'ancien WIP (`88f589d`) suffixait TOUT le slot par snapshot,
+ * ce qui cassait les params globaux — corrigé ici.
  */
 let activeSnapshotIndex = 0;
 
-/**
- * Clé du store d'overrides `liveChainParamOverridesByPresetSlot`, incluant le snapshot actif : deux
- * snapshots du même slot ont des overrides distincts, mais partagent la base (`slotChainSessionByKey`,
- * clé sans snapshot). Résultat : un param non modifié affiche la base (identique sur les 4 snapshots) ;
- * un param modifié affiche l'override du snapshot où il a été modifié. Cœur du refresh snapshot.
- */
+/** Clé du store d'overrides — GLOBALE (partagée par les 4 snapshots ; voir seeding snapshot). */
 function overrideMapKey(preset: number, kemplineSlotIndex: number): string {
-  return `${liveChainOverrideStorageKey(preset, kemplineSlotIndex)}|s${activeSnapshotIndex}`;
+  return liveChainOverrideStorageKey(preset, kemplineSlotIndex);
 }
 
 function recordLiveChainParamOverrideForKemplineSlot(
@@ -434,8 +433,6 @@ function recordLiveChainParamOverrideForKemplineSlot(
   if (preset < 0 || !Number.isInteger(kemplineSlotIndex) || kemplineSlotIndex < 0) return;
   const sid = symbolicId.trim();
   if (!sid) return;
-  // Override attribué au snapshot ACTIF (clé snapshot-aware) — une modif d'un param n'affecte que
-  // le snapshot où elle est faite (device + affichage), les autres gardent leur valeur.
   const key = overrideMapKey(preset, kemplineSlotIndex);
   let m = liveChainParamOverridesByPresetSlot.get(key);
   if (!m) {
@@ -443,17 +440,53 @@ function recordLiveChainParamOverrideForKemplineSlot(
     liveChainParamOverridesByPresetSlot.set(key, m);
   }
   m.set(sid, value);
+  // Si ce param est contrôlé par snapshot, mémoriser la valeur pour le SNAPSHOT ACTIF dans le cache
+  // (sinon basculer puis revenir perdrait l'édition — le device, lui, stocke bien par snapshot).
+  syncSnapshotCacheFromEdit(preset, kemplineSlotIndex, sid, value);
+}
+
+/** Retire un override (par sid) du store global d'un slot. */
+function removeLiveChainOverrideSid(preset: number, kemplineSlotIndex: number, sid: string): void {
+  liveChainParamOverridesByPresetSlot
+    .get(overrideMapKey(preset, kemplineSlotIndex))
+    ?.delete(sid.trim());
+}
+
+/**
+ * MAJ du cache snapshot quand on édite un param contrôlé par snapshot (sur le slot actif) : stocke la
+ * valeur brute pour le snapshot actif. Sans objet si le param n'est pas snapshot-contrôlé, si le slot
+ * n'est pas le slot actif, ou si la valeur n'est pas numérique.
+ */
+function syncSnapshotCacheFromEdit(
+  preset: number,
+  kemplineSlotIndex: number,
+  sid: string,
+  value: ChainParamValueJson,
+): void {
+  if (preset !== currentPresetIndex || kemplineSlotIndex !== selectedParamsKemplineSlotIndex) return;
+  if (typeof value !== "number") return;
+  const ctx = selectedParamsHwWireContext;
+  const bus = kemplineIndexToSlotBusJs(kemplineSlotIndex);
+  if (!ctx || bus === null) return;
+  const rowIndex = ctx.paramsForDisplay.findIndex((p) => (p.symbolicID ?? "").trim() === sid.trim());
+  if (rowIndex < 0) return;
+  const wireIdx = liveWriteParamIndexForRow(
+    ctx.paramsForDisplay,
+    rowIndex,
+    ctx.catalogSignal,
+    ctx.wireParamIndexBase,
+    ctx.wireLocal,
+  );
+  const entry = snapshotParamValuesCache.find(
+    (s) => s.slotBus === bus && s.paramIndex === wireIdx,
+  );
+  if (entry) entry.values[activeSnapshotIndex] = value;
 }
 
 function clearLiveChainOverridesForKemplineSlot(preset: number, kemplineSlotIndex: number): void {
-  // Un changement de modèle invalide les overrides du slot dans TOUS les snapshots (chaîne de base
-  // partagée qui change) — on purge les 4 clés snapshot + la base.
-  for (let s = 0; s < 4; s += 1) {
-    liveChainParamOverridesByPresetSlot.delete(
-      `${liveChainOverrideStorageKey(preset, kemplineSlotIndex)}|s${s}`,
-    );
-  }
-  slotChainSessionByKey.delete(liveChainOverrideStorageKey(preset, kemplineSlotIndex));
+  const key = liveChainOverrideStorageKey(preset, kemplineSlotIndex);
+  liveChainParamOverridesByPresetSlot.delete(key);
+  slotChainSessionByKey.delete(key);
 }
 
 function clearAllLiveChainParamOverrides(): void {
@@ -6545,6 +6578,99 @@ async function loadSnapshotParamValuesFromBackend(): Promise<void> {
   }
   // Le panneau params a pu se rendre AVANT ce chargement async → poser les caméras sur les lignes.
   refreshSnapshotCamerasInOpenParamsPane();
+  // ...et seeder les valeurs du snapshot actif dans les overrides (pour l'affichage).
+  seedSnapshotOverridesForActiveSlot();
+  refreshOpenParamsPaneFromLiveOverrides();
+  // ...et afficher les params snapshot-contrôlés dans le tableau des contrôles (comme les FS).
+  void mergeSnapshotParamsIntoControllersCache();
+}
+
+/**
+ * Ajoute les params contrôlés par snapshot (source « Snapshot ») dans le cache du tableau des
+ * contrôles — ils ne sont PAS décodés par `scan_controller_assignments` (pas de groupe 1 `9N:87`,
+ * donc pas de nom sur le fil). On résout le nom via le catalogue du modèle du slot. À appeler APRÈS
+ * `loadControllerAssignmentsCacheFromBackend` (sinon il écrase). Idempotent (skip si déjà présent).
+ */
+async function mergeSnapshotParamsIntoControllersCache(): Promise<void> {
+  if (snapshotParamValuesCache.length === 0) return;
+  let added = false;
+  for (const entry of snapshotParamValuesCache) {
+    const ki = entry.kemplineSlotIndex;
+    if (ki === null) continue;
+    if (
+      controllerAssignmentsCache.some(
+        (a) =>
+          a.slotBus === entry.slotBus &&
+          a.source === CONTROLLERS_SNAPSHOT_SOURCE &&
+          a.paramSelector === entry.paramIndex,
+      )
+    ) {
+      continue;
+    }
+    let paramName = `Param ${entry.paramIndex}`;
+    const slot = lastHwSyncNormalizedSlots?.[ki];
+    if (slot) {
+      const idTrim = await resolveSlotCatalogModelId(slot);
+      const found = await findModelDefinitionForSlot(slot, idTrim, slot.category);
+      const params = found?.entry.params ?? [];
+      const sid = symbolicIdForWireParamIndex(params, entry.paramIndex, null, 0, false, false);
+      const pdef = sid ? params.find((p) => (p.symbolicID ?? "").trim() === sid) : null;
+      if (pdef) paramName = (pdef.name || pdef.symbolicID || paramName).trim();
+    }
+    controllerAssignmentsCache.push({
+      slotBus: entry.slotBus,
+      kemplineSlotIndex: ki,
+      paramName,
+      customName: null,
+      momentary: false,
+      colorIndex: 0,
+      source: CONTROLLERS_SNAPSHOT_SOURCE,
+      minRaw: entry.minRaw,
+      maxRaw: entry.maxRaw,
+      isBypass: false,
+      paramSelector: entry.paramIndex,
+    });
+    added = true;
+  }
+  if (added) renderControllersAssignmentsTable();
+}
+
+/**
+ * Seed les overrides du slot ACTIF avec les valeurs du SNAPSHOT ACTIF pour ses params
+ * snapshot-contrôlés (depuis `snapshotParamValuesCache`) : pose l'override = valeur stockée du
+ * snapshot si connue, sinon retire l'override (→ affiche la base). Le pipeline d'affichage existant
+ * (base + overrides) montre alors la bonne valeur. À appeler à chaque bascule / chargement / focus
+ * de slot. Les params GLOBAUX ne sont PAS touchés (leur override reste partagé par les 4 snapshots).
+ */
+function seedSnapshotOverridesForActiveSlot(): void {
+  const ki = selectedParamsKemplineSlotIndex;
+  const ctx = selectedParamsHwWireContext;
+  if (ki === null || !ctx || currentPresetIndex < 0) return;
+  const bus = kemplineIndexToSlotBusJs(ki);
+  if (bus === null) return;
+  for (const entry of snapshotParamValuesCache) {
+    if (entry.slotBus !== bus) continue;
+    const rowIndex = ctx.paramsForDisplay.findIndex(
+      (_p, i) =>
+        liveWriteParamIndexForRow(
+          ctx.paramsForDisplay,
+          i,
+          ctx.catalogSignal,
+          ctx.wireParamIndexBase,
+          ctx.wireLocal,
+        ) === entry.paramIndex,
+    );
+    if (rowIndex < 0) continue;
+    const sid = (ctx.paramsForDisplay[rowIndex]?.symbolicID ?? "").trim();
+    if (!sid) continue;
+    const val = entry.values[activeSnapshotIndex];
+    if (val === null || val === undefined) {
+      // Ce snapshot n'a pas de valeur propre pour ce param → afficher la base.
+      removeLiveChainOverrideSid(currentPresetIndex, ki, sid);
+    } else {
+      recordLiveChainParamOverrideForKemplineSlot(currentPresetIndex, ki, sid, val);
+    }
+  }
 }
 
 /** Valeur sentinelle de l'option "Bypass" dans le select param (n'est pas un `symbolicID` catalogue). */
@@ -6867,6 +6993,14 @@ async function deleteControllerRow(a: ControllerAssignmentJson): Promise<void> {
   controllerAssignmentsCache = controllerAssignmentsCache.filter(
     (x) => !(x.slotBus === a.slotBus && x.paramName === a.paramName && x.source === a.source),
   );
+  // Contrôle Snapshot : retirer aussi du cache des valeurs par snapshot (sinon il réapparaît au
+  // prochain merge et la caméra reste) et retirer la caméra de la ligne dans Edit.
+  if (a.source === CONTROLLERS_SNAPSHOT_SOURCE && typeof a.paramSelector === "number") {
+    snapshotParamValuesCache = snapshotParamValuesCache.filter(
+      (s) => !(s.slotBus === a.slotBus && s.paramIndex === a.paramSelector),
+    );
+    refreshSnapshotCamerasInOpenParamsPane();
+  }
   renderControllersAssignmentsTable();
   markPresetModified();
 }
@@ -7179,8 +7313,9 @@ function setActiveSnapshotHighlight(index: number): void {
   document.querySelectorAll<HTMLButtonElement>(".snapshot-btn").forEach((btn) => {
     btn.classList.toggle("is-active", Number(btn.dataset.snapshot) === index);
   });
-  // Ré-affiche le slot params ouvert avec les valeurs du snapshot désormais actif (base partagée +
-  // overrides propres à ce snapshot). Sans objet si aucun panneau params n'est ouvert.
+  // Seeder les overrides des params snapshot-contrôlés du slot actif avec les valeurs du NOUVEAU
+  // snapshot (les params globaux restent partagés), puis ré-afficher le panneau params ouvert.
+  seedSnapshotOverridesForActiveSlot();
   refreshOpenParamsPaneFromLiveOverrides();
 }
 
@@ -11570,6 +11705,11 @@ async function loadAndShowModelsParamsForSlot(
   kemplineSlotIndex?: number,
 ): Promise<void> {
   await loadAndShowModelsParamsForSlotInner(slot, kemplineSlotIndex);
+  // Le contexte wire du slot est désormais posé : seeder les valeurs du snapshot actif pour ses
+  // params snapshot-contrôlés, poser les caméras, et rafraîchir l'affichage.
+  seedSnapshotOverridesForActiveSlot();
+  refreshSnapshotCamerasInOpenParamsPane();
+  refreshOpenParamsPaneFromLiveOverrides();
   // Type de slot pour le panneau Controllers (ordre : spécial d'abord, puis vide, sinon modèle).
   controllersActiveSlotKind = flowIoKindFromSlotCategory(slot.category)
     ? "special"
@@ -14089,9 +14229,13 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
             // `preset_data` backend vient d'être rafraîchi par ce dump : c'est le SEUL moment où
             // on recharge le cache local des assignations Command Center depuis le backend (voir
             // `controllerAssignmentsCache`) — pas à chaque clic de slot ni chaque changement d'onglet.
-            void loadControllerAssignmentsCacheFromBackend();
-            // Idem pour les valeurs par snapshot (params source « Snapshot ») : décodées du dump frais.
-            void loadSnapshotParamValuesFromBackend();
+            // Séquencé : les controllers d'abord (remplacent le cache), PUIS les valeurs par
+            // snapshot (params source « Snapshot ») qui viennent s'ajouter au tableau — sinon le
+            // merge snapshot serait écrasé par le rechargement des controllers.
+            void (async () => {
+              await loadControllerAssignmentsCacheFromBackend();
+              await loadSnapshotParamValuesFromBackend();
+            })();
             if (hardwareRefresh) {
               // Le dump frais est autoritaire : reconstruire la grille comme un chargement normal.
               await hydrateSlotChainSessionFromPresetData(index);
