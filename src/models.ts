@@ -6343,6 +6343,21 @@ async function writeControllersSourceSelectionLive(sourceValue: string): Promise
         isBypass: false,
         paramSelector,
       });
+      // Marquer le param comme snapshot-contrôlé localement (le dump backend n'est pas rafraîchi) →
+      // fait apparaître l'icône caméra dans Edit + active le routage override par snapshot (étape 4).
+      // Valeurs par snapshot encore inconnues côté local (le device les stockera) → `null` (= base).
+      if (!isParamSnapshotControlled(slotBus, paramSelector)) {
+        snapshotParamValuesCache.push({
+          slotBus,
+          kemplineSlotIndex: ki,
+          paramIndex: paramSelector,
+          minRaw: 0,
+          maxRaw: 0,
+          values: [null, null, null, null],
+        });
+      }
+      // Poser l'icône caméra sur la ligne du param dans Edit sans attendre un re-rendu.
+      refreshSnapshotCamerasInOpenParamsPane();
       markPresetModified();
     } catch (e) {
       console.error("[ControllersLiveWrite] snapshot", e);
@@ -6445,6 +6460,92 @@ type ControllerAssignmentJson = {
  * (voir `upsertControllerAssignmentCacheEntry`) au lieu de dépendre d'un rescan backend.
  */
 let controllerAssignmentsCache: ControllerAssignmentJson[] = [];
+
+/** Shape renvoyée par `get_active_preset_snapshot_param_values` (Rust `SnapshotParamValues`, camelCase). */
+type SnapshotParamValuesJson = {
+  slotBus: number;
+  kemplineSlotIndex: number | null;
+  /** Index wire du paramètre (même convention que `param_selector`). */
+  paramIndex: number;
+  minRaw: number;
+  maxRaw: number;
+  /** Valeur brute par snapshot (4 entrées, snap 1..4). `null` = pas de valeur propre (= base). */
+  values: Array<number | null>;
+};
+
+/**
+ * Params contrôlés par snapshot (source « Snapshot ») + leurs 4 valeurs, décodés du `preset_data`.
+ * Peuplé UNE fois par chargement de preset (voir `loadSnapshotParamValuesFromBackend`) et complété
+ * localement à l'assignation d'un nouveau param à Snapshot (le dump backend n'étant pas rafraîchi
+ * par les écritures live, même logique que `controllerAssignmentsCache`). Sert à : l'icône caméra
+ * dans Edit, et le routage override par-snapshot (étape 4).
+ */
+let snapshotParamValuesCache: SnapshotParamValuesJson[] = [];
+
+/** `true` si le paramètre (bus + index wire) est contrôlé par snapshot. */
+function isParamSnapshotControlled(slotBus: number, paramIndex: number): boolean {
+  return snapshotParamValuesCache.some(
+    (s) => s.slotBus === slotBus && s.paramIndex === paramIndex,
+  );
+}
+
+/**
+ * Décore les lignes de params DÉJÀ rendues (onglet Edit) avec l'icône caméra selon le cache
+ * snapshot — sans re-rendre le panneau (léger, aucun accès device). Nécessaire car le cache se
+ * charge en asynchrone APRÈS le premier rendu du panneau (sinon la caméra n'apparaît qu'au clic
+ * suivant). Match par (bus du slot actif, index wire du paramètre), même calcul qu'au rendu.
+ */
+function refreshSnapshotCamerasInOpenParamsPane(): void {
+  const inner = getModelsParamsInner();
+  const ctx = selectedParamsHwWireContext;
+  const ki = selectedParamsKemplineSlotIndex;
+  if (!inner || !ctx || ki === null) return;
+  const bus = kemplineIndexToSlotBusJs(ki);
+  if (bus === null) return;
+  inner.querySelectorAll<HTMLLIElement>("li.models-params-row").forEach((li) => {
+    const sid = (li.dataset.symbolicId ?? "").trim();
+    const label = li.querySelector<HTMLElement>(".models-params-row-name");
+    if (!sid || !label) return;
+    const rowIndex = ctx.paramsForDisplay.findIndex(
+      (p) => (p.symbolicID ?? "").trim() === sid,
+    );
+    const controlled =
+      rowIndex >= 0 &&
+      isParamSnapshotControlled(
+        bus,
+        liveWriteParamIndexForRow(
+          ctx.paramsForDisplay,
+          rowIndex,
+          ctx.catalogSignal,
+          ctx.wireParamIndexBase,
+          ctx.wireLocal,
+        ),
+      );
+    const existing = label.querySelector(".models-params-row-snapshot-cam");
+    if (controlled && !existing) {
+      const cam = document.createElement("span");
+      cam.className = "models-params-row-snapshot-cam";
+      cam.title = "Contrôlé par snapshot — la modification ne s'applique qu'au snapshot actif";
+      cam.innerHTML = MODELS_PARAM_SNAPSHOT_CAMERA_SVG;
+      label.appendChild(cam);
+    } else if (!controlled && existing) {
+      existing.remove();
+    }
+  });
+}
+
+/** Recharge le cache des valeurs par snapshot depuis le backend (au chargement d'un preset). */
+async function loadSnapshotParamValuesFromBackend(): Promise<void> {
+  try {
+    snapshotParamValuesCache = await invoke<SnapshotParamValuesJson[]>(
+      "get_active_preset_snapshot_param_values",
+    );
+  } catch {
+    snapshotParamValuesCache = [];
+  }
+  // Le panneau params a pu se rendre AVANT ce chargement async → poser les caméras sur les lignes.
+  refreshSnapshotCamerasInOpenParamsPane();
+}
 
 /** Valeur sentinelle de l'option "Bypass" dans le select param (n'est pas un `symbolicID` catalogue). */
 const CONTROLLERS_BYPASS_PARAM_VALUE = "__bypass__";
@@ -6671,6 +6772,16 @@ const CONTROLLERS_TRASH_SVG =
   '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" ' +
   'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
   '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 14h10l1-14"/><path d="M10 10v6M14 10v6"/></svg>';
+
+/**
+ * Icône appareil photo SVG inline (monochrome, `currentColor`) — marque, dans l'onglet Edit, les
+ * paramètres contrôlés par snapshot (rappel : « toucher ce param ne change que le snapshot actif »,
+ * comme HX Edit). Snapshot = photo.
+ */
+const MODELS_PARAM_SNAPSHOT_CAMERA_SVG =
+  '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" ' +
+  'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.2"/></svg>';
 
 /** Re-rend le tableau des assignations Command Center depuis le cache local (aucun appel backend). */
 function renderControllersAssignmentsTable(): void {
@@ -10026,6 +10137,25 @@ function appendModelsParamRows(
     const label = document.createElement("span");
     label.className = "models-params-row-name";
     label.textContent = (p.name || p.symbolicID || "").trim() || "—";
+    // Icône caméra si ce paramètre est contrôlé par snapshot (source « Snapshot ») : le modifier
+    // ici (Edit) ne change que le snapshot actif. Match par (bus du slot, index wire du paramètre).
+    if (liveWriteSlotIndex !== undefined) {
+      const snapBus = kemplineIndexToSlotBusJs(liveWriteSlotIndex);
+      const wireIdx = liveWriteParamIndexForRow(
+        params,
+        j,
+        catalogSignal,
+        liveWriteParamIndexBase,
+        liveWriteWireLocalSelector,
+      );
+      if (snapBus !== null && isParamSnapshotControlled(snapBus, wireIdx)) {
+        const cam = document.createElement("span");
+        cam.className = "models-params-row-snapshot-cam";
+        cam.title = "Contrôlé par snapshot — la modification ne s'applique qu'au snapshot actif";
+        cam.innerHTML = MODELS_PARAM_SNAPSHOT_CAMERA_SVG;
+        label.appendChild(cam);
+      }
+    }
     const minEl = document.createElement("span");
     minEl.className = "models-params-row-min";
     minEl.textContent = formatParamBoundForDisplay(p.min, p, helixControlsMap);
@@ -13960,6 +14090,8 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
             // on recharge le cache local des assignations Command Center depuis le backend (voir
             // `controllerAssignmentsCache`) — pas à chaque clic de slot ni chaque changement d'onglet.
             void loadControllerAssignmentsCacheFromBackend();
+            // Idem pour les valeurs par snapshot (params source « Snapshot ») : décodées du dump frais.
+            void loadSnapshotParamValuesFromBackend();
             if (hardwareRefresh) {
               // Le dump frais est autoritaire : reconstruire la grille comme un chargement normal.
               await hydrateSlotChainSessionFromPresetData(index);
