@@ -6586,6 +6586,103 @@ async function loadSnapshotParamValuesFromBackend(): Promise<void> {
 }
 
 /**
+ * Noms des 4 snapshots (index 0 = Snapshot 1 … index 3 = Snapshot 4). Nom custom décodé depuis le
+ * dump si présent (voir `snapshot_param_values::scan_snapshot_names`), sinon défaut "Snapshot N".
+ * Peuplé au chargement du preset (voir `loadSnapshotNamesFromBackend`) et mis à jour localement à
+ * chaque renommage (même logique que `snapshotParamValuesCache` — le dump backend n'est pas
+ * rafraîchi par les écritures live).
+ */
+let snapshotNamesCache: string[] = ["Snapshot 1", "Snapshot 2", "Snapshot 3", "Snapshot 4"];
+
+/** Affiche dans le textbox le nom du snapshot ACTUELLEMENT actif (`activeSnapshotIndex`). */
+function renderActiveSnapshotNameInput(): void {
+  const input = document.getElementById("snapshot-name-input") as HTMLInputElement | null;
+  if (!input) return;
+  input.value = snapshotNamesCache[activeSnapshotIndex] ?? `Snapshot ${activeSnapshotIndex + 1}`;
+}
+
+/** Recharge le cache des noms de snapshot depuis le backend (au chargement d'un preset). */
+async function loadSnapshotNamesFromBackend(): Promise<void> {
+  try {
+    const names = await invoke<string[]>("get_active_preset_snapshot_names");
+    snapshotNamesCache = names.length === 4 ? names : snapshotNamesCache;
+  } catch {
+    // best effort : garde les défauts "Snapshot N"
+  }
+  renderActiveSnapshotNameInput();
+}
+
+/**
+ * ÉTAPE 3 (fix A) : positionne l'UI sur le snapshot RÉELLEMENT actif du preset (décodé du dump, clé
+ * `0x5c`), au lieu de supposer toujours le Snapshot 1. Le device peut être parqué sur un autre
+ * snapshot (ex. preset "Snap 4" → actif 2). À appeler APRÈS les caches snapshot (valeurs+noms) pour
+ * que `setActiveSnapshotHighlight` seede les bonnes valeurs et affiche le bon nom.
+ */
+async function loadActiveSnapshotFromBackend(): Promise<void> {
+  try {
+    const idx = await invoke<number>("get_active_preset_active_snapshot");
+    console.info("[SnapshotActive][front] backend returned idx=", idx);
+    if (Number.isInteger(idx) && idx >= 0 && idx <= 3) {
+      setActiveSnapshotHighlight(idx);
+      console.info("[SnapshotActive][front] setActiveSnapshotHighlight(", idx, ") appliqué");
+    }
+  } catch (e) {
+    console.warn("[SnapshotActive][front] échec", e);
+    // best effort : garde le snapshot 1 par défaut
+  }
+}
+
+/** Textbox de nom de snapshot (bandeau preset) : renommage live envoyé au device au blur/Enter. */
+function initSnapshotNameInput(): void {
+  const input = document.getElementById("snapshot-name-input") as HTMLInputElement | null;
+  input?.addEventListener("change", () => {
+    const trimmed = input.value.trim();
+    if (!trimmed) {
+      // Nom vide : on ne casse rien côté device, on revient juste à la valeur en cache.
+      renderActiveSnapshotNameInput();
+      return;
+    }
+    snapshotNamesCache[activeSnapshotIndex] = trimmed;
+    input.value = trimmed;
+    void renameActiveSnapshot(trimmed);
+  });
+  // Entrée valide le renommage (blur → event `change`) et rend le focus, pour que Ctrl+S enchaîne.
+  input?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      input.blur();
+    }
+  });
+}
+
+/**
+ * ÉTAPE 2 (fix A) : renommage du snapshot actif façon HX Edit = **activate → relecture preset →
+ * rename**, dans cet ordre. La relecture (via `activateSnapshotWithDeviceReload`) recale la session
+ * ed:03 (compteur monotone) et positionne le device sur le snapshot cible ; SANS elle, le device
+ * rejette le renommage et assomme la lane (bug historique). Le backend `rename_snapshot` ne fait
+ * plus l'activation lui-même (il exige que le device soit déjà sur la cible).
+ */
+async function renameActiveSnapshot(name: string): Promise<void> {
+  const idx = activeSnapshotIndex;
+  // Attendre qu'une éventuelle bascule en cours se termine, puis (re)faire activate + relecture pour
+  // garantir une session cohérente juste avant le renommage (comme HX Edit : activate → read → rename).
+  for (let i = 0; i < 40 && snapshotSwitchInFlight; i += 1) {
+    await delayMs(50);
+  }
+  await activateSnapshotWithDeviceReload(idx);
+  // `activateSnapshotWithDeviceReload` a rechargé les noms DEPUIS LE DEVICE (`loadSnapshotNamesFromBackend`)
+  // → ça a ÉCRASÉ le nom qu'on vient de saisir. On le RÉ-APPLIQUE ici (le renommage est temporaire :
+  // le dump device ne reflète pas encore le nouveau nom tant que le preset n'est pas sauvegardé).
+  snapshotNamesCache[idx] = name;
+  renderActiveSnapshotNameInput();
+  try {
+    await invoke("rename_snapshot", { snapshotIndex: idx, name });
+  } catch (e) {
+    console.error("[SnapshotRename]", e);
+  }
+}
+
+/**
  * Ajoute les params contrôlés par snapshot (source « Snapshot ») dans le cache du tableau des
  * contrôles — ils ne sont PAS décodés par `scan_controller_assignments` (pas de groupe 1 `9N:87`,
  * donc pas de nom sur le fil). On résout le nom via le catalogue du modèle du slot. À appeler APRÈS
@@ -7317,13 +7414,62 @@ function setActiveSnapshotHighlight(index: number): void {
   // snapshot (les params globaux restent partagés), puis ré-afficher le panneau params ouvert.
   seedSnapshotOverridesForActiveSlot();
   refreshOpenParamsPaneFromLiveOverrides();
+  renderActiveSnapshotNameInput();
+}
+
+/**
+ * `true` pendant qu'une bascule snapshot (activation + relecture device) est en cours — évite les
+ * clics concurrents qui chevaucheraient deux relectures preset.
+ */
+let snapshotSwitchInFlight = false;
+
+/**
+ * ÉTAPE 1 (fix A) : bascule snapshot façon HX Edit = activer le snapshot sur le device (`0x58`) PUIS
+ * RELIRE le preset au device (`request_preset_content`), au lieu de se contenter du cache local.
+ * HX Edit relit tout le preset après chaque changement de snapshot (dump confirmé capture
+ * `change_snapshot.json`) : ça charge les valeurs du nouveau snapshot ET garde la session ed:03
+ * cohérente (compteur `double` monotone) — condition nécessaire pour que le device accepte ensuite
+ * un renommage. On réutilise le mécanisme d'attente de dump du softSync.
+ */
+async function activateSnapshotWithDeviceReload(index: number): Promise<void> {
+  if (snapshotSwitchInFlight) return;
+  snapshotSwitchInFlight = true;
+  // Retour visuel immédiat depuis le cache (surbrillance + valeurs), avant la relecture device.
+  setActiveSnapshotHighlight(index);
+  try {
+    await invoke("activate_snapshot", { snapshotIndex: index });
+  } catch (e) {
+    console.error("[SnapshotActivate]", e);
+    snapshotSwitchInFlight = false;
+    return;
+  }
+  try {
+    // Relecture du preset au device (comme HX Edit après une bascule snapshot).
+    await invoke("request_preset_content", { forceImmediate: true });
+    // Attendre le dump frais : poll `get_active_preset_slots` jusqu'à non-vide (comme softSync).
+    await delayMs(120);
+    for (let tries = 0; tries < 30; tries += 1) {
+      try {
+        const slots = await invoke<[string, string][] | null>("get_active_preset_slots");
+        if (slots && slots.length > 0) break;
+      } catch {
+        // transient
+      }
+      await delayMs(120);
+    }
+    // Recharger les caches snapshot depuis le dump frais (valeurs par snapshot + noms).
+    await loadSnapshotParamValuesFromBackend();
+    await loadSnapshotNamesFromBackend();
+  } catch (e) {
+    console.error("[SnapshotReload]", e);
+  } finally {
+    snapshotSwitchInFlight = false;
+  }
 }
 
 /**
  * Sélecteur de snapshot (bandeau preset) : 4 boutons S1-S4. Un clic active le snapshot sur le
- * device (paquet `0x58`, cf `snapshot_write.rs`) ET rafraîchit l'affichage des params depuis le
- * cache d'overrides du snapshot (voir `overrideMapKey`). Les modifs de params (UI ou molette) sont
- * routées vers le snapshot actif via l'écho `f0:03` `85 62…ca` → `applyHardwareSlotParamChanged`.
+ * device (paquet `0x58`, cf `snapshot_write.rs`) ET relit le preset au device (Étape 1, fix A).
  */
 function initSnapshotSelector(): void {
   const buttons = document.querySelectorAll<HTMLButtonElement>(".snapshot-btn");
@@ -7331,10 +7477,7 @@ function initSnapshotSelector(): void {
     btn.addEventListener("click", () => {
       const index = Number(btn.dataset.snapshot);
       if (!Number.isInteger(index) || index < 0 || index > 3) return;
-      setActiveSnapshotHighlight(index);
-      void invoke("activate_snapshot", { snapshotIndex: index }).catch((e) =>
-        console.error("[SnapshotActivate]", e),
-      );
+      void activateSnapshotWithDeviceReload(index);
     });
   });
   setActiveSnapshotHighlight(0);
@@ -14235,6 +14378,9 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
             void (async () => {
               await loadControllerAssignmentsCacheFromBackend();
               await loadSnapshotParamValuesFromBackend();
+              await loadSnapshotNamesFromBackend();
+              // Positionner l'UI sur le snapshot réellement actif du preset (pas toujours le 1).
+              await loadActiveSnapshotFromBackend();
             })();
             if (hardwareRefresh) {
               // Le dump frais est autoritaire : reconstruire la grille comme un chargement normal.
@@ -14939,6 +15085,7 @@ window.addEventListener("DOMContentLoaded", () => {
   initAppContextMenuPolicy();
   initModelsMainTabs();
   initSnapshotSelector();
+  initSnapshotNameInput();
   initMatrixGridPanelContextMenu();
   initMatrixDragDrop();
 

@@ -336,6 +336,10 @@ function isKeyboardSaveBlocked(e: KeyboardEvent): boolean {
   if (renameIndex >= 0) return true;
   const t = e.target;
   if (!(t instanceof HTMLElement)) return false;
+  // Exception : le textbox de nom de snapshot ne doit PAS bloquer Ctrl+S. Le handler blur d'abord
+  // le champ (ce qui valide le renommage en cours) puis lance la sauvegarde — sinon Ctrl+S depuis
+  // ce champ, toujours présent dans le bandeau, était ignoré (régression du bandeau snapshot).
+  if (t.id === "snapshot-name-input") return false;
   const tag = t.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable;
 }
@@ -345,6 +349,12 @@ document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
     if (!isKeyboardSaveBlocked(e) && activePreset >= 0 && canSavePreset(activePreset)) {
       e.preventDefault();
+      // Valide d'abord un renommage snapshot en cours (blur → event `change` synchrone) pour que la
+      // sauvegarde suive et ne perde pas la saisie en cours.
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active.id === "snapshot-name-input") {
+        active.blur();
+      }
       void savePreset(activePreset);
     }
     return;

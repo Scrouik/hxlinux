@@ -111,10 +111,109 @@ fn scan_snapshot_source_params(data: &[u8]) -> Vec<SnapshotSourceRef> {
     out
 }
 
-/// Position du marqueur `SNAPSHOT n\0` (n = 1..4). `None` si absent.
+/// Décode un champ nom de snapshot à la position `pos` si `pos` pointe sur la clé `0x04` d'un champ
+/// `04 <fixstr tag 0xa1..0xbf> <texte> 00 0e` — Some((nom_sans_nul, position_après_0x0e)).
+///
+/// Cette signature STRUCTURELLE est name-agnostic ET tempo-agnostic : elle ne dépend ni du texte du
+/// nom (défaut "SNAPSHOT N" ou custom), ni des octets de payload qui suivent (tempo, triplets…).
+/// L'ancienne ancre « octets fixes » (`05 ca 42 f0 … 88 00 c3 01 9e`) était FAUSSE : ses 5 derniers
+/// octets appartenaient au PAYLOAD du snapshot (identique pour les snaps 1/2/3 non modifiés, mais
+/// DIFFÉRENT pour un snapshot modifié — ex. Level=-30 sur le snap4 de `read_snapshot_preset_linux`),
+/// donc elle ratait tout snapshot modifié. Vérifié : la signature structurelle trouve exactement 4
+/// champs (snap 1..4) sur `read_snapshot_preset(_linux)` et `read_preset_named_snap`.
+fn decode_snapshot_name_field_at(data: &[u8], pos: usize) -> Option<(String, usize)> {
+    if data.get(pos).copied() != Some(0x04) {
+        return None;
+    }
+    let tag = *data.get(pos + 1)?;
+    if !(0xa1..=0xbf).contains(&tag) {
+        return None;
+    }
+    let declared_len = (tag - 0xa0) as usize; // longueur fixstr, nul final inclus
+    if declared_len == 0 {
+        return None;
+    }
+    let null_pos = pos + 1 + declared_len; // dernier octet du fixstr = nul terminateur
+    if data.get(null_pos).copied() != Some(0x00) {
+        return None;
+    }
+    // La clé suivante DOIT être 0x0e (signature du bloc nom de snapshot) — écarte les autres fixstr.
+    if data.get(null_pos + 1).copied() != Some(0x0e) {
+        return None;
+    }
+    let text_bytes = &data[pos + 2..null_pos];
+    let name = std::str::from_utf8(text_bytes).ok()?.to_string();
+    Some((name, null_pos + 2))
+}
+
+/// Positions (clé `0x04`) de tous les champs nom de snapshot du dump, dans l'ordre d'apparition —
+/// la Nᵉ position correspond au snapshot N (1-based), l'ordre physique des 4 blocs étant fixe.
+fn snapshot_name_field_positions(data: &[u8]) -> Vec<usize> {
+    if data.len() < 4 {
+        return Vec::new();
+    }
+    (0..data.len())
+        .filter(|&i| decode_snapshot_name_field_at(data, i).is_some())
+        .collect()
+}
+
+/// Position du bloc `SNAPSHOT n` (n = 1..4) via la signature structurelle du champ nom. `None` si
+/// absent. Retourne la position de la clé `0x04` (le run de triplets du bloc est AVANT, cf
+/// `snapshot_block_triplet_values` qui balaye `[pos-450, pos)`).
 fn snapshot_marker_pos(data: &[u8], snap_num: usize) -> Option<usize> {
-    let needle: Vec<u8> = format!("SNAPSHOT {snap_num}\0").into_bytes();
-    data.windows(needle.len()).position(|w| w == needle)
+    snapshot_name_field_positions(data)
+        .get(snap_num.checked_sub(1)?)
+        .copied()
+}
+
+/// Nom du snapshot n (1..4) : le nom custom s'il est décodable (non vide), sinon le défaut
+/// `"Snapshot N"` (HX Edit affiche par défaut `"SNAPSHOT N"`, on garde la casse de notre UI).
+pub fn snapshot_name(data: &[u8], snap_num: usize) -> String {
+    snapshot_marker_pos(data, snap_num)
+        .and_then(|pos| decode_snapshot_name_field_at(data, pos))
+        .map(|(name, _)| name)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| format!("Snapshot {snap_num}"))
+}
+
+/// Les 4 noms de snapshot du preset actif (index 0 = Snapshot 1 … index 3 = Snapshot 4).
+pub fn scan_snapshot_names(data: &[u8]) -> Vec<String> {
+    (1..=SNAPSHOT_COUNT).map(|n| snapshot_name(data, n)).collect()
+}
+
+/// Snapshot actif (0-based, 0..=3) stocké dans l'en-tête du preset : map top-level → clé `0x68`
+/// (métadonnées preset) → clé `0x5c`. C'est la MÊME clé `0x5c` que les paquets d'activation/renommage
+/// (`81 5c <idx>` / `82 5c <idx>`). Vérifié sur captures : preset neuf (`no_snap`) = 0 (Snapshot 1) ;
+/// "Snap 4" = 2/3 selon l'état. `None` si l'en-tête n'est pas décodable — l'appelant retombe alors
+/// sur 0 (Snapshot 1). HXLinux supposait AVANT toujours 0, d'où l'UI positionnée à tort sur Snap 1
+/// alors que le device était parqué ailleurs (bug signalé 2026-08-06).
+pub fn active_snapshot_index(data: &[u8]) -> Option<u8> {
+    // Le début du dump content_only contient PLUSIEURS petits frames `83 66 cd .. 67 .. 68 ..` : les
+    // premiers sont des PRÉAMBULES (`0x68` = nil `c0`, ou sous-map `82` sans `0x5c`) ; la VRAIE map
+    // d'en-tête (avec le nom `0x6d` et `0x5c`) arrive PLUS LOIN (offset ~112 vérifié sur dump réel de
+    // notre app, pas dans les 64 premiers octets). On itère donc tous les fixmap `8N` de 1re clé `0x66`
+    // dans une large fenêtre et on retient le PREMIER dont `0x68` est une map contenant `0x5c` (0..=3).
+    // (Bug 2026-08-06 : fenêtre 64o + prendre le 1er frame → `0x68=nil`/absent → None → UI figée Snap 1.)
+    let limit = data.len().saturating_sub(1).min(2048);
+    for i in 0..limit {
+        if !((0x81..=0x8f).contains(&data[i]) && data[i + 1] == 0x66) {
+            continue;
+        }
+        let mut pos = i;
+        let Some(top) = parse_value(data, &mut pos) else {
+            continue;
+        };
+        let Some(top_map) = top.as_map() else { continue };
+        let Some(inner) = map_get(top_map, 0x68).and_then(|v| v.as_map()) else {
+            continue;
+        };
+        if let Some(idx) = map_get(inner, 0x5c).and_then(|v| v.as_int()) {
+            if (0..=3).contains(&idx) {
+                return Some(idx as u8);
+            }
+        }
+    }
+    None
 }
 
 /// Parse un run de triplets `93 [scalaire, scalaire, valeur]` à partir de `start`, jusqu'à ce que
@@ -211,8 +310,27 @@ mod tests {
         v
     }
 
-    /// Bloc snapshot : run de triplets (`93 [bool,int,val|nil]`) puis marqueur `SNAPSHOT n\0`.
-    fn snap_block(values: &[Option<f32>], n: usize) -> Vec<u8> {
+    /// Suite `04 <tag> <nom> 00 0e <c2> <ancre 13o>` reproduisant fidèlement la structure réelle
+    /// (captures `read_snapshot_preset.json` / `read_preset_named_snap.json`, 2026-07-14) : le nom
+    /// (par défaut "SNAPSHOT N" ou custom) : `04 <tag=0xa1+len> <texte> 00 0e` puis un octet de
+    /// payload variable (`tail_byte`) — reproduit le fait que ce qui suit `0x0e` DIFFÈRE selon le
+    /// snapshot (bug de l'ancienne ancre « octets fixes »).
+    fn snapshot_name_suffix(name: &str, tail_byte: u8) -> Vec<u8> {
+        let text = name.as_bytes();
+        let mut v = vec![0x04, 0xa1u8.wrapping_add(text.len() as u8)];
+        v.extend_from_slice(text);
+        v.push(0x00); // nul terminateur (inclus dans la longueur fixstr déclarée)
+        v.push(0x0e); // clé suivante (signature structurelle du champ nom)
+        v.push(tail_byte); // octet de payload variable (ex. c2/c3, ou début de tableau)
+        v
+    }
+
+    /// Bloc snapshot : run de triplets (`93 [bool,int,val|nil]`) puis champ nom.
+    fn snap_block(values: &[Option<f32>], name: &str) -> Vec<u8> {
+        snap_block_with_tail(values, name, 0xc2)
+    }
+
+    fn snap_block_with_tail(values: &[Option<f32>], name: &str, tail_byte: u8) -> Vec<u8> {
         let mut v = Vec::new();
         for (i, val) in values.iter().enumerate() {
             v.push(0x93);
@@ -226,7 +344,7 @@ mod tests {
                 None => v.push(0xc0),
             }
         }
-        v.extend_from_slice(format!("SNAPSHOT {n}\0").as_bytes());
+        v.extend(snapshot_name_suffix(name, tail_byte));
         v
     }
 
@@ -244,7 +362,7 @@ mod tests {
         for n in 0..4 {
             d.extend(snap_block(
                 &[Some(level[n]), Some(tone[n]), None],
-                n + 1,
+                &format!("SNAPSHOT {}", n + 1),
             ));
         }
         d
@@ -283,5 +401,147 @@ mod tests {
         let src_pos = d.iter().position(|&b| b == 0x0c).unwrap();
         d[src_pos] = 0x03;
         assert!(scan_snapshot_param_values(&d).is_empty());
+    }
+
+    /// Reproduit la signature structurelle vue dans `read_snapshot_preset.json`
+    /// (`04 ab 53 4e 41 50 53 48 4f 54 20 31 00 0e`) — l'octet qui suit `0x0e` (ici `c2`) est du
+    /// payload variable, hors signature.
+    #[test]
+    fn snapshot_name_field_matches_real_capture_bytes() {
+        let suffix = snapshot_name_suffix("SNAPSHOT 1", 0xc2);
+        let expected: Vec<u8> =
+            bytes_from_hex_colon("04:ab:53:4e:41:50:53:48:4f:54:20:31:00:0e:c2");
+        assert_eq!(suffix, expected);
+    }
+
+    fn bytes_from_hex_colon(s: &str) -> Vec<u8> {
+        s.split(':').map(|h| u8::from_str_radix(h, 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn scan_snapshot_names_reads_default_labels() {
+        let mut d = Vec::new();
+        for n in 1..=4 {
+            d.extend(snap_block(&[None], &format!("SNAPSHOT {n}")));
+        }
+        assert_eq!(
+            scan_snapshot_names(&d),
+            vec!["SNAPSHOT 1", "SNAPSHOT 2", "SNAPSHOT 3", "SNAPSHOT 4"]
+        );
+    }
+
+    #[test]
+    fn scan_snapshot_names_survives_rename_name_agnostic() {
+        // Le snapshot 1 est renommé (comme après `rename_first_snapshot.json`) : le texte littéral
+        // "SNAPSHOT 1" a disparu — seule la signature structurelle permet de retrouver le bloc.
+        let mut d = Vec::new();
+        let names = ["FirstSnap", "SNAPSHOT 2", "SNAPSHOT 3", "SNAPSHOT 4"];
+        for name in names {
+            d.extend(snap_block(&[None], name));
+        }
+        assert_eq!(scan_snapshot_names(&d), names.to_vec());
+    }
+
+    /// RÉGRESSION (bug trouvé sur `read_snapshot_preset_linux.json`, snap4 modifié Level=-30) :
+    /// l'octet de payload APRÈS `0x0e` diffère entre snapshots (identique 1/2/3 non modifiés, mais
+    /// différent sur le snap4 modifié). Le décodage du nom ET des valeurs doit marcher malgré ça.
+    #[test]
+    fn snapshot_name_and_values_survive_divergent_payload_tail() {
+        let mut d = Vec::new();
+        // Un param source=Snapshot (pos0), valeurs 0/0/0/-30 (= le cas Deluxe Comp Level du capture).
+        d.push(0x91);
+        d.extend(snap_source_elem(0x02, 0x04, -60.0, 12.0));
+        let vals = [0.0f32, 0.0, 0.0, -30.0];
+        // Snap 1/2/3 : tail 0x88 (comme les blocs non modifiés) ; snap 4 : tail 0x0d (divergent).
+        let tails = [0x88u8, 0x88, 0x88, 0x0d];
+        for n in 0..4 {
+            d.extend(snap_block_with_tail(&[Some(vals[n])], &format!("SNAPSHOT {}", n + 1), tails[n]));
+        }
+        // Noms : tous par défaut, snap4 inclus (l'ancienne ancre le ratait à cause du tail divergent).
+        assert_eq!(
+            scan_snapshot_names(&d),
+            vec!["SNAPSHOT 1", "SNAPSHOT 2", "SNAPSHOT 3", "SNAPSHOT 4"]
+        );
+        // Valeurs : le snap4 (Level=-30) doit être décodé.
+        let out = scan_snapshot_param_values(&d);
+        assert_eq!(out.len(), 1);
+        let got: Vec<Option<f32>> = out[0].values.clone();
+        assert_eq!(got, vec![Some(0.0), Some(0.0), Some(0.0), Some(-30.0)]);
+    }
+
+    #[test]
+    fn snapshot_name_defaults_when_dump_empty() {
+        assert_eq!(snapshot_name(&[], 1), "Snapshot 1");
+        assert_eq!(scan_snapshot_names(&[]), vec!["Snapshot 1", "Snapshot 2", "Snapshot 3", "Snapshot 4"]);
+    }
+
+    /// En-tête preset reproduisant la structure réelle (`read_snapshot_preset_linux` :
+    /// top fixmap-3 {0x66:u16, 0x67:int, 0x68:{0x6b:u16, 0x6c:u16, 0x6d:nom, 0x75:bool, 0x53:arr, 0x5c:idx}}).
+    fn build_header_with_active(active: u8) -> Vec<u8> {
+        let mut d = vec![
+            // préfixe de trame arbitraire (le décodeur cherche le fixmap `8N`+clé 0x66)
+            0x00, 0x00, 0x06, 0x00, 0x24, 0x00, 0x00, 0x00,
+            0x83, // top fixmap-3
+            0x66, 0xcd, 0x03, 0xf8, // 0x66 = u16(1016)
+            0x67, 0x00, // 0x67 = 0
+            0x68, 0x86, // 0x68 = fixmap-6
+            0x6b, 0xcd, 0x00, 0x00, // 0x6b = u16(0)
+            0x6c, 0xcd, 0x00, 0x16, // 0x6c = u16(22)
+            0x6d, 0xa7, b'S', b'n', b'a', b'p', b' ', b'4', 0x00, // 0x6d = "Snap 4\0"
+            0x75, 0xc2, // 0x75 = false
+            0x53, 0x92, 0xcd, 0x08, 0x88, 0x00, // 0x53 = arr[u16(2184), 0]
+            0x5c, active, // 0x5c = active snapshot index
+        ];
+        d.push(0x00); // padding
+        d
+    }
+
+    #[test]
+    fn decodes_active_snapshot_from_header() {
+        assert_eq!(active_snapshot_index(&build_header_with_active(0)), Some(0));
+        assert_eq!(active_snapshot_index(&build_header_with_active(1)), Some(1));
+        assert_eq!(active_snapshot_index(&build_header_with_active(2)), Some(2));
+        assert_eq!(active_snapshot_index(&build_header_with_active(3)), Some(3));
+        // Dump vide / illisible → None (l'appelant retombe sur 0).
+        assert_eq!(active_snapshot_index(&[]), None);
+        assert_eq!(active_snapshot_index(&[0x00, 0x11, 0x22]), None);
+    }
+
+    /// RÉGRESSION (capture `change_preset_actived_snap`, 2026-08-06) : le dump commence par un frame
+    /// PRÉAMBULE `83 66 cd 04 f3 67 01 68 c0` (`0x68` = nil) AVANT la vraie map d'en-tête. Le décodeur
+    /// doit SAUTER le préambule et lire le `0x5c` de la vraie map. Vérité terrain différentiel :
+    /// "Active Snap 1..4" → 0x5c = 0/1/2/3.
+    #[test]
+    fn decodes_active_snapshot_skipping_nil_preamble() {
+        // Préambule : fixmap-3 {0x66:u16, 0x67:1, 0x68:nil}.
+        let preamble: Vec<u8> = vec![
+            0x00, 0x00, 0x06, 0x00, 0x09, 0x00, 0x00, 0x00, // frame prefix
+            0x83, 0x66, 0xcd, 0x04, 0xf3, 0x67, 0x01, 0x68, 0xc0, // 0x68 = nil
+        ];
+        for active in 0u8..=3 {
+            let mut d = preamble.clone();
+            d.extend(build_header_with_active(active));
+            assert_eq!(
+                active_snapshot_index(&d),
+                Some(active),
+                "préambule nil doit être sauté (active={active})"
+            );
+        }
+    }
+
+    /// RÉGRESSION (dump content_only réel de notre app, 2026-08-07) : la vraie map d'en-tête arrive
+    /// LOIN du début (offset ~112), précédée de plusieurs petits frames préambule (dont des sous-maps
+    /// `82` sans `0x5c`). Le décodeur doit chercher au-delà des 64 premiers octets. Ici on préfixe
+    /// ~150 octets de bruit + un frame `83 66 … 68 82 …` (sous-map sans 0x5c) avant le vrai en-tête.
+    #[test]
+    fn decodes_active_snapshot_header_far_from_start() {
+        let mut d: Vec<u8> = Vec::new();
+        // Bruit de préambule (frames divers, dont un `83 66 cd .. 67 .. 68 82 <map-2 sans 0x5c>`).
+        d.extend(std::iter::repeat(0x00).take(90));
+        d.extend([0x83, 0x66, 0xcd, 0x03, 0xe8, 0x67, 0x00, 0x68, 0x82, 0x76, 0xcd, 0x00, 0x80, 0x77, 0x00]);
+        d.extend(std::iter::repeat(0x00).take(20));
+        // Vrai en-tête (offset > 64) avec active=2.
+        d.extend(build_header_with_active(2));
+        assert_eq!(active_snapshot_index(&d), Some(2));
     }
 }

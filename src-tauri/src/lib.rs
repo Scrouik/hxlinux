@@ -2866,6 +2866,46 @@ fn get_active_preset_snapshot_param_values(
     snapshot_param_values::scan_snapshot_param_values(&s.preset_data)
 }
 
+/// Noms des 4 snapshots du preset actif (index 0 = Snapshot 1 … index 3 = Snapshot 4). Nom custom
+/// décodé depuis le dump si présent, sinon défaut `"Snapshot N"`. Voir `snapshot_param_values::scan_snapshot_names`.
+#[tauri::command]
+fn get_active_preset_snapshot_names(state: tauri::State<Arc<Mutex<AppState>>>) -> Vec<String> {
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        match app.helix_state.clone() {
+            Some(h) => (app.active_preset, h),
+            None => return snapshot_param_values::scan_snapshot_names(&[]),
+        }
+    };
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() || s.preset_index != active_preset {
+        return snapshot_param_values::scan_snapshot_names(&[]);
+    }
+    snapshot_param_values::scan_snapshot_names(&s.preset_data)
+}
+
+/// Snapshot actif (0-based, 0..=3) du preset actif, décodé depuis l'en-tête du dump (clé `0x5c`, cf
+/// `snapshot_param_values::active_snapshot_index`). Défaut 0 (Snapshot 1) si indécodable. Cale aussi
+/// le suivi backend `active_snapshot_index` sur la valeur décodée (cohérence pour la garde du
+/// renommage et l'activation conditionnelle). Le device peut être parqué sur un autre snapshot que le 1.
+#[tauri::command]
+fn get_active_preset_active_snapshot(state: tauri::State<Arc<Mutex<AppState>>>) -> u8 {
+    let (active_preset, helix_arc) = {
+        let app = state.lock().unwrap();
+        match app.helix_state.clone() {
+            Some(h) => (app.active_preset, h),
+            None => return 0,
+        }
+    };
+    let s = helix_arc.lock().unwrap();
+    if !s.preset_data_ready || s.preset_data.is_empty() || s.preset_index != active_preset {
+        return 0;
+    }
+    // `active_snapshot_index` est décodé et stocké EN PHASE1 (l'en-tête `0x5c` n'est PAS dans
+    // `preset_data` content_only). On retourne donc la valeur suivie, pas un décodage du contenu.
+    s.active_snapshot_index
+}
+
 /// État actif/inactif de chaque slot Kempline (0..15) du preset actif — `None` si l'état n'a pas pu
 /// être déterminé (segment absent ou format inattendu), sinon `Some(true)`=actif / `Some(false)`=inactif.
 /// Voir `preset_chain_params::slot_active_state_from_assignable_segment`.
@@ -3149,6 +3189,43 @@ fn activate_snapshot(
     s.send(OutPacket::new(packet));
     drop(s);
     eprintln!("[LiveWrite][snapshotActivate][sent] index={snapshot_index}");
+    Ok(())
+}
+
+/// Renomme un snapshot (0-based : Snap 1 = 0, … Snap 4 = 3) sur le HX. Voir
+/// `helix::preset_label::send_snapshot_rename`.
+#[tauri::command]
+fn rename_snapshot(
+    state: tauri::State<Arc<Mutex<AppState>>>,
+    snapshot_index: u8,
+    name: String,
+) -> Result<(), String> {
+    let helix_arc = {
+        let app = state.lock().unwrap();
+        app.helix_state.clone()
+    };
+    let helix_arc = helix_arc.ok_or("HX non connecté")?;
+    if snapshot_index > 3 {
+        return Err(format!("index snapshot invalide: {snapshot_index} (attendu 0..=3)"));
+    }
+    let mut s = helix_arc.lock().unwrap();
+    if !s.editor_ready {
+        return Err("Amorçage USB en cours — renommage snapshot indisponible".to_string());
+    }
+    // ÉTAPE 2 (fix A) : renommage SEUL. Le positionnement (activation `0x58`) ET la relecture du
+    // preset (cohérence session ed:03, comme HX Edit) sont orchestrés PAR LE FRONTEND AVANT cet appel
+    // (`activateSnapshotWithDeviceReload` → `rename_snapshot`). NB : cette relecture repasse par
+    // phase1, qui ré-écrit `active_snapshot_index` avec le `0x5c` de l'en-tête — donc on ne peut PAS
+    // s'en servir comme garde stricte (risque de faux rejet). Le frontend garantit l'activation ; on
+    // se contente d'un avertissement si incohérence apparente.
+    if s.active_snapshot_index != snapshot_index {
+        eprintln!(
+            "[SnapshotRename][warn] active_snapshot_index={} ≠ cible={} (relecture phase1 a pu l'écraser) — on envoie quand même",
+            s.active_snapshot_index, snapshot_index
+        );
+    }
+    helix::preset_label::send_snapshot_rename(&mut s, snapshot_index, &name)?;
+    eprintln!("[LiveWrite][snapshotRename][sent] index={snapshot_index} name={name:?}");
     Ok(())
 }
 
@@ -5371,6 +5448,9 @@ pub fn run() {
             get_active_preset_slot_assignable_usb_json,
             get_active_preset_controller_assignments,
             get_active_preset_snapshot_param_values,
+            get_active_preset_snapshot_names,
+            get_active_preset_active_snapshot,
+            rename_snapshot,
             get_active_preset_slot_active_states,
             write_slot_active_state,
             write_controller_create_real_param_assignment,

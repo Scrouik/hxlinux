@@ -1684,6 +1684,24 @@ html, body {
   text-overflow: ellipsis;
 }
 
+.snapshot-name-input {
+  width: 120px;
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-light);
+  background: var(--bg-raised);
+  color: var(--amber);
+}
+
+.snapshot-name-input:focus {
+  outline: none;
+  border-color: var(--amber);
+}
+
 .snapshot-btn {
   display: inline-flex;
   align-items: center;

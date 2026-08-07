@@ -444,6 +444,19 @@ impl Mode for RequestPreset {
                         state.preset_index = idx;
                         state.active_preset_name = Some(name.clone());
                         crate::helix::preset_name_wire::log_wire_preset("phase1", idx, Some(&name));
+                        // Le snapshot ACTIF (clé `0x5c` de l'en-tête) est dans CE paquet phase1 (payload
+                        // `data[16..]`), PAS dans `preset_data` (content_only = contenu seul, sans
+                        // en-tête). On le décode donc ici, au même endroit que le nom, et on le stocke.
+                        if data.len() > 16 {
+                            if let Some(active_snap) =
+                                crate::snapshot_param_values::active_snapshot_index(&data[16..])
+                            {
+                                state.active_snapshot_index = active_snap;
+                                crate::helix::init_trace::trace_fmt(format_args!(
+                                    "[SnapshotActive][phase1] preset={idx} active_snapshot={active_snap}"
+                                ));
+                            }
+                        }
                     } else {
                         crate::helix::init_trace::trace_fmt(format_args!(
                             "RequestPreset Phase1 index={} hors plage (>= {}) — trame transitoire dump auto, état actif conservé",

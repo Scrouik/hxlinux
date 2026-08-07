@@ -35,6 +35,7 @@ pub fn build_snapshot_activate_packet(state: &mut HelixState, snapshot_index: u8
 
     state.live_write_ctr = state.live_write_ctr.wrapping_add(0x11);
     state.live_write_yy = state.live_write_yy.wrapping_add(1);
+    state.active_snapshot_index = snapshot_index; // suivi de l'actif (pour l'activation conditionnelle du renommage)
     packet
 }
 

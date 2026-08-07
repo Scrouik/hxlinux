@@ -346,6 +346,11 @@ pub struct HelixState {
     /// Compteurs dédiés au write live `27` (reverse-engineering HX Edit).
     pub live_write_ctr: u16,
     pub live_write_yy: u8,
+    /// Snapshot actif courant côté device (0-based, 0..=3). Mis à jour à chaque activation `0x58`.
+    /// Défaut 0 (Snap 1) — TODO : lire le snapshot actif RÉEL du dump au chargement preset (le device
+    /// peut être parqué ailleurs que Snap 1). Sert à n'activer AVANT un renommage QUE si la cible
+    /// n'est pas déjà l'actif (HX Edit n'active que lorsqu'il change réellement de snapshot).
+    pub active_snapshot_index: u8,
     /// Compteur de session pour l'octet juste après `83 66 cd 03|04` sur
     /// l'assignation modèle de slot (profil 03:10 observé).
     pub slot_model_lane_seq: Option<u8>,
@@ -693,6 +698,7 @@ impl HelixState {
             cab_dual_cab2_last_in36_frame: None,
             live_write_ctr: 0x6cbd,
             live_write_yy: 0x17,
+            active_snapshot_index: 0,
             slot_model_lane_seq: None,
             want_content_only_after_x2: false,
             pending_rename_name_verify: false,
