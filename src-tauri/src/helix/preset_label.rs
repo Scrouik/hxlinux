@@ -140,6 +140,12 @@ fn send_preset_label(
         double,
         wire,
     );
+    // DIAG chantier C : octets du paquet label (save ET rename preset) — cd/lane/double.
+    eprintln!(
+        "[PresetLabel][sent] term={:#04x} cd={:#04x} lane(b12_13)={:02x}:{:02x} double(b28_29)={:02x}:{:02x} cnt={:02x}",
+        data.get(30).copied().unwrap_or(0), data.get(27).copied().unwrap_or(0),
+        lane_lo, lane_hi, double[0], double[1], cnt
+    );
     state.send(OutPacket::new(data));
     state.live_write_ctr = state.live_write_ctr.wrapping_add(LABEL_LANE_LO_DELTA);
     Ok(())

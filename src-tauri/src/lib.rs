@@ -577,7 +577,20 @@ fn save_preset_to_hardware(
             index
         ));
     }
-    helix::preset_label::send_preset_save(&mut s, index, &name)
+    helix::preset_label::send_preset_save(&mut s, index, &name)?;
+    // C' (chantier unification compteurs) : après un SAVE (commit), le device devient STRICT et exige
+    // que la lecture suivante CONTINUE le compteur du save. Le save a posé `editor_ed03_double` = X
+    // (son double b28-29) et cd = 0x03. Notre requête de lecture phase1 met le « double » en b28 =
+    // `request_preset_session_id` et le cd = `ed03_cmd_type` → on les re-cale pour que la phase1
+    // post-save envoie cd=0x03 et b28 = X+1 (continuation). Lane laissée telle quelle (test tolérance).
+    let save_double_lo = (s.editor_ed03_double & 0xff) as u8;
+    s.request_preset_session_id = save_double_lo.wrapping_add(1);
+    s.ed03_cmd_type = 0x03;
+    eprintln!(
+        "[PresetSave][resync] editor_double_lo={save_double_lo:#04x} → req_sess_id={:#04x} ed03_cmd_type=0x03",
+        s.request_preset_session_id
+    );
+    Ok(())
 }
 
 /// Dialogue « Enregistrer sous » pour un export `.hlx` (contenu JSON fourni par le frontend).
@@ -2466,6 +2479,21 @@ fn force_recover_preset_reader(state: tauri::State<Arc<Mutex<AppState>>>) -> Res
         s.reset_preset_ed03_transaction_counter();
         s.request_preset_session_id = 0xf4;
         s.new_session_no();
+        // Fix gel ~20 (2026-08-08) : la recovery d'origine ne remettait PAS à zéro
+        // `editor_ed03_lane` (bloqué `f3:16:01` au gel) ni les autres compteurs ed03 → seul un
+        // restart d'app (HelixState neuf) réparait. On reset donc l'état ed03/lane complet aux
+        // défauts d'une session neuve. Gaté `HX_FULL_RECOVER` (défaut ON).
+        if helix::HelixState::full_recover_enabled() {
+            s.reset_editor_ed03_lane();
+            s.ed03_cmd_type = 0x01;
+            s.preset_dump_ack_ctr = ((0x1d_u16) << 8) | (0xf4_u16);
+            s.preset_read_ctr16 = 0x03f2;
+            s.firmware_scroll_ack_ctr = helix::firmware_scroll_ack::SCROLL_LANE_BOOT;
+            eprintln!(
+                "[PresetDebug][recover] FULL reset ed03/lane (editor_ed03_lane={:#06x} cmd_type=0x01 dump_ack_ctr preset_read_ctr16 fw_scroll)",
+                s.editor_ed03_lane
+            );
+        }
         s.switch_mode(ModeRequest::Standard);
         // Libérer le verrou helix AVANT de re-locker AppState pour éviter toute contention
         // avec la boucle de modes qui tient les deux verrous dans le même ordre.

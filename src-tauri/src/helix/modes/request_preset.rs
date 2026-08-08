@@ -193,23 +193,37 @@ impl RequestPreset {
                 );
             }
         } else {
-            let phase2_session = rand::random::<u8>().max(0x04);
+            // Fix gel lectures : octets 27-28 = compteur unifié cd:double façon HX (voir phase 1).
+            let (b27_cd, b28_lo) = if HelixState::preset_cd_unified() {
+                let c = state.next_preset_read_ctr16();
+                (c[0], c[1])
+            } else {
+                (cmd_type, sess_id)
+            };
+            // Fix gel : lane de requête = compteur de chunks (editor_ed03_lane) comme HX, au lieu
+            // de phase2_session:double_lo:0x64. Sinon random session + double_hi figé 0x64.
+            let (l12, l13, l14) = if HelixState::req_lane_chunkctr() {
+                let lane = state.editor_ed03_lane_bytes();
+                (lane[0], lane[1], state.editor_ed03_lane_b14)
+            } else {
+                (rand::random::<u8>().max(0x04), d[0], d[1])
+            };
             let pkt = OutPacket::new(vec![
                 0x19, 0x00, 0x00, 0x18,
                 0x80, 0x10, 0xed, 0x03,
                 0x00, cnt,  0x00, 0x0c,
-                phase2_session, d[0], d[1], 0x00,
+                l12, l13, l14, 0x00,
                 0x01, 0x00, 0x06, 0x00,
                 0x09, 0x00, 0x00, 0x00,
-                0x83, 0x66, 0xcd, cmd_type,
-                sess_id, 0x64, 0x16, 0x65,
+                0x83, 0x66, 0xcd, b27_cd,
+                b28_lo, 0x64, 0x16, 0x65,
                 0xc0, 0x00, 0x00, 0x00,
             ]);
             state.send(pkt);
             if preset_debug_verbose_enabled() {
                 eprintln!(
-                    "[PresetDebug][RequestPreset::send_phase2] cnt={cnt:#04x} sess={phase2_session:#04x} sess_id={sess_id:#04x} double={:02x}:{:02x} editor=0",
-                    d[0], d[1]
+                    "[PresetDebug][RequestPreset::send_phase2] cnt={cnt:#04x} lane={l12:02x}:{l13:02x}:{l14:02x} cd(b27)={b27_cd:#04x} b28(lo)={b28_lo:#04x} cd_unified={} req_lane_chunkctr={}",
+                    HelixState::preset_cd_unified(), HelixState::req_lane_chunkctr()
                 );
             }
         }
@@ -232,11 +246,30 @@ impl Mode for RequestPreset {
         self.mode_tx = state.mode_tx.clone();
 
         let cnt      = state.next_x80_cnt();
-        let sess1    = state.session_no;
-        // Lane éditeur (0x64xx) — pas d'incrément pour Phase 1
-        let double1  = state.editor_ed03_double_val();
         let sess_id1 = state.request_preset_session_id;
         let cmd_type = state.ed03_cmd_type;
+        // C' (chantier unification lane ed:03) : la lane (b12-13) de la requête de lecture utilise
+        // désormais `live_write_ctr` — la MÊME lane monotone (+0x11) que les écritures (dont le SAVE).
+        // Ainsi la lecture post-save CONTINUE la lane du save (save = 0x6cdf → +0x11 = 0x6cf0), au lieu
+        // de `session_no`:`editor_double` (0xf57c) que le device rejette après un commit. Avancée +0x11
+        // comme une écriture (les lectures consécutives incrémentent, comme HX Edit). Flag de secours
+        // `HX_READ_LANE_LIVEWRITE=0` → ancien comportement (session_no + editor_double).
+        let use_livewrite_lane = !matches!(
+            std::env::var("HX_READ_LANE_LIVEWRITE").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        );
+        let (b12, b13, b14): (u8, u8, u8) = if HelixState::req_lane_chunkctr() {
+            // Fix gel : aligner la lane de requête sur HX — b12=position, b13:b14 = compteur de
+            // chunks global (editor_ed03_lane, AVEC RETENUE b14) au lieu de …:0x64 figé.
+            let lane = state.editor_ed03_lane_bytes();
+            (lane[0], lane[1], state.editor_ed03_lane_b14)
+        } else if use_livewrite_lane {
+            let ctr = state.live_write_ctr;
+            ((ctr & 0xff) as u8, ((ctr >> 8) & 0xff) as u8, 0x00)
+        } else {
+            let d = state.editor_ed03_double_val();
+            (state.session_no, d[0], d[1])
+        };
 
         // Avancer sess_id de 1 pour que Phase 2 utilise sess_id1 + 1.
         state.request_preset_session_id = state.request_preset_session_id.wrapping_add(1);
@@ -257,19 +290,59 @@ impl Mode for RequestPreset {
             state.preset_data_ready,
         );
 
+        // Fix gel lectures (2026-08-08) : octets 27-28 = compteur unifié `cd:double` façon HX
+        // (cd bumpé seulement au wrap de l'octet 28) au lieu de cmd_type(+1/lecture):sess_id.
+        // Gaté `HX_PRESET_CD_UNIFIED` (défaut ON ; =0 → ancien cmd_type:sess_id1).
+        let (b27_cd, b28_lo) = if HelixState::preset_cd_unified() {
+            let c = state.next_preset_read_ctr16();
+            (c[0], c[1])
+        } else {
+            (cmd_type, sess_id1)
+        };
         // Phase 1 : sub=0x04, byte30=0x17 — demande du nom du preset
         let pkt = OutPacket::new(vec![
             0x19, 0x00, 0x00, 0x18,
             0x80, 0x10, 0xed, 0x03,
             0x00, cnt,  0x00, 0x04,
-            sess1, double1[0], double1[1], 0x00,
+            b12, b13, b14, 0x00,
             0x01, 0x00, 0x06, 0x00,
             0x09, 0x00, 0x00, 0x00,
-            0x83, 0x66, 0xcd, cmd_type,
-            sess_id1, 0x64, 0x17, 0x65,
+            0x83, 0x66, 0xcd, b27_cd,
+            b28_lo, 0x64, 0x17, 0x65,
             0xc0, 0x00, 0x00, 0x00,
         ]);
+        // DIAG : compteurs de la requête de lecture phase1 (cd:double unifié = octets 27-28 réels).
+        eprintln!(
+            "[ReadReq][phase1] cd(b27)={b27_cd:#04x} b28(lo)={b28_lo:#04x} b12_13(lane)={b12:02x}:{b13:02x} b14={b14:02x} cd_unified={} (cmd_type={cmd_type:#04x} sess_id1={sess_id1:#04x}) livewrite_lane={use_livewrite_lane}",
+            HelixState::preset_cd_unified()
+        );
+        // DIAG gel host-side (« exactement 20 », chantier futur) : dump de TOUS les compteurs host
+        // par lecture pour repérer lequel plafonne/bascule au 20e. Gaté `HX_READ_COUNTERS` (off).
+        if HelixState::read_counters_trace() {
+        eprintln!(
+            "[ReadCounters] gen={} cmd_type={:#04x} req_sess_id={:#04x} session_no={:#04x} ed_lane={:#06x} ed_lane_b14={:#04x} ed_double={:#06x} dump_ack_ctr={:#06x} live_write_ctr={:#06x} fw_scroll_ctr={:#06x} read_ctr16={:#06x} x1={:#04x} x2={:#04x} x80={:#04x}",
+            state.preset_read_generation,
+            state.ed03_cmd_type,
+            state.request_preset_session_id,
+            state.session_no,
+            state.editor_ed03_lane,
+            state.editor_ed03_lane_b14,
+            state.editor_ed03_double,
+            state.preset_dump_ack_ctr,
+            state.live_write_ctr,
+            state.firmware_scroll_ack_ctr,
+            state.preset_read_ctr16,
+            state.x1_cnt,
+            state.x2_cnt,
+            state.x80_cnt,
+        );
+        }
         state.send(pkt);
+        // Avancer la lane +0x11 (comme une écriture) si on utilise live_write_ctr, pour que les
+        // lectures consécutives incrémentent (cohérence session, comme HX Edit).
+        if use_livewrite_lane {
+            state.live_write_ctr = state.live_write_ctr.wrapping_add(0x11);
+        }
 
         self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only, state.preset_read_generation, WATCHDOG_MS);
     }
@@ -288,14 +361,19 @@ impl Mode for RequestPreset {
                     0xf0, 0x03, 0x02, 0x10,
                     0x00, XX, 0x00, 0x04
                 ], 12) {
-                    let cnt = state.next_x2_cnt();
-                    let double = state.next_preset_dump_ack_double();
-                    state.send(OutPacket::new(vec![
-                        0x08, 0x00, 0x00, 0x18,
-                        0x02, 0x10, 0xf0, 0x03,
-                        0x00, cnt, 0x00, 0x08,
-                        double[0], double[1], 0x00, 0x00,
-                    ]));
+                    // Fix gel lectures : ne PAS ACKer la télémétrie f0:03 pendant le dump —
+                    // ces f0:03 sub=08 parasitent le dump (le device tronque puis se tait).
+                    // HX Edit ne les envoie jamais pendant un dump. Consommé silencieusement.
+                    if !HelixState::suppress_f0_during_dump() {
+                        let cnt = state.next_x2_cnt();
+                        let double = state.next_preset_dump_ack_double();
+                        state.send(OutPacket::new(vec![
+                            0x08, 0x00, 0x00, 0x18,
+                            0x02, 0x10, 0xf0, 0x03,
+                            0x00, cnt, 0x00, 0x08,
+                            double[0], double[1], 0x00, 0x00,
+                        ]));
+                    }
                 }
                 return false;
             }
@@ -440,7 +518,20 @@ impl Mode for RequestPreset {
                     // tout juste peinte (le « flash »). On rejette donc tout index hors
                     // plage : l'état actif (déjà = 14 via request_preset_content) est
                     // conservé, et la grille parsée depuis le dump reste affichée.
-                    if (idx as usize) < PRESET_COUNT {
+                    // Fix double-lecture : le garbage `idx=0 name='???g'` (transitoire pendant
+                    // un switch) passe l'ancienne garde (0 est dans la plage) → adopte
+                    // `preset_index=0` → fantôme-0 côté frontend (presetDrift → double lecture).
+                    // On exige que le nom décodé corresponde au catalogue connu pour cet index
+                    // (les noms sont chargés au boot via RequestPresetNames). Si pas encore
+                    // chargés ou flag off → comportement d'origine.
+                    let name_matches_catalog = !HelixState::reject_garbage_phase1()
+                        || !state.got_preset_names
+                        || state
+                            .preset_names
+                            .get(idx as usize)
+                            .map(|n| n == &name)
+                            .unwrap_or(false);
+                    if (idx as usize) < PRESET_COUNT && name_matches_catalog {
                         state.preset_index = idx;
                         state.active_preset_name = Some(name.clone());
                         crate::helix::preset_name_wire::log_wire_preset("phase1", idx, Some(&name));
@@ -458,15 +549,18 @@ impl Mode for RequestPreset {
                             }
                         }
                     } else {
+                        let reason = if (idx as usize) >= PRESET_COUNT {
+                            "hors plage"
+                        } else {
+                            "nom garbage ≠ catalogue (fantôme-0)"
+                        };
                         crate::helix::init_trace::trace_fmt(format_args!(
-                            "RequestPreset Phase1 index={} hors plage (>= {}) — trame transitoire dump auto, état actif conservé",
-                            idx, PRESET_COUNT
+                            "RequestPreset Phase1 index={} REJETÉ ({}) — trame transitoire, état actif conservé",
+                            idx, reason
                         ));
-                        if preset_debug_verbose_enabled() {
-                            eprintln!(
-                                "[PresetDebug][RequestPreset::data_in] Phase1 index={idx} hors plage (dump auto post-D&D ?) — preset_index conservé, pas d'écrasement"
-                            );
-                        }
+                        eprintln!(
+                            "[PresetDebug][RequestPreset::data_in] Phase1 index={idx} name={name:?} REJETÉ ({reason}) — preset_index conservé"
+                        );
                     }
                 }
                 self.send_phase2(state);

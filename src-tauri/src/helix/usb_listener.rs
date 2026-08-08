@@ -103,6 +103,18 @@ fn start_live_param_poll_thread(
     thread::spawn(move || {
         // Cadence basée sur un `Instant` de référence (pas un `sleep(40ms)` répété tel quel) pour
         // éviter la dérive accumulée au fil des itérations.
+        //
+        // Cadence surchargeable par env `HX_LIVE_POLL_MS` (défaut = `LIVE_PARAM_POLL_INTERVAL_MS`).
+        // Chantier gel lectures (2026-08-08) : capture différentielle `multi_change_preset*.json`
+        // montre qu'on polle f0:03 à ~12/s (78 ms fixe) contre ~2,8/s adaptatif chez HX Edit → on
+        // sature le device qui cesse de servir les dumps après ~6-7 lectures. Ce flag permet de
+        // balayer la cadence (78/150/300 ms) sans recompiler pour vérifier si le seuil de gel recule.
+        let interval_ms = std::env::var("HX_LIVE_POLL_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(LIVE_PARAM_POLL_INTERVAL_MS);
+        eprintln!("[LiveParamPoll] intervalle poll f0:03 = {interval_ms} ms (défaut {LIVE_PARAM_POLL_INTERVAL_MS}, env HX_LIVE_POLL_MS)");
         let mut next_tick = Instant::now();
         loop {
             if stop.load(Ordering::SeqCst) {
@@ -112,7 +124,7 @@ fn start_live_param_poll_thread(
             if now < next_tick {
                 thread::sleep(next_tick - now);
             }
-            next_tick += Duration::from_millis(LIVE_PARAM_POLL_INTERVAL_MS);
+            next_tick += Duration::from_millis(interval_ms);
 
             let mut sh = shared.lock().unwrap();
             let mut s = state.lock().unwrap();
@@ -147,6 +159,11 @@ fn start_live_param_poll_thread(
                     0x00, seq, 0x00, 0x08,
                 ];
                 pkt.extend_from_slice(&tick_bytes);
+                if HelixState::f0_trace_enabled() {
+                    eprintln!(
+                        "[F0Trace][poll-send] read_in_progress={preset_read_in_progress} gate_ok={gate_ok}"
+                    );
+                }
                 s.send(OutPacket::new(pkt));
             }
         }

@@ -25,6 +25,33 @@ const ENDPOINT_OUT: u8 = 0x01;
 const WRITE_TIMEOUT_MS: u64 = 150;
 static USB_WRITE_SEQ: AtomicU64 = AtomicU64::new(1);
 
+/// Fix gel lectures (2026-08-08) : après backoff de récupération suite à N timeouts d'écriture
+/// consécutifs, avant de reprendre. Laisse l'endpoint OUT du device se drainer.
+const WRITER_RECOVERY_BACKOFF_MS: u64 = 200;
+
+/// Fix gel lectures : le thread writer SURVIT-il à 5 timeouts consécutifs (défaut) au lieu de
+/// se suicider (`return`) ? La capture `multi_change_preset_linux.json` montre que le device
+/// reste VIVANT (dumps jusqu'à t=52) alors que le writer mort ne laisse plus PARTIR aucun OUT →
+/// gel permanent. Récupération = clear_halt + backoff + reset. `HX_WRITER_SURVIVE=0` restaure
+/// l'ancien suicide (au cas où le device partirait réellement en vrille — hypothèse user).
+fn writer_survive_enabled() -> bool {
+    !matches!(
+        std::env::var("HX_WRITER_SURVIVE").as_deref(),
+        Ok("0") | Ok("false") | Ok("off")
+    )
+}
+
+/// Timeout d'écriture bulk, surchargeable par `HX_WRITE_TIMEOUT_MS` (défaut [`WRITE_TIMEOUT_MS`]).
+/// 150 ms est court : sous backpressure device (rafales de dump) un write NAK peut dépasser
+/// 150 ms et compter comme erreur. Un timeout plus long réduit ces faux positifs.
+fn write_timeout_ms() -> u64 {
+    std::env::var("HX_WRITE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(WRITE_TIMEOUT_MS)
+}
+
 /// Délai minimal entre deux envois OUT **commande** ED03 (`1b`, `19`, keep-alive `ed`, etc.).
 /// Les ACK flux 272 (`ed:03` sub=`08`, 16 o) sont exclus : HX Edit les enchaîne sans 14 ms
 /// entre chaque chunk (sinon 10×14 ms bloque le writer pendant la rafale post-pull).
@@ -162,7 +189,7 @@ pub fn start_writer(
                         match handle.write_bulk(
                             ENDPOINT_OUT,
                             chunk,
-                            Duration::from_millis(WRITE_TIMEOUT_MS),
+                            Duration::from_millis(write_timeout_ms()),
                         ) {
                             Ok(written) => {
                                 consecutive_errors = 0;
@@ -206,8 +233,24 @@ pub fn start_writer(
                                     eprintln!("[UsbWriter] pipe stall détecté → clear_halt 0x01");
                                     let _ = handle.clear_halt(ENDPOINT_OUT);
                                 }
-                                if e == rusb::Error::NoDevice || consecutive_errors >= 5 {
-                                    return;
+                                if e == rusb::Error::NoDevice {
+                                    return; // device réellement débranché → arrêt légitime
+                                }
+                                if consecutive_errors >= 5 {
+                                    if writer_survive_enabled() {
+                                        // FIX GEL : NE PAS tuer le thread (sinon plus aucun OUT →
+                                        // gel permanent, alors que le device est encore vivant).
+                                        // Récupérer : clear_halt + backoff (laisse l'endpoint OUT
+                                        // drainer) + reset compteur, puis continuer.
+                                        eprintln!(
+                                            "[UsbWriter] {consecutive_errors} timeouts consécutifs → clear_halt + backoff {WRITER_RECOVERY_BACKOFF_MS}ms + reprise (au lieu d'abandonner)"
+                                        );
+                                        let _ = handle.clear_halt(ENDPOINT_OUT);
+                                        thread::sleep(Duration::from_millis(WRITER_RECOVERY_BACKOFF_MS));
+                                        consecutive_errors = 0;
+                                    } else {
+                                        return; // ancien comportement (suicide) — HX_WRITER_SURVIVE=0
+                                    }
                                 }
                                 break;
                             }

@@ -199,7 +199,12 @@ impl KeepAliveManager {
                 // le host n'émet pas de poll proactif : on saute le cycle entier.
                 let skip_cycle = {
                     let s = state.lock().unwrap();
-                    s.preset_content_only || s.usb_host_transaction_hold
+                    // Fix gel lectures : sauter tout le cycle keep-alive pendant une lecture
+                    // preset (`preset_usb_read_in_progress`), pas seulement `preset_content_only` —
+                    // sinon la lane idle f0 (ci-dessous) émet un f0:03 en plein dump et le parasite.
+                    s.preset_content_only
+                        || s.usb_host_transaction_hold
+                        || (HelixState::suppress_f0_during_dump() && s.preset_usb_read_in_progress())
                 };
                 if skip_cycle {
                     thread::sleep(Duration::from_millis(KEEP_ALIVE_CYCLE_MS));

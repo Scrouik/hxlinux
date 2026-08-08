@@ -237,6 +237,16 @@ pub struct HelixState {
     /// Init `0x00`. Avancé par `advance_editor_ed03_lane_hi3`. Témoin : `HX_LANE_B14_CARRY=0`.
     pub editor_ed03_lane_b14: u8,
 
+    /// Compteur unifié `cd:double` des requêtes RequestPreset (fix gel lectures 2026-08-08).
+    /// (octet 27 = poids FORT = « cd », octet 28 = poids FAIBLE) forment UN seul compteur 16 bits
+    /// qui avance de +1 par paquet de requête (phase 1 puis phase 2) ; octet 29 figé `0x64`. `cd`
+    /// ne monte donc QU'au débordement de l'octet 28 — exactement comme HX Edit (capture
+    /// `60_changes_hxedit.json` : cd `03→04` une seule fois en 60 lectures, `(cd:lo)` +1/paquet).
+    /// Notre ancien code incrémentait `ed03_cmd_type` (cd) à CHAQUE lecture → cd atteignait `0x15`
+    /// vers la 21ᵉ lecture = le device gelait. Départ `0x03f2` (1re valeur observée HX).
+    /// Gaté par `HX_PRESET_CD_UNIFIED` (défaut ON, `=0` restaure l'ancien schéma).
+    pub preset_read_ctr16: u16,
+
     // Compteurs keep-alive
     pub x1_cnt:  u8,
     pub x2_cnt:  u8,
@@ -677,6 +687,7 @@ impl HelixState {
             editor_ed03_double: Self::preset_ed03_transaction_counter_before_first(),
             editor_ed03_lane:   Self::EDITOR_ED03_LANE_FIRST,
             editor_ed03_lane_b14: 0x00,
+            preset_read_ctr16:  0x03f2, // fix gel : compteur unifié cd:double façon HX (départ observé)
             preset_last_ack_double: [0, 0],
             request_preset_session_id: 0xf4,
             ed03_cmd_type:      0x01,
@@ -1215,6 +1226,26 @@ impl HelixState {
         self.editor_ed03_double_val()
     }
 
+    /// Fix gel lectures : le schéma `cd:double` unifié façon HX est-il actif ?
+    /// Défaut ON ; `HX_PRESET_CD_UNIFIED=0` (ou `false`/`off`) restaure l'ancien
+    /// (cd = `ed03_cmd_type` incrémenté à chaque lecture, qui provoquait le gel ~21ᵉ lecture).
+    pub fn preset_cd_unified() -> bool {
+        !matches!(
+            std::env::var("HX_PRESET_CD_UNIFIED").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        )
+    }
+
+    /// Renvoie `[cd, lo]` courant du compteur unifié `preset_read_ctr16`
+    /// (`cd` = octet 27 poids fort, `lo` = octet 28 poids faible) puis avance de +1.
+    /// L'octet 29 (poids fort du double) reste `0x64` côté appelant.
+    pub fn next_preset_read_ctr16(&mut self) -> [u8; 2] {
+        let cd = ((self.preset_read_ctr16 >> 8) & 0xff) as u8;
+        let lo = (self.preset_read_ctr16 & 0xff) as u8;
+        self.preset_read_ctr16 = self.preset_read_ctr16.wrapping_add(1);
+        [cd, lo]
+    }
+
     // ── Compteur lane ED03 (octets 12-13 des OUT 80:10:ed:03) ────────────────
     //
     // Décodé byte-pour-byte sur 4 captures HX (dont select_presets.json) :
@@ -1312,7 +1343,100 @@ impl HelixState {
     }
 
     /// Envoie un paquet USB vers le HX
+    /// Fix gel lectures (2026-08-08) : supprimer les OUT f0:03 émis PENDANT un dump preset.
+    /// Backtrace a montré 2 sources qui parasitent le dump (le device tronque puis se tait
+    /// vers la ~20ᵉ lecture) : (1) l'ACK réactif `f0:03 sub=08` de `RequestPreset::data_in`
+    /// aux trames télémétrie `f0:03 sub=04` entrantes ; (2) la lane idle f0 de `keep_alive`.
+    /// HX Edit n'envoie AUCUN f0:03 pendant un dump (dump propre) → on s'aligne. Défaut ON ;
+    /// `HX_F0_DUMP_SUPPRESS=0` (ou `false`/`off`) restaure l'ancien comportement (parasitage).
+    pub fn suppress_f0_during_dump() -> bool {
+        !matches!(
+            std::env::var("HX_F0_DUMP_SUPPRESS").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        )
+    }
+
+    /// Fix gel ~20 (2026-08-08) : la recovery `force_recover_preset_reader` remet-elle à zéro
+    /// TOUT l'état ed03/lane (comme une session neuve) et pas seulement un sous-ensemble ?
+    /// Au gel, `editor_ed03_lane` reste bloqué (f3:16:01) et la recovery d'origine ne le reset
+    /// pas → seul un restart d'app (HelixState neuf) réparait. Défaut ON ; `HX_FULL_RECOVER=0`
+    /// restaure l'ancienne recovery partielle.
+    pub fn full_recover_enabled() -> bool {
+        !matches!(
+            std::env::var("HX_FULL_RECOVER").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        )
+    }
+
+    /// Diagnostic chantier « gel exactement 20 lectures » (host-side, à élucider) : dump des
+    /// compteurs host à chaque lecture. Gaté `HX_READ_COUNTERS=1` (off par défaut).
+    pub fn read_counters_trace() -> bool {
+        matches!(
+            std::env::var("HX_READ_COUNTERS").as_deref(),
+            Ok("1") | Ok("true") | Ok("on")
+        )
+    }
+
+    /// Fix gel lectures (2026-08-08) : la lane (octets 12-13-14) de la requête RequestPreset
+    /// porte-t-elle le COMPTEUR DE CHUNKS (`editor_ed03_lane` : b12=position, b13=chunk lo,
+    /// b14=chunk hi AVEC RETENUE) comme HX Edit, au lieu de `session_no : editor_double_lo : 0x64`
+    /// (b14 figé 0x64) ? Capture `60_changes_hxedit` : HX met b13:b14 = compteur de chunks global
+    /// qui monte 00→03 sur 60 lectures ; nous figions b14=0x64. Le device REFUSE nos requêtes
+    /// après ~20 lectures (bytes=0, alors qu'elles lui parviennent). Défaut ON ;
+    /// `HX_REQ_LANE_CHUNKCTR=0` restaure l'ancien (session_no:double_lo:0x64).
+    pub fn req_lane_chunkctr() -> bool {
+        !matches!(
+            std::env::var("HX_REQ_LANE_CHUNKCTR").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        )
+    }
+
+    /// Fix double-lecture (2026-08-08) : rejeter l'adoption de `preset_index` depuis une
+    /// lecture phase1 dont le nom décodé ne correspond PAS au catalogue connu pour cet index.
+    /// Pendant un switch, la phase1 renvoie parfois du garbage (`idx=0 name='???g'`) que
+    /// l'ancienne garde (index dans la plage) laissait passer → `active_preset=0` transitoire
+    /// → `presetDrift` (frontend) lit le preset 0 puis relit le vrai = DOUBLE lecture. HX = 1
+    /// lecture propre/changement. Défaut ON ; `HX_REJECT_GARBAGE_PHASE1=0` restaure l'ancien.
+    pub fn reject_garbage_phase1() -> bool {
+        !matches!(
+            std::env::var("HX_REJECT_GARBAGE_PHASE1").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        )
+    }
+
+    /// Instrumentation gel lectures (2026-08-08, gaté `HX_F0_TRACE`) : trace des OUT f0:03.
+    pub fn f0_trace_enabled() -> bool {
+        std::env::var_os("HX_F0_TRACE").is_some_and(|v| {
+            let s = v.to_string_lossy();
+            !s.is_empty() && s != "0" && !s.eq_ignore_ascii_case("false")
+        })
+    }
+
     pub fn send(&self, packet: OutPacket) {
+        // DIAG f0:03 pendant dump : le poll est censé être gaté OFF pendant une lecture
+        // (`preset_usb_read_in_progress`). Si un OUT f0:03 sort avec read_in_progress=true,
+        // il vient d'une source NON gatée (keep_alive/autre) → candidate au parasitage du dump.
+        if Self::f0_trace_enabled() && packet.data.get(4..8) == Some(&[0x02, 0x10, 0xf0, 0x03]) {
+            let rip = self.preset_usb_read_in_progress();
+            eprintln!(
+                "[F0Trace][send] sub={:#04x} read_in_progress={} editor_ready={}",
+                packet.data.get(11).copied().unwrap_or(0),
+                rip,
+                self.editor_ready,
+            );
+            // Backtrace des 8 premiers f0:03 émis PENDANT une lecture → nomme la source parasite.
+            if rip {
+                use std::sync::atomic::{AtomicU32, Ordering};
+                static BT_COUNT: AtomicU32 = AtomicU32::new(0);
+                if BT_COUNT.fetch_add(1, Ordering::Relaxed) < 8 {
+                    eprintln!(
+                        "[F0Trace][send][BACKTRACE f0 pendant lecture #{}]\n{}",
+                        BT_COUNT.load(Ordering::Relaxed),
+                        std::backtrace::Backtrace::force_capture()
+                    );
+                }
+            }
+        }
         init_trace::trace_out(&packet.data, "send");
         if let Some(tx) = &self.tx {
             let _ = tx.send(packet);
