@@ -17,6 +17,7 @@
 | 3 | Décrochage au-delà de ~256 chunks (**BUG C**) | Compteur de chunks 16 bits ; retenue ignorée (octet 14 figé à 0) | Octet 14 = vrai octet haut, retenue sur débordement de l'octet 13 | `HX_LANE_B14_CARRY` | ✅ Résolu (confirmé terrain) |
 | 4 | Désync du double éditeur au wrap (**BUG A**) | HX saute la valeur `lo=0x00` au double wrap, pas nous | Saut du `0x00` sur le `lo` du double éditeur | `HX_EDITOR_DOUBLE_SKIP_00` | ✅ Résolu |
 | 5 | Décrochage au tournant de page `05→06` (**§5**) | Abonnement « lane vivante » jamais armé : tour de fermeture PHASE B incomplet ou court-circuité | Commit `1b 0c f1` + attente `23 04` ; FSM sans `Done` prématuré sur `26 ef` | `HX_PHASEB_COMMIT` | 🟡 Handshake **validé log** ; terrain **en attente** |
+| 7 | Gel des lectures preset vers ~19-21 lectures | Transactions de lecture ED03 laissées **ouvertes** : trailer de fin de dump jamais acquitté | Acquitter le trailer de fin (`OUT 08 80:10:ed:03 sub=08`) comme HX → clôt chaque transaction | `HX_ACK_DUMP_TRAILER` | ✅ **Résolu** (terrain : 60 lectures, 0 gel) |
 
 ---
 
@@ -189,6 +190,44 @@ Tant que (2) et (3) ne sont pas verts, on ne déclare pas le §5 **opérationnel
 | HX Edit = cache des 125 presets en RAM | ❌ Les captures montrent un `RequestPreset` à chaque switch UI |
 | `reset_editor_ed03_lane()` dans `force_recover` | ❌ Retiré — le compteur chunks (13+14) est **global** ; reset host seul aggrave la désync (§3) |
 | Lenteur perçue = protocole USB | ❌ Surtout latence host (poll 200 ms, throttles) ; dump USB comparable à HX |
+
+---
+
+## 7. Gel des lectures preset vers ~19-21 lectures — transactions ED03 non closes (RÉSOLU)
+
+**Symptôme.** Après ~19-21 lectures de preset consécutives, le dump se tronque puis le device
+cesse totalement de répondre à `19 sub=04` (`bytes=0`), tout en restant vivant (les keep-alives
+continuent). Seule une ré-ouverture USB complète (restart de l'app) le réveille. Indépendant du
+contenu du preset et du sens de parcours ; aucun littéral `20` nulle part dans le code (backend
+ou frontend).
+
+**Cause (prouvée byte-à-byte — `change_preset_and_freeze_linux.json` vs `60_changes_hxedit.json`).**
+Après le dernier chunk de 272 octets, le device envoie un **trailer de fin de dump** :
+`XX:00:00:18 ed:03:80:10 00:cc:00:04 …` (~224–240 octets, tête `XX` = octet de session ≠ `0x08`,
+`data[1]==0x00` là où un chunk normal est `08:01`). **HX Edit acquitte ce trailer** avec
+`OUT 08 80:10:ed:03 sub=08` — c'est la **clôture** de la transaction de lecture. Nous ne le
+faisions pas (il tombait dans le `_ =>` par défaut ; le dump se terminait par watchdog) →
+**chaque lecture laissait une transaction ouverte** → la fenêtre interne du device **sature à
+~19–21 transactions ouvertes** et il cesse de servir les lectures.
+
+> **Contrainte device (générale).** Le HX Stomp XL ne tolère que **~19–21 transactions de lecture
+> ED03 NON closes**. Toute opération qui déclenche un dump ED03 **doit acquitter son trailer de
+> fin**, sinon elles s'accumulent et le device gèle. Même mécanisme que le gel du scroll
+> multi-cran (§2 / Addendum §10), ici sur le chemin de lecture preset.
+
+**Correctif (`HX_ACK_DUMP_TRAILER`, défaut ON).** Une nouvelle branche dans `RequestPreset::data_in`
+détecte le trailer (gardée par `await_dump_end_after_full_chunk`, pour ne jamais matcher la
+réponse Phase 1 de 56 octets), ajoute son payload (corrige au passage un preset parfois
+incomplet juste avant le gel), envoie l'ACK de clôture, et termine le transfert. Isolé du chemin
+scroll (mode RequestPreset uniquement ; le multi-cran passe par la couche pipeline distincte
+`ScrollModelPull`).
+
+> *Résultat terrain : 60 lectures, 62 presets chargés, **0 gel, 0 recovery**. Multi-cran vérifié :
+> aucune régression. Cela atteint opérationnellement le but du §5 (lectures soutenues) via le
+> vrai signal manquant — l'ACK du trailer — et non l'abonnement lane vivante. Leçon : mesurer la
+> séquence post-dump **complète** (pas juste la requête) avant de coder ; un diff byte-à-byte a
+> tranché là où ~10 essais aveugles (cadence poll, compteurs cd/lane, `clear_halt` d'endpoint,
+> reader, recovery) avaient échoué.*
 
 ---
 
