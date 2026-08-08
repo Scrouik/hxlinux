@@ -1368,6 +1368,20 @@ impl HelixState {
         )
     }
 
+    /// Fix gel lectures (2026-08-08) : acquitter le TRAILER de fin de dump (frame `XX:00:00:18
+    /// ed:03:80:10 sub=04`, ~224-240o, tête = octet de session ≠ 0x08) comme HX Edit, au lieu de
+    /// le laisser dans le défaut sans ACK. Capture `change_preset_and_freeze` : HX envoie un
+    /// `OUT 08 80:10:ed:03 sub=08` après ce trailer (= clôture de transaction) ; nous non → chaque
+    /// lecture laisse une transaction ouverte → le device sature à ~21 lectures et cesse de
+    /// répondre. Même mécanisme que le gel scroll multinotch (Addendum §10). Défaut ON ;
+    /// `HX_ACK_DUMP_TRAILER=0` restaure l'ancien (pas d'ACK trailer).
+    pub fn ack_dump_trailer() -> bool {
+        !matches!(
+            std::env::var("HX_ACK_DUMP_TRAILER").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        )
+    }
+
     /// Diagnostic chantier « gel exactement 20 lectures » (host-side, à élucider) : dump des
     /// compteurs host à chaque lecture. Gaté `HX_READ_COUNTERS=1` (off par défaut).
     pub fn read_counters_trace() -> bool {

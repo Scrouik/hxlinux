@@ -670,6 +670,40 @@ impl Mode for RequestPreset {
                 true
             }
 
+            // Fix gel (2026-08-08) : TRAILER de fin de dump. Head = octet de session (≠ 0x08,
+            // `data[1]==0x00` alors qu'un chunk normal est `08:01`), reste = `..:00:18 ed:03:80:10
+            // sub=04`, ~224-240o. HX Edit l'ACQUITTE avec un `OUT 08 80:10:ed:03 sub=08` (clôture
+            // de transaction) ; nous le laissions au défaut sans ACK → transaction non close →
+            // device sature à ~21 lectures. On l'acquitte comme HX + on ajoute son payload (le
+            // preset était peut-être incomplet). Gardé par `await_dump_end_after_full_chunk` pour
+            // ne PAS matcher les réponses Phase 1 (56o) qui arrivent AVANT tout chunk plein.
+            (_, 0x04)
+                if HelixState::ack_dump_trailer()
+                    && self.await_dump_end_after_full_chunk
+                    && data.len() > 16
+                    && data.first() != Some(&0x08)
+                    && data.get(1) == Some(&0x00)
+                    && data.get(2..4) == Some(&[0x00, 0x18])
+                    && data.get(4..8) == Some(&[0xed, 0x03, 0x80, 0x10]) =>
+            {
+                self.preset_data.extend_from_slice(&data[16..]);
+                let cnt = state.next_x80_cnt();
+                let lane = state.next_preset_stream_chunk_ack_lane();
+                state.send(OutPacket::new(vec![
+                    0x08, 0x00, 0x00, 0x18,
+                    0x80, 0x10, 0xed, 0x03,
+                    0x00, cnt, 0x00, 0x08,
+                    lane[0], lane[1], lane[2], 0x00,
+                ]));
+                self.last_ack_lane = [lane[0], lane[1]];
+                eprintln!(
+                    "[PresetDebug][RequestPreset::data_in] TRAILER fin dump ACQUITTÉ (head={:02x} len={} total={}) cnt={:#04x} lane={:02x}:{:02x}:{:02x}",
+                    data[0], data.len(), self.preset_data.len(), cnt, lane[0], lane[1], lane[2]
+                );
+                self.finish_preset_transfer(state);
+                true
+            }
+
             // Idle (`sub=10`) reçu pendant une clôture différée et SANS chunk intercalé :
             // confirmation immédiate de la vraie fin §10 (évite d'attendre le watchdog
             // court). Inoffensif si l'idle est mangé en amont par check_keep_alive — le

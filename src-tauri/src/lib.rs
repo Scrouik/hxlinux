@@ -2426,6 +2426,17 @@ fn clear_all_preset_blocks(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<
 /// puis revient en mode Standard pour permettre une relance propre côté front.
 #[tauri::command]
 fn force_recover_preset_reader(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<(), String> {
+    // DIAG chantier « gel 20 » (2026-08-08) : `HX_DISABLE_RECOVER=1` transforme cette recovery
+    // (pansement historique, cf. user) en no-op — pour voir le VRAI comportement du bug sans le
+    // demi-reset de session (session_no/request_preset_session_id/switch Standard) qui pourrait
+    // masquer/aggraver la cause racine. Off par défaut (comportement inchangé).
+    if matches!(
+        std::env::var("HX_DISABLE_RECOVER").as_deref(),
+        Ok("1") | Ok("true") | Ok("on")
+    ) {
+        eprintln!("[PresetDebug][recover] DÉSACTIVÉE (HX_DISABLE_RECOVER=1) — no-op");
+        return Ok(());
+    }
     let (helix_arc, skip_reason) = {
         let mut app = state.lock().unwrap();
         let now = Instant::now();

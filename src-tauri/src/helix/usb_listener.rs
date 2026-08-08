@@ -30,6 +30,20 @@ const ENDPOINT_IN: u8 = 0x81;
 /// peut être aussi long que souhaité sans retarder l'envoi du poll f0:03.
 const READ_TIMEOUT_MS: u64 = 500;
 const BUFFER_SIZE: usize = 512;
+
+/// Fix gel ~20 lectures (2026-08-08) : nb de timeouts read consécutifs PENDANT une lecture preset
+/// avant de tenter `clear_halt(ENDPOINT_IN)`. Hypothèse : l'endpoint IN 0x81 se met en HALT/stall
+/// après ~20 lectures → read_bulk muet ; seul un restart d'app (ré-ouverture USB) réparait. On
+/// tente de réveiller l'endpoint sans restart. 8 × ~500ms ≈ 4s.
+const READER_CLEAR_HALT_AFTER: u32 = 8;
+
+/// `HX_READER_CLEAR_HALT=0` désactive le `clear_halt(IN)` de récupération (défaut ON).
+fn reader_clear_halt_enabled() -> bool {
+    !matches!(
+        std::env::var("HX_READER_CLEAR_HALT").as_deref(),
+        Ok("0") | Ok("false") | Ok("off")
+    )
+}
 /// Intervalle de poll f0:03 pour recevoir les changements de paramètre knob HW (85:62) et les
 /// notifications d'assignation (82:62:3b). Calé sur HX Edit (~78 ms, mesuré 2026-07-11 sur
 /// `boot_device_add_model_add_bypass.json`) : HX Edit poll f0:03 toutes les 78 ms et reçoit une
@@ -185,6 +199,8 @@ pub fn start_listener(
         let mut buf = vec![0u8; BUFFER_SIZE];
         let mut seen_fingerprints: HashSet<Vec<u8>> = HashSet::new();
         let mut suppressed_repeats: u64 = 0;
+        // Fix gel ~20 : timeouts read consécutifs pendant une lecture preset (endpoint IN muet).
+        let mut consecutive_read_timeouts: u32 = 0;
 
         loop {
             // Vérifier si on doit s'arrêter
@@ -201,6 +217,7 @@ pub fn start_listener(
                 Duration::from_millis(READ_TIMEOUT_MS),
             ) {
                 Ok(n) if n > 0 => {
+                    consecutive_read_timeouts = 0; // données reçues → l'endpoint IN vit
                     let data = buf[..n].to_vec();
                     {
                         let mut sh = poll_shared.lock().unwrap();
@@ -530,11 +547,37 @@ pub fn start_listener(
                         }
                     }
                 }
-                Ok(_) => {
-                    // 0 bytes reçus — on continue
-                }
-                Err(rusb::Error::Timeout) => {
-                    // Timeout normal — on reboucle pour vérifier stop
+                Ok(_) | Err(rusb::Error::Timeout) => {
+                    // 0 octet / timeout normal — on reboucle. MAIS : fix gel ~20 lectures — si ces
+                    // timeouts se répètent PENDANT une lecture preset active, l'endpoint IN 0x81
+                    // est probablement en HALT/stall (device envoie encore ses dumps mais read_bulk
+                    // reste muet ; seul un restart d'app = ré-ouverture USB réparait). On tente un
+                    // `clear_halt(IN)` pour réveiller l'endpoint sans redémarrer.
+                    if reader_clear_halt_enabled() {
+                        let in_read = {
+                            match state.lock() {
+                                Ok(s) => s.preset_usb_read_in_progress(),
+                                Err(_) => false,
+                            }
+                        };
+                        // On n'incrémente que pendant une lecture qui stalle ; on ne remet à zéro
+                        // QUE sur données reçues (Ok(n>0)), pas entre deux retries — sinon le
+                        // watchdog (2s) relâche `in_read` et le compteur n'atteindrait jamais le
+                        // seuil. Il s'accumule donc à travers les retries du gel.
+                        if in_read {
+                            consecutive_read_timeouts += 1;
+                            if consecutive_read_timeouts >= READER_CLEAR_HALT_AFTER {
+                                eprintln!(
+                                    "[UsbListener] {consecutive_read_timeouts} timeouts read pendant lecture preset → clear_halt(IN {ENDPOINT_IN:#04x})"
+                                );
+                                match handle.clear_halt(ENDPOINT_IN) {
+                                    Ok(()) => eprintln!("[UsbListener] clear_halt(IN) OK"),
+                                    Err(e) => eprintln!("[UsbListener] clear_halt(IN) échec : {e}"),
+                                }
+                                consecutive_read_timeouts = 0;
+                            }
+                        }
+                    }
                 }
                 Err(rusb::Error::NoDevice) => {
                     eprintln!("[UsbListener] HX déconnecté");
