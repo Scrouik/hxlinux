@@ -173,11 +173,6 @@ fn start_live_param_poll_thread(
                     0x00, seq, 0x00, 0x08,
                 ];
                 pkt.extend_from_slice(&tick_bytes);
-                if HelixState::f0_trace_enabled() {
-                    eprintln!(
-                        "[F0Trace][poll-send] read_in_progress={preset_read_in_progress} gate_ok={gate_ok}"
-                    );
-                }
                 s.send(OutPacket::new(pkt));
             }
         }

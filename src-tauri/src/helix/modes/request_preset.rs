@@ -316,27 +316,6 @@ impl Mode for RequestPreset {
             "[ReadReq][phase1] cd(b27)={b27_cd:#04x} b28(lo)={b28_lo:#04x} b12_13(lane)={b12:02x}:{b13:02x} b14={b14:02x} cd_unified={} (cmd_type={cmd_type:#04x} sess_id1={sess_id1:#04x}) livewrite_lane={use_livewrite_lane}",
             HelixState::preset_cd_unified()
         );
-        // DIAG gel host-side (« exactement 20 », chantier futur) : dump de TOUS les compteurs host
-        // par lecture pour repérer lequel plafonne/bascule au 20e. Gaté `HX_READ_COUNTERS` (off).
-        if HelixState::read_counters_trace() {
-        eprintln!(
-            "[ReadCounters] gen={} cmd_type={:#04x} req_sess_id={:#04x} session_no={:#04x} ed_lane={:#06x} ed_lane_b14={:#04x} ed_double={:#06x} dump_ack_ctr={:#06x} live_write_ctr={:#06x} fw_scroll_ctr={:#06x} read_ctr16={:#06x} x1={:#04x} x2={:#04x} x80={:#04x}",
-            state.preset_read_generation,
-            state.ed03_cmd_type,
-            state.request_preset_session_id,
-            state.session_no,
-            state.editor_ed03_lane,
-            state.editor_ed03_lane_b14,
-            state.editor_ed03_double,
-            state.preset_dump_ack_ctr,
-            state.live_write_ctr,
-            state.firmware_scroll_ack_ctr,
-            state.preset_read_ctr16,
-            state.x1_cnt,
-            state.x2_cnt,
-            state.x80_cnt,
-        );
-        }
         state.send(pkt);
         // Avancer la lane +0x11 (comme une écriture) si on utilise live_write_ctr, pour que les
         // lectures consécutives incrémentent (cohérence session, comme HX Edit).

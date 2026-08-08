@@ -1382,15 +1382,6 @@ impl HelixState {
         )
     }
 
-    /// Diagnostic chantier « gel exactement 20 lectures » (host-side, à élucider) : dump des
-    /// compteurs host à chaque lecture. Gaté `HX_READ_COUNTERS=1` (off par défaut).
-    pub fn read_counters_trace() -> bool {
-        matches!(
-            std::env::var("HX_READ_COUNTERS").as_deref(),
-            Ok("1") | Ok("true") | Ok("on")
-        )
-    }
-
     /// Fix gel lectures (2026-08-08) : la lane (octets 12-13-14) de la requête RequestPreset
     /// porte-t-elle le COMPTEUR DE CHUNKS (`editor_ed03_lane` : b12=position, b13=chunk lo,
     /// b14=chunk hi AVEC RETENUE) comme HX Edit, au lieu de `session_no : editor_double_lo : 0x64`
@@ -1418,39 +1409,7 @@ impl HelixState {
         )
     }
 
-    /// Instrumentation gel lectures (2026-08-08, gaté `HX_F0_TRACE`) : trace des OUT f0:03.
-    pub fn f0_trace_enabled() -> bool {
-        std::env::var_os("HX_F0_TRACE").is_some_and(|v| {
-            let s = v.to_string_lossy();
-            !s.is_empty() && s != "0" && !s.eq_ignore_ascii_case("false")
-        })
-    }
-
     pub fn send(&self, packet: OutPacket) {
-        // DIAG f0:03 pendant dump : le poll est censé être gaté OFF pendant une lecture
-        // (`preset_usb_read_in_progress`). Si un OUT f0:03 sort avec read_in_progress=true,
-        // il vient d'une source NON gatée (keep_alive/autre) → candidate au parasitage du dump.
-        if Self::f0_trace_enabled() && packet.data.get(4..8) == Some(&[0x02, 0x10, 0xf0, 0x03]) {
-            let rip = self.preset_usb_read_in_progress();
-            eprintln!(
-                "[F0Trace][send] sub={:#04x} read_in_progress={} editor_ready={}",
-                packet.data.get(11).copied().unwrap_or(0),
-                rip,
-                self.editor_ready,
-            );
-            // Backtrace des 8 premiers f0:03 émis PENDANT une lecture → nomme la source parasite.
-            if rip {
-                use std::sync::atomic::{AtomicU32, Ordering};
-                static BT_COUNT: AtomicU32 = AtomicU32::new(0);
-                if BT_COUNT.fetch_add(1, Ordering::Relaxed) < 8 {
-                    eprintln!(
-                        "[F0Trace][send][BACKTRACE f0 pendant lecture #{}]\n{}",
-                        BT_COUNT.load(Ordering::Relaxed),
-                        std::backtrace::Backtrace::force_capture()
-                    );
-                }
-            }
-        }
         init_trace::trace_out(&packet.data, "send");
         if let Some(tx) = &self.tx {
             let _ = tx.send(packet);
