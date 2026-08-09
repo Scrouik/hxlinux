@@ -113,6 +113,7 @@ fn send_preset_label(
     wire: PresetLabelWire,
     disabled_msg: &str,
     enabled: bool,
+    use_editor_lane: bool,
 ) -> Result<(), String> {
     if !enabled {
         return Err(disabled_msg.to_string());
@@ -125,9 +126,16 @@ fn send_preset_label(
         return Err("nom preset vide".to_string());
     }
 
-    let ctr = state.live_write_ctr;
-    let lane_lo = (ctr & 0xff) as u8;
-    let lane_hi = ((ctr >> 8) & 0xff) as u8;
+    // Fix save→lecture (2026-08-09) : le SAVE voyage sur la lane EDITOR (continue les lectures) ;
+    // le rename PRESET reste sur `live_write_ctr` (inchangé). Voir `save_lane_editor_enabled`.
+    let on_editor = use_editor_lane && save_lane_editor_enabled();
+    let (lane_lo, lane_hi) = if on_editor {
+        let lane = state.editor_ed03_lane_bytes();
+        (lane[0], lane[1])
+    } else {
+        let ctr = state.live_write_ctr;
+        ((ctr & 0xff) as u8, ((ctr >> 8) & 0xff) as u8)
+    };
     let cnt = state.next_x80_cnt();
     let double = state.next_editor_ed03_double();
 
@@ -142,13 +150,29 @@ fn send_preset_label(
     );
     // DIAG chantier C : octets du paquet label (save ET rename preset) — cd/lane/double.
     eprintln!(
-        "[PresetLabel][sent] term={:#04x} cd={:#04x} lane(b12_13)={:02x}:{:02x} double(b28_29)={:02x}:{:02x} cnt={:02x}",
+        "[PresetLabel][sent] term={:#04x} cd={:#04x} lane(b12_13)={:02x}:{:02x} double(b28_29)={:02x}:{:02x} cnt={:02x} editor_lane={on_editor}",
         data.get(30).copied().unwrap_or(0), data.get(27).copied().unwrap_or(0),
         lane_lo, lane_hi, double[0], double[1], cnt
     );
     state.send(OutPacket::new(data));
-    state.live_write_ctr = state.live_write_ctr.wrapping_add(LABEL_LANE_LO_DELTA);
+    // Avancer la lane utilisée (émettre-puis-avancer) pour que l'opération suivante continue.
+    if on_editor {
+        state.advance_editor_ed03_lane_lo(HelixState::EDITOR_ED03_LANE_CMD_DELTA);
+    } else {
+        state.live_write_ctr = state.live_write_ctr.wrapping_add(LABEL_LANE_LO_DELTA);
+    }
     Ok(())
+}
+
+/// Fix save→lecture (2026-08-09) : le SAVE (commit `0x47`) doit voyager sur la lane EDITOR (celle des
+/// lectures), pas sur `live_write_ctr`. Prouvé capture `snap_save_triplet_linux` : notre save est
+/// byte-identique à HX Edit SAUF la lane (nous b13=0x6d live_write ; HX b13 continue les reads) → le
+/// device IGNORE notre save (0 réponse) et désync le canal. Défaut ON ; `HX_SAVE_LANE_EDITOR=0` restaure.
+pub fn save_lane_editor_enabled() -> bool {
+    match std::env::var("HX_SAVE_LANE_EDITOR").as_deref() {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+        Err(_) => true,
+    }
 }
 
 /// Témoin `HX_PRESET_RENAME_HW` (défaut ON) : rename preset sur le HX. `=0` désactive l’envoi.
@@ -176,6 +200,7 @@ pub fn send_preset_rename(state: &mut HelixState, preset_index: usize, name: &st
         RENAME_WIRE,
         "rename preset HX désactivé (HX_PRESET_RENAME_HW=0)",
         preset_rename_hw_enabled(),
+        false, // rename preset : lane inchangée (live_write_ctr)
     )
 }
 
@@ -197,6 +222,7 @@ pub fn send_preset_save(state: &mut HelixState, preset_index: usize, name: &str)
         SAVE_WIRE,
         "sauvegarde preset HX désactivée (HX_PRESET_SAVE_HW=0)",
         preset_save_hw_enabled(),
+        true, // SAVE : lane EDITOR (continue les lectures) — fix save→lecture
     )
 }
 

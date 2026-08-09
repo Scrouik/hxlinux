@@ -63,6 +63,21 @@ fn dd_dump_auto_guard_enabled() -> bool {
     }
 }
 
+/// Fix save→lecture (2026-08-09) : charger un preset par le TRIPLET HX Edit
+/// `0x14 SELECT(idx) → 0x17 read-name → 0x16 read?` (au lieu de sauter le SELECT).
+/// Prouvé sur `Save/select_presets.json` (25/25/25) : le device TOLÈRE l'absence du SELECT
+/// en lecture normale mais l'EXIGE après un commit (save) → sinon lane muette (0 dump).
+/// `HX_PRESET_SELECT_TRIPLET=0` → ancien comportement (phase1 `0x17` directe, sans SELECT).
+fn preset_select_triplet_enabled() -> bool {
+    match std::env::var("HX_PRESET_SELECT_TRIPLET").as_deref() {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
 pub struct RequestPreset {
     preset_data:             Vec<u8>,
     /// true = Phase 1 envoyée, en attente de la réponse 68 octets
@@ -80,6 +95,12 @@ pub struct RequestPreset {
     dump_end_pending: bool,
     /// Nombre de chunks de dump AUTO drainés pendant Phase 1 (debug / diagnostic).
     drained_auto_chunks_in_phase1: u32,
+    /// true = commande SELECT (`0x14`) envoyée, en attente de sa réponse avant d'envoyer Phase 1.
+    /// Fix save→lecture (2026-08-09) : HX Edit charge un preset par le TRIPLET
+    /// `0x14 SELECT(idx) → 0x17 read-name → 0x16 read?`. On saute historiquement le SELECT ;
+    /// le device le TOLÈRE en lecture normale mais l'EXIGE après un commit (save). Gaté
+    /// `HX_PRESET_SELECT_TRIPLET` (défaut ON). Voir `send_select`.
+    awaiting_select_response: bool,
 }
 
 impl RequestPreset {
@@ -94,6 +115,7 @@ impl RequestPreset {
             saw_full_272_chunk: false,
             dump_end_pending: false,
             drained_auto_chunks_in_phase1: 0,
+            awaiting_select_response: false,
         }
     }
 
@@ -162,6 +184,101 @@ impl RequestPreset {
                 }
             });
         }
+    }
+
+    /// Envoie la commande SELECT (`0x14`, sub=0x04) portant l'index du preset — 1re commande du
+    /// triplet HX Edit (`Save/select_presets.json`). Arme `awaiting_select_response` : la réponse
+    /// sera acquittée dans `data_in`, puis `send_phase1` (read-name) sera appelé. Le double vient de
+    /// `preset_read_ctr16` (SELECT=X → Phase1=X+1 → Phase2=X+2, monotone comme HX Edit).
+    fn send_select(&mut self, state: &mut HelixState) {
+        self.awaiting_select_response = true;
+        let cnt = state.next_x80_cnt();
+        let preset_idx = (state.preset_index & 0xff) as u8;
+        // Lane éditeur : émettre la valeur courante puis avancer (comme les autres commandes ed:03).
+        let lane = state.advance_editor_ed03_lane_lo(HelixState::EDITOR_ED03_LANE_CMD_DELTA);
+        let (b12, b13, b14) = (lane[0], lane[1], state.editor_ed03_lane_b14);
+        let (b27_cd, b28_lo) = if HelixState::preset_cd_unified() {
+            let c = state.next_preset_read_ctr16();
+            (c[0], c[1])
+        } else {
+            (state.ed03_cmd_type, state.request_preset_session_id)
+        };
+        // Byte-exact d'après `select_presets.json` #1364 : sub=0x04, byte20=0x0d, term=0x14,
+        // payload `82 6b 00 6c <preset_idx> 00 00 00`.
+        let pkt = OutPacket::new(vec![
+            0x1d, 0x00, 0x00, 0x18,
+            0x80, 0x10, 0xed, 0x03,
+            0x00, cnt,  0x00, 0x04,
+            b12, b13, b14, 0x00,
+            0x01, 0x00, 0x06, 0x00,
+            0x0d, 0x00, 0x00, 0x00,
+            0x83, 0x66, 0xcd, b27_cd,
+            b28_lo, 0x64, 0x14, 0x65,
+            0x82, 0x6b, 0x00, 0x6c,
+            preset_idx, 0x00, 0x00, 0x00,
+        ]);
+        eprintln!(
+            "[ReadReq][select] preset_idx={preset_idx:#04x} cd(b27)={b27_cd:#04x} b28(lo)={b28_lo:#04x} lane={b12:02x}:{b13:02x}:{b14:02x}"
+        );
+        state.send(pkt);
+        self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only, state.preset_read_generation, WATCHDOG_MS);
+    }
+
+    /// Envoie la Phase 1 (`0x17` read-name, sub=0x04) et arme l'attente de sa réponse.
+    /// Appelée soit directement (triplet désactivé), soit après l'ACK de la réponse SELECT.
+    fn send_phase1(&mut self, state: &mut HelixState) {
+        self.waiting_phase1_response = true;
+        let cnt      = state.next_x80_cnt();
+        let sess_id1 = state.request_preset_session_id;
+        let cmd_type = state.ed03_cmd_type;
+        // `HX_READ_LANE_LIVEWRITE=0` → ancien comportement (session_no + editor_double).
+        let use_livewrite_lane = !matches!(
+            std::env::var("HX_READ_LANE_LIVEWRITE").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        );
+        let (b12, b13, b14): (u8, u8, u8) = if HelixState::req_lane_chunkctr() {
+            // Fix gel : b12=position, b13:b14 = compteur de chunks global (editor_ed03_lane).
+            let lane = state.editor_ed03_lane_bytes();
+            (lane[0], lane[1], state.editor_ed03_lane_b14)
+        } else if use_livewrite_lane {
+            let ctr = state.live_write_ctr;
+            ((ctr & 0xff) as u8, ((ctr >> 8) & 0xff) as u8, 0x00)
+        } else {
+            let d = state.editor_ed03_double_val();
+            (state.session_no, d[0], d[1])
+        };
+
+        // Avancer sess_id de 1 pour que Phase 2 utilise sess_id1 + 1.
+        state.request_preset_session_id = state.request_preset_session_id.wrapping_add(1);
+
+        // Octets 27-28 = compteur unifié `cd:double` façon HX (gel-fix, `HX_PRESET_CD_UNIFIED`).
+        let (b27_cd, b28_lo) = if HelixState::preset_cd_unified() {
+            let c = state.next_preset_read_ctr16();
+            (c[0], c[1])
+        } else {
+            (cmd_type, sess_id1)
+        };
+        // Phase 1 : sub=0x04, byte30=0x17 — demande du nom du preset
+        let pkt = OutPacket::new(vec![
+            0x19, 0x00, 0x00, 0x18,
+            0x80, 0x10, 0xed, 0x03,
+            0x00, cnt,  0x00, 0x04,
+            b12, b13, b14, 0x00,
+            0x01, 0x00, 0x06, 0x00,
+            0x09, 0x00, 0x00, 0x00,
+            0x83, 0x66, 0xcd, b27_cd,
+            b28_lo, 0x64, 0x17, 0x65,
+            0xc0, 0x00, 0x00, 0x00,
+        ]);
+        eprintln!(
+            "[ReadReq][phase1] cd(b27)={b27_cd:#04x} b28(lo)={b28_lo:#04x} b12_13(lane)={b12:02x}:{b13:02x} b14={b14:02x} cd_unified={} (cmd_type={cmd_type:#04x} sess_id1={sess_id1:#04x}) livewrite_lane={use_livewrite_lane}",
+            HelixState::preset_cd_unified()
+        );
+        state.send(pkt);
+        if use_livewrite_lane {
+            state.live_write_ctr = state.live_write_ctr.wrapping_add(0x11);
+        }
+        self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only, state.preset_read_generation, WATCHDOG_MS);
     }
 
     /// Envoie Phase 2 (sub=0x0c, byte30=0x16) après réception de la réponse Phase 1.
@@ -237,7 +354,8 @@ impl Mode for RequestPreset {
 
     fn start(&mut self, state: &mut HelixState) {
         self.preset_data.clear();
-        self.waiting_phase1_response = true;
+        self.waiting_phase1_response = false;
+        self.awaiting_select_response = false;
         self.watchdog_cancel_tx = None;
         self.await_dump_end_after_full_chunk = false;
         self.saw_full_272_chunk = false;
@@ -245,34 +363,6 @@ impl Mode for RequestPreset {
         self.drained_auto_chunks_in_phase1 = 0;
         self.mode_tx = state.mode_tx.clone();
 
-        let cnt      = state.next_x80_cnt();
-        let sess_id1 = state.request_preset_session_id;
-        let cmd_type = state.ed03_cmd_type;
-        // C' (chantier unification lane ed:03) : la lane (b12-13) de la requête de lecture utilise
-        // désormais `live_write_ctr` — la MÊME lane monotone (+0x11) que les écritures (dont le SAVE).
-        // Ainsi la lecture post-save CONTINUE la lane du save (save = 0x6cdf → +0x11 = 0x6cf0), au lieu
-        // de `session_no`:`editor_double` (0xf57c) que le device rejette après un commit. Avancée +0x11
-        // comme une écriture (les lectures consécutives incrémentent, comme HX Edit). Flag de secours
-        // `HX_READ_LANE_LIVEWRITE=0` → ancien comportement (session_no + editor_double).
-        let use_livewrite_lane = !matches!(
-            std::env::var("HX_READ_LANE_LIVEWRITE").as_deref(),
-            Ok("0") | Ok("false") | Ok("off")
-        );
-        let (b12, b13, b14): (u8, u8, u8) = if HelixState::req_lane_chunkctr() {
-            // Fix gel : aligner la lane de requête sur HX — b12=position, b13:b14 = compteur de
-            // chunks global (editor_ed03_lane, AVEC RETENUE b14) au lieu de …:0x64 figé.
-            let lane = state.editor_ed03_lane_bytes();
-            (lane[0], lane[1], state.editor_ed03_lane_b14)
-        } else if use_livewrite_lane {
-            let ctr = state.live_write_ctr;
-            ((ctr & 0xff) as u8, ((ctr >> 8) & 0xff) as u8, 0x00)
-        } else {
-            let d = state.editor_ed03_double_val();
-            (state.session_no, d[0], d[1])
-        };
-
-        // Avancer sess_id de 1 pour que Phase 2 utilise sess_id1 + 1.
-        state.request_preset_session_id = state.request_preset_session_id.wrapping_add(1);
         // Preset rechargé : les wires Path 1 mémorisés ne correspondent plus au dump.
         state.path1_input_source_wire = None;
         state.path1_split_type_wire = None;
@@ -290,40 +380,15 @@ impl Mode for RequestPreset {
             state.preset_data_ready,
         );
 
-        // Fix gel lectures (2026-08-08) : octets 27-28 = compteur unifié `cd:double` façon HX
-        // (cd bumpé seulement au wrap de l'octet 28) au lieu de cmd_type(+1/lecture):sess_id.
-        // Gaté `HX_PRESET_CD_UNIFIED` (défaut ON ; =0 → ancien cmd_type:sess_id1).
-        let (b27_cd, b28_lo) = if HelixState::preset_cd_unified() {
-            let c = state.next_preset_read_ctr16();
-            (c[0], c[1])
+        // Fix save→lecture (2026-08-09) : HX Edit charge un preset par le TRIPLET
+        // `0x14 SELECT(idx) → 0x17 read-name → 0x16 read?`. On envoie d'abord le SELECT et on attend
+        // sa réponse (ACK dans data_in) AVANT la Phase 1. Sans le SELECT, le device reste muet après
+        // un commit (save). `HX_PRESET_SELECT_TRIPLET=0` → ancien comportement (Phase 1 directe).
+        if preset_select_triplet_enabled() {
+            self.send_select(state);
         } else {
-            (cmd_type, sess_id1)
-        };
-        // Phase 1 : sub=0x04, byte30=0x17 — demande du nom du preset
-        let pkt = OutPacket::new(vec![
-            0x19, 0x00, 0x00, 0x18,
-            0x80, 0x10, 0xed, 0x03,
-            0x00, cnt,  0x00, 0x04,
-            b12, b13, b14, 0x00,
-            0x01, 0x00, 0x06, 0x00,
-            0x09, 0x00, 0x00, 0x00,
-            0x83, 0x66, 0xcd, b27_cd,
-            b28_lo, 0x64, 0x17, 0x65,
-            0xc0, 0x00, 0x00, 0x00,
-        ]);
-        // DIAG : compteurs de la requête de lecture phase1 (cd:double unifié = octets 27-28 réels).
-        eprintln!(
-            "[ReadReq][phase1] cd(b27)={b27_cd:#04x} b28(lo)={b28_lo:#04x} b12_13(lane)={b12:02x}:{b13:02x} b14={b14:02x} cd_unified={} (cmd_type={cmd_type:#04x} sess_id1={sess_id1:#04x}) livewrite_lane={use_livewrite_lane}",
-            HelixState::preset_cd_unified()
-        );
-        state.send(pkt);
-        // Avancer la lane +0x11 (comme une écriture) si on utilise live_write_ctr, pour que les
-        // lectures consécutives incrémentent (cohérence session, comme HX Edit).
-        if use_livewrite_lane {
-            state.live_write_ctr = state.live_write_ctr.wrapping_add(0x11);
+            self.send_phase1(state);
         }
-
-        self.arm_watchdog(state.mode_tx.clone(), state.preset_content_only, state.preset_read_generation, WATCHDOG_MS);
     }
 
     fn data_in(&mut self, data: &[u8], state: &mut HelixState) -> bool {
@@ -444,6 +509,37 @@ impl Mode for RequestPreset {
                         self.preset_data.len()
                     );
                 }
+            }
+            return true;
+        }
+
+        // ── Handshake SELECT (0x14) : réponse → ACK → Phase 1 ───────────────────
+        // Fix save→lecture (2026-08-09) : le SELECT a été envoyé (`awaiting_select_response`). Sa
+        // réponse (ed03 sub=04, ≥36 o) doit être ACQUITTÉE (sub=08), puis on envoie la Phase 1
+        // (read-name). Les notifs LED (sub=04, 16 o) sont déjà traitées plus haut. Un chunk de dump
+        // AUTO éventuel est drainé sans être pris pour la réponse SELECT.
+        if self.awaiting_select_response {
+            if dd_dump_auto_guard_enabled()
+                && crate::helix::preset_dump_stream_ack::is_preset_dump_stream_chunk_in(data)
+            {
+                self.ack_dump_chunk_without_storing(state);
+                return true;
+            }
+            if sub == 0x04 && data.len() >= 36 {
+                let cnt = state.next_x80_cnt();
+                let lane = state.advance_editor_ed03_lane_lo(HelixState::EDITOR_ED03_LANE_CMD_DELTA);
+                state.send(OutPacket::new(vec![
+                    0x08, 0x00, 0x00, 0x18,
+                    0x80, 0x10, 0xed, 0x03,
+                    0x00, cnt, 0x00, 0x08,
+                    lane[0], lane[1], state.editor_ed03_lane_b14, 0x00,
+                ]));
+                eprintln!(
+                    "[ReadReq][select] réponse reçue ({} o) → ACK + Phase 1",
+                    data.len()
+                );
+                self.awaiting_select_response = false;
+                self.send_phase1(state);
             }
             return true;
         }

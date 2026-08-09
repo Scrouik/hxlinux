@@ -341,6 +341,10 @@ function isKeyboardSaveBlocked(e: KeyboardEvent): boolean {
   // ce champ, toujours présent dans le bandeau, était ignoré (régression du bandeau snapshot).
   if (t.id === "snapshot-name-input") return false;
   const tag = t.tagName;
+  // Les sliders de paramètres sont des `<input type="range">` : après un réglage de param, le focus
+  // reste dessus. Ce ne sont PAS des champs de saisie texte → ils NE doivent PAS bloquer Ctrl+S,
+  // sinon « modifier un param puis Ctrl+S » n'envoie jamais la sauvegarde (bug save param 2026-08-09).
+  if (tag === "INPUT" && (t as HTMLInputElement).type === "range") return false;
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable;
 }
 
