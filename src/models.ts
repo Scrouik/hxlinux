@@ -612,6 +612,94 @@ async function hydrateSlotDualPartsSessionFromPresetData(presetIndex: number): P
   emitModelsSyncTrace(`hydrateSlotDualPartsSession preset=${presetIndex} dualSlots=${filled}`);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PALIER 1 (assainissement affichage, 2026-08-10) — modèle d'état unique `CurrentPreset`.
+//
+// Objectif final : `CurrentPreset` = la SEULE vérité affichée, reconstruite du dump frais à
+// chaque chargement (et après un save), mise à jour en place par les édits live ; l'UI ne lit
+// QUE lui (fin des caches multiples : slotChainSessionByKey, liveChainParamOverridesByPresetSlot…).
+// Voir docs/carte_flux_affichage.md.
+//
+// Palier 1 = poser la fondation SANS RIEN CHANGER À L'ÉCRAN : on construit `currentPresetState`
+// en PARALLÈLE des caches actuels, LU PAR PERSONNE, et on VÉRIFIE par un log de comparaison
+// qu'il est fidèle à l'ancien cache. Revert = supprimer cette section + son appel.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Palier 1 : état d'un slot dans le modèle unique (valeurs de chaîne BRUTES du dump). */
+type CurrentPresetSlotState = {
+  kemplineIndex: number;
+  modelName: string;
+  chainValues: ChainParamValueJson[];
+};
+
+/** Palier 1 : modèle d'état unique du preset courant (reconstruit du dump). */
+type CurrentPresetState = {
+  index: number;
+  slots: CurrentPresetSlotState[];
+};
+
+/** Source de vérité d'affichage (cible). Palier 1 : peuplé mais LU PAR PERSONNE. */
+let currentPresetState: CurrentPresetState | null = null;
+
+/** Diag palier 1 : `localStorage.current_preset_diag=1` → logs `[CurrentPreset]`. Silencieux sinon. */
+function currentPresetDiagEnabled(): boolean {
+  try {
+    return localStorage.getItem("current_preset_diag") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Palier 1 : construit `CurrentPreset` depuis le dump frais, via les MÊMES commandes backend
+ * qu'aujourd'hui (`get_active_preset_slots` + `get_active_preset_slot_chain_param_values` par slot).
+ * Aucune nouvelle dépendance, aucun effet de bord d'affichage.
+ */
+async function buildCurrentPresetFromDump(index: number): Promise<CurrentPresetState> {
+  const slotsRaw = await invoke<[string, string][] | null>("get_active_preset_slots").catch(() => null);
+  const slots: CurrentPresetSlotState[] = [];
+  for (let ki = 0; ki < 16; ki += 1) {
+    const modelName = slotsRaw?.[ki]?.[0] ?? "<empty>";
+    const chainValues = (await readChainValuesFromPresetDataOnce(ki)) ?? [];
+    slots.push({ kemplineIndex: ki, modelName, chainValues });
+  }
+  return { index, slots };
+}
+
+/**
+ * Palier 1 : construit `currentPresetState` et VÉRIFIE sa fidélité vs l'ancien cache
+ * `slotChainSessionByKey` (slot par slot). Ne modifie RIEN de l'affichage. À appeler après
+ * l'hydratation (isopérimètre). Log gaté par `currentPresetDiagEnabled()`.
+ */
+async function refreshCurrentPresetAndCompare(index: number): Promise<void> {
+  if (index < 0) return;
+  const cp = await buildCurrentPresetFromDump(index);
+  currentPresetState = cp;
+  if (!currentPresetDiagEnabled()) return;
+  const emit = (msg: string) => {
+    console.info(msg);
+    void invoke("log_frontend_message", { message: msg }).catch(() => {});
+  };
+  let mismatches = 0;
+  for (const slot of cp.slots) {
+    const legacy =
+      slotChainSessionByKey.get(liveChainOverrideStorageKey(index, slot.kemplineIndex)) ?? [];
+    const a = JSON.stringify(slot.chainValues);
+    const b = JSON.stringify(legacy);
+    if (a !== b) {
+      mismatches += 1;
+      emit(
+        `[CurrentPreset][diff] preset=${index} slot=${slot.kemplineIndex} model=${slot.modelName} new=${a.slice(0, 90)} legacy=${b.slice(0, 90)}`,
+      );
+    }
+  }
+  // NB : on lit `currentPresetState` ici (au-delà du simple write) — palier 1 ; les vrais
+  // lecteurs (panneau/grille) arriveront aux paliers 2-3.
+  emit(
+    `[CurrentPreset][build] preset=${index} slots=${currentPresetState?.slots.length ?? 0} mismatches_vs_legacy=${mismatches}`,
+  );
+}
+
 function linkedCabHexFromSlot(slot: SlotDebug): string {
   return (slot.cabHexHint ?? "").trim() || cabHexFromAmpCabWire(slot.moduleHex) || "";
 }
@@ -14387,6 +14475,8 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
               await hydrateSlotChainSessionFromPresetData(index);
               await hydrateSlotDualPartsSessionFromPresetData(index);
               await hydrateFlowIoChainSessionFromPresetData(index);
+              // Palier 1 : construire + vérifier `CurrentPreset` (parallèle, lu par personne).
+              await refreshCurrentPresetAndCompare(index);
             } else {
               // Après hydratation, rafraîchir le panneau params si le preset est toujours actif.
               // Le panneau s'est ouvert avant l'hydratation (cache vide → valeurs par défaut).
@@ -14394,6 +14484,8 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
                 if (currentPresetIndex === index && selectedParamsKemplineSlotIndex !== null && lastHwSyncNormalizedSlots) {
                   scheduleSoftRefreshParamsPaneFromSlots(lastHwSyncNormalizedSlots);
                 }
+                // Palier 1 : construire + vérifier `CurrentPreset` après hydratation (parallèle, lu par personne).
+                void refreshCurrentPresetAndCompare(index);
               });
               void hydrateSlotDualPartsSessionFromPresetData(index);
               void hydrateFlowIoChainSessionFromPresetData(index);
