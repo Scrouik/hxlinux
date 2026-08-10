@@ -1319,27 +1319,59 @@ impl HelixState {
         self.editor_ed03_lane_b14 = 0x00;
     }
 
-    /// Aligne `preset_index` sur le nom lu par `RequestPresetName` (octet [24] seul est
-    /// souvent 0 — le nom est à [27..] et la liste est déjà dans `preset_names`).
-    pub fn resolve_preset_index_from_active_name(&mut self) {
+    /// Détermine l'index du preset ACTIF. L'IDENTITÉ d'un preset est son INDEX (slot 0-124), JAMAIS
+    /// son nom : le device autorise (et génère par défaut) des noms NON UNIQUES — tous les presets
+    /// vierges s'appellent « New Preset ». Résoudre l'index par le nom (1er match) intriquait donc
+    /// tous les homonymes sur le premier (bug 2026-08-10).
+    ///
+    /// `idx_from_packet` = octet index du paquet `RequestPresetName`, PEU FIABLE (souvent 0). On lui
+    /// préfère l'index déjà connu (`self.preset_index`, posé par le dump phase1 / `data[40]`).
+    /// Ordre de confiance : (1) l'index courant s'il est cohérent avec le nom actif ; (2) l'octet du
+    /// paquet s'il est cohérent avec le nom ; (3) DERNIER RECOURS, résolution par nom UNIQUEMENT si
+    /// le nom est unique dans le catalogue (sinon on ne touche à rien — impossible de disambiguer des
+    /// homonymes par le nom, le dump suivant fixera l'index).
+    pub fn reconcile_active_preset_index(&mut self, idx_from_packet: usize) {
+        let Some(name) = self.active_preset_name.clone() else {
+            return;
+        };
+        let name_at = |i: usize, names: &[String]| names.get(i).map(|n| n == &name).unwrap_or(false);
+
+        // (1) Index courant déjà cohérent avec le nom → il fait foi (cas normal après un dump).
+        if name_at(self.preset_index, &self.preset_names) {
+            self.active_preset_name_index = Some(self.preset_index);
+            return;
+        }
+        // (2) L'octet index du paquet est cohérent avec le nom → on l'adopte.
+        if name_at(idx_from_packet, &self.preset_names) {
+            self.preset_index = idx_from_packet;
+            self.active_preset_name_index = Some(idx_from_packet);
+            return;
+        }
+        // (3) Dernier recours : nom UNIQUE → on résout ; ambigu/absent → on ne touche à rien.
         const SLOT_COUNT: usize = 125;
         if !self.got_preset_names || self.preset_names.len() < SLOT_COUNT {
             return;
         }
-        let Some(ref name) = self.active_preset_name else {
-            return;
-        };
-        let Some(idx) = self.preset_names.iter().position(|n| n == name) else {
-            return;
-        };
-        if self.preset_index != idx {
-            eprintln!(
-                "[PresetDebug] preset_index {} → {} (nom actif '{}')",
-                self.preset_index, idx, name
-            );
+        let mut matches = self.preset_names.iter().enumerate().filter(|(_, n)| *n == &name);
+        if let Some((idx, _)) = matches.next() {
+            if matches.next().is_none() {
+                // Nom unique.
+                if self.preset_index != idx {
+                    eprintln!(
+                        "[PresetDebug] preset_index {} → {} (nom actif unique '{}')",
+                        self.preset_index, idx, name
+                    );
+                }
+                self.preset_index = idx;
+                self.active_preset_name_index = Some(idx);
+            } else {
+                // Nom AMBIGU (homonymes) : on NE remappe PAS — l'index courant/dump reste la vérité.
+                eprintln!(
+                    "[PresetDebug] nom actif '{}' ambigu (homonymes) → index {} conservé (pas de remap)",
+                    name, self.preset_index
+                );
+            }
         }
-        self.preset_index = idx;
-        self.active_preset_name_index = Some(idx);
     }
 
     /// Envoie un paquet USB vers le HX

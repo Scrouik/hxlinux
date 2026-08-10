@@ -532,6 +532,15 @@ fn rename_preset(
     }
 
     helix::preset_label::send_preset_rename(&mut s, index, &effective_name)?;
+    // Mettre à jour le catalogue backend IMMÉDIATEMENT (2026-08-11) : sinon l'ancien nom reste au slot
+    // `index` jusqu'au prochain reboot → le nouveau nom paraît UNIQUE → `reconcile_active_preset_index`
+    // le résout à tort vers l'autre preset homonyme, ET `reject_garbage_phase1` rejette le dump de ce
+    // preset (nom décodé ≠ catalogue périmé). C'est le résidu d'intrication post-rename en session
+    // (disparaissait au restart car RequestPresetNames rechargeait les vrais noms). Le catalogue helix
+    // fait foi ; la sync helix→AppState propagera.
+    if index < s.preset_names.len() {
+        s.preset_names[index] = effective_name.clone();
+    }
     s.pending_rename_name_verify = true;
     s.switch_mode(ModeRequest::RequestPresetName);
 
@@ -857,6 +866,16 @@ fn probe_hardware_slot_focus_usb(
 /// collecte des IN `0x81` sur une fenêtre courte (remplie par `usb_listener`).
 /// Ne modifie pas `preset_data` : sert à valider le trafic ; l’UI continue d’utiliser le dump preset
 /// au chargement + merge RAM sur changement de slot.
+/// Expérience freeze save-snapshot (2026-08-10) : la sonde focus-slot `0x4e` (ed:03, cd=04) qu'HX Edit
+/// n'émet JAMAIS pollue le canal ed:03 (transaction supplémentaire non close ?). `HX_SLOT_FOCUS_ED03=0`
+/// inhibe son envoi pour tester si le freeze au save d'un preset à snapshot disparaît. Défaut ON.
+fn slot_focus_ed03_enabled() -> bool {
+    match std::env::var("HX_SLOT_FOCUS_ED03").as_deref() {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+        Err(_) => true,
+    }
+}
+
 #[tauri::command]
 fn sync_hardware_slot_focus_usb(
     app: tauri::AppHandle,
@@ -912,9 +931,18 @@ fn sync_hardware_slot_focus_usb(
             .collect::<Vec<_>>()
             .join(" ");
         s.usb_slot_focus_capture.clear();
-        s.usb_slot_focus_capture_deadline =
-            Some(std::time::Instant::now() + Duration::from_millis(CAPTURE_MS));
-        s.send(OutPacket::new(packet));
+        // EXPÉRIENCE freeze save-snapshot (2026-08-10) : HX Edit n'émet JAMAIS ce focus-slot `0x4e`
+        // sur ed:03 (0 paquet dans hxedit_full_save_session). Notre sonde ajoute une transaction ed:03
+        // (cd=04) qui pourrait saturer le quota de transactions non closes (~19-21, cf trailer-ACK) →
+        // le save d'un preset à snapshot (commit strict) rejette → freeze. `HX_SLOT_FOCUS_ED03=0`
+        // inhibe l'envoi de la sonde pour tester l'hypothèse (ne touche PAS au trailer-ACK des dumps).
+        if slot_focus_ed03_enabled() {
+            s.usb_slot_focus_capture_deadline =
+                Some(std::time::Instant::now() + Duration::from_millis(CAPTURE_MS));
+            s.send(OutPacket::new(packet));
+        } else {
+            eprintln!("[FocusUSB] INHIBÉ (HX_SLOT_FOCUS_ED03=0) — focus 0x4e ed:03 NON envoyé");
+        }
         out_hex
     };
 

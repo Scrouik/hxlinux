@@ -114,16 +114,19 @@ impl Mode for RequestPresetName {
                 );
                 if state.pending_rename_name_verify {
                     if let Some((idx, decoded)) = wire_name {
-                        state.preset_index = idx;
+                        // NE PAS écraser preset_index par l'octet [24] (peu fiable). On réconcilie
+                        // l'index actif proprement (l'index déjà connu fait foi ; le nom n'est qu'un
+                        // dernier recours si unique), puis on rafraîchit le nom au BON index.
                         state.active_preset_name = Some(decoded.clone());
-                        state.resolve_preset_index_from_active_name();
+                        state.reconcile_active_preset_index(idx);
+                        let active = state.preset_index;
                         crate::helix::preset_name_wire::log_wire_preset(
                             "rename-verify",
-                            idx,
+                            active,
                             Some(&decoded),
                         );
-                        if idx < state.preset_names.len() {
-                            state.preset_names[idx] = decoded;
+                        if active < state.preset_names.len() {
+                            state.preset_names[active] = decoded;
                         }
                     } else {
                         eprintln!(
@@ -138,9 +141,9 @@ impl Mode for RequestPresetName {
                     return false;
                 }
                 if let Some((idx, decoded)) = wire_name {
-                    state.preset_index = idx;
+                    // Idem : l'index déjà connu fait foi ; pas de remap par nom homonyme.
                     state.active_preset_name = Some(decoded.clone());
-                    state.resolve_preset_index_from_active_name();
+                    state.reconcile_active_preset_index(idx);
                     crate::helix::preset_name_wire::log_wire_preset(
                         "RequestPresetName",
                         state.preset_index,

@@ -51,8 +51,10 @@ fn build_preset_label_packet(
     lane_lo: u8,
     lane_hi: u8,
     cnt: u8,
+    cd: u8,
     double: [u8; 2],
     wire: PresetLabelWire,
+    align_to_4: bool,
 ) -> Vec<u8> {
     let msg_size_byte = 0x20u8.wrapping_add(text.len() as u8);
     let second_length_byte = msg_size_byte.wrapping_sub(0x10);
@@ -86,7 +88,7 @@ fn build_preset_label_packet(
         0x83,
         0x66,
         0xcd,
-        wire.cd,
+        cd,
         double[0],
         double[1],
         wire.suffix[0],
@@ -100,7 +102,17 @@ fn build_preset_label_packet(
         length_tag,
     ];
     data.extend_from_slice(text);
-    while data.len() < (msg_size_byte as usize) + 10 {
+    // Fix freeze SAVE (2026-08-10) : HX Edit rembourre le paquet à un MULTIPLE DE 4 octets (alignement
+    // bulk), avec au moins 1 nul de terminaison après le nom. Prouvé sur 11 captures HX (nom 6→48,
+    // 10→52, 11→52, 13→56, 14→56 o ; TOUS ≡ 0 mod 4). Notre ancien `msg_size_byte + 10` donnait 55 o
+    // (≡ 3 mod 4) pour un nom de 13 car → paquet MAL ALIGNÉ → le device REJETTE le save (freeze),
+    // alors qu'un nom de 14 car (56 o, aligné) passait. Racine confirmée device (test user 14 vs 13 car).
+    let target = if align_to_4 {
+        ((msg_size_byte as usize) + 8 + 3) & !3usize // round_up_4(msg_size + 8)
+    } else {
+        (msg_size_byte as usize) + 10 // ancien comportement (rename, ou flag off)
+    };
+    while data.len() < target {
         data.push(0x00);
     }
     data
@@ -137,16 +149,35 @@ fn send_preset_label(
         ((ctr & 0xff) as u8, ((ctr >> 8) & 0xff) as u8)
     };
     let cnt = state.next_x80_cnt();
-    let double = state.next_editor_ed03_double();
+    // Fix freeze save-snapshot (2026-08-10) : HX Edit utilise UN SEUL double ed:03 monotone pour
+    // TOUTES les ops (…read? f3 → SAVE f4 → read f5…). Notre save partait sur `editor_ed03_double`,
+    // un compteur SÉPARÉ des lectures (`preset_read_ctr16`) → double hors séquence → le device rejette
+    // le save d'un preset à snapshot et gèle le canal ed:03. Prouvé captures `hxedit_full_save_session`
+    // + `save_with_snap`. Le SAVE prend donc `cd` ET le double lo depuis `preset_read_ctr16` (comme une
+    // lecture) → save = dernière lecture +1, et la lecture suivante continue save+1 naturellement.
+    // Le hi du double reste 0x64 (page éditeur), comme les lectures. Gaté `HX_SAVE_READ_CTR_DOUBLE`
+    // (défaut ON) ; ne touche QUE le SAVE (use_editor_lane) — le rename garde `editor_ed03_double`.
+    let (cd, double) = if use_editor_lane && save_read_ctr_double_enabled() {
+        let [read_cd, read_lo] = state.next_preset_read_ctr16();
+        (read_cd, [read_lo, 0x64])
+    } else {
+        (wire.cd, state.next_editor_ed03_double())
+    };
 
+    // Alignement mult-de-4 : le device exige que TOUTE commande ed:03 label (SAVE *et* RENAME preset)
+    // soit rembourrée à un multiple de 4 octets, sinon il gèle (validé device : save OK avec l'align,
+    // rename gelait sans). Gaté `HX_SAVE_PAD_ALIGN4` (défaut ON).
+    let align_to_4 = save_pad_align4_enabled();
     let data = build_preset_label_packet(
         preset_index as u8,
         &text,
         lane_lo,
         lane_hi,
         cnt,
+        cd,
         double,
         wire,
+        align_to_4,
     );
     // DIAG chantier C : octets du paquet label (save ET rename preset) — cd/lane/double.
     eprintln!(
@@ -170,6 +201,28 @@ fn send_preset_label(
 /// device IGNORE notre save (0 réponse) et désync le canal. Défaut ON ; `HX_SAVE_LANE_EDITOR=0` restaure.
 pub fn save_lane_editor_enabled() -> bool {
     match std::env::var("HX_SAVE_LANE_EDITOR").as_deref() {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+        Err(_) => true,
+    }
+}
+
+/// Fix freeze save-snapshot (2026-08-10) : le SAVE prend son `cd`+double sur le compteur des lectures
+/// (`preset_read_ctr16`) au lieu de `editor_ed03_double`, pour que le double ed:03 reste UN monotone
+/// unique (…read? → SAVE → read…) comme HX Edit. Défaut ON ; `HX_SAVE_READ_CTR_DOUBLE=0` restaure
+/// l'ancien double `editor_ed03_double`.
+pub fn save_read_ctr_double_enabled() -> bool {
+    match std::env::var("HX_SAVE_READ_CTR_DOUBLE").as_deref() {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+        Err(_) => true,
+    }
+}
+
+/// Fix freeze SAVE (2026-08-10, RACINE VRAIE confirmée device) : le paquet SAVE doit être rembourré à
+/// un MULTIPLE DE 4 octets (comme HX Edit, prouvé sur 11 captures). Sans ça, un nom de longueur donnant
+/// un paquet non-aligné (ex. 13 car → 55 o) est REJETÉ par le device → gel des lectures. Défaut ON ;
+/// `HX_SAVE_PAD_ALIGN4=0` restaure l'ancien padding `msg_size+10`.
+pub fn save_pad_align4_enabled() -> bool {
+    match std::env::var("HX_SAVE_PAD_ALIGN4").as_deref() {
         Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
         Err(_) => true,
     }
@@ -292,7 +345,15 @@ fn build_snapshot_label_packet(
         length_tag,
     ];
     data.extend_from_slice(text);
-    while data.len() < (msg_size_byte as usize) + 9 {
+    // Même alignement mult-4 que le save/rename preset (device exige un paquet ed:03 label ≡ 0 mod 4).
+    // En-tête 2 o plus court → `msg_size_byte` décalé de 2, mais `round_up_4(msg_size + 8)` reste la
+    // bonne cible (= round_up_4(header + len + 1)). Gaté `HX_SAVE_PAD_ALIGN4` (défaut ON).
+    let target = if save_pad_align4_enabled() {
+        ((msg_size_byte as usize) + 8 + 3) & !3usize
+    } else {
+        (msg_size_byte as usize) + 9
+    };
+    while data.len() < target {
         data.push(0x00);
     }
     data
@@ -359,7 +420,7 @@ mod tests {
     #[test]
     fn save_body_matches_capture_layout() {
         let text = b"Rename".to_vec();
-        let data = build_preset_label_packet(0x0d, &text, 0x05, 0x52, 0xb6, [0x1b, 0x64], SAVE_WIRE);
+        let data = build_preset_label_packet(0x0d, &text, 0x05, 0x52, 0xb6, SAVE_WIRE.cd, [0x1b, 0x64], SAVE_WIRE, true);
         let cap = bytes_from_hex_colon(SAVE_CAPTURE);
         assert_eq!(data.len(), cap.len());
         for (i, (&a, &b)) in data.iter().zip(cap.iter()).enumerate() {
@@ -378,7 +439,7 @@ mod tests {
     #[test]
     fn save_matches_capture_cd03_session() {
         let text = b"Active Snap 1".to_vec();
-        let data = build_preset_label_packet(0x19, &text, 0x34, 0x3f, 0xc1, [0xfc, 0x64], SAVE_WIRE);
+        let data = build_preset_label_packet(0x19, &text, 0x34, 0x3f, 0xc1, SAVE_WIRE.cd, [0xfc, 0x64], SAVE_WIRE, true);
         let cd_idx = data.windows(3).position(|w| w == [0x83, 0x66, 0xcd]).unwrap();
         assert_eq!(data[cd_idx + 3], 0x03, "cd session (pas 0x04)");
         assert_eq!(data[cd_idx + 4], 0xfc, "double[0]");
@@ -390,10 +451,30 @@ mod tests {
         assert!(data.windows(text.len()).any(|w| w == text.as_slice()));
     }
 
+    /// Fix freeze SAVE : le paquet SAVE doit être aligné sur 4 octets, comme HX Edit. Longueurs
+    /// prouvées sur 11 captures HX (nom → total) : 6→48, 10→52, 11→52, 13→56, 14→56. L'ancien padding
+    /// donnait 55 o pour un nom de 13 car (≡ 3 mod 4) → rejeté par le device (freeze).
+    #[test]
+    fn save_packet_padded_to_multiple_of_4_like_hxedit() {
+        for (name, expected) in [
+            (&b"Rename"[..], 48usize),
+            (b"Snap-Drive", 52),
+            (b"Snap_change", 52),
+            (b"Active Snap 1", 56),
+            (b"SVT3Pro Willis", 56),
+        ] {
+            let data = build_preset_label_packet(
+                0x00, name, 0x00, 0x00, 0x00, SAVE_WIRE.cd, [0x00, 0x64], SAVE_WIRE, true,
+            );
+            assert_eq!(data.len(), expected, "nom {:?} ({} car)", std::str::from_utf8(name).unwrap(), name.len());
+            assert_eq!(data.len() % 4, 0, "aligné mult-4 pour {:?}", std::str::from_utf8(name).unwrap());
+        }
+    }
+
     #[test]
     fn rename_uses_cd03_cmd02_suffix_0665() {
         let text = b"New Name".to_vec();
-        let data = build_preset_label_packet(0x20, &text, 0x05, 0x52, 0xb6, [0xed, 0x64], RENAME_WIRE);
+        let data = build_preset_label_packet(0x20, &text, 0x05, 0x52, 0xb6, RENAME_WIRE.cd, [0xed, 0x64], RENAME_WIRE, false);
         assert_eq!(&data[4..8], &[0x80, 0x10, 0xed, 0x03]);
         assert_eq!(data[18], 0x02);
         let cd_idx = data
