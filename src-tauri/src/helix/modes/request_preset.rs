@@ -614,14 +614,19 @@ impl Mode for RequestPreset {
                         // `data[16..]`), PAS dans `preset_data` (content_only = contenu seul, sans
                         // en-tête). On le décode donc ici, au même endroit que le nom, et on le stocke.
                         if data.len() > 16 {
-                            if let Some(active_snap) =
+                            // FIX bug report snapshot (2026-08-10) : `active_snapshot_index` renvoie
+                            // None quand l'en-tête n'a pas de clé `0x5c` décodable (preset sans
+                            // snapshot différencié). AVANT, le `if let Some` ne mettait alors PAS à
+                            // jour l'état → on GARDAIT le snapshot du preset précédent (report visible
+                            // à l'UI). On retombe désormais sur 0 (Snapshot 1 = défaut device) pour
+                            // que chaque preset reparte de son snapshot réel, jamais de l'ancien.
+                            let active_snap =
                                 crate::snapshot_param_values::active_snapshot_index(&data[16..])
-                            {
-                                state.active_snapshot_index = active_snap;
-                                crate::helix::init_trace::trace_fmt(format_args!(
-                                    "[SnapshotActive][phase1] preset={idx} active_snapshot={active_snap}"
-                                ));
-                            }
+                                    .unwrap_or(0);
+                            state.active_snapshot_index = active_snap;
+                            crate::helix::init_trace::trace_fmt(format_args!(
+                                "[SnapshotActive][phase1] preset={idx} active_snapshot={active_snap}"
+                            ));
                         }
                     } else {
                         let reason = if (idx as usize) >= PRESET_COUNT {
