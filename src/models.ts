@@ -651,6 +651,19 @@ function currentPresetDiagEnabled(): boolean {
 }
 
 /**
+ * Palier 2a : le panneau params lit sa base depuis `CurrentPreset` (source unique) plutôt que
+ * `slotChainSessionByKey`. Défaut ON (palier 1 a prouvé leur égalité). `localStorage.
+ * panel_from_current_preset=0` → ancien comportement (revert instantané).
+ */
+function panelFromCurrentPresetEnabled(): boolean {
+  try {
+    return localStorage.getItem("panel_from_current_preset") !== "0";
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Palier 1 : construit `CurrentPreset` depuis le dump frais, via les MÊMES commandes backend
  * qu'aujourd'hui (`get_active_preset_slots` + `get_active_preset_slot_chain_param_values` par slot).
  * Aucune nouvelle dépendance, aucun effet de bord d'affichage.
@@ -1047,7 +1060,17 @@ async function resolveChainValuesForKemplineSlot(
   if (params.length === 0) return null;
 
   const sessionKey = liveChainOverrideStorageKey(currentPresetIndex, kemplineSlotIndex);
-  let base = slotChainSessionByKey.get(sessionKey) ?? null;
+  // Palier 2a : base lue depuis CurrentPreset (source unique) s'il correspond au preset courant ;
+  // sinon fallback EXACT à l'ancien cache puis aux défauts catalogue (strictement neutre — palier 1
+  // a prouvé l'égalité CurrentPreset == slotChainSessionByKey). Revert : panel_from_current_preset=0.
+  let base: ChainParamValueJson[] | null = null;
+  if (panelFromCurrentPresetEnabled() && currentPresetState?.index === currentPresetIndex) {
+    const fromCp = currentPresetState.slots[kemplineSlotIndex]?.chainValues ?? null;
+    if (fromCp && fromCp.length > 0) base = fromCp;
+  }
+  if (!base || base.length === 0) {
+    base = slotChainSessionByKey.get(sessionKey) ?? null;
+  }
   if (!base || base.length === 0) {
     base = buildDefaultChainValuesForSourceOrder(params, catalogRoutingSignal);
   }

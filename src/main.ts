@@ -488,6 +488,43 @@ async function exportPresetHlx(index: number) {
 
 // ─── Save to disk ─────────────────────────────────────────────────────────────
 
+const delayMs = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
+
+/**
+ * Séquence de sauvegarde FIDÈLE à HX Edit activée par défaut (`localStorage.save_faithful !== "0"`).
+ * Preuve capture `save_preset_snap_freeze.json` : un `0x47 SAVE` envoyé « à froid » (sans lecture
+ * ed:03 juste avant) est IGNORÉ par le device sur un preset à snapshots → le canal ed:03 gèle
+ * (lectures suivantes muettes). HX Edit précède TOUJOURS le save de `0x58 activate(snapshot actif)`
+ * → `reread` (request_preset_content) sur une lane continue, et le device répond alors au save.
+ * On réplique ça avant le `0x47` pour que le save continue une transaction de lecture fraîche.
+ */
+function isFaithfulSaveEnabled(): boolean {
+  // DÉSACTIVÉ par défaut (2026-08-10). La capture `hxedit_full_save_session` prouve que l'approche
+  // « activate→reread→save via 3 invokes » n'est PAS le levier : HX Edit sauvegarde un preset à
+  // snapshot SANS 0x58 ni 0x18, juste `SELECT→readname→read?→SAVE` sur UN SEUL double ed:03 monotone
+  // (…→f3 read? → f4 SAVE → f5…). Le vrai fix est backend (unifier le compteur double du save sur
+  // celui des lectures). On revient à une base propre ; opt-in de test avec `localStorage.save_faithful=1`.
+  try {
+    return localStorage.getItem("save_faithful") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Attend le dump frais après un `request_preset_content` (poll `get_active_preset_slots`). */
+async function waitForFreshDump(): Promise<void> {
+  await delayMs(120);
+  for (let tries = 0; tries < 30; tries += 1) {
+    try {
+      const slots = await invoke<[string, string][] | null>("get_active_preset_slots");
+      if (slots && slots.length > 0) return;
+    } catch {
+      // transitoire — on retente
+    }
+    await delayMs(120);
+  }
+}
+
 async function savePreset(index: number) {
   hideContextMenu();
   if (!canSavePreset(index)) {
@@ -502,6 +539,15 @@ async function savePreset(index: number) {
     return;
   }
   try {
+    if (isFaithfulSaveEnabled()) {
+      // FIDÈLE HX Edit : activate(snapshot actif) → reread → save. Réchauffe la transaction ed:03
+      // pour que le device accepte le `0x47` (sinon freeze sur preset à snapshots).
+      barHint.textContent = "Sauvegarde…";
+      const snap = await invoke<number>("get_active_preset_active_snapshot");
+      await invoke("activate_snapshot", { snapshotIndex: snap });
+      await invoke("request_preset_content", { forceImmediate: true });
+      await waitForFreshDump();
+    }
     await invoke("save_preset_to_hardware", { index });
     await emit("models:preset-saved", { index });
     barHint.textContent = `✓  Preset ${padNum(index)} enregistré sur le HX`;
