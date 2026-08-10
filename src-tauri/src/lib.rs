@@ -2929,6 +2929,14 @@ fn get_active_preset_active_snapshot(state: tauri::State<Arc<Mutex<AppState>>>) 
     if !s.preset_data_ready || s.preset_data.is_empty() || s.preset_index != active_preset {
         return 0;
     }
+    // Règle métier (user 2026-08-10) : un preset « a un snapshot » UNIQUEMENT si au moins un
+    // paramètre d'un model est assigné à la source « Snapshot » (panneau Controllers). Sans AUCUN
+    // param snapshot, la notion de snapshot par défaut n'a pas de sens : le n° de snap parqué
+    // (ex. Snap 4) ne doit jamais être honoré — on force l'affichage sur Snapshot 1 (0). Ainsi,
+    // quel que soit le snapshot actif au save, la réouverture du preset repart sur Snap 1.
+    if snapshot_param_values::scan_snapshot_param_values(&s.preset_data).is_empty() {
+        return 0;
+    }
     // `active_snapshot_index` est décodé et stocké EN PHASE1 (l'en-tête `0x5c` n'est PAS dans
     // `preset_data` content_only). On retourne donc la valeur suivie, pas un décodage du contenu.
     s.active_snapshot_index
