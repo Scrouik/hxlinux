@@ -7311,6 +7311,11 @@ async function purgeControllersForSlotBeforeModelChange(kemplineSlotIndex: numbe
     }
   }
   controllerAssignmentsCache = controllerAssignmentsCache.filter((a) => a.slotBus !== bus);
+  // Purge aussi le cache des valeurs par snapshot pour ce bus (sinon la caméra reste sur l'ancienne
+  // ligne du panneau paramètres après changement/suppression de modèle) + rafraîchit les caméras.
+  // Miroir du geste déjà validé dans `deleteControllerRow`.
+  snapshotParamValuesCache = snapshotParamValuesCache.filter((s) => s.slotBus !== bus);
+  refreshSnapshotCamerasInOpenParamsPane();
   renderControllersAssignmentsTable();
 }
 
