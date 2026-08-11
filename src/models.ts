@@ -664,6 +664,20 @@ function panelFromCurrentPresetEnabled(): boolean {
 }
 
 /**
+ * Saisie clavier de la valeur au-dessus du slider (clic sur le readout `chainEl` → champ texte).
+ * Cible : sliders non-crantés visibles (famille 2 pas-fin large-plage + famille 3 span/200), pour
+ * atteindre une valeur précise sans balayer la souris sur des milliers de positions. Défaut ON.
+ * `localStorage.setItem("param_value_keyboard", "0")` → revert (retour au slider seul).
+ */
+function paramValueKeyboardEnabled(): boolean {
+  try {
+    return localStorage.getItem("param_value_keyboard") !== "0";
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Palier 1 : construit `CurrentPreset` depuis le dump frais, via les MÊMES commandes backend
  * qu'aujourd'hui (`get_active_preset_slots` + `get_active_preset_slot_chain_param_values` par slot).
  * Aucune nouvelle dépendance, aucun effet de bord d'affichage.
@@ -9891,6 +9905,95 @@ function formatHelixFromControl(rawValue: number, control: HelixControlDefJson, 
   return s;
 }
 
+/** Une bande de `format` produit-elle un NOMBRE (token printf) et non un libellé littéral (« Off », « A 100 ») ? */
+function helixBandIsNumeric(b: HelixControlFormatBandJson): boolean {
+  const fu = b.formatUnits;
+  const f = b.format;
+  if (typeof fu === "string" && HELIX_PRINTF_TOKEN_RE.test(fu)) return true;
+  if (fu === undefined && typeof f === "string" && HELIX_PRINTF_TOKEN_RE.test(f)) return true;
+  return false;
+}
+
+/** Unité littérale d'une bande (`"%.1f kHz"` → `"khz"`), en minuscules, pour matcher le token tapé. */
+function helixBandUnitToken(b: HelixControlFormatBandJson): string {
+  const fu = b.formatUnits ?? "";
+  return helixUnescapePercentMarks(fu.replace(HELIX_PRINTF_TOKEN_RE, "")).trim().toLowerCase();
+}
+
+/**
+ * `true` si le contrôle affiche des NOMBRES éditables au clavier. Faux pour les enums (`format`
+ * = liste de libellés) et les contrôles à bandes 100 % libellées (aucune bande numérique — ex.
+ * `Shimmer_pitchblend`, `dynamic_ambience_shape`). `undefined` (displayType absent) = éditable (nombre brut).
+ */
+function controlAllowsKeyboardValueEntry(def: HelixControlDefJson | undefined): boolean {
+  if (!def) return true;
+  const fmt = def.format;
+  if (Array.isArray(fmt) && fmt.length > 0 && typeof fmt[0] === "string") return false;
+  if (Array.isArray(fmt) && fmt.length > 0 && typeof fmt[0] === "object") {
+    const bands = fmt as HelixControlFormatBandJson[];
+    if (!bands.some((b) => helixBandIsNumeric(b))) return false;
+  }
+  return true;
+}
+
+/**
+ * Inverse de `formatHelixFromControl` : « texte affiché » → valeur BRUTE chaîne (non snappée, non bornée).
+ * Forward : `affiché = brut × dspToDisplayScale × unitsMultiplier(bande) + offset`. On extrait le nombre
+ * + un éventuel token d'unité (`ms`, `s`, `hz`, `khz`, `db`, `%`, `deg`…). Token présent → bande dont
+ * `formatUnits` porte cette unité (son `unitsMultiplier`) ; sinon → unité de base (1re bande numérique à
+ * multiplicateur 1). `null` si non parsable. `def` absent → le nombre EST la valeur brute.
+ */
+function parseDisplayToRawForControl(
+  text: string,
+  def: HelixControlDefJson | undefined,
+): number | null {
+  const t = (text ?? "").trim();
+  if (!t) return null;
+  const m = t.replace(",", ".").match(/[-+]?\d*\.?\d+/);
+  if (!m || m.index === undefined) return null;
+  const typed = Number.parseFloat(m[0]);
+  if (!Number.isFinite(typed)) return null;
+  if (!def) return typed;
+  const unitToken = t
+    .slice(m.index + m[0].length)
+    .replace(/%/g, "%")
+    .trim()
+    .toLowerCase();
+  const dsp =
+    typeof def.dspToDisplayScale === "number" && def.dspToDisplayScale !== 0
+      ? def.dspToDisplayScale
+      : 1;
+  const intOff =
+    typeof def.dspToDisplayIntegerOffset === "number" ? def.dspToDisplayIntegerOffset : 0;
+  let unitsMult =
+    typeof def.unitsMultiplier === "number" && def.unitsMultiplier !== 0
+      ? def.unitsMultiplier
+      : 1;
+  const fmt = def.format;
+  if (Array.isArray(fmt) && fmt.length > 0 && typeof fmt[0] === "object") {
+    const bands = fmt as HelixControlFormatBandJson[];
+    let chosen: HelixControlFormatBandJson | null = null;
+    if (unitToken) {
+      chosen = bands.find((b) => helixBandIsNumeric(b) && helixBandUnitToken(b) === unitToken) ?? null;
+    }
+    if (!chosen) {
+      // Défaut convenu : unité de base = 1re bande numérique à multiplicateur 1 (ex. frequency « 1500 » → Hz).
+      chosen =
+        bands.find(
+          (b) => helixBandIsNumeric(b) && (b.unitsMultiplier === undefined || b.unitsMultiplier === 1),
+        ) ??
+        bands.find((b) => helixBandIsNumeric(b)) ??
+        null;
+    }
+    unitsMult =
+      chosen && typeof chosen.unitsMultiplier === "number" && chosen.unitsMultiplier !== 0
+        ? chosen.unitsMultiplier
+        : 1;
+  }
+  const raw = (typed - intOff) / unitsMult / dsp;
+  return Number.isFinite(raw) ? raw : null;
+}
+
 function normalizeCatalogSignal(signal: string | null | undefined): "mono" | "stereo" | null {
   const s = (signal ?? "").trim().toLowerCase();
   if (!s) return null;
@@ -10778,6 +10881,83 @@ function appendModelsParamRows(
         }
         sliderCell.append(ticks);
       }
+      // Saisie clavier de la valeur : clic sur le readout → champ texte → reconversion vers brut →
+      // repositionne le slider et déclenche la MÊME écriture live (dispatch d'un event `input`).
+      // Cible : sliders non-crantés visibles (pas segmentés, pas de repères), contrôle numérique.
+      if (
+        !segSlider &&
+        tickCount === null &&
+        paramValueKeyboardEnabled() &&
+        controlAllowsKeyboardValueEntry(helixDef)
+      ) {
+        chainEl.classList.add("models-params-row-chain--editable");
+        chainEl.tabIndex = 0;
+        chainEl.setAttribute("role", "button");
+        chainEl.setAttribute(
+          "title",
+          "Cliquer pour saisir la valeur au clavier (Entrée = valider, Échap = annuler)",
+        );
+        const startEdit = (): void => {
+          if (input.disabled) return;
+          if (chainEl.querySelector("input")) return; // déjà en édition
+          const prevText = chainEl.textContent ?? "";
+          const editor = document.createElement("input");
+          editor.type = "text";
+          editor.className = "models-params-chain-editor";
+          editor.value = prevText;
+          editor.setAttribute(
+            "aria-label",
+            `Saisir la valeur — ${(p.name || p.symbolicID || "").trim()}`,
+          );
+          chainEl.textContent = "";
+          chainEl.appendChild(editor);
+          editor.focus();
+          editor.select();
+          let done = false;
+          const restore = (text: string | null): void => {
+            if (done) return;
+            done = true;
+            editor.remove();
+            if (text !== null) chainEl.textContent = text;
+          };
+          const commit = (): void => {
+            if (done) return;
+            const raw = parseDisplayToRawForControl(editor.value, helixDef);
+            if (raw === null || !Number.isFinite(raw)) {
+              restore(prevText);
+              return;
+            }
+            let v = snapRawToIncrement(raw, sliderMin, sliderMax, inc, sliderValueType);
+            v = Math.min(sliderMax, Math.max(sliderMin, v));
+            if (!Number.isFinite(v)) {
+              restore(prevText);
+              return;
+            }
+            restore(null); // le handler `input` du slider remettra le texte à jour
+            input.value = String(v);
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+          };
+          editor.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              restore(prevText);
+            }
+            e.stopPropagation();
+          });
+          editor.addEventListener("blur", () => commit());
+          editor.addEventListener("click", (e) => e.stopPropagation());
+        };
+        chainEl.addEventListener("click", startEdit);
+        chainEl.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            startEdit();
+          }
+        });
+      }
       rowValueUpdaters[j] = (nextCv) => {
         const nextIndex = segSlider
           ? chainValueAsSegmentedIndex(nextCv, p, segSlider.labels.length)
@@ -10791,6 +10971,8 @@ function appendModelsParamRows(
         if (sliderValueType !== 0) {
           setSliderFillVisual(input, v, sliderMin, sliderMax);
         }
+        // Ne pas écraser une saisie clavier en cours (champ éditeur présent dans le readout).
+        if (chainEl.querySelector("input")) return;
         const chainV = segSlider ? segmentedIndexToChainValue(v, p) : v;
         chainEl.textContent = formatChainParamValueJson(chainV, p, helixControlsMap);
         const s = paramSliderHoverTitle(chainV, p, helixControlsMap);

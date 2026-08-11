@@ -1262,6 +1262,38 @@ html, body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Readout cliquable pour saisie clavier de la valeur (sliders non-crantés). */
+.models-params-row-chain--editable {
+  cursor: text;
+  border-bottom: 1px dotted color-mix(in srgb, var(--amber) 55%, transparent);
+}
+.models-params-row-chain--editable:hover {
+  border-bottom-color: var(--amber);
+}
+.models-params-row-chain--editable:focus-visible {
+  outline: 1px solid var(--amber);
+  outline-offset: 1px;
+  border-bottom-color: transparent;
+}
+
+.models-params-chain-editor {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+  border: 1px solid var(--amber);
+  border-radius: 3px;
+}
+.models-params-chain-editor:focus {
+  outline: none;
+}
+
 .models-params-error {
   color: #e07070;
 }
