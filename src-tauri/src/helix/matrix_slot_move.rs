@@ -151,13 +151,126 @@ fn prime_dump_ack_lane_after_interpath_if_enabled(state: &mut HelixState) {
     }
 }
 
+/// `HX_DD_CREATE_SPLIT_FAITHFUL=0` → témoin (comportement historique : commits `19` même en
+/// création de split → device en no-op, le bloc ne bouge pas).
+fn create_split_faithful_enabled() -> bool {
+    match std::env::var("HX_DD_CREATE_SPLIT_FAITHFUL").as_deref() {
+        Ok(v) if v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false") => false,
+        _ => true,
+    }
+}
+
+/// Trame `08` ed:03 création de split : préambule (`sub=0x10`) ou ACK (`sub=0x08`), portant le
+/// **lane éditeur** (`live_write_ctr`) à l'offset 12-13, offset 14-15 = `00 00`
+/// (capture `d&d_path1_to_path2_before_split.json`).
+fn build_ed03_lane08(state: &mut HelixState, sub: u8, lane: u16) -> Vec<u8> {
+    let cnt = state.next_x80_cnt();
+    vec![
+        0x08, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, cnt, 0x00, sub,
+        (lane & 0xff) as u8, (lane >> 8) as u8, 0x00, 0x00,
+    ]
+}
+
+/// SELECT de la source AVANT le MOVE (création de split, capture before_split).
+/// `1d …<lane_lo> <lane_hi> 00 00 …83 66 cd 03 <yy> 64 4e 65 82 62 <src_bus> 1a`.
+/// **Copie conforme HX Edit** : lane éditeur (`live_write_ctr`) à l'offset 12-13 — PAS session+double
+/// (statique = deux écritures identiques → device no-op) ; `yy = live_write_yy` séquentiel.
+fn build_select_source_lane(state: &mut HelixState, src_bus: u8, lane: u16) -> Vec<u8> {
+    let cnt = state.next_x80_cnt();
+    let yy = state.live_write_yy;
+    state.live_write_yy = yy.wrapping_add(1);
+    vec![
+        0x1d, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, cnt, 0x00, 0x04,
+        (lane & 0xff) as u8, (lane >> 8) as u8, 0x00, 0x00, 0x01, 0x00, 0x06, 0x00, 0x0d,
+        0x00, 0x00, 0x00, 0x83, 0x66, 0xcd, 0x03, yy, 0x64, 0x4e, 0x65, 0x82, 0x62, src_bus,
+        0x1a, 0x00, 0x00, 0x00, 0x00,
+    ]
+}
+
+/// MOVE `1d …<lane_lo> <lane_hi> 00 00 …83 66 cd 03 <yy> 64 2b 65 82 4b <src> 4c <dst>` en
+/// création de split. Comme [`build_matrix_slot_move_packet`] mais avec le **lane éditeur** à
+/// l'offset 12-13 (au lieu de session+double) — byte-fidèle before_split.
+fn build_matrix_move_lane(
+    state: &mut HelixState,
+    src_index: usize,
+    dest_index: usize,
+    lane: u16,
+) -> Result<Vec<u8>, String> {
+    let src_bus = kempline_index_to_slot_bus(src_index)
+        .ok_or_else(|| format!("matrix move : bus source invalide pour index {src_index}"))?;
+    let dst_bus = kempline_index_to_slot_bus(dest_index)
+        .ok_or_else(|| format!("matrix move : bus destination invalide pour index {dest_index}"))?;
+    let cnt = state.next_x80_cnt();
+    let yy = state.live_write_yy;
+    state.live_write_yy = yy.wrapping_add(1);
+    Ok(vec![
+        0x1d, 0x00, 0x00, 0x18, 0x80, 0x10, 0xed, 0x03, 0x00, cnt, 0x00, 0x04,
+        (lane & 0xff) as u8, (lane >> 8) as u8, 0x00, 0x00, 0x01, 0x00, 0x06, 0x00, 0x0d,
+        0x00, 0x00, 0x00, 0x83, 0x66, 0xcd, 0x03, yy, 0x64, 0x2b, 0x65, 0x82, 0x4b, src_bus,
+        0x4c, dst_bus, 0x00, 0x00, 0x00,
+    ])
+}
+
 /// Déplace un bloc FX matrix (drag & drop HX Edit).
+///
+/// `create_split` = destination sur un path 2 VIDE (on crée le routage parallèle). Dans ce cas,
+/// HX Edit envoie SELECT(source) puis MOVE, et **aucun** commit `19` (capture
+/// `d&d_path1_to_path2_before_split.json`). Nos commits parasites y provoquaient un no-op device.
 pub fn send_matrix_slot_move(
     state: &mut HelixState,
     src_index: usize,
     dest_index: usize,
+    create_split: bool,
 ) -> Result<String, String> {
     let inter_path = (src_index >= 8) != (dest_index >= 8);
+    let faithful_create_split = create_split && inter_path && create_split_faithful_enabled();
+
+    // Création de split (path1 → path2 vide) : séquence COPIE CONFORME de la capture
+    // `d&d_path1_to_path2_before_split.json`. Pour CHAQUE `1d` (SELECT puis MOVE) :
+    // préambule `08 sub=10` (lane L) → `1d` (lane L) → ACK `08 sub=08` (lane L+0x11).
+    // Le lane est `live_write_ctr` incrémenté de +0x11 par étape ; offset 14-15 = `00 00`.
+    // AUCUN commit `19`, AUCUN prime_dump_ack.
+    if faithful_create_split {
+        let src_bus = kempline_index_to_slot_bus(src_index)
+            .ok_or_else(|| format!("matrix move : bus source invalide pour index {src_index}"))?;
+        let l0 = state.live_write_ctr;
+        let l1 = l0.wrapping_add(0x11);
+        let l2 = l1.wrapping_add(0x11);
+
+        // Étape SELECT.
+        let pre_sel = build_ed03_lane08(state, 0x10, l0);
+        state.send(OutPacket::new(pre_sel));
+        let sel = build_select_source_lane(state, src_bus, l0);
+        state.send(OutPacket::new(sel));
+        let ack_sel = build_ed03_lane08(state, 0x08, l1);
+        state.send(OutPacket::with_delay(ack_sel, 8));
+
+        // Étape MOVE.
+        let pre_mv = build_ed03_lane08(state, 0x10, l1);
+        state.send(OutPacket::new(pre_mv));
+        let mv = build_matrix_move_lane(state, src_index, dest_index, l1)?;
+        let mv_src = mv[34];
+        let mv_dst = mv[36];
+        state.send(OutPacket::new(mv));
+        let ack_mv = build_ed03_lane08(state, 0x08, l2);
+        state.send(OutPacket::with_delay(ack_mv, 8));
+
+        state.live_write_ctr = l2;
+
+        if let Some(dst_bus) = kempline_index_to_slot_bus(dest_index) {
+            state.hw_active_slot_index = Some(dest_index);
+            state.hw_active_slot_bus = Some(dst_bus);
+            state.hw_active_slot_sequence = state.hw_active_slot_sequence.wrapping_add(1);
+        }
+
+        return Ok(format!(
+            "create_split_faithful select_src bus {mv_src:#04x} | move_1d {src_index}->{dest_index} \
+             bus {mv_src:#04x}->{mv_dst:#04x} | lane {l0:#06x}->{l1:#06x} | no_commit"
+        ));
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+
     let pkt = build_matrix_slot_move_packet(state, src_index, dest_index)?;
     let ack_lo = pkt[12];
     let ack_hi = pkt[13];
@@ -168,10 +281,12 @@ pub fn send_matrix_slot_move(
     state.send(OutPacket::new(pkt));
     state.send(OutPacket::with_delay(post, 8));
 
-    let mut lines = vec![format!(
+    lines.push(format!(
         "move_1d {src_index}->{dest_index} bus {src_bus:#04x}->{dst_bus:#04x}"
-    )];
+    ));
 
+    // Commits `19` SPLIT/MERGE : inter-path avec un split DÉJÀ existant (le cas création de split
+    // est traité plus haut, byte-fidèle, et retourne avant ici).
     if inter_path {
         send_branch_commit_pair(state)?;
         prime_dump_ack_lane_after_interpath_if_enabled(state);
@@ -220,6 +335,35 @@ mod tests {
         let mut s = test_state();
         let pkt = build_matrix_slot_move_packet(&mut s, 2, 7).unwrap();
         assert_eq!(&pkt[32..40], &[0x82, 0x4b, 0x03, 0x4c, 0x08, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn create_split_select_and_move_lane_shape() {
+        // Capture HX Edit d&d_path1_to_path2_before_split : SELECT+MOVE portent le LANE éditeur
+        // (live_write_ctr) à l'offset 12-13, offset 14-15 = 00, +0x11 entre les deux ;
+        // yy séquentiel (offset 28).
+        let mut s = test_state(); // live_write_ctr=0x4c00, live_write_yy=0x13
+        let l0 = s.live_write_ctr;
+        let sel = build_select_source_lane(&mut s, 0x03, l0);
+        assert_eq!(sel.len(), 40);
+        assert_eq!(sel[0], 0x1d);
+        assert_eq!(&sel[12..16], &[(l0 & 0xff) as u8, (l0 >> 8) as u8, 0x00, 0x00], "lane offset12-13 + 00 00");
+        assert_eq!(sel[27], 0x03, "cd03");
+        assert_eq!(sel[28], 0x13, "yy = live_write_yy initial");
+        assert_eq!(&sel[29..36], &[0x64, 0x4e, 0x65, 0x82, 0x62, 0x03, 0x1a]);
+
+        let l1 = l0.wrapping_add(0x11);
+        let mv = build_matrix_move_lane(&mut s, 1, 9, l1).unwrap();
+        assert_eq!(&mv[12..16], &[(l1 & 0xff) as u8, (l1 >> 8) as u8, 0x00, 0x00], "lane +0x11 + 00 00");
+        assert_eq!(mv[27], 0x03, "cd03");
+        assert_eq!(mv[28], 0x14, "yy séquentiel = SELECT+1");
+        assert_eq!(&mv[32..37], &[0x82, 0x4b, 0x02, 0x4c, 0x0c], "82 4b <src_bus> 4c <dst_bus>");
+
+        // Préambule/ACK 08 : lane à l'offset 12-13, offset 14-15 = 00.
+        let pre = build_ed03_lane08(&mut s, 0x10, l0);
+        assert_eq!(pre.len(), 16);
+        assert_eq!(pre[11], 0x10);
+        assert_eq!(&pre[12..16], &[(l0 & 0xff) as u8, (l0 >> 8) as u8, 0x00, 0x00]);
     }
 
     #[test]

@@ -78,6 +78,16 @@ fn preset_select_triplet_enabled() -> bool {
     }
 }
 
+/// `HX_DD_READ_EDIT_BUFFER=0` → témoin : la relecture post-D&D envoie quand même le SELECT
+/// (comportement fautif = revert du split). Défaut ON : `skip_select` saute le SELECT → lit le
+/// buffer d'édition. Garde-fou dédié au fix D&D (pipeline lecture = historique de freezes).
+fn read_edit_buffer_enabled() -> bool {
+    match std::env::var("HX_DD_READ_EDIT_BUFFER").as_deref() {
+        Ok(v) if v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false") => false,
+        _ => true,
+    }
+}
+
 pub struct RequestPreset {
     preset_data:             Vec<u8>,
     /// true = Phase 1 envoyée, en attente de la réponse 68 octets
@@ -384,9 +394,25 @@ impl Mode for RequestPreset {
         // `0x14 SELECT(idx) → 0x17 read-name → 0x16 read?`. On envoie d'abord le SELECT et on attend
         // sa réponse (ACK dans data_in) AVANT la Phase 1. Sans le SELECT, le device reste muet après
         // un commit (save). `HX_PRESET_SELECT_TRIPLET=0` → ancien comportement (Phase 1 directe).
-        if preset_select_triplet_enabled() {
+        // Option B (`HX_DD_READ_EDIT_BUFFER` ON, défaut) : on SAUTE le SELECT (`82 6b 00 6c <idx>`)
+        // qui RECHARGERAIT le preset depuis la flash et écraserait une édition non sauvegardée
+        // (split créé par D&D, ou modif faite sur le device). Sans SELECT, la Phase 1 lit le
+        // BUFFER D'ÉDITION courant → état édité, pas de revert/écrasement. Le SELECT n'est renvoyé
+        // que si `preset_read_force_select` (save→lecture : device muet sinon après commit).
+        // `HX_DD_READ_EDIT_BUFFER=0` → comportement historique (SELECT selon le triplet).
+        let force_select = state.preset_read_force_select;
+        state.preset_read_force_select = false;
+        let send_select = if read_edit_buffer_enabled() {
+            preset_select_triplet_enabled() && force_select
+        } else {
+            preset_select_triplet_enabled()
+        };
+        if send_select {
             self.send_select(state);
         } else {
+            if read_edit_buffer_enabled() && !force_select {
+                eprintln!("[ReadReq][select] SAUTÉ (lecture buffer d'édition — Option B)");
+            }
             self.send_phase1(state);
         }
     }

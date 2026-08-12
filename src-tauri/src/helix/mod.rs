@@ -306,6 +306,14 @@ pub struct HelixState {
     // Si false : RequestPreset revient à Standard (corps preset après noms + nom actif)
     pub preset_content_only: bool,
 
+    /// Option B (défaut, `HX_DD_READ_EDIT_BUFFER` ON) : la lecture (`RequestPreset`) SAUTE le SELECT
+    /// du triplet (`82 6b 00 6c <idx>`, qui RECHARGERAIT le preset depuis la flash et écraserait une
+    /// édition non sauvegardée — D&D, ou modif faite sur le device) et lit le BUFFER D'ÉDITION courant.
+    /// Le SELECT n'est renvoyé que si la PROCHAINE lecture pose ce flag à true — cas save→lecture
+    /// (le device reste muet sans SELECT juste après un commit). Posé par
+    /// `request_preset_content(force_select=true)`, consommé (remis à false) au démarrage de la lecture.
+    pub preset_read_force_select: bool,
+
     /// Génération courante de lecture preset. Incrémentée à chaque démarrage de
     /// RequestPreset ; les StandardPresetRead(gen) avec gen != valeur courante sont
     /// des orphelins issus d'un watchdog/timer d'une lecture précédente et sont ignorés.
@@ -676,6 +684,7 @@ impl HelixState {
             preset_data_ready:  false,
             redundant_preset_read_skip_used: false,
             preset_content_only: false,
+            preset_read_force_select: false,
             preset_read_generation: 0,
             connecting:         true,
             got_preset:         false,

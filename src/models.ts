@@ -1642,6 +1642,7 @@ async function applySlotContentWatchFromSync(
 }
 
 async function invokeSlotFocusWatch(ki: number): Promise<void> {
+  if (matrixDdFocusSuppressed) return; // D&D matrice en cours : pas de focus parasite (revert bloc).
   if (!slotFocusUsbSyncEnabled()) return;
   if (ki < 0 || ki >= 16) return;
   const now = Date.now();
@@ -1860,6 +1861,11 @@ function delayMs(ms: number): Promise<void> {
 let hardwareSlotSwitchTail: Promise<void> = Promise.resolve();
 
 function enqueueHardwareSlotSwitch(slotIndex: number): Promise<void> {
+  if (matrixDdFocusSuppressed) {
+    // D&D matrice en cours : HX Edit n'envoie pas de slot-switch autour d'un move → sinon revert.
+    emitModelsSyncTrace(`enqueueHardwareSlotSwitch slot=${slotIndex} SUPPRIMÉ (D&D matrice)`);
+    return Promise.resolve();
+  }
   emitModelsSyncTrace(
     `enqueueHardwareSlotSwitch slot=${slotIndex} stack=${new Error().stack?.split("\n")[2]?.trim()}`,
   );
@@ -2165,6 +2171,7 @@ async function runHardwareSyncSoftRefresh(): Promise<void> {
     if (
       hardwareSlotSequenceAdvanced &&
       slotFocusUsbSyncEnabled() &&
+      !matrixDdFocusSuppressed && // D&D matrice : pas de focus parasite (revert bloc).
       !forcePresetDumpOnHardwareSlotNotify() &&
       hwSlotState &&
       Number.isInteger(hwSlotState.slotIndex) &&
@@ -5798,6 +5805,16 @@ async function withMatrixUsbInteractionLock<T>(
 let matrixSlotClipboard: MatrixSlotClipboard | null = null;
 /** Index source pendant un drag & drop matrice (move). */
 let matrixDragSourceKi: number | null = null;
+/**
+ * Pendant un D&D matrice : inhibe les émetteurs focus/slot-switch (`enqueueHardwareSlotSwitch`
+ * et `invokeSlotFocusWatch`/`sync_hardware_slot_focus_usb`). HX Edit n'envoie AUCUN focus autour
+ * d'un move ; ces trames parasites (refocus de la source, `4e 65 82 62 <bus> 1a`) juste après le
+ * MOVE font REVENIR le bloc sur le device (revert observé, capture `dnd_change_path_linux.json`).
+ */
+let matrixDdFocusSuppressed = false;
+function setMatrixDdFocusSuppressed(on: boolean): void {
+  matrixDdFocusSuppressed = on;
+}
 /** Split / merge en cours de drag (frontière source 0..8). */
 let matrixDragRouting: { kind: "split" | "merge"; sourceBoundary: number } | null = null;
 /** Bloque le clic « focus I/O » après un drop split/merge (évite `cd:03 f9` parasite). */
@@ -8389,59 +8406,68 @@ export { copyMatrixSlotFromCell, pasteMatrixSlotToCell };
 
 /** Déplacer un bloc : paquet USB `1d` (HX Edit) puis relecture du preset actif. */
 async function moveMatrixSlotFromTo(sourceKi: number, destKi: number): Promise<void> {
-  if (isMatrixUsbInteractionLocked()) return;
-  const slots = lastHwSyncNormalizedSlots;
-  if (!slots || slots.length !== 16) {
-    console.warn("[MatrixMove] snapshot grille absent");
-    return;
-  }
-  if (!canMoveMatrixSlotToEmpty(sourceKi, destKi, slots)) {
-    console.warn("[MatrixMove] déplacement invalide", sourceKi, "→", destKi);
-    setStatus("Déplacement impossible : slot occupé ou colonne déjà utilisée");
-    return;
-  }
-  const sourceSlot = slots[sourceKi];
-  if (!sourceSlot) return;
+  // Le flag focus-suppress reste armé pendant TOUTE l'opération (move + relecture + settle) puis
+  // est levé ici : garantit qu'aucun focus/slot-switch parasite ne parte autour du move (revert).
+  try {
+    if (isMatrixUsbInteractionLocked()) return;
+    const slots = lastHwSyncNormalizedSlots;
+    if (!slots || slots.length !== 16) {
+      console.warn("[MatrixMove] snapshot grille absent");
+      return;
+    }
+    if (!canMoveMatrixSlotToEmpty(sourceKi, destKi, slots)) {
+      console.warn("[MatrixMove] déplacement invalide", sourceKi, "→", destKi);
+      setStatus("Déplacement impossible : slot occupé ou colonne déjà utilisée");
+      return;
+    }
+    const sourceSlot = slots[sourceKi];
+    if (!sourceSlot) return;
 
-  const displayName = sourceSlot.name?.trim() || "bloc";
-  const path1ToEmptyPath2 = isPath1ToEmptyPath2Move(sourceKi, destKi, slots);
-  let moveOk = false;
+    const displayName = sourceSlot.name?.trim() || "bloc";
+    const path1ToEmptyPath2 = isPath1ToEmptyPath2Move(sourceKi, destKi, slots);
+    let moveOk = false;
 
-  await withMatrixUsbInteractionLock(
-    `Déplacement bloc ${sourceKi + 1} → ${destKi + 1}…`,
-    async () => {
-      moveOk = await moveMatrixSlotUsb(sourceKi, destKi);
-      if (!moveOk) {
-        setStatus("Déplacement annulé : erreur USB");
-        return;
-      }
+    await withMatrixUsbInteractionLock(
+      `Déplacement bloc ${sourceKi + 1} → ${destKi + 1}…`,
+      async () => {
+        moveOk = await moveMatrixSlotUsb(sourceKi, destKi, path1ToEmptyPath2);
+        if (!moveOk) {
+          setStatus("Déplacement annulé : erreur USB");
+          return;
+        }
+        await delayMs(MATRIX_USB_OP_SETTLE_MS);
+        markPresetModified();
+        console.info("[MatrixMove] ok USB", sourceKi, "→", destKi, displayName);
+      },
+    );
+
+    if (!moveOk || currentPresetIndex < 0) return;
+
+    pendingHardwareSelectedKemplineSlotIndex = destKi;
+    pendingHardwareSelectedSlotBus = null;
+
+    if (path1ToEmptyPath2) {
+      clearMatrixRoutingColsOverride();
+      setStatus(`Bloc déplacé (${sourceKi + 1} → ${destKi + 1}) — relecture hardware…`);
+      await requestLoadForPreset(currentPresetIndex, {
+        hardwareRefreshAfterEdit: { sourceKi, destKi },
+      });
+      // Garde le focus inhibé un court instant APRÈS la relecture : le device auto-focalise la
+      // destination ; un focus parasite ici (refocus source) ferait revenir le bloc (revert).
       await delayMs(MATRIX_USB_OP_SETTLE_MS);
-      markPresetModified();
-      console.info("[MatrixMove] ok USB", sourceKi, "→", destKi, displayName);
-    },
-  );
+      return;
+    }
 
-  if (!moveOk || currentPresetIndex < 0) return;
-
-  pendingHardwareSelectedKemplineSlotIndex = destKi;
-  pendingHardwareSelectedSlotBus = null;
-
-  if (path1ToEmptyPath2) {
-    clearMatrixRoutingColsOverride();
-    setStatus(`Bloc déplacé (${sourceKi + 1} → ${destKi + 1}) — relecture hardware…`);
-    await requestLoadForPreset(currentPresetIndex, {
-      hardwareRefreshAfterEdit: { sourceKi, destKi },
-    });
-    return;
-  }
-
-  applyOptimisticMatrixSlotMove(sourceKi, destKi);
-  relocateMatrixSlotSessionData(sourceKi, destKi);
-  await refreshMatrixGridFromSnapshot();
-  setStatus(`Bloc déplacé (${sourceKi + 1} → ${destKi + 1})`);
-  if (selectedParamsKemplineSlotIndex === destKi || selectedParamsKemplineSlotIndex === sourceKi) {
-    suppressNextUiSlotHardwareSwitch = true;
-    selectParamsPaneByKemplineIndex(destKi);
+    applyOptimisticMatrixSlotMove(sourceKi, destKi);
+    relocateMatrixSlotSessionData(sourceKi, destKi);
+    await refreshMatrixGridFromSnapshot();
+    setStatus(`Bloc déplacé (${sourceKi + 1} → ${destKi + 1})`);
+    if (selectedParamsKemplineSlotIndex === destKi || selectedParamsKemplineSlotIndex === sourceKi) {
+      suppressNextUiSlotHardwareSwitch = true;
+      selectParamsPaneByKemplineIndex(destKi);
+    }
+  } finally {
+    setMatrixDdFocusSuppressed(false);
   }
 }
 
@@ -8472,6 +8498,9 @@ function clearMatrixDragOverHighlights(): void {
 
 function beginMatrixSlotDragVisual(): void {
   document.body.classList.add("models-matrix-slot-dragging");
+  // Inhibe les focus/slot-switch parasites dès le début du geste (jusqu'à la fin de l'opération) :
+  // HX Edit n'en envoie aucun autour d'un move → sinon le device fait revenir le bloc.
+  setMatrixDdFocusSuppressed(true);
   const slots = lastHwSyncNormalizedSlots;
   matrixDragRoutingBaseCols =
     slots && slots.length === 16 ? resolveMatrixRoutingColumns(slots) : null;
@@ -8703,6 +8732,7 @@ function bindMatrixSlotDragSource(el: HTMLElement, slot: SlotDebug, ki: number):
       matrixDragSourceKi = null;
       el.classList.remove("node--matrix-drag-source");
       endMatrixSlotDragVisual();
+      setMatrixDdFocusSuppressed(false); // pas de move → on lève l'inhibition focus.
       return;
     }
 
@@ -8714,8 +8744,12 @@ function bindMatrixSlotDragSource(el: HTMLElement, slot: SlotDebug, ki: number):
 
     matrixDragSourceKi = null;
 
-    if (!willDrop || destKi === null) return;
+    if (!willDrop || destKi === null) {
+      setMatrixDdFocusSuppressed(false); // drop annulé → on lève l'inhibition focus.
+      return;
+    }
 
+    // moveMatrixSlotFromTo lèvera l'inhibition dans son `finally` (fin move + relecture).
     console.info("[MatrixMove] pointerup", ki, "→", destKi);
     setStatus(`Déplacement bloc ${ki + 1} → ${destKi + 1}…`);
     void moveMatrixSlotFromTo(ki, destKi);
@@ -8729,6 +8763,7 @@ function bindMatrixSlotDragSource(el: HTMLElement, slot: SlotDebug, ki: number):
       el.releasePointerCapture(ev.pointerId);
     }
     endMatrixSlotDragVisual();
+    setMatrixDdFocusSuppressed(false); // geste annulé → on lève l'inhibition focus.
   });
 }
 
@@ -13420,12 +13455,17 @@ function isInterPathMatrixMove(sourceKi: number, destKi: number): boolean {
   return matrixSlotPath(sourceKi) !== matrixSlotPath(destKi);
 }
 
-async function moveMatrixSlotUsb(sourceKi: number, destKi: number): Promise<boolean> {
+async function moveMatrixSlotUsb(
+  sourceKi: number,
+  destKi: number,
+  createSplit: boolean,
+): Promise<boolean> {
   try {
     await waitUntilHardwareSyncIdle(15_000);
     const out = await invoke<string>("move_matrix_slot_usb", {
       sourceSlotIndex: sourceKi,
       destSlotIndex: destKi,
+      createSplit,
     });
     console.info("[MatrixMove] usb", out);
     markLiveWriteUiInteraction();
@@ -14549,6 +14589,9 @@ async function requestLoadForPreset(index: number, opts?: RequestLoadForPresetOp
     lastRequestPresetInvokeAt = Date.now();
     await invoke("request_preset_content", {
       forceImmediate: opts?.fullPresetReload === true,
+      // Option B (défaut) : lecture du buffer d'édition (pas de SELECT → pas de rechargement flash
+      // qui écraserait D&D/modif device). Le SELECT n'est forcé que par le save→lecture.
+      // Cf. HX_DD_READ_EDIT_BUFFER.
     });
   } catch (e) {
     const msg = String(e);

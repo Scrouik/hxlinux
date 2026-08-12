@@ -2106,6 +2106,7 @@ fn arm_matrix_dd_drag_usb(state: tauri::State<Arc<Mutex<AppState>>>) -> Result<S
 fn move_matrix_slot_usb(
     source_slot_index: u32,
     dest_slot_index: u32,
+    create_split: bool,
     state: tauri::State<Arc<Mutex<AppState>>>,
 ) -> Result<String, String> {
     if source_slot_index >= 16 || dest_slot_index >= 16 {
@@ -2128,7 +2129,12 @@ fn move_matrix_slot_usb(
             "move_matrix_slot_usb ignoré (HX non prêt ou lecture preset en cours)".to_string(),
         );
     }
-    send_matrix_slot_move(&mut s, source_slot_index as usize, dest_slot_index as usize)
+    send_matrix_slot_move(
+        &mut s,
+        source_slot_index as usize,
+        dest_slot_index as usize,
+        create_split,
+    )
 }
 
 #[tauri::command]
@@ -2315,9 +2321,13 @@ fn get_preset_data_hex(state: tauri::State<Arc<Mutex<AppState>>>) -> Option<Stri
 #[tauri::command]
 fn request_preset_content(
     force_immediate: Option<bool>,
+    force_select: Option<bool>,
     state: tauri::State<Arc<Mutex<AppState>>>,
 ) -> Result<(), String> {
     let force_immediate = force_immediate.unwrap_or(false);
+    // Option B (défaut) : on SAUTE le SELECT (lit le buffer d'édition), SAUF si l'appelant force le
+    // SELECT — cas save→lecture. Cf. `preset_read_force_select` / `HX_DD_READ_EDIT_BUFFER`.
+    let force_select = force_select.unwrap_or(false);
     let (active_preset, helix_arc) = {
         let mut app = state.lock().unwrap();
         let now = Instant::now();
@@ -2422,6 +2432,9 @@ fn request_preset_content(
     // preset_content_only=true dans les deux cas : bloque les RequestPresetName
     // déclenchés par le MIDI listener pendant qu'on attend le x2 de confirmation.
     s.preset_content_only = true;
+    // Défaut = lire le buffer d'édition (pas de SELECT). `force_select=true` (save→lecture) renvoie
+    // le SELECT. Consommé au démarrage de la lecture (send).
+    s.preset_read_force_select = force_select;
     if s.want_content_only_after_x2 && !force_immediate {
         // activate_preset a envoyé le MIDI PC et posé le flag.
         // On attend le x2 du hardware pour lancer cd:03 — garantit que tous

@@ -545,7 +545,8 @@ async function savePreset(index: number) {
       barHint.textContent = "Sauvegarde…";
       const snap = await invoke<number>("get_active_preset_active_snapshot");
       await invoke("activate_snapshot", { snapshotIndex: snap });
-      await invoke("request_preset_content", { forceImmediate: true });
+      // save→lecture : FORCER le SELECT (le device reste muet sans lui juste après un commit).
+      await invoke("request_preset_content", { forceImmediate: true, forceSelect: true });
       await waitForFreshDump();
     }
     await invoke("save_preset_to_hardware", { index });
