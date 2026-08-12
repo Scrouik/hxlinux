@@ -4,12 +4,12 @@
 
 
 
-**EN:** Open-source **HX Stomp XL** editor for **Linux** (Tauri — Rust + TypeScript).  
+**EN:** Open-source **HX Stomp XL** editor for **Linux** (Tauri — Rust + TypeScript).
 **FR:** Éditeur open source pour **HX Stomp XL** sous **Linux** (Tauri — Rust + TypeScript).
 
 Connect over native USB, browse and edit presets, assign FX blocks, tweak parameters live, and manage the signal chain — **without HX Edit**.
 
-> **First usable version · Première version utilisable** (June 2026) — early testers welcome · testeurs bienvenus.
+> **Latest release · Dernière version : v0.2.0** (August 2026) — early testers welcome · testeurs bienvenus.
 
 | | |
 |---|---|
@@ -20,14 +20,17 @@ Connect over native USB, browse and edit presets, assign FX blocks, tweak parame
 
 ## Download · Télécharger
 
-**[GitHub Releases](https://github.com/Scrouik/hxlinux/releases)** — AppImage or `.deb` (Linux x86_64).
+**[GitHub Releases](https://github.com/Scrouik/hxlinux/releases)** — AppImage, `.deb`, or `.rpm` (Linux x86_64).
 
 After download, install the USB udev rule — see [install.en.md](docs/install.en.md) / [install.md](docs/install.md).
 
 ## Highlights · En bref
 
 - Native USB to HX Stomp XL (125 presets: browse, activate, rename, save)
-- Stomp matrix: copy / paste / move FX blocks, model picker, live parameter editing
+- Stomp matrix: copy / paste / move FX blocks with **drag & drop** (incl. creating splits), model picker
+- Live parameter editing — drag or **type a value** directly on the sliders
+- **Command Center**: assign controllers (footswitch or snapshot), bypass, min/max, live editing
+- **Snapshots**: switch Snap 1–4, per-snapshot parameter values, rename
 - Amp+Cab and Cab Dual tabs, Path 1 Input & Split (live write + hardware scroll)
 - Model metadata bundled — **HX Edit not required** for the release build
 
@@ -59,10 +62,10 @@ npm run tauri build  # release bundles in src-tauri/target/release/bundle/
 | [Référence protocole USB](docs/Référence%20protocole%20USB%20HX%20Stomp%20XL.md) | USB protocol notes (FR) |
 
 > [!WARNING]
-> **Early release — back up your presets first**  
-> Export your presets from HX Edit before using HXLinux.  
-> No data loss has been reported, but this is a first release — better safe than sorry.
+> **Early release — back up your presets first**
+> Export your presets from HX Edit before using HXLinux.
+> No data loss has been reported, but this is still an early release — better safe than sorry.
 >
-> **Première version — sauvegardez vos presets avant tout**  
-> Exportez vos presets depuis HX Edit avant d'utiliser HXLinux.  
-> Aucune perte de données n'a été signalée, mais c'est une première version — mieux vaut prévenir que guérir.
+> **Première version — sauvegardez vos presets avant tout**
+> Exportez vos presets depuis HX Edit avant d'utiliser HXLinux.
+> Aucune perte de données n'a été signalée, mais c'est encore une version de test — mieux vaut prévenir que guérir.
