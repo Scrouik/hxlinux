@@ -1621,6 +1621,11 @@ html, body {
   transition: background 0.08s;
 }
 
+/* L'attribut [hidden] (spécificité 0,0,1) est sinon écrasé par `.ctx-item { display:flex }`. */
+.ctx-item[hidden] {
+  display: none;
+}
+
 .ctx-item:hover {
   background: var(--bg-hover);
   color: var(--amber);

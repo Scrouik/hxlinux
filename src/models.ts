@@ -6035,6 +6035,7 @@ function onMatrixGridPanelContextMenu(ev: MouseEvent): void {
   const cleanItem = document.getElementById("models-ctx-clean-all");
   const copyItem = document.getElementById("models-ctx-copy");
   const pasteItem = document.getElementById("models-ctx-paste");
+  const toggleActiveItem = document.getElementById("models-ctx-toggle-active");
   if (!menu || !reloadItem || !cleanItem) return;
 
   const busy = isModelsContentBusy();
@@ -6054,6 +6055,12 @@ function onMatrixGridPanelContextMenu(ev: MouseEvent): void {
     copyItem.hidden = !canCopy;
     copyItem.classList.toggle("disabled", busy);
   }
+  if (toggleActiveItem) {
+    // Bascule actif/inactif : uniquement sur un vrai bloc FX (jamais input/output/split/merge/case vide).
+    const canToggle = !!targetSlot && canCopyMatrixSlot(targetSlot);
+    toggleActiveItem.hidden = !canToggle;
+    toggleActiveItem.classList.toggle("disabled", busy);
+  }
   if (pasteItem) {
     const canPaste =
       matrixCtxMenuTargetKi != null &&
@@ -6061,8 +6068,9 @@ function onMatrixGridPanelContextMenu(ev: MouseEvent): void {
       !!slots &&
       slots.length === 16 &&
       matrixPasteDestKind(matrixCtxMenuTargetKi, slots) != null;
-    pasteItem.hidden = !matrixSlotClipboard;
-    pasteItem.classList.toggle("disabled", busy || !canPaste);
+    // Masqué (pas seulement grisé) hors d'une destination valide → jamais sur Input/Output/Split/Merge.
+    pasteItem.hidden = !canPaste;
+    pasteItem.classList.toggle("disabled", busy);
   }
 
   const x = Math.min(ev.clientX, window.innerWidth - 220);
@@ -7727,6 +7735,16 @@ function initMatrixGridPanelContextMenu(): void {
     const ki = matrixCtxMenuTargetKi;
     if (ki == null) return;
     void pasteMatrixSlotToCell(ki);
+  });
+
+  const toggleActiveItem = document.getElementById("models-ctx-toggle-active");
+  toggleActiveItem?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    hideMatrixContextMenu();
+    if (toggleActiveItem.classList.contains("disabled")) return;
+    const ki = matrixCtxMenuTargetKi;
+    if (ki == null) return;
+    void toggleSlotActiveState(ki);
   });
 }
 
@@ -14483,6 +14501,12 @@ function slotBusToKemplineIndexJs(slotBus: number): number | null {
 async function toggleSelectedSlotActiveState(): Promise<void> {
   const ki = selectedParamsKemplineSlotIndex;
   if (ki === null) return;
+  await toggleSlotActiveState(ki);
+}
+
+/** Bascule actif/inactif (bypass) d'un slot donné — même effet que la barre espace, applicable à
+ * n'importe quelle case (utilisé par le menu contextuel sur la cellule cliquée). */
+async function toggleSlotActiveState(ki: number): Promise<void> {
   const slotBus = kemplineIndexToSlotBusJs(ki);
   if (slotBus === null) return;
   // Source de vérité : la classe déjà affichée dans la grille, pas `get_active_preset_slot_active_states`
