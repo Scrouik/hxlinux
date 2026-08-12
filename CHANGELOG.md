@@ -2,6 +2,38 @@
 
 Toutes les modifications notables de HXLinux sont documentées dans ce fichier.
 
+## [0.2.0] — 2026-08-12
+
+### Command Center (nouveau)
+- Nouvel espace **Command Center** avec onglets **Edit** et **Controllers** pour gérer les assignations de contrôleurs.
+- Lecture et écriture live des assignations : **Source, Type, Couleur, Nom**, et état de **bypass** par slot.
+- Création d'une assignation directement depuis un **footswitch**, affichage **multi-contrôles**, édition live des bornes **Min/Max** (écrites sur le device).
+- Suppression d'assignations via une **colonne corbeille** (unitaire) et action **« tout supprimer »** avec fenêtre de confirmation intégrée.
+- Effacement automatique des contrôles d'un slot avant un changement de modèle.
+
+### Snapshots (nouveau)
+- Bascule du **snapshot actif** (Snap 1 à 4) depuis les boutons du bandeau (caméra + numéro).
+- Affichage des **valeurs de paramètres par snapshot** et des paramètres pilotés par snapshot dans la table des contrôles.
+- **« Snapshot »** disponible comme source de contrôleur dans l'onglet Controllers, avec icône caméra sur les paramètres concernés.
+- **Renommage** des snapshots, détection fiable du snapshot réellement actif, et cohérence de session USB.
+- Corrections : un preset sans paramètre de snapshot s'affiche toujours sur **Snap 1** ; le snapshot actif ne reprend plus par erreur celui du preset précédent.
+
+### Grille & édition
+- **Drag & drop** dans la grille : déplacement de blocs et **création d'un split** par glisser-déposer.
+- **Saisie clavier** de la valeur directement sur les sliders non-crantés (en plus du glissement).
+
+### Stabilité lecture / sauvegarde (majeur)
+- **Fin des gels de lecture de preset** : acquittement du trailer de fin de dump (clôture de transaction façon HX Edit) et contrainte device documentée.
+- **Sauvegarde réparée** : le raccourci Ctrl+S n'est plus intercepté par un slider, la sauvegarde ne part plus sur une lane USB étrangère, et le padding des paquets de save/rename est aligné (multiple de 4) — c'était la vraie cause des gels au save et au renommage.
+- **Identité des presets par index** : fin des presets « intriqués » (homonymes « New Preset ») lors des clics/éditions.
+- **Source Input relue correctement** au chargement (Main / Return / USB), au lieu de retomber sur Main L/R par défaut.
+- Numérotation **banque + lettre** (01A à 32D) affichée partout.
+- Suppression d'une **caméra fantôme** lors d'un changement de modèle.
+
+### Interne
+- Chantier d'assainissement de l'affichage : introduction d'un modèle d'état unique **CurrentPreset** reconstruit depuis le dump (paliers 1 et 2a).
+- Nettoyage de code mort et d'instrumentation de diagnostic.
+
 ## [0.1.1] — 2026-07-07
 
 ### Input / Output / Split / Merge (I/O spéciaux)
