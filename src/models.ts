@@ -5803,6 +5803,8 @@ async function withMatrixUsbInteractionLock<T>(
 }
 
 let matrixSlotClipboard: MatrixSlotClipboard | null = null;
+/** Slot (kempline index) sous le clic droit ayant ouvert le menu contextuel matrice. */
+let matrixCtxMenuTargetKi: number | null = null;
 /** Index source pendant un drag & drop matrice (move). */
 let matrixDragSourceKi: number | null = null;
 /**
@@ -5974,12 +5976,26 @@ function canCopyMatrixSlot(slot: SlotDebug): boolean {
   return (slot.moduleHex ?? "").trim().length > 0;
 }
 
-function canPasteMatrixSlotToEmpty(kemplineSlotIndex: number, slots: SlotDebug[]): boolean {
+/**
+ * Nature d'une destination de collage :
+ * - `"empty"` : case vide, colonne libre → op USB `add`.
+ * - `"occupied"` : case portant un bloc FX remplaçable (non structurel) → op USB `replace` (écrasement).
+ * - `null` : destination invalide (pas de presse-papier, preset absent, ou case structurelle input/output/split/merge).
+ */
+function matrixPasteDestKind(
+  kemplineSlotIndex: number,
+  slots: SlotDebug[],
+): "empty" | "occupied" | null {
   const cb = matrixSlotClipboard;
-  if (!cb || currentPresetIndex < 0) return false;
+  if (!cb || currentPresetIndex < 0) return null;
   const slot = slots[kemplineSlotIndex];
-  if (!slot || !isEmptyGridCell(slot)) return false;
-  return !isMatrixColumnOccupied(slots, kemplineSlotIndex);
+  if (!slot) return null;
+  if (isEmptyGridCell(slot)) {
+    return isMatrixColumnOccupied(slots, kemplineSlotIndex) ? null : "empty";
+  }
+  // Case occupée : n'écrase qu'un vrai bloc FX (jamais input/output/split/merge/routing).
+  if (isStructuralMatrixCategory(slot.category)) return null;
+  return "occupied";
 }
 
 /** Validation drag & drop move : case vide, colonne libre (sauf le bloc source déplacé). */
@@ -6002,16 +6018,52 @@ function hideMatrixContextMenu(): void {
   menu?.classList.remove("visible");
 }
 
+/** Résout le kempline index de la case sous l'événement (remonte au `[data-kempline-slot-index]`). */
+function resolveKemplineIndexFromEvent(ev: Event): number | null {
+  const t = ev.target;
+  if (!(t instanceof Element)) return null;
+  const cell = t.closest<HTMLElement>("[data-kempline-slot-index]");
+  if (!cell) return null;
+  const ki = Number.parseInt(cell.dataset.kemplineSlotIndex ?? "", 10);
+  return Number.isInteger(ki) ? ki : null;
+}
+
 function onMatrixGridPanelContextMenu(ev: MouseEvent): void {
   if (currentPresetIndex < 0 || isModelsContentBusy()) return;
   const menu = document.getElementById("models-ctx-menu");
   const reloadItem = document.getElementById("models-ctx-reload");
   const cleanItem = document.getElementById("models-ctx-clean-all");
+  const copyItem = document.getElementById("models-ctx-copy");
+  const pasteItem = document.getElementById("models-ctx-paste");
   if (!menu || !reloadItem || !cleanItem) return;
 
   const busy = isModelsContentBusy();
   reloadItem.classList.toggle("disabled", busy);
   cleanItem.classList.toggle("disabled", busy);
+
+  // Cellule ciblée par le clic droit → pilote Copier / Coller.
+  matrixCtxMenuTargetKi = resolveKemplineIndexFromEvent(ev);
+  const slots = lastHwSyncNormalizedSlots;
+  const targetSlot =
+    matrixCtxMenuTargetKi != null && slots && slots.length === 16
+      ? slots[matrixCtxMenuTargetKi]
+      : undefined;
+
+  if (copyItem) {
+    const canCopy = !!targetSlot && canCopyMatrixSlot(targetSlot);
+    copyItem.hidden = !canCopy;
+    copyItem.classList.toggle("disabled", busy);
+  }
+  if (pasteItem) {
+    const canPaste =
+      matrixCtxMenuTargetKi != null &&
+      !!matrixSlotClipboard &&
+      !!slots &&
+      slots.length === 16 &&
+      matrixPasteDestKind(matrixCtxMenuTargetKi, slots) != null;
+    pasteItem.hidden = !matrixSlotClipboard;
+    pasteItem.classList.toggle("disabled", busy || !canPaste);
+  }
 
   const x = Math.min(ev.clientX, window.innerWidth - 220);
   const y = Math.min(ev.clientY, window.innerHeight - 100);
@@ -7652,6 +7704,30 @@ function initMatrixGridPanelContextMenu(): void {
     if (cleanItem.classList.contains("disabled")) return;
     void cleanAllMatrixBlocks();
   });
+
+  const copyItem = document.getElementById("models-ctx-copy");
+  const pasteItem = document.getElementById("models-ctx-paste");
+
+  copyItem?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    hideMatrixContextMenu();
+    if (copyItem.classList.contains("disabled")) return;
+    const ki = matrixCtxMenuTargetKi;
+    const slots = lastHwSyncNormalizedSlots;
+    if (ki == null || !slots || slots.length !== 16) return;
+    const slot = slots[ki];
+    if (!slot) return;
+    void copyMatrixSlotFromCell(ki, slot);
+  });
+
+  pasteItem?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    hideMatrixContextMenu();
+    if (pasteItem.classList.contains("disabled")) return;
+    const ki = matrixCtxMenuTargetKi;
+    if (ki == null) return;
+    void pasteMatrixSlotToCell(ki);
+  });
 }
 
 async function buildChainParamsMapForCopy(
@@ -8232,10 +8308,15 @@ async function pasteMatrixSlotToCell(
   destKi: number,
   options?: { skipInteractionLock?: boolean },
 ): Promise<boolean> {
-  const run = async (): Promise<boolean> => {
-  const cb = matrixSlotClipboard;
-  const slots = lastHwSyncNormalizedSlots;
-  if (!cb || !slots || slots.length !== 16 || !canPasteMatrixSlotToEmpty(destKi, slots)) {
+  // Pré-contrôle + éventuelle confirmation d'écrasement AVANT tout verrou/MAJ optimiste.
+  const cbPre = matrixSlotClipboard;
+  const slotsPre = lastHwSyncNormalizedSlots;
+  if (!cbPre || !slotsPre || slotsPre.length !== 16) {
+    console.warn("[MatrixPaste] destination invalide");
+    return false;
+  }
+  const destKind = matrixPasteDestKind(destKi, slotsPre);
+  if (!destKind) {
     console.warn("[MatrixPaste] destination invalide");
     return false;
   }
@@ -8243,6 +8324,35 @@ async function pasteMatrixSlotToCell(
     console.warn("[MatrixPaste] preset pas prêt");
     return false;
   }
+
+  // Case occupée → avertir avant d'écraser le model existant.
+  if (destKind === "occupied") {
+    const victimName = (slotsPre[destKi]?.name ?? "").trim() || "ce model";
+    const confirmed = await showConfirmDialog({
+      title: "Écraser le model ?",
+      message: `Le model « ${victimName} » va être écrasé par « ${cbPre.displayName} ». Continuer ?`,
+      confirmLabel: "Écraser",
+      cancelLabel: "Annuler",
+      danger: true,
+    });
+    if (!confirmed) {
+      setStatus("Collage annulé");
+      return false;
+    }
+  }
+
+  const run = async (): Promise<boolean> => {
+  const cb = matrixSlotClipboard;
+  const slots = lastHwSyncNormalizedSlots;
+  if (!cb || !slots || slots.length !== 16 || matrixPasteDestKind(destKi, slots) !== destKind) {
+    console.warn("[MatrixPaste] destination invalide");
+    return false;
+  }
+  if (loading || loadedPresetIndex !== currentPresetIndex) {
+    console.warn("[MatrixPaste] preset pas prêt");
+    return false;
+  }
+  const pasteOp: "add" | "replace" = destKind === "occupied" ? "replace" : "add";
 
   const idTrim = cb.catalogModelId;
   const metaEarly = await getPresetMetaForId(idTrim);
@@ -8308,12 +8418,12 @@ async function pasteMatrixSlotToCell(
     });
 
     const out = await invokeProbeSlotModelUsb( {
-      op: "add",
+      op: pasteOp,
       slotIndex: destKi,
       catalogModelId: idTrim,
       assignVariant: cb.assignVariant,
     });
-    console.info("[MatrixPaste] add", cb.displayName, idTrim, out);
+    console.info(`[MatrixPaste] ${pasteOp}`, cb.displayName, idTrim, out);
     mergeProbeSlotModelUntil = {
       ki: destKi,
       deadline: Date.now() + PROBE_SLOT_MERGE_GRACE_MS,
@@ -15442,6 +15552,36 @@ window.addEventListener("DOMContentLoaded", () => {
       if (!typing && selectedParamsKemplineSlotIndex !== null) {
         e.preventDefault();
         void toggleSelectedSlotActiveState();
+        return;
+      }
+    }
+    // Copier / coller un model au clavier (sur le slot sélectionné). On ne détourne PAS Ctrl+C/V
+    // pendant une saisie texte ni quand du texte est sélectionné (copie de texte préservée).
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+      const key = e.key.toLowerCase();
+      if (key === "c" || key === "v") {
+        const target = e.target as HTMLElement | null;
+        const tag = target?.tagName;
+        const typing = tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable;
+        const hasTextSelection = (window.getSelection()?.toString() ?? "").length > 0;
+        if (typing || hasTextSelection) return;
+        const ki = selectedParamsKemplineSlotIndex;
+        if (ki === null || currentPresetIndex < 0 || isModelsContentBusy()) return;
+        const slots = lastHwSyncNormalizedSlots;
+        if (!slots || slots.length !== 16) return;
+        if (key === "c") {
+          const slot = slots[ki];
+          if (slot && canCopyMatrixSlot(slot)) {
+            e.preventDefault();
+            void copyMatrixSlotFromCell(ki, slot);
+          }
+          return;
+        }
+        // key === "v" : collage (case vide ou occupée → popup géré dans pasteMatrixSlotToCell).
+        if (matrixSlotClipboard && matrixPasteDestKind(ki, slots) != null) {
+          e.preventDefault();
+          void pasteMatrixSlotToCell(ki);
+        }
         return;
       }
     }
