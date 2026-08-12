@@ -113,6 +113,43 @@ pub fn scan_path1_input_source_wire(buf: &[u8]) -> Option<u8> {
     None
 }
 
+/// Témoin `HX_READ_INPUT_SOURCE_FROM_DUMP` (défaut ON) : à la fin d'une lecture de preset, rescanne
+/// le dump pour restaurer la source Input affichée. Sans ce rescan, l'UI retombe sur le défaut
+/// Main L/R alors que le device a bien persisté la source (bug de relecture prouvé, capture
+/// `bug_lecture_input_snap4_linux.json` : dump snap4 = `82 05 04 07` = Return, mais UI = Main).
+/// `HX_READ_INPUT_SOURCE_FROM_DUMP=0` désactive le rescan (ancien comportement).
+pub fn read_input_source_from_dump_enabled() -> bool {
+    match std::env::var("HX_READ_INPUT_SOURCE_FROM_DUMP").as_deref() {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+        Err(_) => true,
+    }
+}
+
+/// Cherche la source `@input` dans un **dump de preset** (relecture). Contrairement au format live
+/// `82:62:00:33:XX`, le dump encode la source dans le nœud Input (en tête de preset) sous la forme :
+///   `82 13 00 14  82 05 <wire> 07  83 02 03 03 03 04`
+/// `<wire>` = valeur catalogue (01=Main, 04=Return, 06=USB). Le nœud Split insère un `83 0e` avant
+/// son propre `82 05` → pas de collision. On retourne la **1ʳᵉ** occurrence (nœud Input structurellement
+/// premier). Signature vérifiée sur `bug_lecture_input_snap4_linux.json` + `change_preset.json`.
+pub fn scan_path1_input_source_wire_from_preset(preset_data: &[u8]) -> Option<u8> {
+    const PREFIX: [u8; 6] = [0x82, 0x13, 0x00, 0x14, 0x82, 0x05];
+    const SUFFIX: [u8; 7] = [0x07, 0x83, 0x02, 0x03, 0x03, 0x03, 0x04];
+    let total = PREFIX.len() + 1 + SUFFIX.len(); // 14 octets
+    if preset_data.len() < total {
+        return None;
+    }
+    let mut i = 0usize;
+    while i + total <= preset_data.len() {
+        if preset_data[i..i + PREFIX.len()] == PREFIX
+            && preset_data[i + PREFIX.len() + 1..i + total] == SUFFIX
+        {
+            return Some(preset_data[i + PREFIX.len()]);
+        }
+        i += 1;
+    }
+    None
+}
+
 /// IN `21` (44 o) émis quand l’utilisateur **scroll** la source Input sur le hardware (capture `scroll Input.json`).
 /// Distinct du pull FX (`1d`/`1f` + `82:69:31:6a`) : ici `f0:03:02:10` + ancre `82:69:1b:6a:84:52…` + `82:62:00:33:XX`.
 pub fn is_path1_input_scroll_notify_21(data: &[u8]) -> bool {
@@ -341,6 +378,34 @@ mod tests {
             .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
             .collect();
         assert_eq!(scan_path1_input_source_wire(&buf), Some(1));
+    }
+
+    #[test]
+    fn scan_input_source_wire_from_preset_dump() {
+        // Extraits réels du nœud Input (bug_lecture_input_snap4_linux.json).
+        // preset 22/snap4 = Return (04), preset 23 = Main (01).
+        for (hex, wire) in [
+            // …82 15 01 16 dc 00 14 | 82 13 00 14 82 05 04 07 83 02 03 03 03 04 | 93 c2…
+            ("8215011600dc001482130014820504078302030303049300", 4u8),
+            ("8215001600dc001482130014820501078302030303049300", 1u8),
+        ] {
+            let buf: Vec<u8> = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect();
+            assert_eq!(scan_path1_input_source_wire_from_preset(&buf), Some(wire));
+        }
+    }
+
+    #[test]
+    fn scan_input_source_wire_ignores_split_node() {
+        // Nœud Split : `82 13 02 14 83 0e 82 05 00 07 …` — byte2=02 + `83 0e` → pas de match Input.
+        let hex = "82130214830e820500078302000300";
+        let buf: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        assert_eq!(scan_path1_input_source_wire_from_preset(&buf), None);
     }
 
     #[test]

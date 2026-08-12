@@ -147,6 +147,26 @@ impl RequestPreset {
         self.await_dump_end_after_full_chunk = false;
         self.dump_end_pending = false;
         self.cancel_watchdog();
+
+        // Relecture source Input : le dump encode `@input` dans le nœud Input
+        // (`82 13 00 14 82 05 <wire> 07 83 02 03 03 03 04`). Sans ce rescan, `start` a remis
+        // `path1_input_source_wire = None` et l'UI retombe sur le défaut Main L/R, alors que le
+        // device a bien persisté la source (bug prouvé, capture `bug_lecture_input_snap4_linux.json`).
+        // Gaté `HX_READ_INPUT_SOURCE_FROM_DUMP` (défaut ON).
+        if crate::helix::path1_io_live_write::read_input_source_from_dump_enabled() {
+            if let Some(wire) =
+                crate::helix::path1_io_live_write::scan_path1_input_source_wire_from_preset(
+                    &self.preset_data,
+                )
+            {
+                state.path1_input_source_wire = Some(wire);
+                eprintln!(
+                    "[Path1Input][read-dump] @input wire={wire} restauré depuis le dump (len={})",
+                    self.preset_data.len()
+                );
+            }
+        }
+
         let next_mode = if state.preset_content_only {
             ModeRequest::StandardPresetRead(state.preset_read_generation)
         } else {
