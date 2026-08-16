@@ -7,12 +7,18 @@ let presetNames: string[] = [];
 let activePreset = -1;
 let selectedIndex = -1;
 let ctxTargetIndex = -1;
+// Copier/coller de preset : index+nom de la source mémorisée (voie device-save).
+// Indépendant de la position : copier/coller possible sur des slots non-actifs.
+let copiedPresetIndex = -1;
+let copiedPresetName  = "";
 let dragSrcIndex = -1;
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
 
 const list        = document.getElementById("preset-list")!;
 const ctxMenu     = document.getElementById("ctx-menu")!;
+const ctxCopy     = document.getElementById("ctx-copy")!;
+const ctxPaste    = document.getElementById("ctx-paste")!;
 const ctxRename   = document.getElementById("ctx-rename")!;
 const ctxExport   = document.getElementById("ctx-export")!;
 const ctxSave     = document.getElementById("ctx-save")!;
@@ -270,7 +276,9 @@ async function onItemDblClick(index: number) {
 
 function onPresetItemContextMenu(e: MouseEvent, index: number) {
   e.preventDefault();
-  if (index !== activePreset || activePreset < 0) return;
+  // Menu affiché sur TOUT slot (plus « actif uniquement ») : Copier/Coller sont
+  // indépendants de la position. Les items HW (Save/Rename/Export) restent gérés
+  // par leur propre logique « actif seulement » dans onContextMenu.
   onContextMenu(e, index);
 }
 
@@ -281,6 +289,26 @@ function onContextMenu(e: MouseEvent, index: number) {
   render(presetNames, activePreset);
 
   ctxLoad.classList.add("disabled");
+
+  // Copier : autorisé sur tout slot ayant un preset (même vidé+renommé « Vide » = valide) ;
+  // désactivé seulement sur un placeholder réellement vide.
+  if (!isEmpty(presetNames[index])) {
+    ctxCopy.classList.remove("disabled");
+    ctxCopy.removeAttribute("title");
+  } else {
+    ctxCopy.classList.add("disabled");
+    ctxCopy.title = "Empty slot — nothing to copy";
+  }
+  // Coller : autorisé si un preset est en mémoire et que la destination ≠ source.
+  if (copiedPresetIndex >= 0 && copiedPresetIndex !== index) {
+    ctxPaste.classList.remove("disabled");
+    ctxPaste.title = `Paste "${copiedPresetName}" here`;
+  } else {
+    ctxPaste.classList.add("disabled");
+    ctxPaste.title =
+      copiedPresetIndex < 0 ? "No preset copied yet" : "Source = destination";
+  }
+
   if (canExportPreset(index)) {
     ctxExport.classList.remove("disabled");
     ctxExport.removeAttribute("title");
@@ -568,6 +596,50 @@ async function loadPreset(_index: number) {
 }
 
 // ─── Context menu actions ─────────────────────────────────────────────────────
+
+ctxCopy.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (ctxTargetIndex < 0 || ctxCopy.classList.contains("disabled")) return;
+  copiedPresetIndex = ctxTargetIndex;
+  copiedPresetName  = presetNames[ctxTargetIndex] ?? "";
+  hideContextMenu();
+  barHint.textContent = `Preset ${padNum(copiedPresetIndex)} "${copiedPresetName}" copied`;
+  setTimeout(() => { barHint.textContent = "Clic droit sur la grille · Glisser pour réordonner"; }, 2500);
+});
+
+ctxPaste.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (ctxTargetIndex < 0 || ctxPaste.classList.contains("disabled")) return;
+  const dst = ctxTargetIndex;
+  const src = copiedPresetIndex;
+  hideContextMenu();
+  // Confirmation d'écrasement si la destination contient déjà un preset.
+  if (!isEmpty(presetNames[dst])) {
+    const ok = window.confirm(
+      `Overwrite preset ${padNum(dst)} "${presetNames[dst]}" with "${copiedPresetName}"?`
+    );
+    if (!ok) return;
+  }
+  void pastePreset(src, dst);
+});
+
+/** Colle le preset copié (src) vers dst via le device (activate src → save dst → land dst). */
+async function pastePreset(src: number, dst: number) {
+  barHint.textContent = `Copying ${padNum(src)} → ${padNum(dst)}…`;
+  try {
+    await invoke("copy_preset_to_slot", { srcIndex: src, dstIndex: dst });
+    // Le backend a atterri sur dst et mis à jour le catalogue : refléter côté UI.
+    selectedIndex = dst;
+    activePreset  = dst;
+    try { presetNames = await invoke<string[]>("get_preset_names"); } catch { /* garde l'ancien */ }
+    render(presetNames, activePreset);
+    await emit("models:load-preset", { index: dst });
+    barHint.textContent = `✓ Pasted "${copiedPresetName}" → ${padNum(dst)}`;
+  } catch (e) {
+    barHint.textContent = `Paste error: ${e}`;
+  }
+  setTimeout(() => { barHint.textContent = "Clic droit sur la grille · Glisser pour réordonner"; }, 2800);
+}
 
 ctxRename.addEventListener("click", (e) => {
   e.stopPropagation();

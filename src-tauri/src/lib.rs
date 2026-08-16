@@ -602,6 +602,125 @@ fn save_preset_to_hardware(
     Ok(())
 }
 
+/// Envoie un MIDI Program Change (sélection preset) sur l'endpoint 0x02.
+fn send_program_change(
+    handle: &std::sync::Arc<rusb::DeviceHandle<rusb::GlobalContext>>,
+    index: usize,
+) -> Result<(), String> {
+    let packet = [0x0Cu8, 0xC0, index as u8, 0x00];
+    handle
+        .write_bulk(0x02, &packet, Duration::from_millis(1000))
+        .map_err(|e| format!("MIDI Program Change slot {index} : {e}"))
+        .map(|_| ())
+}
+
+/// Applique l'état local post-sélection preset (identique à `activate_preset`).
+fn mark_preset_activated(app: &mut AppState, index: usize) {
+    app.active_preset = index;
+    if let Some(ref helix_arc) = app.helix_state {
+        if let Ok(mut s) = helix_arc.lock() {
+            s.want_content_only_after_x2 = true;
+            s.hw_active_slot_index = None;
+            s.hw_active_slot_bus = None;
+            s.hw_active_slot_sequence = s.hw_active_slot_sequence.wrapping_add(1);
+        }
+    }
+}
+
+/// COPIE un preset `src` → `dst` en exploitant le sérialiseur du DEVICE (voie validée) :
+/// active la source (son contenu va dans le buffer d'édition du device) → attend le chargement
+/// → SAVE vers la destination (le device sérialise lui-même) → active la destination (atterrissage).
+///
+/// Indépendant de la position de départ (src/dst passés en paramètre). Piloté par l'UI
+/// (menu clic droit Copier/Coller) avec confirmation d'écrasement côté frontend.
+#[tauri::command]
+fn copy_preset_to_slot(
+    src_index: usize,
+    dst_index: usize,
+    state: tauri::State<Arc<Mutex<AppState>>>,
+) -> Result<String, String> {
+    if src_index > 125 || dst_index > 125 {
+        return Err("index hors limites (0..125)".to_string());
+    }
+    if src_index == dst_index {
+        return Err("source == destination".to_string());
+    }
+
+    let (handle, helix_arc, name) = {
+        let app = state.lock().unwrap();
+        let handle = app.usb_handle.clone().ok_or("HX non connecté")?;
+        let helix = app.helix_state.clone().ok_or("HX non connecté")?;
+        let name = app
+            .preset_names
+            .get(src_index)
+            .cloned()
+            .filter(|n| !n.is_empty() && n != "<empty>")
+            .ok_or_else(|| format!("preset source {src_index:03} indisponible"))?;
+        (handle, helix, name)
+    };
+    {
+        let s = helix_arc.lock().unwrap();
+        if !s.editor_ready {
+            return Err("Amorçage USB en cours — copie indisponible".to_string());
+        }
+    }
+    eprintln!("[CopyToSlot] src={src_index:03} '{name}' → dst={dst_index:03} : activate source…");
+
+    // 1. Charger la source dans le buffer d'édition du device.
+    helix_arc.lock().unwrap().preset_data_ready = false;
+    send_program_change(&handle, src_index)?;
+    mark_preset_activated(&mut state.lock().unwrap(), src_index);
+
+    // 2. Attendre que le chargement de la source soit confirmé (buffer d'édition prêt).
+    let mut loaded = false;
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(75));
+        let s = helix_arc.lock().unwrap();
+        if s.preset_data_ready && s.preset_index == src_index {
+            loaded = true;
+            break;
+        }
+    }
+    if !loaded {
+        return Err(format!(
+            "chargement source {src_index:03} non confirmé (timeout) — copie annulée"
+        ));
+    }
+    eprintln!("[CopyToSlot] source chargée → SAVE vers {dst_index:03}");
+
+    // 3. Sauver le buffer d'édition (= source) vers la destination (le device sérialise).
+    {
+        let mut s = helix_arc.lock().unwrap();
+        helix::preset_label::send_preset_save(&mut s, dst_index, &name)?;
+        let save_double_lo = (s.editor_ed03_double & 0xff) as u8;
+        s.request_preset_session_id = save_double_lo.wrapping_add(1);
+        s.ed03_cmd_type = 0x03;
+        // Refléter le nom copié dans le CATALOGUE HELIX (comme rename_preset l.542), AVANT la
+        // lecture d'atterrissage : sinon `reconcile_active_preset_index` voit le nom comme unique
+        // (encore seulement à l'index source) et remappe la dest → source (bug index observé).
+        // Avec la MAJ, le nom est présent aux 2 index (homonymes = normal pour une copie) →
+        // cas ambigu → pas de remap, l'index dest du paquet est préservé.
+        if let Some(slot) = s.preset_names.get_mut(dst_index) {
+            *slot = name.clone();
+        }
+    }
+    std::thread::sleep(Duration::from_millis(120));
+
+    // 4. Atterrir sur la destination + refléter le nom copié dans le catalogue.
+    helix_arc.lock().unwrap().preset_data_ready = false;
+    send_program_change(&handle, dst_index)?;
+    {
+        let mut app = state.lock().unwrap();
+        if let Some(slot) = app.preset_names.get_mut(dst_index) {
+            *slot = name.clone();
+        }
+        mark_preset_activated(&mut app, dst_index);
+    }
+    eprintln!("[CopyToSlot] terminé : '{name}' copié {src_index:03} → {dst_index:03}, atterri sur dest");
+
+    Ok(format!("preset '{name}' copié {src_index:03} → {dst_index:03}"))
+}
+
 /// Dialogue « Enregistrer sous » pour un export `.hlx` (contenu JSON fourni par le frontend).
 #[tauri::command]
 fn save_hlx_preset_file(json: String, default_name: String) -> Result<Option<String>, String> {
@@ -5481,6 +5600,7 @@ pub fn run() {
             request_active_preset_name,
             rename_preset,
             save_preset_to_hardware,
+            copy_preset_to_slot,
             save_hlx_preset_file,
             activate_preset,
             switch_active_hardware_slot,
